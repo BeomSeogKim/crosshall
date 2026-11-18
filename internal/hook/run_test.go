@@ -142,6 +142,24 @@ func TestHookObservesWithoutOutputOnEnd(t *testing.T) {
 	}
 }
 
+func TestMissingLeafStartSkipsLookupWithoutDispatcher(t *testing.T) {
+	rv, dir, leaf := runFixture(t)
+	if err := os.Rename(leaf, filepath.Join(dir, "parked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "ready")); err != nil {
+		t.Fatal(err)
+	}
+	transport := recordedTransport{lookup: func(intent string) (string, wire.Response, error) {
+		t.Fatalf("stopped dispatcher received first-contact lookup %q", intent)
+		return "", wire.Response{}, nil
+	}}
+	out, outcome := simulate(t, rv, transport, "SessionStart", map[string]any{"source": "startup", "cwd": dir})
+	if out != "" || outcome != "no_dispatcher" {
+		t.Fatalf("outcome %q, output %q", outcome, out)
+	}
+}
+
 func TestMissingLeafStartOnlyChecksDefaultAfterLookupRefusal(t *testing.T) {
 	for _, code := range []core.Code{core.CodeKeyRetired, core.CodeNotEnrolled} {
 		t.Run(string(code), func(t *testing.T) {

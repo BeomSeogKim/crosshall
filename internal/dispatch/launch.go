@@ -31,6 +31,10 @@ type LaunchConfig struct {
 // It reports whether this call launched a child, even if readiness fails.
 // Owner must come from the explicit CLI owner gate, independent of startup.
 func (cfg LaunchConfig) Start(ctx context.Context) (bool, error) {
+	return cfg.start(ctx, syscall.Kill)
+}
+
+func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signal) error) (bool, error) {
 	if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
 		return false, err
 	}
@@ -61,7 +65,10 @@ func (cfg LaunchConfig) Start(ctx context.Context) (bool, error) {
 		}
 	}
 	previous := readReady(cfg.Rendezvous)
-	if previous.live(state) {
+	live, err := previous.liveness(state, probe)
+	if live || (!cfg.Owner && err != nil) {
+		// A sandboxed member can still send through the rendezvous when
+		// the local startup probe is inconclusive.
 		return false, nil
 	}
 	executable, err := os.Executable()
@@ -158,8 +165,24 @@ type readyMarker struct {
 }
 
 func (r readyMarker) live(state *os.Root) bool {
-	return r.Instance != "" && r.Version == wire.Version && r.PID > 0 &&
-		syscall.Kill(r.PID, 0) == nil && lockHeld(state)
+	live, _ := r.liveness(state, syscall.Kill)
+	return live
+}
+
+func (r readyMarker) liveness(state *os.Root, probe func(int, syscall.Signal) error) (bool, error) {
+	held, err := lockState(state)
+	if err != nil || !held || r.Instance == "" || r.Version != wire.Version || r.PID <= 0 {
+		return false, err
+	}
+	err = probe(r.PID, 0)
+	switch {
+	case err == nil, errors.Is(err, syscall.EPERM), errors.Is(err, syscall.EACCES):
+		return true, nil
+	case errors.Is(err, syscall.ESRCH):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func readReady(rendezvous string) readyMarker {
@@ -178,11 +201,6 @@ func readReady(rendezvous string) readyMarker {
 		return readyMarker{}
 	}
 	return marker
-}
-
-func lockHeld(state *os.Root) bool {
-	held, _ := lockState(state)
-	return held
 }
 
 // lockState reports whether a dispatcher holds the lock. A missing file or a

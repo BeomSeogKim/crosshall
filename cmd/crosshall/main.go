@@ -29,6 +29,10 @@ var version = "dev"
 
 func main() {
 	entry := time.Now()
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		runHook(entry, os.Args[2:])
+		return
+	}
 	paths, pathErr := resolvePaths()
 	if len(os.Args) == 2 && os.Args[1] == "__dispatch" {
 		os.Exit(serve(paths, pathErr))

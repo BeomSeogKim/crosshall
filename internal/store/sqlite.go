@@ -17,7 +17,10 @@ import (
 //go:embed migrations/001_init.sql
 var initialSchema string
 
-var migrations = []string{initialSchema}
+//go:embed migrations/002_adapters.sql
+var adapterSchema string
+
+var migrations = []string{initialSchema, adapterSchema}
 
 // Store owns the dispatcher's single SQLite connection.
 type Store struct {

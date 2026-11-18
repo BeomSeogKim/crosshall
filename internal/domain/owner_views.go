@@ -50,8 +50,8 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	if caller.Role != core.RoleOwner {
 		return Refuse(core.CodeOwnerOnly, "the owner can list bindings across channels", "crosshall who"), nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.name, c.topic, b.id, b.alias, b.state, b.focus, p.vendor,
-		COALESCE((SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id=b.principal_id), b.joined_at_ms)
+	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.name, c.topic, b.id, b.principal_id, b.alias, b.state, b.focus, p.vendor,
+		COALESCE((SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id=b.principal_id AND o.kind='command'), b.joined_at_ms)
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		ORDER BY c.id, b.id`)
 	if err != nil {
@@ -63,9 +63,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	for rows.Next() {
 		var channel int64
 		var name, topic string
-		var binding, seen sql.NullInt64
+		var binding, principal, seen sql.NullInt64
 		var alias, bindingState, focus, vendor sql.NullString
-		if err := rows.Scan(&channel, &name, &topic, &binding, &alias, &bindingState, &focus, &vendor, &seen); err != nil {
+		if err := rows.Scan(&channel, &name, &topic, &binding, &principal, &alias, &bindingState, &focus, &vendor, &seen); err != nil {
 			return core.Result{}, err
 		}
 		if len(out.Channels) == 0 || channel != previous {
@@ -77,6 +77,7 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 				Member: Member{
 					Alias: alias.String, Focus: focus.String, Vendor: vendor.String, BindingID: binding.Int64,
 					State: "unknown", LastCommandAgoS: max((ms(now)-seen.Int64)/1000, 0), Route: "pull",
+					principal: principal.Int64,
 				},
 				BindingState: bindingState.String,
 			}
@@ -89,6 +90,15 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	}
 	if err := rows.Err(); err != nil {
 		return core.Result{}, err
+	}
+	rows.Close()
+	for i := range out.Channels {
+		for j := range out.Channels[i].Members {
+			m := &out.Channels[i].Members[j].Member
+			if err := withPresence(ctx, tx, m.principal, m, now); err != nil {
+				return core.Result{}, err
+			}
+		}
 	}
 	return OK(out)
 }

@@ -23,8 +23,12 @@ type Member struct {
 	Route           string `json:"route"`
 	Self            bool   `json:"self,omitempty"`
 	BindingID       int64  `json:"binding_id,omitempty"`
-	// Change is set on rows of roster_changes: joined, focus or departed.
+	// Change is set on rows of roster_changes: joined, focus, presence or departed.
 	Change string `json:"change,omitempty"`
+	// Observed is the latest adapter fact; absent without an adapter.
+	Observed *Observed `json:"observed,omitempty"`
+
+	principal int64
 }
 
 // ChannelResult is the data of a successful channel creation.

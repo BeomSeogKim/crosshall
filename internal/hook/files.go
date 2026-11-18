@@ -1,0 +1,214 @@
+package hook
+
+import (
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
+)
+
+type adapterPolicy struct {
+	Enabled  bool
+	Reminder bool
+	Epoch    uint64
+}
+
+func readPolicy(rv *os.Root, adapter string) (adapterPolicy, error) {
+	data, err := ident.ReadPrivateFile(rv, "policy", 4096)
+	if err != nil {
+		return adapterPolicy{}, err
+	}
+	var policy adapterPolicy
+	found := false
+	rows, complete := strings.CutSuffix(string(data), "\n")
+	if !complete && len(data) != 0 {
+		return adapterPolicy{}, errors.New("incomplete hook policy")
+	}
+	for _, line := range strings.Split(rows, "\n") {
+		f := strings.Split(line, " ")
+		if f[0] != adapter {
+			continue
+		}
+		if found || len(f) != 4 || (f[1] != "0" && f[1] != "1") || (f[2] != "0" && f[2] != "1") {
+			return adapterPolicy{}, errors.New("invalid hook policy")
+		}
+		epoch, err := strconv.ParseUint(f[3], 10, 64)
+		if err != nil {
+			return adapterPolicy{}, errors.New("invalid policy epoch")
+		}
+		policy = adapterPolicy{Enabled: f[1] == "1", Reminder: f[2] == "1", Epoch: epoch}
+		found = true
+	}
+	return policy, nil
+}
+
+// hasDefault is only a hint for a first join. The dispatcher rechecks it in the enrollment transaction.
+func hasDefault(ctx context.Context, rv *os.Root, repo string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !filepath.IsAbs(repo) || filepath.Clean(repo) != repo {
+		return false, nil
+	}
+	f, err := spool.OpenServerFile(rv, "repo-defaults", os.O_RDONLY)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	sum := sha256.Sum256([]byte(repo))
+	want := hex.EncodeToString(sum[:])
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4096), 4096)
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if scanner.Text() == want {
+			return true, nil
+		}
+	}
+	return false, scanner.Err()
+}
+
+func currentAck(rv, leaf *os.Root, generation, effect, turn string) (wire.HookAck, error) {
+	var ack wire.HookAck
+	if effect != "notice" && effect != "reminder" {
+		return ack, errors.New("unknown stamp effect")
+	}
+	if effect == "reminder" && (turn == "" || strings.ContainsAny(turn, " \n\r\t")) {
+		return ack, errors.New("invalid stamp turn")
+	}
+	ready, err := ident.ReadPrivateFile(rv, "ready", 4096)
+	if err != nil {
+		return ack, err
+	}
+	var marker struct {
+		Instance string `json:"instance"`
+		Version  int    `json:"v"`
+	}
+	if err := json.Unmarshal(ready, &marker); err != nil || marker.Instance == "" || marker.Version != wire.Version {
+		return ack, errors.New("invalid dispatcher marker")
+	}
+	gen, err := ident.ReadPrivateFile(leaf, "gen", 1024)
+	if err != nil {
+		return ack, err
+	}
+	if generation == "" || strings.TrimSpace(string(gen)) != generation {
+		return ack, errors.New("member generation changed")
+	}
+	stamp, err := ident.ReadPrivateFile(leaf, "stamp", 4096)
+	if err != nil {
+		return ack, err
+	}
+	line, complete := strings.CutSuffix(string(stamp), "\n")
+	fields := strings.Split(line, " ")
+	if !complete || len(fields) != 4 || fields[0] != marker.Instance || fields[1] != generation {
+		return ack, errors.New("stale member stamp")
+	}
+	notice, e := strconv.ParseUint(fields[2], 10, 64)
+	reminder, err := strconv.ParseUint(fields[3], 10, 64)
+	if e != nil || err != nil {
+		return ack, errors.New("invalid stamp sequence")
+	}
+	ack = wire.HookAck{Kind: effect, Instance: marker.Instance, Generation: generation, Seq: notice}
+	if effect == "reminder" {
+		ack.Seq, ack.TurnRef = reminder, turn
+	}
+	return ack, nil
+}
+
+func seenText(ack wire.HookAck) string {
+	text := fmt.Sprintf("%s %s %d", ack.Instance, ack.Generation, ack.Seq)
+	if ack.Kind == "reminder" {
+		text += " " + ack.TurnRef
+	}
+	return text + "\n"
+}
+
+func stampClean(rv, leaf *os.Root, generation, effect, turn string) bool {
+	ack, err := currentAck(rv, leaf, generation, effect, turn)
+	if err != nil {
+		return false
+	}
+	seen, err := ident.ReadPrivateFile(leaf, "seen-"+effect, 4096)
+	return err == nil && string(seen) == seenText(ack)
+}
+
+func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookAck) error {
+	// Hold the same stable inode across the comparison and atomic publication.
+	// Losing a lock costs a future check; no hook waits on another hook's disk I/O.
+	lock, err := leaf.Open(".")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return err
+	}
+	current, err := currentAck(rv, leaf, generation, effect, turn)
+	if err != nil {
+		return err
+	}
+	if current != ack {
+		return errors.New("hook acknowledgement no longer matches")
+	}
+	return writeRecord(leaf, "seen-"+effect, seenText(ack))
+}
+
+func writeRecord(leaf *os.Root, name, record string) error {
+	part := wire.NewID() + ".part"
+	f, err := leaf.OpenFile(part, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer leaf.Remove(part)
+	_, err = f.WriteString(record)
+	if err = errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	return leaf.Rename(part, name)
+}
+
+func countHook(rv *os.Root, adapter, event, outcome string, entry time.Time) {
+	// Names can originate in argv. Only names in our manifest reach the log.
+	m, ok := loadManifest(adapter)
+	if !ok {
+		adapter = "unknown"
+	}
+	if _, ok := m.event(event); !ok {
+		event = "unknown"
+	}
+	switch outcome {
+	case "off", "unmatched", "identity", "clean", "rpc", "deadline", "refused", "stale_epoch", "no_dispatcher":
+	default:
+		outcome = "refused"
+	}
+	record := fmt.Sprintf("%s %s %s %d\n", adapter, event, outcome, time.Since(entry).Milliseconds())
+	if len(record) > 64 {
+		return
+	}
+	dir, err := spool.OpenServerChild(rv, "hooks", true)
+	if err != nil {
+		return
+	}
+	defer dir.Close()
+	f, err := spool.OpenServerFile(dir, entry.UTC().Format("20060102"), os.O_WRONLY|os.O_CREATE|os.O_APPEND)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(record)
+}

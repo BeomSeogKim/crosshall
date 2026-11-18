@@ -39,6 +39,12 @@ func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, r
 
 func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Caller, req Request, now time.Time) (core.Result, error) {
 	switch cmd := req.Command.(type) {
+	// adapter-domain
+	case HookEnroll:
+		return s.hookEnroll(ctx, tx, caller, req, cmd, now)
+	case HookEvent:
+		return s.hookEvent(ctx, tx, caller, req, cmd, now)
+	// end adapter-domain
 	// owner-views
 	case OwnerWho:
 		return s.ownerWho(ctx, tx, caller, now)
@@ -47,6 +53,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	case ChannelDefault:
 		return s.channelDefault(ctx, tx, caller, req, cmd, now)
 	// end owner-views
+	case AdapterSet:
+		return s.adapterSet(ctx, tx, caller, req, cmd, now)
 	// read-ledger
 	case Read:
 		return s.read(ctx, tx, caller, req, cmd, now)
@@ -417,7 +425,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			focus = existing.focus
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE binding SET state = 'live', departed_at_ms = NULL, alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
+			`UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0, alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
 			alias, ms(now), focus, ms(now), existing.id); err != nil {
 			return core.Result{}, err
 		}
@@ -575,7 +583,7 @@ func notEnrolled() core.Result {
 func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time) ([]Member, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT b.principal_id, b.alias, p.vendor, b.focus, b.joined_at_ms,
-		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id)
+		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id AND o.kind = 'command')
 		 FROM binding b JOIN principal p ON p.id = b.principal_id
 		 WHERE b.channel_id = ? AND b.state = 'live'
 		 ORDER BY b.joined_at_ms, b.id`, channel)
@@ -599,10 +607,17 @@ func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time
 		}
 		m.LastCommandAgoS = max((ms(now)-seen)/1000, 0)
 		m.State, m.Route, m.Self = "unknown", "pull", principal == self
+		m.principal = principal
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
+			return nil, err
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Self && !out[j].Self })
 	return out, nil
@@ -660,8 +675,8 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 		     SELECT principal_id, MAX(seq) AS seq FROM roster_change
 		     WHERE channel_id = ? AND seq > ? AND principal_id <> ?
 		     GROUP BY principal_id)
-		 SELECT b.alias, p.vendor, b.focus, b.state, b.joined_at_ms,
-		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id),
+		 SELECT b.principal_id, b.alias, p.vendor, b.focus, b.state, b.joined_at_ms,
+		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id AND o.kind = 'command'),
 		        rc.field
 		 FROM latest l
 		 JOIN roster_change rc ON rc.channel_id = ? AND rc.seq = l.seq
@@ -680,7 +695,7 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 			joined        int64
 			last          sql.NullInt64
 		)
-		if err := rows.Scan(&m.Alias, &m.Vendor, &m.Focus, &state, &joined, &last, &change); err != nil {
+		if err := rows.Scan(&m.principal, &m.Alias, &m.Vendor, &m.Focus, &state, &joined, &last, &change); err != nil {
 			return nil, err
 		}
 		seen := joined
@@ -694,5 +709,14 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

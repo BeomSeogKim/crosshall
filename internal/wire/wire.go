@@ -20,9 +20,12 @@ type Request struct {
 	VendorVersion string          `json:"vendor_version,omitempty"`
 	IssuedAtMS    int64           `json:"issued_at_ms"`
 	ExpiresAtMS   int64           `json:"expires_at_ms"`
+	PublishSeq    uint64          `json:"publish_seq,omitempty"`
 	Ack           uint64          `json:"ack"`
 	Verb          string          `json:"verb"`
 	Args          json.RawMessage `json:"args"`
+	// Reply defaults to true. Only member observations may request no reply.
+	Reply *bool `json:"reply,omitempty"`
 }
 
 // Response correlates a command result with the attempt that produced it.

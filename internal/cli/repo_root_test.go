@@ -24,8 +24,8 @@ func TestRepoRootCanonicalizesNestedAndSymlinkPaths(t *testing.T) {
 	}
 	t.Chdir(deep)
 	for _, input := range []string{"", ".", deep, link} {
-		if got, err := repoRoot(input); err != nil || got != canonical {
-			t.Fatalf("repoRoot(%q) = %q, %v, want %q", input, got, err, canonical)
+		if got, err := RepoRoot(input); err != nil || got != canonical {
+			t.Fatalf("RepoRoot(%q) = %q, %v, want %q", input, got, err, canonical)
 		}
 	}
 }
@@ -42,17 +42,17 @@ func TestRepoRootAcceptsWorktreeGitFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := repoRoot(root); err != nil || got != want {
-		t.Fatalf("repoRoot(%q) = %q, %v, want %q", root, got, err, want)
+	if got, err := RepoRoot(root); err != nil || got != want {
+		t.Fatalf("RepoRoot(%q) = %q, %v, want %q", root, got, err, want)
 	}
-	if _, err := repoRoot(file); err == nil {
+	if _, err := RepoRoot(file); err == nil {
 		t.Fatal("a file was accepted as a worktree directory")
 	}
 }
 
 func TestRepoRootRejectsMissingAndInvalidWorktreeMarkers(t *testing.T) {
 	root := t.TempDir()
-	if _, err := repoRoot(root); err == nil {
+	if _, err := RepoRoot(root); err == nil {
 		t.Fatal("a directory outside any worktree was accepted")
 	}
 	writeGitHEAD(t, filepath.Join(root, ".git"))
@@ -63,7 +63,7 @@ func TestRepoRootRejectsMissingAndInvalidWorktreeMarkers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, ".git"), []byte("invalid\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repoRoot(nested); err == nil {
+	if _, err := RepoRoot(nested); err == nil {
 		t.Fatal("an invalid nested worktree marker was ignored")
 	}
 }

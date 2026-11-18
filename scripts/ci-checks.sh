@@ -41,6 +41,22 @@ if [ -n "${PR_BODY:-}" ] && printf '%s' "$PR_BODY" | grep -Eiq "$ai_re"; then
   fail=1
 fi
 
+# 5. Go formatting, static analysis and tests.
+if unformatted="$(gofmt -l .)"; then
+  if [ -n "$unformatted" ]; then
+    printf 'error: run gofmt on:\n%s\n' "$unformatted" >&2
+    fail=1
+  fi
+else
+  fail=1
+fi
+if ! go vet ./...; then
+  fail=1
+fi
+if ! go test ./...; then
+  fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "checks passed"
 fi

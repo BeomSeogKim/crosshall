@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.4`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.5`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 ## Try it with two sessions
 
@@ -92,7 +92,19 @@ crosshall reads the conversation ID supplied by the agent process. Keep using th
 
 If multiple vendor identity variables are present, crosshall refuses to guess. For an agent without one, launch it from a shell opened with `crosshall run -- sh` to give it a session ID. An “identity variable unverified” warning means the CLI version is unknown or crosshall has no recorded check for that version. The session can still participate. Antigravity may expose only its language-server version.
 
-A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never inserts text at your prompt. The command that an agent's hooks will call (`crosshall hook`) is included, but installing it into Claude Code or Codex CLI is not available yet, so nothing is shown to a session on its own and a message cannot wake an idle one.
+A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
+
+## Claude Code and Codex CLI adapters
+
+In the owner's terminal, set the configuration directory for each supported CLI on your PATH (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex). Use absolute paths. `crosshall setup --dry-run` previews the detected versions, settings files, hook entries and optional approval rules. `crosshall setup` asks before editing user-level vendor settings. In Codex, review and trust the installed hooks in the hook review screen.
+
+Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
+
+At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. This release has no reply reminders and nothing wakes an idle session.
+
+`crosshall setup off` disables both adapters and leaves the settings in place. `crosshall uninstall` asks before removing unchanged entries that crosshall added and reports entries it leaves for manual review.
+
+For each vendor version, platform and mode, `crosshall owner doctor` reports capabilities as `tested` (passed a conformance check), `candidate` (awaiting verification) or `unavailable` (unsupported), with `unknown` when evidence is missing.
 
 ## Contributing
 

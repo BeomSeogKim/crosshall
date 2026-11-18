@@ -76,6 +76,12 @@ func writeJSON(w io.Writer, v any) {
 
 func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	switch cmd.(type) {
+	case domain.Restore:
+		var r domain.RestoreResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "Restored binding %d.\n", r.BindingID)
 	case domain.CreateChannel:
 		var r domain.ChannelResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -112,6 +118,12 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	case domain.Reply:
 		return renderReply(data, w)
 	// end ask-reply
+	// note-log
+	case domain.Note, domain.Log, domain.Leave, domain.Focus:
+		return renderNoteLog(cmd, data, w)
+	// end note-log
+	case domain.OwnerWho, domain.OwnerLog, domain.ChannelDefault:
+		return renderOwnerViews(cmd, data, w)
 	case domain.Who:
 		var r domain.WhoResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -147,6 +159,14 @@ func renderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 	if omitted > 0 {
 		fmt.Fprintf(w, "  ... %d more: crosshall who\n", omitted)
 	}
+}
+
+// lateness formats how late a reply was; under a second it keeps milliseconds.
+func lateness(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return age(ms / 1000)
 }
 
 func age(seconds int64) string {

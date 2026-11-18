@@ -55,9 +55,10 @@ func (CreateChannel) Verb() string { return VerbCreateChannel }
 
 // Join binds the caller to a channel.
 type Join struct {
-	Channel string `json:"channel,omitempty"`
-	Alias   string `json:"alias,omitempty"`
-	Focus   string `json:"focus,omitempty"`
+	Channel  string `json:"channel,omitempty"`
+	Alias    string `json:"alias,omitempty"`
+	Focus    string `json:"focus,omitempty"`
+	RepoRoot string `json:"repo_root,omitempty"`
 }
 
 func (Join) command() {}
@@ -83,6 +84,14 @@ type Handler interface {
 func Decode(verb string, args json.RawMessage) (Command, error) {
 	var cmd Command
 	switch verb {
+	// owner-views
+	case VerbOwnerWho:
+		return decodeLedgerCommand[OwnerWho](args)
+	case VerbOwnerLog:
+		return decodeLedgerCommand[OwnerLog](args)
+	case VerbChannelDefault:
+		return decodeLedgerCommand[ChannelDefault](args)
+	// end owner-views
 	// read-ledger
 	case VerbRead:
 		return decodeLedgerCommand[Read](args)
@@ -101,6 +110,12 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 	// end read-ledger
 	case VerbCreateChannel:
 		var c CreateChannel
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	case VerbRestore:
+		var c Restore
 		if err := strictUnmarshal(args, &c); err != nil {
 			return nil, err
 		}
@@ -131,6 +146,16 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		}
 		cmd = c
 	// end ask-reply
+	// note-log
+	case VerbNote:
+		return decodeLedgerCommand[Note](args)
+	case VerbLog:
+		return decodeLedgerCommand[Log](args)
+	case VerbLeave:
+		return decodeLedgerCommand[Leave](args)
+	case VerbFocus:
+		return decodeLedgerCommand[Focus](args)
+	// end note-log
 	default:
 		return nil, fmt.Errorf("unknown verb %q", verb)
 	}

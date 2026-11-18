@@ -125,6 +125,9 @@ func (id Identity) Warning() string {
 		return ""
 	}
 	version := id.Version
+	if marker, ok := strings.CutPrefix(version, "ls:"); id.Vendor == "agy" && ok {
+		return fmt.Sprintf("identity variable unverified on agy: CLI version unknown (language server %s)", marker)
+	}
 	if version == "" {
 		version = "unknown"
 	}
@@ -133,6 +136,7 @@ func (id Identity) Warning() string {
 
 func runtimeVersion(vendor string, lookup func(string) (string, bool)) string {
 	var version string
+	var prefix string
 	switch vendor {
 	case "codex":
 		version, _ = lookup("CODEX_VERSION")
@@ -142,8 +146,13 @@ func runtimeVersion(vendor string, lookup func(string) (string, bool)) string {
 			encoded, _, _ = strings.Cut(encoded, "_")
 			version = strings.ReplaceAll(encoded, "-", ".")
 		}
+	case "agy":
+		// The language server and the CLI can have different build numbers.
+		build, _ := lookup("ANTIGRAVITY_LS_VERSION")
+		if number, ok := strings.CutPrefix(build, "cli-"); ok {
+			version, prefix = number, "ls:cli-"
+		}
 	}
-	// Antigravity's language-server version can differ from the CLI version.
 	if version == "" || version[0] < '0' || version[0] > '9' ||
 		strings.IndexFunc(version, func(r rune) bool {
 			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' ||
@@ -151,5 +160,5 @@ func runtimeVersion(vendor string, lookup func(string) (string, bool)) string {
 		}) >= 0 {
 		return "unknown"
 	}
-	return version
+	return prefix + version
 }

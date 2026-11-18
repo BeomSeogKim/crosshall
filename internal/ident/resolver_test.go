@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 )
@@ -160,8 +161,13 @@ func TestResolverEnrollmentTransaction(t *testing.T) {
 	old.Generation = "old"
 	_, err = r.Resolve(ctx, tx, ingress, old)
 	requireRefusal(t, err, core.CodeLeafMismatch)
-	if _, err := tx.Exec("UPDATE principal_key SET state='retired'"); err != nil {
-		t.Fatal(err)
+	ok, err := RestoreKey(ctx, tx, 1, "claude", "next-session", time.Now())
+	if err != nil || !ok {
+		t.Fatalf("restore did not attach a new key: %v", err)
+	}
+	var state string
+	if err := tx.QueryRow("SELECT state FROM leaf WHERE digest=?", id.Digest()).Scan(&state); err != nil || state != "fenced" {
+		t.Fatalf("old leaf state %q after restore: %v", state, err)
 	}
 	_, err = r.Resolve(ctx, tx, ingress, proof)
 	requireRefusal(t, err, core.CodeKeyRetired)

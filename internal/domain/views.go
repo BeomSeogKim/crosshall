@@ -369,9 +369,7 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	}
 	pending := []int64{}
 	if ok {
-		pending, err = selectIDs(ctx, tx, `SELECT m.id FROM recipient r JOIN message m ON m.id = r.message_id
-			WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL ORDER BY m.id`, member.principal, member.channel)
-		if err != nil {
+		if pending, err = pendingIDs(ctx, tx, member.principal, member.channel); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -379,7 +377,10 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err := json.Unmarshal(result.Data, &fields); err != nil {
 		return core.Result{}, err
 	}
-	fields["pending"], _ = json.Marshal(pending)
+	// A command that ended the membership (leave) brings its own list.
+	if ok || fields["pending"] == nil {
+		fields["pending"], _ = json.Marshal(pending)
+	}
 	if fields["roster_changes"] == nil {
 		fields["roster_changes"] = json.RawMessage(`[]`)
 	}
@@ -403,4 +404,14 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	}
 	result.Data, err = json.Marshal(fields)
 	return result, err
+}
+
+// pendingIDs lists the messages addressed to a member that it has not picked up.
+func pendingIDs(ctx context.Context, tx store.Tx, principal, channel int64) ([]int64, error) {
+	ids, err := selectIDs(ctx, tx, `SELECT m.id FROM recipient r JOIN message m ON m.id = r.message_id
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL ORDER BY m.id`, principal, channel)
+	if ids == nil {
+		ids = []int64{}
+	}
+	return ids, err
 }

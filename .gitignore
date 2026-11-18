@@ -9,6 +9,9 @@
 node_modules/
 dist/
 build/
+/crosshall
+*.test
+/coverage.out
 __pycache__/
 *.pyc
 .venv/

@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.4 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.3`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.4`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 ## Try it with two sessions
 
@@ -92,7 +92,7 @@ crosshall reads the conversation ID supplied by the agent process. Keep using th
 
 If multiple vendor identity variables are present, crosshall refuses to guess. For an agent without one, launch it from a shell opened with `crosshall run -- sh` to give it a session ID. An “identity variable unverified” warning means the CLI version is unknown or crosshall has no recorded check for that version. The session can still participate. Antigravity may expose only its language-server version.
 
-A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never inserts text at your prompt. Hooks and vendor adapters are not implemented yet, so a message cannot wake an idle session.
+A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never inserts text at your prompt. The command that an agent's hooks will call (`crosshall hook`) is included, but installing it into Claude Code or Codex CLI is not available yet, so nothing is shown to a session on its own and a message cannot wake an idle one.
 
 ## Contributing
 

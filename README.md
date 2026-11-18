@@ -7,10 +7,6 @@ sessions from different vendors (Claude Code, Codex CLI, and any other agent
 that can run a shell command) meet, leave each other notes, ask each other for
 work, and see who is doing what.
 
-## Status
-
-Design stage. There is nothing to install yet.
-
 ## Why
 
 People who run several coding agents at once often let them talk through
@@ -22,28 +18,85 @@ terminal panes. That works, with three recurring problems:
   nobody notices.
 - The receiving agent cannot tell a peer agent's text from the human's.
 
-## What it will do
+## Install
 
-- **Channels.** A session attaches to one channel per stream of work, so
-  unrelated work stays apart.
-- **Notes, requests, replies.** The sender says whether an answer is expected.
-  One request can go to several members at once.
-- **A ledger.** Every request is tracked per recipient: stored, picked up,
-  answered, or overdue. The human can see what is stuck.
-- **Presence.** A channel shows who is there and what each member is working
-  on.
-- **It never types into your terminal.** Delivery uses each agent's own
-  documented hooks and commands, never the input line.
-- **Vendor neutral.** The whole workflow runs from a plain command-line tool.
-  Vendor adapters only automate enrollment and make delivery prompt.
-- **Local.** No account, no telemetry, no model calls of its own.
+On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
+
+```sh
+git clone --branch v0.1.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+cd crosshall
+./scripts/install.sh
+export PATH="$HOME/.local/bin:$PATH"
+crosshall version
+```
+
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.2`. Include `~/.local/bin` on PATH in your agent sessions too.
+
+## Try it with two sessions
+
+**1. From a plain terminal outside any agent session**, start the dispatcher and create a channel. Channel creation and budget grants belong to the owner. crosshall refuses owner commands when it detects an agent identity, a launch route, or an agent environment marker.
+
+```sh
+crosshall owner start
+crosshall owner channel create manual
+```
+
+**2. Have two agent sessions join the channel**, each with its own alias.
+
+```sh
+# In the writer's session
+crosshall join manual --as writer
+# In the reviewer's session
+crosshall join manual --as reviewer
+```
+
+**3. In the owner's terminal**, grant one root token. It lets the writer open an exchange with eight units. Each recipient asked for an answer costs one unit. Notes and replies are free.
+
+```sh
+crosshall owner budget grant manual/@writer --roots 1
+```
+
+**4. In the writer's session**, ask for a review and check who owes a reply.
+
+```sh
+crosshall ask @reviewer "What is missing from the install example?" --new
+crosshall waiting
+```
+
+**5. In the reviewer's session**, check the inbox, read the request, and answer it. The examples use request 1 and reply 2. Substitute the IDs printed by your commands.
+
+```sh
+crosshall inbox
+crosshall read 1
+crosshall reply 1 "Include the minimum Go version."
+```
+
+**6. In the writer's session**, read the answer, check that the request has cleared, and send a note. Either member can browse earlier messages without marking them as read.
+
+```sh
+crosshall read 2
+crosshall waiting
+crosshall note @reviewer "The example now lists the minimum Go version."
+crosshall log
+```
+
+## Session identity and delivery
+
+crosshall reads the conversation ID supplied by the agent process. Keep using the same session to keep its membership and requests.
+
+| Agent | Identity variable |
+| --- | --- |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` |
+| Codex CLI | `CODEX_THREAD_ID` |
+| Antigravity | `ANTIGRAVITY_CONVERSATION_ID` |
+
+If multiple vendor identity variables are present, crosshall refuses to guess. For an agent without one, launch it from a shell opened with `crosshall run -- sh` to give it a session ID. An “identity variable unverified” warning means the CLI version is unknown or crosshall has no recorded check for that version. The session can still participate. Antigravity may expose only its language-server version.
+
+A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never inserts text at your prompt. Hooks and vendor adapters are not implemented yet, so a message cannot wake an idle session.
 
 ## Contributing
 
-Issues describing how you coordinate agents today, and where it breaks, are
-the most useful contribution at this stage. See [CONTRIBUTING.md](CONTRIBUTING.md)
-and the [Code of Conduct](CODE_OF_CONDUCT.md). Security reports go through
-[SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues through [SECURITY.md](SECURITY.md).
 
 ## License
 

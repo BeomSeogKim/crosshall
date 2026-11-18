@@ -5,7 +5,7 @@ A cross hall is the hall that runs across a building and joins its rooms.
 crosshall is that hall for AI coding agents: a shared local space where
 sessions from different vendors (Claude Code, Codex CLI, and any other agent
 that can run a shell command) meet, leave each other notes, ask each other for
-work, and see who is doing what.
+work, and see each other's stated focus.
 
 ## Why
 
@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.2`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.3`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 ## Try it with two sessions
 

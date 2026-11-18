@@ -68,3 +68,26 @@ func TestHookPublicationLockHonorsDeadline(t *testing.T) {
 		t.Fatalf("unexpected packet after timeout: %v (%v)", entries, err)
 	}
 }
+
+// A resumed process can observe the deadline before its timer delivers Done.
+type undeliveredDeadline struct {
+	context.Context
+	end time.Time
+}
+
+func (d undeliveredDeadline) Deadline() (time.Time, bool) { return d.end, true }
+
+func TestOverdueHookCannotPublishBeforeTimerDelivery(t *testing.T) {
+	f := setup(t)
+	f.member = ident.Identity{Vendor: "codex", Key: "paused-hook"}
+	leaf := f.leaf(t)
+	ctx := undeliveredDeadline{t.Context(), time.Now().Add(-time.Millisecond)}
+	_, err := f.client.HookCall(ctx, f.member, "generation-a", wire.Request{Verb: wire.VerbHookEvent, OpKey: "late"}, true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("overdue publication returned %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(leaf, "in"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("overdue request reached the spool: %v, %v", entries, err)
+	}
+}

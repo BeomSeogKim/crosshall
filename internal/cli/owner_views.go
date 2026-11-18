@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -139,14 +142,18 @@ type doctorCheck struct {
 
 func renderDoctor(o outputs, r core.Result) core.ExitCode {
 	var result struct {
-		Checks []doctorCheck `json:"checks"`
-		Hint   string        `json:"hint"`
+		Checks   []doctorCheck   `json:"checks"`
+		Hint     string          `json:"hint"`
+		Adapters json.RawMessage `json:"adapters"`
 	}
 	if err := json.Unmarshal(r.Data, &result); err != nil || len(result.Checks) == 0 {
 		return o.fail(core.ExitError, CodeLocalError, "no diagnostic checks were returned", "")
 	}
 	if o.json {
 		fields := map[string]any{"v": 1, "ok": r.Status == core.ExitOK, "kind": "owner doctor", "checks": result.Checks}
+		if len(result.Adapters) != 0 {
+			fields["adapters"] = result.Adapters
+		}
 		if r.Status != core.ExitOK {
 			fields["code"], fields["message"], fields["hint"] = CodeLocalError, "one or more checks failed", result.Hint
 		}
@@ -164,10 +171,83 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 			return core.ExitError
 		}
 	}
+	if len(result.Adapters) != 0 {
+		if err := renderDoctorAdapters(o.stdout, result.Adapters); err != nil {
+			return core.ExitError
+		}
+	}
 	if result.Hint != "" {
 		if _, err := fmt.Fprintf(o.stdout, "The dispatcher is not running; next: %s\n", result.Hint); err != nil {
 			return core.ExitError
 		}
 	}
 	return r.Status
+}
+
+func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
+	var adapters []struct {
+		Adapter, Executable, Version, Trust string
+		InstallState                        string `json:"install_state"`
+		Intended, Installed, Drifted        int
+		Policy                              *struct {
+			Enabled, Reminder bool
+			Epoch             uint64
+		}
+		Evidence []struct {
+			Version, Platform, Mode, Capability, Level string
+			ManifestRev                                string `json:"manifest_rev"`
+		}
+		UnverifiedLaunches *int `json:"unverified_launches"`
+		Hooks              *struct {
+			Date   string
+			Counts map[string]int
+			P95MS  int `json:"p95_ms"`
+		}
+	}
+	if err := json.Unmarshal(raw, &adapters); err != nil {
+		return err
+	}
+	var output strings.Builder
+	for _, a := range adapters {
+		state := cmp.Or(a.InstallState, "unknown")
+		if state == "unknown" {
+			fmt.Fprintf(&output, "%s adapter — installation unknown, %d hooks intended\n", a.Adapter, a.Intended)
+		} else {
+			fmt.Fprintf(&output, "%s adapter — %s, %d/%d installed, %d drifted\n", a.Adapter, state, a.Installed, a.Intended, a.Drifted)
+		}
+		fmt.Fprintf(&output, "  executable %q, cached version %q, hook trust %s\n",
+			cmp.Or(a.Executable, "unknown"), cmp.Or(a.Version, "unverified"), cmp.Or(a.Trust, "unknown"))
+		if a.Policy == nil {
+			fmt.Fprintln(&output, "  policy unknown")
+		} else {
+			policy, reminder := "off", "off"
+			if a.Policy.Enabled {
+				policy = "on"
+			}
+			if a.Policy.Reminder {
+				reminder = "on"
+			}
+			fmt.Fprintf(&output, "  policy %s, reminder %s, epoch %d\n", policy, reminder, a.Policy.Epoch)
+		}
+		if a.UnverifiedLaunches != nil {
+			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)
+		}
+		if len(a.Evidence) == 0 {
+			fmt.Fprintln(&output, "  capability evidence unknown")
+		}
+		for _, e := range a.Evidence {
+			fmt.Fprintf(&output, "  evidence %q %q %q %q — %s %s\n", e.Version, e.Platform, e.Mode, e.ManifestRev, e.Capability, e.Level)
+		}
+		if a.Hooks == nil {
+			fmt.Fprintln(&output, "  hook counters unknown")
+		} else {
+			fmt.Fprintf(&output, "  hooks %s UTC — p95 %d ms", a.Hooks.Date, a.Hooks.P95MS)
+			for _, outcome := range slices.Sorted(maps.Keys(a.Hooks.Counts)) {
+				fmt.Fprintf(&output, " %s=%d", outcome, a.Hooks.Counts[outcome])
+			}
+			fmt.Fprintln(&output)
+		}
+	}
+	_, err := io.WriteString(w, output.String())
+	return err
 }

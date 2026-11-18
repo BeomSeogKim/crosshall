@@ -40,6 +40,9 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// A diagnostic test may only inspect a vendor home it sets itself.
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+	os.Unsetenv("CODEX_HOME")
 	os.Exit(m.Run())
 }
 

@@ -162,6 +162,7 @@ type readyMarker struct {
 	Instance string `json:"instance"`
 	Version  int    `json:"v"`
 	PID      int    `json:"pid"`
+	Lease    bool   `json:"lease,omitempty"`
 }
 
 func (r readyMarker) live(state *os.Root) bool {
@@ -191,6 +192,10 @@ func readReady(rendezvous string) readyMarker {
 		return readyMarker{}
 	}
 	defer dir.Close()
+	return readReadyAt(dir)
+}
+
+func readReadyAt(dir *os.Root) readyMarker {
 	file, err := spool.OpenServerFile(dir, "ready", os.O_RDONLY)
 	if err != nil {
 		return readyMarker{}

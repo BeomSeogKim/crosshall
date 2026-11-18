@@ -19,7 +19,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// Budget bounds the entire callback from command entry.
+// Budget is the absolute callback deadline from command entry.
 const Budget = 150 * time.Millisecond
 
 type hookTransport interface {
@@ -27,33 +27,28 @@ type hookTransport interface {
 	HookCall(context.Context, ident.Identity, string, wire.Request, bool) (spool.Reply, error)
 }
 
-// Run serves one callback. Reserve the last few milliseconds for recording a
-// timeout even when the vendor keeps stdin open or the dispatcher is busy.
-func Run(ctx context.Context, entry time.Time, client spool.Client, args []string, stdin *os.File, stdout *os.File) {
+// Run serves one callback. Path resolution and counter preparation share the
+// callback budget with dispatch. Only the supervisor records an outcome.
+func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, rendezvous func() (string, error)) {
 	if len(args) != 2 {
 		return
 	}
-	rv, err := ident.OpenPrivateDir(client.Rendezvous)
-	if err != nil {
-		return
+	end := entry.Add(Budget)
+	prepare := func() (*os.Root, *hookCounter) {
+		path, err := rendezvous()
+		if err != nil || !time.Now().Before(end) {
+			return nil, nil
+		}
+		rv, err := ident.OpenPrivateDir(path)
+		if err != nil || !time.Now().Before(end) {
+			return rv, nil
+		}
+		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
-	defer rv.Close()
-	work, cancel := context.WithDeadline(ctx, entry.Add(Budget-5*time.Millisecond))
-	defer cancel()
-	done := make(chan string, 1)
-	go func() {
-		done <- dispatchEvent(work, entry, rv, client, args, stdin, stdout, os.LookupEnv)
-	}()
-	var outcome string
-	select {
-	case outcome = <-done:
-	case <-work.Done():
-		outcome = "deadline"
-	}
-	if work.Err() != nil {
-		outcome = "deadline"
-	}
-	countHook(rv, args[0], args[1], outcome, entry)
+	runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+		client := spool.Client{Rendezvous: rv.Name()}
+		return dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
+	})
 }
 
 func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hookTransport, args []string, stdin io.Reader, stdout io.Writer, lookup func(string) (string, bool)) string {
@@ -79,12 +74,15 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err != nil {
 		return "refused"
 	}
+	if hookExpired(ctx) {
+		return "deadline"
+	}
 	leaf, gen, repo, outcome := resolveLeaf(ctx, rv, client, spec, e)
 	if outcome != "" {
 		return outcome
 	}
 	defer leaf.Close()
-	if ctx.Err() != nil {
+	if hookExpired(ctx) {
 		return "deadline"
 	}
 	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
@@ -103,11 +101,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	clean := !spec.Enroll && effect != "" && stampClean(rv, leaf, gen, effect, turn)
 	want := effect != "" && !clean
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
-	if ctx.Err() != nil {
-		return "deadline"
-	}
 	if dispatcherGone(rv) {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
+	}
+	if hookExpired(ctx) {
+		return "deadline"
 	}
 	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want)
 	if err != nil {
@@ -131,7 +129,7 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err != nil || !current.Enabled || current.Epoch != policy.Epoch || result.Epoch != current.Epoch {
 		return "stale_epoch"
 	}
-	if ctx.Err() != nil {
+	if hookExpired(ctx) {
 		return "deadline"
 	}
 	if len(output) > 0 {
@@ -139,7 +137,7 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 			return "refused"
 		}
 	}
-	if result.Ack != nil && ctx.Err() == nil {
+	if result.Ack != nil && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, effect, turn, *result.Ack)
 	}
 	return "rpc"
@@ -169,6 +167,9 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 	if dispatcherGone(rv) {
 		return nil, "", "", "no_dispatcher"
 	}
+	if hookExpired(ctx) {
+		return nil, "", "", "deadline"
+	}
 	gen, resp, err := client.HookLookup(ctx, e.Identity, "lookup")
 	if err != nil {
 		return nil, "", "", transportOutcome(ctx, err)
@@ -185,6 +186,9 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 		}
 		if !match {
 			return nil, "", "", "unmatched"
+		}
+		if hookExpired(ctx) {
+			return nil, "", "", "deadline"
 		}
 		gen, resp, err = client.HookLookup(ctx, e.Identity, "join")
 		if err != nil {
@@ -215,10 +219,17 @@ func enrollmentRoot(spec eventSpec, e event) string {
 
 func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo string, want bool, epoch uint64) wire.Request {
 	ref := e.reference(entry)
-	// These synthetic manifests establish neither the launch build nor its mode.
+	// The launch's build and mode, as the hook's environment states them;
+	// "unverified" where the manifest names no source or it does not parse.
 	profile := wire.HookProfile{
 		Adapter: m.Adapter, ManifestRev: m.Revision, Platform: runtime.GOOS + "-" + runtime.GOARCH,
-		VendorVersion: "unverified", Mode: "unverified",
+		VendorVersion: e.VendorVersion, Mode: e.Mode,
+	}
+	if profile.VendorVersion == "" {
+		profile.VendorVersion = "unverified"
+	}
+	if profile.Mode == "" {
+		profile.Mode = "unverified"
 	}
 	req := wire.Request{OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref}
 	if spec.Enroll {
@@ -283,18 +294,28 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 	return append(b, '\n'), err
 }
 
-// dispatcherGone reports a missing readiness marker or a marker whose process
-// no longer exists. The hook then publishes nothing and does not wait.
+// dispatcherGone reports whether the dispatcher has stopped serving this
+// rendezvous. The hook then publishes nothing and does not wait.
 func dispatcherGone(rv *os.Root) bool {
 	raw, err := ident.ReadPrivateFile(rv, "ready", 4096)
 	if err != nil {
 		return true
 	}
 	var marker struct {
-		PID int `json:"pid"`
+		Instance string `json:"instance"`
+		PID      int    `json:"pid"`
+		Lease    bool   `json:"lease"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || marker.PID <= 0 {
 		return true
 	}
+	if marker.Lease {
+		held, err := spool.ReadyLeaseHeld(rv, marker.Instance)
+		if !errors.Is(err, os.ErrPermission) {
+			return !held
+		}
+	}
+	// Older dispatchers omit the lease. A sandbox that denies inspection may
+	// still reach the dispatcher, so retain the legacy PID check there too.
 	return errors.Is(syscall.Kill(marker.PID, 0), syscall.ESRCH)
 }

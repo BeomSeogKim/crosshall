@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ var (
 )
 
 type manifest struct {
+	Install      InstallSpec          `json:"install"`
 	Adapter      string               `json:"adapter"`
 	Revision     string               `json:"revision"`
 	EventField   string               `json:"event_field"`
@@ -35,6 +37,14 @@ type manifest struct {
 	LaunchEnv    string               `json:"launch_env"`
 	TurnField    string               `json:"turn_field"`
 	Events       map[string]eventSpec `json:"events"`
+	// The launch's own vendor build and mode, when the running agent names
+	// them in its hooks' environment: VersionEnv must match VersionPattern
+	// (the observed label grammar), whose first group is the version with
+	// '-' for '.'; Modes maps ModeEnv values to a mode.
+	VersionEnv     string            `json:"version_env"`
+	VersionPattern string            `json:"version_pattern"`
+	ModeEnv        string            `json:"mode_env"`
+	Modes          map[string]string `json:"modes"`
 }
 
 type eventSpec struct {
@@ -76,6 +86,8 @@ type event struct {
 	TurnRef        string
 	EventRef       string
 	Fact           string
+	VendorVersion  string
+	Mode           string
 	name           string
 }
 
@@ -154,6 +166,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 			}
 		}
 	}
+	e.VendorVersion, e.Mode = launchBuild(m, lookup)
 	if !spec.Enroll && spec.ReasonField == "" && e.TurnRef != "" {
 		e.EventRef = e.TurnRef + ":" + spec.Name
 	}
@@ -204,4 +217,28 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, er
 		return nil, errHookInput
 	}
 	return fields, nil
+}
+
+// launchBuild reads the launch's vendor version and mode from the hook's
+// environment as the manifest describes; anything that does not parse is
+// "unverified".
+func launchBuild(m manifest, lookup func(string) (string, bool)) (string, string) {
+	version, mode := "unverified", "unverified"
+	// Only a label in the observed grammar counts; any other build, a
+	// pre-release suffix included, stays unverified.
+	if m.VersionEnv != "" && m.VersionPattern != "" {
+		if raw, ok := lookup(m.VersionEnv); ok {
+			if pattern, err := regexp.Compile(m.VersionPattern); err == nil {
+				if match := pattern.FindStringSubmatch(raw); len(match) == 2 {
+					version = strings.ReplaceAll(match[1], "-", ".")
+				}
+			}
+		}
+	}
+	if m.ModeEnv != "" {
+		if raw, ok := lookup(m.ModeEnv); ok && m.Modes[raw] != "" {
+			mode = m.Modes[raw]
+		}
+	}
+	return version, mode
 }

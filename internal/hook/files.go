@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -182,7 +183,12 @@ func writeRecord(leaf *os.Root, name, record string) error {
 	return leaf.Rename(part, name)
 }
 
-func countHook(rv *os.Root, adapter, event, outcome string, entry time.Time) {
+type hookCounter struct {
+	file   io.WriteCloser
+	prefix string
+}
+
+func openHookCounter(rv *os.Root, adapter, event string, entry time.Time) *hookCounter {
 	// Names can originate in argv. Only names in our manifest reach the log.
 	m, ok := loadManifest(adapter)
 	if !ok {
@@ -191,24 +197,32 @@ func countHook(rv *os.Root, adapter, event, outcome string, entry time.Time) {
 	if _, ok := m.event(event); !ok {
 		event = "unknown"
 	}
+	if !time.Now().Before(entry.Add(Budget)) {
+		return nil
+	}
+	dir, err := spool.OpenServerChild(rv, "hooks", true)
+	if err != nil {
+		return nil
+	}
+	defer dir.Close()
+	if !time.Now().Before(entry.Add(Budget)) {
+		return nil
+	}
+	f, err := spool.OpenServerFile(dir, entry.UTC().Format("20060102"), os.O_WRONLY|os.O_CREATE|os.O_APPEND)
+	if err != nil {
+		return nil
+	}
+	return &hookCounter{file: f, prefix: adapter + " " + event + " "}
+}
+
+func (c *hookCounter) append(outcome string, entry time.Time) {
 	switch outcome {
 	case "off", "unmatched", "identity", "clean", "rpc", "deadline", "refused", "stale_epoch", "no_dispatcher":
 	default:
 		outcome = "refused"
 	}
-	record := fmt.Sprintf("%s %s %s %d\n", adapter, event, outcome, time.Since(entry).Milliseconds())
-	if len(record) > 64 {
-		return
+	record := fmt.Sprintf("%s%s %d\n", c.prefix, outcome, time.Since(entry).Milliseconds())
+	if len(record) <= 64 {
+		_, _ = io.WriteString(c.file, record)
 	}
-	dir, err := spool.OpenServerChild(rv, "hooks", true)
-	if err != nil {
-		return
-	}
-	defer dir.Close()
-	f, err := spool.OpenServerFile(dir, entry.UTC().Format("20060102"), os.O_WRONLY|os.O_CREATE|os.O_APPEND)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(record)
 }

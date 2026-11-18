@@ -78,6 +78,8 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	switch cmd.(type) {
 	case domain.AdapterSet:
 		return renderAdapterPolicy(data, w)
+	case domain.AdapterEvidence: // adapter-claude
+		return renderAdapterEvidence(data, w)
 	case domain.Restore:
 		var r domain.RestoreResult
 		if err := json.Unmarshal(data, &r); err != nil {

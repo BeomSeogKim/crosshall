@@ -63,6 +63,7 @@ type server struct {
 	db              *store.Store
 	watch           *fsnotify.Watcher
 	ready           readyMarker
+	readyLease      *os.File
 	nextReap        time.Time
 	lastLogged      string
 	adapterSequence uint64
@@ -107,12 +108,6 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err := root.Remove("ready"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	defer func() {
-		if r, err := spool.OpenServerRoot(cfg.Rendezvous); err == nil {
-			r.Remove("ready")
-			r.Close()
-		}
-	}()
 	db, err := store.Open(ctx, cfg.StateRoot)
 	if err != nil {
 		return err
@@ -133,7 +128,16 @@ func Serve(ctx context.Context, cfg Config) error {
 	var instance [16]byte
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher,
-		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid()}}
+		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true}}
+	defer func() {
+		if r, err := spool.OpenServerRoot(cfg.Rendezvous); err == nil {
+			r.Remove("ready")
+			r.Close()
+		}
+		if s.readyLease != nil {
+			s.readyLease.Close()
+		}
+	}()
 	if err := s.scan(ctx); err != nil {
 		return err
 	}
@@ -307,15 +311,38 @@ func (s *server) scan(ctx context.Context) error {
 	if reap {
 		s.nextReap = now.Add(time.Hour)
 	}
-	if marker := readReady(s.cfg.Rendezvous); marker.Instance != s.ready.Instance {
-		// Startup and recovery from a temp purge must publish the current
-		// policy and defaults before hooks can trust this instance.
-		if err := s.publishAdapterFiles(ctx); err != nil {
+	return s.publishReady(ctx, root)
+}
+
+func (s *server) publishReady(ctx context.Context, root *os.Root) error {
+	sameLease := false
+	if s.readyLease != nil {
+		held, statErr := s.readyLease.Stat()
+		atPath, pathErr := root.Lstat(spool.ReadyLeaseFile)
+		sameLease = statErr == nil && pathErr == nil && atPath.Mode() == 0600 && os.SameFile(held, atPath)
+	}
+	if sameLease && readReadyAt(root) == s.ready {
+		return nil
+	}
+	if err := root.Remove("ready"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !sameLease {
+		lease, err := spool.HoldReadyLease(root, s.ready.Instance)
+		if err != nil {
 			return err
 		}
-		return spool.PublishServerFile(root, "ready", s.ready)
+		if s.readyLease != nil {
+			s.readyLease.Close()
+		}
+		s.readyLease = lease
 	}
-	return nil
+	// After startup or a purge, the snapshots and held lease must be visible
+	// in the same rendezvous before hooks can trust this ready marker.
+	if err := s.publishAdapterFilesAt(ctx, root); err != nil {
+		return err
+	}
+	return spool.PublishServerFile(root, "ready", s.ready)
 }
 
 func (s *server) runSpool(dir *os.Root, reap bool, now time.Time, handle func(string, []byte) (core.Result, error)) {

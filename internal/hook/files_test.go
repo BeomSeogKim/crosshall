@@ -158,6 +158,14 @@ func TestHookIncompleteStampAndBusyLeafStayDirty(t *testing.T) {
 	}
 }
 
+func countHook(rv *os.Root, adapter, event, outcome string, entry time.Time) {
+	counter := openHookCounter(rv, adapter, event, entry)
+	if counter != nil {
+		defer counter.file.Close()
+		counter.append(outcome, entry)
+	}
+}
+
 func TestHookCountersAreBoundedAndPrivate(t *testing.T) {
 	rv := hookFileRoot(t)
 	entry := time.Now().UTC()

@@ -305,7 +305,12 @@ func publishFile(ctx context.Context, dir *os.Root, temporary, final string, dat
 	}
 	_, writeErr := file.Write(data)
 	closeErr := file.Close()
-	if err = errors.Join(writeErr, closeErr, ctx.Err()); err == nil {
+	err = errors.Join(writeErr, closeErr, ctx.Err())
+	// A process can resume after its deadline before the context timer runs.
+	if deadline, ok := ctx.Deadline(); err == nil && ok && !time.Now().Before(deadline) {
+		err = context.DeadlineExceeded
+	}
+	if err == nil {
 		err = dir.Rename(temporary, final)
 	}
 	if err != nil {

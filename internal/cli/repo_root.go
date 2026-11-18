@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// repoRoot returns the canonical root of the nearest enclosing Git worktree.
-func repoRoot(path string) (string, error) {
+// RepoRoot returns the canonical root of the nearest enclosing Git worktree.
+func RepoRoot(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err

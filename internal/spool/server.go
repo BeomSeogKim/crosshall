@@ -197,6 +197,24 @@ func readServerPacket(root *os.Root, name string) ([]byte, error) {
 // DrainServerSpool recovers claimed files first and claims new files by rename.
 // A processing or publication error leaves the claim for a later sweep.
 func DrainServerSpool(root *os.Root, handle func(string, []byte) (core.Result, error)) error {
+	return drainServerSpool(root, false, func(id string, raw []byte, _ bool) (core.Result, error) {
+		return handle(id, raw)
+	})
+}
+
+// DrainMemberSpool orders authenticated-leaf hook packets before processing
+// dependent events. The handle receives whether a one-way hook was admitted
+// before expiry, including when recovering a claim from an earlier sweep.
+func DrainMemberSpool(root *os.Root, handle func(string, []byte, bool) (core.Result, error)) error {
+	return drainServerSpool(root, true, handle)
+}
+
+type serverPacket struct {
+	name, id string
+	claim    bool
+}
+
+func drainServerSpool(root *os.Root, member bool, handle func(string, []byte, bool) (core.Result, error)) error {
 	in, err := OpenServerChild(root, "in", false)
 	if err != nil {
 		return err
@@ -212,47 +230,123 @@ func DrainServerSpool(root *os.Root, handle func(string, []byte) (core.Result, e
 		return err
 	}
 	defer out.Close()
-	var failures error
+	packets, err := readServerQueue(in, work)
+	if err != nil {
+		return err
+	}
+	if member {
+		orderHookPackets(in, work, packets)
+	}
 	remaining := BatchLimit
+	var process func(serverPacket, int) error
+	process = func(packet serverPacket, depth int) error {
+		if depth == BatchLimit {
+			// New publications can add predecessors while a claim waits.
+			// Yield to other spools and resume these claims next sweep.
+			remaining = 0
+			return nil
+		}
+		claimed, err := claimServerPacket(root, in, work, packet, member)
+		if err != nil || !claimed {
+			return err
+		}
+		for member {
+			predecessors, err := hookPredecessors(in, work, packet)
+			if err != nil {
+				return err
+			}
+			before := remaining
+			for _, predecessor := range predecessors {
+				if err := process(predecessor, depth+1); err != nil {
+					return err // Keep the dependent claim for the next sweep.
+				}
+				if remaining != before {
+					break // Recheck the scope after each processed predecessor.
+				}
+			}
+			if remaining == before {
+				break
+			}
+			if remaining == 0 {
+				return nil
+			}
+		}
+		remaining--
+		return answerClaim(work, out, packet, member, handle)
+	}
+	var failures error
+	for _, packet := range packets {
+		if remaining == 0 {
+			break
+		}
+		failures = errors.Join(failures, process(packet, 0))
+	}
+	return failures
+}
+
+func readServerQueue(in, work *os.Root) ([]serverPacket, error) {
+	var packets []serverPacket
 	for _, area := range []struct {
 		dir   *os.Root
 		claim bool
 	}{{work, false}, {in, true}} {
 		entries, err := fs.ReadDir(area.dir.FS(), ".")
 		if err != nil {
-			return errors.Join(failures, err)
+			return nil, err
 		}
 		for _, entry := range entries {
-			if remaining == 0 {
-				return failures
-			}
 			name := entry.Name()
 			id, ok := serverAttempt(name)
-			if !ok || entry.IsDir() {
-				continue
+			if ok && !entry.IsDir() {
+				packets = append(packets, serverPacket{name: name, id: id, claim: area.claim})
 			}
-			if area.claim {
-				if _, err := work.Lstat(name); err == nil {
-					continue
-				} else if !errors.Is(err, os.ErrNotExist) {
-					return errors.Join(failures, err)
-				}
-				err := root.Rename(filepath.Join("in", name), filepath.Join("work", name))
-				if errors.Is(err, os.ErrNotExist) {
-					continue // The client withdrew it before admission.
-				}
-				if err != nil {
-					return errors.Join(failures, err)
-				}
-			}
-			remaining--
-			failures = errors.Join(failures, answerClaim(work, out, name, id, handle))
 		}
 	}
-	return failures
+	return packets, nil
 }
 
-func answerClaim(work, out *os.Root, name, id string, handle func(string, []byte) (core.Result, error)) error {
+func claimServerPacket(root, in, work *os.Root, packet serverPacket, member bool) (bool, error) {
+	_, err := work.Lstat(packet.name)
+	if !packet.claim {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil // Already consumed as another hook's predecessor.
+		}
+		return err == nil, err
+	}
+	if err == nil {
+		return false, nil // A recovered claim takes precedence over duplicate input.
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if member {
+		data, err := readServerPacket(in, packet.name)
+		if err == nil {
+			req, oneWay := oneWayHookPacket(data, packet.id)
+			if oneWay && req.ExpiresAtMS <= time.Now().UnixMilli() {
+				err := in.Remove(packet.name)
+				if errors.Is(err, os.ErrNotExist) {
+					err = nil
+				}
+				return false, err
+			}
+		}
+	}
+	err = root.Rename(filepath.Join("in", packet.name), filepath.Join("work", packet.name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil // The client withdrew it before admission.
+	}
+	return err == nil, err
+}
+
+func oneWayHookPacket(data []byte, id string) (wire.Request, bool) {
+	var req wire.Request
+	valid := json.Unmarshal(data, &req) == nil && req.Version == wire.Version && req.Attempt == id && req.OneWayHook()
+	return req, valid
+}
+
+func answerClaim(work, out *os.Root, packet serverPacket, member bool, handle func(string, []byte, bool) (core.Result, error)) error {
+	name := packet.name
 	if _, err := out.Lstat(name); err == nil {
 		return work.Remove(name)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -263,12 +357,19 @@ func answerClaim(work, out *os.Root, name, id string, handle func(string, []byte
 	if err != nil {
 		result = core.Result{Status: core.ExitUsage, Data: json.RawMessage(`{"message":"invalid request file"}`)}
 	} else {
-		result, err = handle(id, data)
+		var oneWay bool
+		if member {
+			_, oneWay = oneWayHookPacket(data, packet.id)
+		}
+		result, err = handle(packet.id, data, oneWay)
 		if err != nil {
 			return err
 		}
+		if oneWay {
+			return work.Remove(name)
+		}
 	}
-	if err := PublishServerFile(out, name, wire.Response{Version: wire.Version, Attempt: id, Result: result}); err != nil {
+	if err := PublishServerFile(out, name, wire.Response{Version: wire.Version, Attempt: packet.id, Result: result}); err != nil {
 		return err
 	}
 	return work.Remove(name)

@@ -71,18 +71,11 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 		}
 	}
 	if needsHello {
-		first, err := ident.OpenPrivateChild(rv, "first")
-		if err != nil {
-			return c.failure(req, core.CodeUnsent, err)
-		}
 		intent := "lookup"
 		if req.Verb == "join" {
 			intent = "join"
 		}
-		hello := wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: id.Vendor,
-			Key: id.Key, VendorVersion: id.Version, Intent: intent}
-		resp, _, sendErr := exchange(ctx, first, hello.Attempt, hello)
-		first.Close()
+		resp, sendErr := firstContact(ctx, rv, id, intent)
 		if sendErr != nil {
 			return c.failure(req, core.CodeUnsent, sendErr)
 		}
@@ -104,7 +97,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 
 	req.VendorVersion = id.Version
 	req.KeyDigest, req.Generation = digest, generation
-	req.Ack, err = readAck(leaf)
+	req.Ack, err = readSequence(leaf, "ack")
 	if err != nil {
 		return c.failure(req, core.CodeUnsent, err)
 	}
@@ -120,6 +113,18 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 		reply.cursor, reply.rendezvous, reply.digest, reply.generation = trailer.Cursor, c.Rendezvous, digest, generation
 	}
 	return reply, nil
+}
+
+func firstContact(ctx context.Context, rv *os.Root, id ident.Identity, intent string) (wire.Response, error) {
+	first, err := ident.OpenPrivateChild(rv, "first")
+	if err != nil {
+		return wire.Response{}, err
+	}
+	defer first.Close()
+	hello := wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: id.Vendor,
+		Key: id.Key, VendorVersion: id.Version, Intent: intent}
+	resp, _, err := exchange(ctx, first, hello.Attempt, hello)
+	return resp, err
 }
 
 // Owner sends through the home-state spool after the caller's owner gate passed.
@@ -190,8 +195,8 @@ func openLeaf(rv *os.Root, digest string) (*os.Root, string, error) {
 	return leaf, gen, nil
 }
 
-func readAck(leaf *os.Root) (uint64, error) {
-	data, err := ident.ReadPrivateFile(leaf, "ack", 32)
+func readSequence(leaf *os.Root, name string) (uint64, error) {
+	data, err := ident.ReadPrivateFile(leaf, name, 32)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
@@ -229,7 +234,7 @@ func (r Reply) Acknowledge() error {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return err
 	}
-	last, err := readAck(leaf)
+	last, err := readSequence(leaf, "ack")
 	if err != nil || last >= r.cursor {
 		return err
 	}
@@ -237,11 +242,17 @@ func (r Reply) Acknowledge() error {
 }
 
 func exchange(ctx context.Context, dir *os.Root, attempt string, packet any) (wire.Response, core.Code, error) {
-	var empty wire.Response
 	data, err := json.Marshal(packet)
 	if err != nil {
-		return empty, core.CodeUnsent, err
+		return wire.Response{}, core.CodeUnsent, err
 	}
+	return exchangeWithPublisher(ctx, dir, attempt, func(in *os.Root) error {
+		return publishFile(ctx, in, attempt+".part", attempt+".json", data)
+	})
+}
+
+func exchangeWithPublisher(ctx context.Context, dir *os.Root, attempt string, publish func(*os.Root) error) (wire.Response, core.Code, error) {
+	var empty wire.Response
 	in, err := ident.OpenPrivateChild(dir, "in")
 	if err != nil {
 		return empty, core.CodeUnsent, err
@@ -256,7 +267,7 @@ func exchange(ctx context.Context, dir *os.Root, attempt string, packet any) (wi
 		return empty, core.CodeUnsent, err
 	}
 	name := attempt + ".json"
-	if err := publishFile(ctx, in, attempt+".part", name, data); err != nil {
+	if err := publish(in); err != nil {
 		return empty, core.CodeUnsent, err
 	}
 

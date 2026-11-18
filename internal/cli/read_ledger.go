@@ -299,13 +299,22 @@ func ledgerIDs(ids []int64) string {
 type ledgerTrailer struct {
 	Pending []int64         `json:"pending"`
 	Changes []domain.Member `json:"roster_changes"`
+	// JoinHint is repeated by the first command of a member a hook enrolled.
+	JoinHint string `json:"join_hint"`
 }
 
 func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer) {
 	if _, isJoin := cmd.(domain.Join); !isJoin {
+		if trailer.JoinHint != "" {
+			fmt.Fprintln(w, trailer.JoinHint)
+		}
 		for _, m := range trailer.Changes {
 			if m.Change == "departed" {
 				fmt.Fprintf(w, "[crosshall] @%s departed\n", m.Alias)
+				continue
+			}
+			if m.Change == "presence" && m.Observed != nil {
+				fmt.Fprintf(w, "[crosshall] @%s %s\n", m.Alias, observedText(m.Observed))
 				continue
 			}
 			focus := m.Focus

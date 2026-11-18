@@ -43,6 +43,7 @@ Owner commands (from your own shell, not from an agent session):
   owner budget grant <channel>/x<id> <units>         Add exchange credit
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
+  owner adapter set <adapter> [--enabled on|off] [--reminder on|off]  Change adapter policy
 
 Other:
   help     Show this help
@@ -215,6 +216,8 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	case args[0] == "who" || args[0] == "log" || args[0] == "doctor" ||
 		(len(args) >= 2 && args[0] == "channel" && args[1] == "default"):
 		return runOwnerViews(ctx, env, opts, args, stdout, stderr)
+	case args[0] == "adapter":
+		return runAdapterPolicy(ctx, env, opts, args, stdout, stderr)
 	// read-ledger
 	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore":
 		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)
@@ -332,7 +335,7 @@ func parseJoin(args []string) (domain.Join, error) {
 		}
 	}
 	if cmd.Channel == "" {
-		root, err := repoRoot("")
+		root, err := RepoRoot("")
 		if err != nil {
 			return cmd, fmt.Errorf("%w; or specify a channel with crosshall join <channel>", err)
 		}

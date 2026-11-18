@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -33,12 +34,18 @@ func newFixture(t *testing.T) *fixture {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
-	schema, err := os.ReadFile("../store/migrations/001_init.sql")
-	if err != nil {
-		t.Fatal(err)
+	migrations, err := filepath.Glob("../store/migrations/*.sql")
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("migrations: %v", err)
 	}
-	if _, err := db.Exec(string(schema)); err != nil {
-		t.Fatalf("migration: %v", err)
+	for _, path := range migrations { // sorted: 001, 002, ...
+		schema, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(schema)); err != nil {
+			t.Fatalf("migration %s: %v", path, err)
+		}
 	}
 	f := &fixture{t: t, db: db, now: time.UnixMilli(1_800_000_000_000)}
 	f.svc = &Service{Clock: func() time.Time { return f.now }}

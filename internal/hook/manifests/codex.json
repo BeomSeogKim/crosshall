@@ -1,0 +1,15 @@
+{
+  "adapter": "codex",
+  "revision": "codex-1",
+  "event_field": "hook_event_name",
+  "session_field": "session_id",
+  "session_env": "CODEX_THREAD_ID",
+  "turn_field": "turn_id",
+  "events": {
+    "SessionStart": {"enroll": true, "source_field": "source", "output": "context"},
+    "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context"},
+    "Stop": {"fact": "turn_finishing", "turn_required": true, "stop": true, "output": "block"},
+    "PermissionRequest": {"fact": "approval_requested"},
+    "SessionEnd": {"fact": "session_ended", "reason_field": "reason"}
+  }
+}

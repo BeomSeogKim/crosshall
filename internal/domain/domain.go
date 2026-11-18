@@ -33,6 +33,13 @@ type Request struct {
 	// Ack is the roster cursor this request acknowledges. The handler treats
 	// it as already seen even if the dispatcher records it after the call.
 	Ack uint64
+	// Adapter contains dispatcher-verified context for a hook request.
+	Adapter *AdapterContext
+}
+
+type AdapterContext struct {
+	Instance, Generation   string
+	NoticeSeq, ReminderSeq uint64
 }
 
 // Command is a decoded domain command.
@@ -84,6 +91,12 @@ type Handler interface {
 func Decode(verb string, args json.RawMessage) (Command, error) {
 	var cmd Command
 	switch verb {
+	// adapter-domain
+	case VerbHookEnroll:
+		return decodeLedgerCommand[HookEnroll](args)
+	case VerbHookEvent:
+		return decodeLedgerCommand[HookEvent](args)
+	// end adapter-domain
 	// owner-views
 	case VerbOwnerWho:
 		return decodeLedgerCommand[OwnerWho](args)
@@ -92,6 +105,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 	case VerbChannelDefault:
 		return decodeLedgerCommand[ChannelDefault](args)
 	// end owner-views
+	case VerbAdapterSet:
+		return decodeLedgerCommand[AdapterSet](args)
 	// read-ledger
 	case VerbRead:
 		return decodeLedgerCommand[Read](args)

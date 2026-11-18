@@ -76,6 +76,8 @@ func writeJSON(w io.Writer, v any) {
 
 func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	switch cmd.(type) {
+	case domain.AdapterSet:
+		return renderAdapterPolicy(data, w)
 	case domain.Restore:
 		var r domain.RestoreResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -99,7 +101,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintf(w, "[crosshall] Already in #%s as @%s.\n", r.Channel, r.Alias)
 		}
 		if len(r.Members) > 0 {
-			renderRoster(w, r.Channel, r.Topic, r.Members, r.Omitted)
+			RenderRoster(w, r.Channel, r.Topic, r.Members, r.Omitted)
 		}
 		for _, m := range r.Changes {
 			line := fmt.Sprintf("[crosshall] @%s %s", m.Alias, m.Change)
@@ -129,14 +131,15 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		renderRoster(w, r.Channel, r.Topic, r.Members, 0)
+		RenderRoster(w, r.Channel, r.Topic, r.Members, 0)
 	default:
 		return renderReadLedger(cmd, data, w)
 	}
 	return nil
 }
 
-func renderRoster(w io.Writer, channel, topic string, members []domain.Member, omitted int) {
+// RenderRoster writes the same plain-text member list for CLI and hook enrollment.
+func RenderRoster(w io.Writer, channel, topic string, members []domain.Member, omitted int) {
 	title := "#" + channel
 	if topic != "" {
 		title += " - " + topic
@@ -153,14 +156,20 @@ func renderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 		if m.Self {
 			alias += " (you)"
 		}
-		// Without a vendor adapter nothing reports working or idle; that is
-		// the normal case, so the plain roster omits the state word.
+		// An adapter's latest literal fact replaces the last-command column.
+		// Without one nothing reports working or idle; that is the normal
+		// case, so the plain roster omits the state word.
 		state := m.State + ", "
 		if m.State == "unknown" {
-			state, unreported = "", true
+			state = ""
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%slast command %s ago\t%s\n",
-			alias, m.Vendor, focus, state, age(m.LastCommandAgoS), m.Route)
+		activity := state + "last command " + age(m.LastCommandAgoS) + " ago"
+		if m.Observed != nil {
+			activity = observedText(m.Observed)
+		} else if m.State == "unknown" {
+			unreported = true
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", alias, m.Vendor, focus, activity, m.Route)
 	}
 	_ = tw.Flush()
 	if unreported {
@@ -169,6 +178,35 @@ func renderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 	if omitted > 0 {
 		fmt.Fprintf(w, "  ... %d more: crosshall who\n", omitted)
 	}
+}
+
+// factWords names an adapter fact as the roster shows it.
+var factWords = map[string]string{
+	domain.FactPromptSubmitted:   "prompt submitted",
+	domain.FactTurnFinishing:     "turn finished",
+	domain.FactApprovalRequested: "approval requested",
+	domain.FactSessionEnded:      "session ended",
+}
+
+// observedText is "<fact> <age> ago", or "unknown (last: ...)" past its cap,
+// labelled when the launch's version and mode were not established.
+func observedText(o *domain.Observed) string {
+	words := factWords[o.Fact]
+	if words == "" {
+		words = o.Fact
+	}
+	text := words + " " + age(o.AgeS) + " ago"
+	label := ""
+	if !o.Verified {
+		label = ", unverified"
+	}
+	if !o.Current {
+		return "unknown (last: " + text + label + ")"
+	}
+	if label != "" {
+		return text + " (unverified)"
+	}
+	return text
 }
 
 // lateness formats how late a reply was; under a second it keeps milliseconds.

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -402,6 +403,10 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if caller.Role != core.RoleMember && !joined {
 		return result, nil
 	}
+	switch req.Command.(type) {
+	case HookEnroll, HookEvent:
+		return result, nil // a hook prints only its own presentation
+	}
 	member, ok, err := lookupLedgerMember(ctx, tx, caller)
 	if err != nil {
 		return core.Result{}, err
@@ -441,8 +446,44 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 			}
 		}
 	}
+	if ok && result.Status == core.ExitOK && !member.hintAcked && req.Command.Verb() != VerbJoin {
+		if err := bootstrapRoster(ctx, tx, member, fields, now); err != nil {
+			return core.Result{}, err
+		}
+	}
 	result.Data, err = json.Marshal(fields)
 	return result, err
+}
+
+// bootstrapRoster serves a member that a hook enrolled: its hint and roster
+// were only offered, so its first ordinary command repeats the hint and the
+// changes since the snapshot the hook showed. The CLI acknowledges after
+// rendering, which ends the bootstrap.
+func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields map[string]json.RawMessage, now time.Time) error {
+	var baseline sql.NullInt64
+	var alias string
+	if err := tx.QueryRowContext(ctx, `SELECT roster_baseline_seq, alias FROM binding WHERE id = ?`, member.binding).
+		Scan(&baseline, &alias); err != nil {
+		return err
+	}
+	if !baseline.Valid {
+		return nil
+	}
+	seq, err := rosterSeq(ctx, tx, member.channel)
+	if err != nil {
+		return err
+	}
+	changes, err := rosterChanges(ctx, tx, member.channel, uint64(baseline.Int64), member.principal, now)
+	if err != nil {
+		return err
+	}
+	if changes == nil {
+		changes = []Member{}
+	}
+	fields["join_hint"], _ = json.Marshal(Hint(alias, member.name))
+	fields["roster_seq"], _ = json.Marshal(seq)
+	fields["roster_changes"], err = json.Marshal(changes)
+	return err
 }
 
 // pendingIDs lists the messages addressed to a member that it has not picked up.

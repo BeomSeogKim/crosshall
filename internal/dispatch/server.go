@@ -29,6 +29,8 @@ type Arrival struct {
 	Path  string
 	Dir   *os.Root
 	Owner bool
+
+	admittedOneWay bool // Set only by the member spool after admission.
 }
 
 // Resolution is the dispatcher-facing caller and first-join handoff.
@@ -56,13 +58,14 @@ type Config struct {
 }
 
 type server struct {
-	cfg        Config
-	state      *os.Root
-	db         *store.Store
-	watch      *fsnotify.Watcher
-	ready      readyMarker
-	nextReap   time.Time
-	lastLogged string
+	cfg             Config
+	state           *os.Root
+	db              *store.Store
+	watch           *fsnotify.Watcher
+	ready           readyMarker
+	nextReap        time.Time
+	lastLogged      string
+	adapterSequence uint64
 }
 
 // Serve runs in the dedicated dispatcher process until ctx is canceled.
@@ -305,6 +308,11 @@ func (s *server) scan(ctx context.Context) error {
 		s.nextReap = now.Add(time.Hour)
 	}
 	if marker := readReady(s.cfg.Rendezvous); marker.Instance != s.ready.Instance {
+		// Startup and recovery from a temp purge must publish the current
+		// policy and defaults before hooks can trust this instance.
+		if err := s.publishAdapterFiles(ctx); err != nil {
+			return err
+		}
 		return spool.PublishServerFile(root, "ready", s.ready)
 	}
 	return nil
@@ -334,9 +342,12 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 		return
 	}
 	watched.add(filepath.Join(path, "in"))
-	s.runSpool(dir, reap, now, func(id string, raw []byte) (core.Result, error) {
-		return s.command(ctx, Arrival{Path: path, Dir: dir}, id, raw)
-	})
+	if reap {
+		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour)))
+	}
+	s.logFailure(spool.DrainMemberSpool(dir, func(id string, raw []byte, admittedOneWay bool) (core.Result, error) {
+		return s.command(ctx, Arrival{Path: path, Dir: dir, admittedOneWay: admittedOneWay}, id, raw)
+	}))
 }
 
 func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
@@ -437,9 +448,18 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
 	}
-	if req.ExpiresAtMS <= time.Now().UnixMilli() {
+	oneWayHook := req.OneWayHook()
+	if req.ExpiresAtMS <= time.Now().UnixMilli() && (!arrival.admittedOneWay || arrival.Owner || !oneWayHook) {
 		return unknownOutcome("attempt expired", req.OpKey), nil
 	}
+	if req.Reply != nil && !*req.Reply && (arrival.Owner || !oneWayHook) {
+		return commandError(core.ExitUsage, "", "only hook observations may omit a reply"), nil
+	}
+	isHook := req.IsHook()
+	if isHook {
+		req.Ack = 0 // Hook output does not acknowledge an ordinary roster.
+	}
+	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault
 	var result core.Result
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
@@ -449,6 +469,18 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if resolved.Refusal != nil {
 			result = *resolved.Refusal
 			return errRefusalRollback
+		}
+		var hook *domain.AdapterContext
+		if isHook {
+			var refusal core.Result
+			hook, refusal, err = s.hookContext(ctx, tx, arrival, req, resolved)
+			if err != nil {
+				return err
+			}
+			if hook == nil {
+				result = refusal
+				return errRefusalRollback
+			}
 		}
 		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack)
 		if err != nil {
@@ -460,6 +492,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result = commandError(core.ExitUsage, "", "invalid command arguments")
 			return errRefusalRollback
 		}
+		request.Adapter = hook
 		switch request.Command.Verb() {
 		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
 			domain.VerbNote, domain.VerbLeave, domain.VerbFocus: // note-log
@@ -469,15 +502,30 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			}
 		}
 		result, err = s.cfg.Handle.Handle(ctx, tx, resolved.Caller, request)
-		if err == nil && result.Status != core.ExitOK {
+		if err != nil {
+			return err
+		}
+		if result.Status != core.ExitOK {
 			if resolved.Caller.Role == core.RoleUnenrolled {
 				return errRefusalRollback
 			}
 			if undoAck != nil {
 				return undoAck()
 			}
+			return nil
 		}
-		return err
+		if refreshFiles {
+			if err := s.invalidateAdapterFile(req.Verb); err != nil {
+				return err
+			}
+		}
+		if err := s.applyAdapterStamps(ctx, tx); err != nil {
+			return err
+		}
+		if isHook && !oneWayHook {
+			return s.addHookAck(ctx, tx, arrival, req, &result)
+		}
+		return nil
 	})
 	if errors.Is(err, errRefusalRollback) {
 		return result, nil
@@ -492,6 +540,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return unknownOutcome("commit outcome unknown", req.OpKey), nil
 		}
 		return commandError(core.ExitError, "", "command failed; see dispatcher.log"), nil
+	}
+	if refreshFiles && result.Status == core.ExitOK {
+		if err := s.publishAdapterFiles(ctx); err != nil {
+			s.logFailure(err)
+			return unknownOutcome("adapter state publication failed after commit", req.OpKey), nil
+		}
 	}
 	return result, nil
 }

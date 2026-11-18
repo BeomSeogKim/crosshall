@@ -75,7 +75,7 @@ func ownerViewCall(args []string) (Call, error) {
 			}
 			path = value
 		}
-		root, err := repoRoot(path)
+		root, err := RepoRoot(path)
 		if err != nil {
 			return Call{}, err
 		}
@@ -105,8 +105,12 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 				if focus == "" {
 					focus = "focus unset"
 				}
-				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, last command %s ago\n",
-					member.Alias, member.BindingID, member.BindingState, member.Vendor, focus, member.Route, age(member.LastCommandAgoS))
+				activity := "last command " + age(member.LastCommandAgoS) + " ago"
+				if member.Observed != nil {
+					activity = observedText(member.Observed) + "; " + activity
+				}
+				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, %s\n",
+					member.Alias, member.BindingID, member.BindingState, member.Vendor, focus, member.Route, activity)
 			}
 		}
 	case domain.OwnerLog:

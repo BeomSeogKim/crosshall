@@ -1,0 +1,555 @@
+package domain
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
+)
+
+// Hook verbs: what an installed vendor hook reports through `crosshall hook`.
+const (
+	VerbHookEnroll = wire.VerbHookEnroll
+	VerbHookEvent  = wire.VerbHookEvent
+)
+
+// Facts a hook event can establish. Each records only what it observed.
+const (
+	FactPromptSubmitted   = wire.HookPromptSubmitted
+	FactTurnFinishing     = wire.HookTurnFinishing
+	FactApprovalRequested = wire.HookApprovalRequested
+	FactSessionEnded      = wire.HookSessionEnded
+)
+
+// factCapMS is how long a fact stays current; both vendors use the same caps.
+// A session end stays until the next start.
+var factCapMS = map[string]int64{
+	FactPromptSubmitted:   30 * 60_000,
+	FactTurnFinishing:     2 * 3_600_000,
+	FactApprovalRequested: 30 * 60_000,
+}
+
+// SessionLaunch is the launch reference of a manifest without a launch ID; a
+// clean end there is an observation only.
+const SessionLaunch = "session"
+
+// OfferCap is the number of IDs one notice line carries.
+const OfferCap = 10
+
+// HookEnroll is a session start: restore, re-join after a clean end, or auto-join.
+type HookEnroll struct{ wire.HookEnrollArgs }
+
+// HookEvent is one observed fact of a launch.
+type HookEvent struct{ wire.HookEventArgs }
+
+func (HookEnroll) command()     {}
+func (HookEnroll) Verb() string { return VerbHookEnroll }
+func (HookEvent) command()      {}
+func (HookEvent) Verb() string  { return VerbHookEvent }
+
+func profileJSON(p wire.HookProfile) string {
+	raw, _ := json.Marshal(p)
+	return string(raw)
+}
+
+func evidence(p wire.HookProfile) string { return "adapter:" + p.Adapter + "@" + p.VendorVersion }
+
+func validRef(ref string) bool {
+	return len(ref) <= 128 && ValidText("reference", ref) == "" && !strings.ContainsAny(ref, "\n\r")
+}
+
+func validProfile(p wire.HookProfile) bool {
+	for _, v := range []string{p.Adapter, p.ManifestRev, p.VendorVersion, p.Platform, p.Mode} {
+		if v == "" || !validRef(v) {
+			return false
+		}
+	}
+	return ValidName(p.Adapter)
+}
+
+func hookUsage(msg string) core.Result { return Fail(core.ExitUsage, "", msg, "") }
+
+// policyOpen reports whether adapter effects are on for this epoch. Off or a
+// changed epoch means the hook prints nothing.
+func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) (bool, error) {
+	var enabled bool
+	var current uint64
+	err := tx.QueryRowContext(ctx, `SELECT enabled, epoch FROM adapter_policy WHERE adapter = ?`, adapter).
+		Scan(&enabled, &current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil // a missing policy means off
+	}
+	return err == nil && enabled && current == epoch, err
+}
+
+type hookBinding struct {
+	id, channel  int64
+	alias, state string
+	channelName  string
+	dnd          bool
+	byHook       bool // departed by a clean session end, so a start restores it
+}
+
+func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
+	var b hookBinding
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.alias, b.state, c.name, b.dnd, b.departed_by_hook
+		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
+		Scan(&b.id, &b.channel, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook)
+	if errors.Is(err, sql.ErrNoRows) {
+		return b, false, nil
+	}
+	return b, err == nil, err
+}
+
+// --- enroll ---------------------------------------------------------------
+
+func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEnroll, now time.Time) (core.Result, error) {
+	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || !validRef(cmd.EventRef) ||
+		!ValidName(cmd.Source) || cmd.HookAtMS <= 0 || (cmd.RepoRoot != "" && !validRepoRoot(cmd.RepoRoot)) {
+		return hookUsage("invalid hook.enroll arguments"), nil
+	}
+	if caller.Role == core.RoleOwner {
+		return Refuse(core.CodeOwnerOnly, "hook verbs are for member sessions", ""), nil
+	}
+	out := wire.HookResult{Epoch: cmd.Epoch}
+	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
+		return okOrErr(out, err)
+	}
+	// A start from a hook clock far ahead of the dispatcher's changes
+	// nothing, a first enrollment included.
+	if cmd.HookAtMS > ms(now)+futureSlackMS {
+		return OK(out)
+	}
+	if caller.PrincipalID == nil {
+		return s.hookAutoJoin(ctx, tx, req, cmd, 0, now)
+	}
+	principal := *caller.PrincipalID
+	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
+		return okOrErr(out, err) // a replay of a claimed callback prints nothing
+	}
+	b, found, err := bindingOf(ctx, tx, principal)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if !found {
+		return s.hookAutoJoin(ctx, tx, req, cmd, principal, now)
+	}
+	// A repeated start of the same launch at the same time is a replay: no text.
+	var started int64
+	err = tx.QueryRowContext(ctx, `SELECT started_hook_at_ms FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?`,
+		principal, cmd.LaunchRef).Scan(&started)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return core.Result{}, err
+	}
+	if err == nil && started == cmd.HookAtMS {
+		return OK(out)
+	}
+	if b.state != "live" {
+		var lastEnd sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(ended_hook_at_ms) FROM adapter_launch WHERE principal_id = ?`,
+			principal).Scan(&lastEnd); err != nil {
+			return core.Result{}, err
+		}
+		// A member who left by hand is not brought back by a hook, and a
+		// compaction or any start older than the clean end is a stale callback.
+		if !b.byHook || cmd.Source == "compact" || (lastEnd.Valid && cmd.HookAtMS <= lastEnd.Int64) {
+			out.Enrollment = "none"
+			return OK(out)
+		}
+		if b.alias, err = rejoin(ctx, tx, b, principal, req.Vendor, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	before, err := presenceOf(ctx, tx, principal, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+		return core.Result{}, err
+	}
+	// The launch and the live binding are written: project the member's capabilities.
+	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
+		return core.Result{}, err
+	}
+	if err := presenceChanged(ctx, tx, b.channel, principal, before, now); err != nil {
+		return core.Result{}, err
+	}
+	out.Enrollment, out.Alias, out.Channel = "restored", b.alias, b.channelName
+	reason := "start"
+	if cmd.Source == "compact" {
+		var done int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM offer WHERE principal_id = ? AND launch_ref = ? AND reason = 'compact'`,
+			principal, cmd.LaunchRef).Scan(&done); err != nil {
+			return core.Result{}, err
+		}
+		if done == 0 {
+			reason = "compact"
+		}
+	}
+	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, reason, &out, now); err != nil {
+		return core.Result{}, err
+	}
+	return OK(out)
+}
+
+// hookAutoJoin joins the repository's default channel: generated alias, zero tokens.
+func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, now time.Time) (core.Result, error) {
+	out := wire.HookResult{Enrollment: "none", Epoch: cmd.Epoch}
+	if cmd.RepoRoot == "" {
+		return OK(out)
+	}
+	ch, found, err := defaultChannel(ctx, tx, cmd.RepoRoot)
+	if err != nil || !found || ch.state != "active" {
+		return okOrErr(out, err)
+	}
+	if principal == 0 {
+		if req.Enroll == nil {
+			return core.Result{}, errors.New("domain: hook enrollment without an enrollment link")
+		}
+		vendor := req.Vendor
+		if vendor == "" {
+			vendor = "unknown"
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO principal (kind, vendor, root_tokens, created_at_ms) VALUES ('session', ?, 0, ?)`, vendor, ms(now))
+		if err != nil {
+			return core.Result{}, err
+		}
+		if principal, err = res.LastInsertId(); err != nil {
+			return core.Result{}, err
+		}
+		if err := req.Enroll(ctx, tx, principal); err != nil {
+			return core.Result{}, err
+		}
+		if _, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	alias, err := generateAlias(ctx, tx, ch.id, req.Vendor)
+	if err != nil {
+		return core.Result{}, err
+	}
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO binding (principal_id, channel_id, alias, state, joined_at_ms, focus, focus_at_ms) VALUES (?, ?, ?, 'live', ?, '', ?)`,
+		principal, ch.id, alias, ms(now), ms(now))
+	if err != nil {
+		return core.Result{}, err
+	}
+	bindingID, err := res.LastInsertId()
+	if err != nil {
+		return core.Result{}, err
+	}
+	if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {
+		return core.Result{}, err
+	}
+	if err := audit(ctx, tx, "joined", "channel:"+ch.name, principal, map[string]string{"alias": alias, "by": "hook"}, now); err != nil {
+		return core.Result{}, err
+	}
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+		return core.Result{}, err
+	}
+	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
+		return core.Result{}, err
+	}
+	seq, err := rosterSeq(ctx, tx, ch.id)
+	if err != nil {
+		return core.Result{}, err
+	}
+	// The snapshot shown here is the baseline of the member's first ordinary command.
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq = ? WHERE id = ?`, seq, bindingID); err != nil {
+		return core.Result{}, err
+	}
+	members, err := roster(ctx, tx, ch.id, principal, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if len(members) > RosterCap {
+		out.Omitted = len(members) - RosterCap
+		members = members[:RosterCap]
+	}
+	if out.Roster, err = json.Marshal(members); err != nil {
+		return core.Result{}, err
+	}
+	out.Enrollment, out.Alias, out.Channel, out.Hint = "joined", alias, ch.name, Hint(alias, ch.name)
+	b := hookBinding{id: bindingID, channel: ch.id, alias: alias, state: "live", channelName: ch.name}
+	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
+		return core.Result{}, err
+	}
+	return OK(out)
+}
+
+func okOrErr(out wire.HookResult, err error) (core.Result, error) {
+	if err != nil {
+		return core.Result{}, err
+	}
+	return OK(out)
+}
+
+func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, at int64) error {
+	// A newer start of a known launch (a resumed session-scoped launch)
+	// reactivates it; an older or equal one changes nothing.
+	_, err := tx.ExecContext(ctx, `INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
+		VALUES (?, ?, ?, ?, ?) ON CONFLICT(principal_id, launch_ref) DO UPDATE SET
+		started_hook_at_ms = excluded.started_hook_at_ms, ended_hook_at_ms = NULL,
+		profile = excluded.profile, verified = excluded.verified
+		WHERE excluded.started_hook_at_ms > adapter_launch.started_hook_at_ms`, principal, launch, profileJSON(p), verified, at)
+	return err
+}
+
+// claimHook records a hook callback's operation key in the writer
+// transaction. False means the callback was already claimed: a replay.
+func claimHook(ctx context.Context, tx store.Tx, principal int64, key string, cmd Command, now time.Time) (bool, error) {
+	if key == "" {
+		return true, nil
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM op WHERE principal_id = ? AND op_key = ?`, principal, key).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	empty, err := OK(wire.HookResult{})
+	if err != nil {
+		return false, err
+	}
+	return true, record(ctx, tx, principal, key, "hook", cmd, empty, now)
+}
+
+// rejoin brings a binding departed by a clean end back, under its alias when
+// free, else a generated one: a hook cannot ask for another.
+func rejoin(ctx context.Context, tx store.Tx, b hookBinding, principal int64, vendor string, now time.Time) (string, error) {
+	alias := b.alias
+	taken, err := aliasLive(ctx, tx, b.channel, alias)
+	if err != nil {
+		return "", err
+	}
+	if taken {
+		if alias, err = generateAlias(ctx, tx, b.channel, vendor); err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0,
+		alias = ?, joined_at_ms = ? WHERE id = ?`, alias, ms(now), b.id); err != nil {
+		return "", err
+	}
+	if err := rosterChange(ctx, tx, b.channel, principal, "joined"); err != nil {
+		return "", err
+	}
+	return alias, audit(ctx, tx, "rejoined", "binding:"+strconv.FormatInt(b.id, 10), principal, map[string]string{"alias": alias}, now)
+}
+
+// --- events ---------------------------------------------------------------
+
+func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEvent, now time.Time) (core.Result, error) {
+	switch cmd.Fact {
+	case FactPromptSubmitted, FactTurnFinishing, FactApprovalRequested, FactSessionEnded:
+	default:
+		return hookUsage("unknown hook fact"), nil
+	}
+	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || cmd.EventRef == "" ||
+		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 {
+		return hookUsage("invalid hook.event arguments"), nil
+	}
+	out := wire.HookResult{Epoch: cmd.Epoch}
+	if caller.Role != core.RoleMember || caller.PrincipalID == nil {
+		return OK(out)
+	}
+	principal := *caller.PrincipalID
+	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
+		return okOrErr(out, err)
+	}
+	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
+		return okOrErr(out, err)
+	}
+	b, found, err := bindingOf(ctx, tx, principal)
+	if err != nil {
+		return core.Result{}, err
+	}
+	before, err := presenceOf(ctx, tx, principal, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	var fresh any
+	if limit := factCapMS[cmd.Fact]; limit > 0 {
+		fresh = cmd.HookAtMS + limit
+	}
+	// The (launch, event) pair claims the event: a second copy changes and prints nothing.
+	res, err := tx.ExecContext(ctx, `INSERT INTO observation
+		(principal_id, kind, origin, source, observed_at_ms, fresh_until_ms, launch_ref, event_ref, turn_ref, hook_at_ms, profile)
+		VALUES (?, ?, 'unknown', ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
+		ON CONFLICT DO NOTHING`,
+		principal, cmd.Fact, evidence(cmd.Profile), ms(now), fresh, cmd.LaunchRef, cmd.EventRef, cmd.TurnRef, cmd.HookAtMS,
+		profileJSON(cmd.Profile))
+	if err != nil {
+		return core.Result{}, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return okOrErr(out, err)
+	}
+	// A hook clock far ahead of the dispatcher's: the fact is stored, not applied.
+	if cmd.HookAtMS > ms(now)+futureSlackMS {
+		return OK(out)
+	}
+	// Only the latest started launch counts. An event of a launch whose start
+	// was never seen is stored only: it cannot establish which launch is newest.
+	latest, err := latestLaunch(ctx, tx, principal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return core.Result{}, err
+	}
+	if err != nil || latest != cmd.LaunchRef {
+		return OK(out)
+	}
+	live := found && b.state == "live"
+	switch cmd.Fact {
+	case FactPromptSubmitted:
+		if cmd.TurnRef != "" {
+			// A prompt older than a turn already opened is stale: it opens its
+			// turn as superseded and supersedes nothing.
+			var newer int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn WHERE principal_id = ? AND launch_ref = ?
+				AND turn_ref <> ? AND opened_hook_at_ms > ?`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS).Scan(&newer); err != nil {
+				return core.Result{}, err
+			}
+			if newer == 0 {
+				if _, err := tx.ExecContext(ctx, `UPDATE turn SET superseded = 1 WHERE principal_id = ? AND launch_ref = ? AND turn_ref <> ?`,
+					principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
+					return core.Result{}, err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, superseded)
+				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS, newer > 0); err != nil {
+				return core.Result{}, err
+			}
+			if newer > 0 {
+				return OK(out) // a stale prompt is an observation: no offer, no acknowledgement
+			}
+		}
+	case FactTurnFinishing:
+		if _, err := tx.ExecContext(ctx, `UPDATE turn SET finishing_hook_at_ms = COALESCE(finishing_hook_at_ms, ?)
+			WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, cmd.HookAtMS, principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
+			return core.Result{}, err
+		}
+	case FactSessionEnded:
+		// Only a bound launch can end: an unverified (session-scoped) end is an
+		// observation, and its launch stays eligible for the next notice. An
+		// end older than its launch's start is a stale callback.
+		if !cmd.LaunchVerified || cmd.LaunchRef == SessionLaunch {
+			break
+		}
+		// The accepted end time only moves forward: a later-arriving older end
+		// cannot lower the cutoff that a restore is checked against.
+		res, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = MAX(COALESCE(ended_hook_at_ms, 0), ?)
+			WHERE principal_id = ? AND launch_ref = ? AND started_hook_at_ms <= ?`,
+			cmd.HookAtMS, principal, cmd.LaunchRef, cmd.HookAtMS)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return okOrErr(out, err)
+		}
+		// A clean session end departs the member only when the manifest bound the launch
+		// reference (launch_verified, independent of version and mode); any
+		// other end is an observation.
+		if live && cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
+			if err := endSession(ctx, tx, b, principal, now); err != nil {
+				return core.Result{}, err
+			}
+			// A member that left is no longer available through its adapter.
+			return okOrErr(out, refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter))
+		}
+	}
+	if live {
+		if err := presenceChanged(ctx, tx, b.channel, principal, before, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	if cmd.Fact == FactPromptSubmitted && cmd.WantOutput && live {
+		if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	return OK(out)
+}
+
+func latestLaunch(ctx context.Context, tx store.Tx, principal int64) (string, error) {
+	var ref string
+	err := tx.QueryRowContext(ctx, `SELECT launch_ref FROM adapter_launch WHERE principal_id = ?
+		ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1`, principal).Scan(&ref)
+	return ref, err
+}
+
+// endSession departs a live binding on the clean end of its latest launch,
+// keeping the principal and its obligations; the next start restores it.
+func endSession(ctx context.Context, tx store.Tx, b hookBinding, principal int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ?, departed_by_hook = 1 WHERE id = ?`,
+		ms(now), b.id); err != nil {
+		return err
+	}
+	if err := rosterChange(ctx, tx, b.channel, principal, "departed"); err != nil {
+		return err
+	}
+	return audit(ctx, tx, "session_ended", "binding:"+strconv.FormatInt(b.id, 10), principal, map[string]string{"alias": b.alias}, now)
+}
+
+// --- offers -----------------------------------------------------------------
+
+// offerPending commits an offer of the oldest unread items not offered yet
+// (all unread ones for a compact re-offer) before any output. It asks for a
+// notice acknowledgement only when nothing eligible remains.
+func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch string, epoch uint64,
+	reason string, out *wire.HookResult, now time.Time) error {
+	if b.dnd {
+		return nil // held: no offer, nothing spent, no acknowledgement
+	}
+	filter := `AND NOT EXISTS (SELECT 1 FROM offer_item oi WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id)`
+	if reason == "compact" {
+		filter = ""
+	}
+	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL `+filter+`
+		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
+	if err != nil {
+		return err
+	}
+	remainder := len(ids) > OfferCap
+	if remainder {
+		ids = ids[:OfferCap]
+	}
+	if !remainder {
+		out.Ack = &wire.HookAck{Kind: "notice"}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var generation string
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM leaf WHERE principal_id = ? AND state = 'live' ORDER BY created_at_ms DESC LIMIT 1`,
+		principal).Scan(&generation); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO offer (principal_id, binding_id, generation, launch_ref, epoch, reason, evidence, at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, principal, b.id, generation, launch, epoch, reason, evidence(p), ms(now))
+	if err != nil {
+		return err
+	}
+	if out.OfferID, err = res.LastInsertId(); err != nil {
+		return err
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (?, ?, ?)`,
+			out.OfferID, id, principal); err != nil {
+			return err
+		}
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	out.PendingLine = "[crosshall] pending: " + strings.Join(parts, " ")
+	return nil
+}

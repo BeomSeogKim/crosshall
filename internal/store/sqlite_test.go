@@ -42,7 +42,7 @@ func TestStoreRollbackAndReopen(t *testing.T) {
 		if err := tx.QueryRowContext(ctx, "SELECT count(*), min(name) FROM channel").Scan(&count, &channel); err != nil {
 			return err
 		}
-		if version != 1 || count != 1 || channel != "committed" {
+		if version != len(migrations) || count != 1 || channel != "committed" {
 			t.Fatalf("schema=%d rows=%d channel=%q", version, count, channel)
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO repo_default VALUES ('/test', 99)"); err == nil {
@@ -67,7 +67,7 @@ func TestMigrationRollbackKeepsBackup(t *testing.T) {
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	db, err := Open(t.Context(), root)
+	db, err := openWithMigrations(t.Context(), root, []string{initialSchema})
 	if err != nil {
 		t.Fatal(err)
 	}

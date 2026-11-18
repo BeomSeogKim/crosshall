@@ -458,8 +458,8 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result = commandError(core.ExitUsage, "", "invalid command arguments")
 			return errRefusalRollback
 		}
-		switch request.Command.(type) {
-		case domain.CreateChannel, domain.Join:
+		switch request.Command.Verb() {
+		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, "ask", "reply":
 			if req.OpKey == "" {
 				result = commandError(core.ExitUsage, "", "an operation key is required for this command")
 				return errRefusalRollback

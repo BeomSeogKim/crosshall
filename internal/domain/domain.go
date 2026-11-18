@@ -83,6 +83,22 @@ type Handler interface {
 func Decode(verb string, args json.RawMessage) (Command, error) {
 	var cmd Command
 	switch verb {
+	// read-ledger
+	case VerbRead:
+		return decodeLedgerCommand[Read](args)
+	case VerbInbox:
+		return decodeLedgerCommand[Inbox](args)
+	case VerbWaiting:
+		return decodeLedgerCommand[Waiting](args)
+	case VerbStatus:
+		return decodeLedgerCommand[Status](args)
+	case VerbOwnerStatus:
+		return decodeLedgerCommand[OwnerStatus](args)
+	case VerbCancel:
+		return decodeLedgerCommand[Cancel](args)
+	case VerbBudgetGrant:
+		return decodeLedgerCommand[BudgetGrant](args)
+	// end read-ledger
 	case VerbCreateChannel:
 		var c CreateChannel
 		if err := strictUnmarshal(args, &c); err != nil {
@@ -101,6 +117,20 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 			return nil, err
 		}
 		cmd = c
+	// ask-reply
+	case VerbAsk:
+		var c Ask
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	case VerbReply:
+		var c Reply
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	// end ask-reply
 	default:
 		return nil, fmt.Errorf("unknown verb %q", verb)
 	}

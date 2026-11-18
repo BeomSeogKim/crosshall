@@ -18,12 +18,22 @@ const usage = `Usage: crosshall [--json] [--key <k>] <command>
 Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
   who                                               List the members of your channel
+  read [<id>...]                                    Read messages
+  inbox                                             List unread messages and open obligations
+  waiting                                           List your outstanding requests
+  status                                            Show the channel ledger
   whoami                                            Show how this session is identified
+  ask @a [@b ...] "..." [--due 30m] [--re <id>|--new]  Ask members for an answer (or --all --each)
+  reply <id> "..." [--decline|--more-time]          Answer a request addressed to you
   run -- <command> [args...]                        Run a command with its own identity
 
 Owner commands (from your own shell, not from an agent session):
   owner start                                       Start the dispatcher
   owner channel create <name> [--topic "..."]       Create a channel
+  owner status [--all | --channel <channel>]         Show the owner ledger
+  owner cancel <channel>/<id>                       Cancel an open request
+  owner budget grant <channel>/x<id> <units>         Add exchange credit
+  owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
 
 Other:
   help     Show this help
@@ -62,6 +72,8 @@ type Env struct {
 	RunChild func(argv []string) core.ExitCode
 	// NewKey returns a fresh operation key.
 	NewKey func() string
+	// Stdin supplies a message body given as "-". Nil means no input.
+	Stdin io.Reader
 	// Unavailable, when set, explains why commands that need the dispatcher
 	// cannot run (for example a development build without CROSSHALL_STATE_DIR).
 	Unavailable string
@@ -119,6 +131,10 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 			return o.unavailable("run")
 		}
 		return env.RunChild(rest[1:])
+	// read-ledger
+	case domain.VerbRead, domain.VerbInbox, domain.VerbWaiting, domain.VerbStatus:
+		return readLedgerMember(ctx, env, opts, verb, rest, stdout, stderr)
+	// end read-ledger
 	case "join":
 		cmd, err := parseJoin(rest)
 		if err != nil {
@@ -130,6 +146,12 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 			return o.usage("who takes no arguments")
 		}
 		return send(ctx, env, opts, Call{Command: domain.Who{}}, stdout, stderr)
+	// ask-reply
+	case "ask":
+		return runAsk(ctx, env, opts, rest, stdout, stderr)
+	case "reply":
+		return runReply(ctx, env, opts, rest, stdout, stderr)
+	// end ask-reply
 	case "owner":
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	}
@@ -174,6 +196,10 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			}
 		}
 		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
+	// read-ledger
+	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget":
+		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)
+		// end read-ledger
 	}
 	return o.usage(fmt.Sprintf("unknown owner command %q", strings.Join(args, " ")))
 }

@@ -75,9 +75,11 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		Version:   version,
 		OwnerGate: ident.OwnerGate,
 		RunChild:  ident.RunChild,
+		Stdin:     os.Stdin,
 	}
 	if pathErr == nil && dispatch.CheckStateRoot(version, paths.state, paths.defaultState) == nil {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})
+		transport.EnableMemberStart(entry, paths.launch(false).Start)
 		env.Transport = transport
 		env.Whoami = transport.Whoami
 		env.WhoamiJSON = transport.WhoamiJSON
@@ -92,24 +94,11 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		}
 		env.Unavailable = reason.Error()
 	}
-	// Owner commands may start the dispatcher, which takes up to three
-	// seconds; member commands get the one-second allowance.
-	spawned := len(args) > 0 && containsOwner(args)
-	ctx, cancel := context.WithDeadline(context.Background(), spool.Deadline(entry, spawned))
+	// The owner startup path and cold member calls may use this outer limit.
+	// The transport keeps identified member calls within their own allowance.
+	ctx, cancel := context.WithDeadline(context.Background(), spool.Deadline(entry, true))
 	defer cancel()
 	return cli.RunEnv(ctx, env, args, os.Stdout, os.Stderr)
-}
-
-func containsOwner(args []string) bool {
-	for _, a := range args {
-		if a == "--" {
-			return false
-		}
-		if a == "owner" {
-			return true
-		}
-	}
-	return false
 }
 
 func serve(paths statePaths, pathErr error) int {

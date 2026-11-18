@@ -5,8 +5,11 @@ to this file; edit `AGENTS.md` only.
 
 ## Status
 
-Design stage. No product code yet. The project was called `sotto` while it was
-being designed; a local folder or older notes may still use that name.
+The core command-line tool is released as release candidates (see the tags
+and `README.md`). Vendor adapters are being built: the hook command exists,
+installing it into an agent does not yet. The project was called `sotto`
+while it was being designed; a local folder or older notes may still use that
+name.
 
 ## Private notes
 

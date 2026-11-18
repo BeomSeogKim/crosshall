@@ -149,7 +149,10 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	waitFor(t, func() bool { return !lockHeld(state) })
+	waitFor(t, func() bool {
+		held, err := lockState(state)
+		return err == nil && !held
+	})
 	// Model a crash after commit with the claimed input still present.
 	writePacket(t, filepath.Join(owner, "work"), request)
 	// A member may restart this existing dispatcher. Its child gets the same clean environment.

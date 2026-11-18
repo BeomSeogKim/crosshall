@@ -166,6 +166,9 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 	if !spec.Enroll {
 		return nil, "", "", "unmatched"
 	}
+	if dispatcherGone(rv) {
+		return nil, "", "", "no_dispatcher"
+	}
 	gen, resp, err := client.HookLookup(ctx, e.Identity, "lookup")
 	if err != nil {
 		return nil, "", "", transportOutcome(ctx, err)

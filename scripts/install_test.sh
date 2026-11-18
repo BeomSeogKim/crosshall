@@ -26,6 +26,13 @@ expect_refusal() {
   fi
 }
 
+# Replace the installed file by renaming a sibling over it. Writing into it
+# would reopen a program that has just run, which Linux can refuse as busy.
+replace_target() {
+  cp -- "$1" "$dest/.replacement"
+  mv -f -- "$dest/.replacement" "$target"
+}
+
 check_release() {
   [[ -f $target && ! -L $target ]] || fail "expected a regular installed executable"
   [[ $("$target" version) == "$1" ]] || fail "expected installed version $1"
@@ -49,6 +56,17 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "version" {
+		// Fail the first version call as a busy file does (exit 126) and
+		// record each call, so the test sees the installer retry once.
+		if calls := os.Getenv("INSTALL_TEST_BUSY_ONCE"); calls != "" {
+			seen, _ := os.ReadFile(calls)
+			if err := os.WriteFile(calls, append(seen, '.'), 0o600); err != nil {
+				os.Exit(1)
+			}
+			if len(seen) == 0 {
+				os.Exit(126)
+			}
+		}
 		if release == "first" {
 			switch os.Getenv("INSTALL_TEST_BAD_VERSION") {
 			case "malformed":
@@ -73,20 +91,11 @@ tag_release() {
 }
 
 tag_release v0.1.0 first
-# This go keeps its output open for a moment after building, as a process
-# forked by the go command can on Linux ("text file busy"). The installer
-# must still run the new binary.
-mkdir "$tmp/busy-go"
-cat > "$tmp/busy-go/go" <<EOF
-#!/usr/bin/env bash
-"$(command -v go)" "\$@" || exit
-[[ \$1 == build ]] || exit 0
-prev=
-for arg; do [[ \$prev == -o ]] && out=\$arg; prev=\$arg; done
-(exec 3>>"\$out"; sleep 0.5) </dev/null >/dev/null 2>&1 &
-EOF
-chmod +x "$tmp/busy-go/go"
-PATH="$tmp/busy-go:$PATH" install_release "$dest" > "$tmp/output"
+# A just-built binary can briefly refuse to run on Linux ("text file busy",
+# exit 126). The installer retries; this release fails its first call so.
+INSTALL_TEST_BUSY_ONCE="$tmp/version-calls" install_release "$dest" > "$tmp/output" 2>&1 ||
+  fail "installer gave up after exit 126: $(cat "$tmp/output")"
+[[ $(cat "$tmp/version-calls") == .. ]] || fail "expected the version check to retry once after exit 126"
 check_release v0.1.0 first
 cp "$target" "$tmp/first"
 
@@ -100,13 +109,13 @@ done
 GOFLAGS=-overlay=missing-env-overlay.json install_release "$dest" > "$tmp/output"
 check_release v0.2.0 second
 
-cat > "$target" <<'EOF'
+cat > "$tmp/unrelated" <<'EOF'
 #!/bin/sh
 echo ran > "$INSTALL_TEST_MARKER"
 echo v0.1.0
 EOF
-chmod +x "$target"
-cp "$target" "$tmp/unrelated"
+chmod +x "$tmp/unrelated"
+replace_target "$tmp/unrelated"
 expect_refusal "$dest"
 [[ ! -e $tmp/executed ]] || fail "existing program was executed during inspection"
 cmp "$target" "$tmp/unrelated" || fail "existing program changed on refusal"
@@ -114,7 +123,7 @@ printf 'GOFLAGS=-overlay=missing-config-overlay.json\n' > "$tmp/go.env"
 GOENV="$tmp/go.env" install_release --force "$dest" > "$tmp/output"
 check_release v0.2.0 second
 
-cp "$tmp/first" "$target"
+replace_target "$tmp/first"
 chmod 600 "$target"
 expect_refusal "$dest"
 [[ ! -x $target ]] && cmp "$tmp/first" "$target" || fail "non-executable file changed"

@@ -226,20 +226,30 @@ func withCurrentNoteDelivery(ctx context.Context, tx store.Tx, r core.Result) (c
 
 // --- log --------------------------------------------------------------------
 
+// logLimit checks a page request and returns its limit, the default when unset.
+func logLimit(cmd Log) (int, *core.Result) {
+	if cmd.Limit < 0 || cmd.Limit > MaxLogLimit {
+		r := Fail(core.ExitUsage, "", fmt.Sprintf("--limit takes 1 to %d", MaxLogLimit), "crosshall help")
+		return 0, &r
+	}
+	if cmd.Since != nil && *cmd.Since < 0 {
+		r := Fail(core.ExitUsage, "", "--since takes a message number", "crosshall help")
+		return 0, &r
+	}
+	if cmd.Limit == 0 {
+		return DefaultLogLimit, nil
+	}
+	return cmd.Limit, nil
+}
+
 func (s *Service) log(ctx context.Context, tx store.Tx, caller core.Caller, cmd Log, now time.Time) (core.Result, error) {
 	m, refusal, err := liveMember(ctx, tx, caller)
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
-	limit := cmd.Limit
-	switch {
-	case limit == 0:
-		limit = DefaultLogLimit
-	case limit < 0 || limit > MaxLogLimit:
-		return Fail(core.ExitUsage, "", fmt.Sprintf("--limit takes 1 to %d", MaxLogLimit), "crosshall help"), nil
-	}
-	if cmd.Since != nil && *cmd.Since < 0 {
-		return Fail(core.ExitUsage, "", "--since takes a message number", "crosshall help"), nil
+	limit, bad := logLimit(cmd)
+	if bad != nil {
+		return *bad, nil
 	}
 	out, err := ChannelLog(ctx, tx, m.channel, cmd.Since, limit)
 	if err != nil {

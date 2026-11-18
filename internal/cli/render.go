@@ -143,6 +143,7 @@ func renderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 	}
 	fmt.Fprintln(w, title)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	unreported := false
 	for _, m := range members {
 		focus := m.Focus
 		if focus == "" {
@@ -152,10 +153,19 @@ func renderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 		if m.Self {
 			alias += " (you)"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s, last command %s ago\t%s\n",
-			alias, m.Vendor, focus, m.State, age(m.LastCommandAgoS), m.Route)
+		// Without a vendor adapter nothing reports working or idle; that is
+		// the normal case, so the plain roster omits the state word.
+		state := m.State + ", "
+		if m.State == "unknown" {
+			state, unreported = "", true
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%slast command %s ago\t%s\n",
+			alias, m.Vendor, focus, state, age(m.LastCommandAgoS), m.Route)
 	}
 	_ = tw.Flush()
+	if unreported {
+		fmt.Fprintln(w, "  Working or idle is not shown: no vendor adapter reports it. The time is the member's last crosshall command.")
+	}
 	if omitted > 0 {
 		fmt.Fprintf(w, "  ... %d more: crosshall who\n", omitted)
 	}

@@ -50,7 +50,7 @@ crosshall join manual --as writer
 crosshall join manual --as reviewer
 ```
 
-**3. In the owner's terminal**, grant one root token. It lets the writer open an exchange with eight units. Each recipient asked for an answer costs one unit. Notes and replies are free.
+**3. In the owner's terminal**, grant one root token. It lets the writer open an exchange with eight units. Each recipient asked for an answer costs one unit. Notes and replies are free. A member's `crosshall status` shows its root tokens and the units left in each exchange it takes part in.
 
 ```sh
 crosshall owner budget grant manual/@writer --roots 1

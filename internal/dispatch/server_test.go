@@ -21,7 +21,7 @@ import (
 
 func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == "__dispatch" {
-		for _, variable := range []string{"CODEX_THREAD_ID", "CROSSHALL_ROUTE", "CROSSHALL_TEST_EXTRA"} {
+		for _, variable := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "CROSSHALL_ROUTE", "CROSSHALL_TEST_EXTRA"} {
 			if _, present := os.LookupEnv(variable); present {
 				os.Exit(70)
 			}
@@ -102,6 +102,8 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 	t.Setenv("TMPDIR", root)
 	t.Setenv("XDG_STATE_HOME", root)
 	t.Setenv("CODEX_THREAD_ID", "test-thread")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "test-session")
+	t.Setenv("ANTIGRAVITY_CONVERSATION_ID", "test-conversation")
 	t.Setenv("CROSSHALL_ROUTE", "test-route")
 	t.Setenv("CROSSHALL_TEST_EXTRA", "unexpected")
 
@@ -150,6 +152,8 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 	waitFor(t, func() bool { return !lockHeld(state) })
 	// Model a crash after commit with the claimed input still present.
 	writePacket(t, filepath.Join(owner, "work"), request)
+	// A member may restart this existing dispatcher. Its child gets the same clean environment.
+	cfg.Owner = false
 	if spawned, err := cfg.Start(ctx); err != nil || !spawned {
 		t.Fatalf("restart: spawned=%t err=%v", spawned, err)
 	}

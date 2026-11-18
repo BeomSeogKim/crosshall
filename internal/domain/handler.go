@@ -27,13 +27,43 @@ var _ Handler = (*Service)(nil)
 // result, not an error; an error means the transaction must be rolled back.
 func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, req Request) (core.Result, error) {
 	now := s.now()
+	result, err := s.handleCommand(ctx, tx, caller, req, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	return withMemberOutput(ctx, tx, caller, req, result, now)
+}
+
+func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Caller, req Request, now time.Time) (core.Result, error) {
 	switch cmd := req.Command.(type) {
+	// read-ledger
+	case Read:
+		return s.read(ctx, tx, caller, req, cmd, now)
+	case Inbox:
+		return s.inbox(ctx, tx, caller, now)
+	case Waiting:
+		return s.waiting(ctx, tx, caller, now)
+	case Status:
+		return s.status(ctx, tx, caller, now)
+	case OwnerStatus:
+		return s.ownerStatus(ctx, tx, caller, cmd, now)
+	case Cancel:
+		return s.cancel(ctx, tx, caller, req, cmd, now)
+	case BudgetGrant:
+		return s.grantBudget(ctx, tx, caller, req, cmd, now)
+		// end read-ledger
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)
 	case Join:
 		return s.join(ctx, tx, caller, req, cmd, now)
 	case Who:
 		return s.who(ctx, tx, caller, req, now)
+	// ask-reply
+	case Ask:
+		return s.ask(ctx, tx, caller, req, cmd, now)
+	case Reply:
+		return s.reply(ctx, tx, caller, req, cmd, now)
+		// end ask-reply
 	}
 	return core.Result{}, fmt.Errorf("domain: unsupported command %T", req.Command)
 }
@@ -51,6 +81,9 @@ func ms(t time.Time) int64 { return t.UnixMilli() }
 
 // payloadHash fingerprints the verb and every semantic argument.
 func payloadHash(cmd Command) (string, error) {
+	if n, ok := cmd.(interface{ normalized() Command }); ok {
+		cmd = n.normalized()
+	}
 	raw, err := json.Marshal(cmd)
 	if err != nil {
 		return "", err

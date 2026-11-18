@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/cli"
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -22,13 +23,41 @@ import (
 // Transport belongs to one CLI invocation. It retains the reply until the
 // caller has finished rendering it.
 type Transport struct {
-	spool   spool.Client
-	lookup  func(string) (string, bool)
-	pending spool.Reply
+	spool       spool.Client
+	lookup      func(string) (string, bool)
+	pending     spool.Reply
+	entry       time.Time
+	startMember func(context.Context) (bool, error)
 }
 
 func New(s spool.Client) *Transport {
 	return &Transport{spool: s, lookup: os.LookupEnv}
+}
+
+// EnableMemberStart allows an identified member command to try starting the
+// dispatcher. Allowances for startup and transport share the CLI entry time.
+func (t *Transport) EnableMemberStart(entry time.Time, start func(context.Context) (bool, error)) {
+	t.entry, t.startMember = entry, start
+}
+
+func (t *Transport) memberCommandContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if t.startMember == nil {
+		return context.WithCancel(parent)
+	}
+	warm, cancelWarm := context.WithDeadline(parent, spool.Deadline(t.entry, false))
+	if warm.Err() != nil {
+		return warm, cancelWarm
+	}
+	cold, cancelCold := context.WithDeadline(parent, spool.Deadline(t.entry, true))
+	// A restricted member can fail the home-state probe while still having
+	// access to the rendezvous of a running dispatcher.
+	spawned, _ := t.startMember(cold)
+	if spawned {
+		cancelWarm()
+		return cold, cancelCold
+	}
+	cancelCold()
+	return warm, cancelWarm
 }
 
 // Do returns enrollment and delivery outcomes through the command result.
@@ -55,7 +84,9 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 		if resolveErr != nil {
 			return identityFailure(resolveErr), nil
 		}
-		reply, err = t.spool.Member(ctx, id, req)
+		memberCtx, cancel := t.memberCommandContext(ctx)
+		defer cancel()
+		reply, err = t.spool.Member(memberCtx, id, req)
 	}
 	if err != nil && reply.Status != core.ExitUnavailable {
 		return core.Result{}, err

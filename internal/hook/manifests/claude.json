@@ -6,6 +6,19 @@
   "session_env": "CLAUDE_CODE_SESSION_ID",
   "launch_env": "CLAUDE_PID",
   "turn_field": "prompt_id",
+  "version_env": "AI_AGENT",
+  "version_pattern": "^claude-code_([0-9]+-[0-9]+-[0-9]+)_harness$",
+  "mode_env": "CLAUDE_CODE_ENTRYPOINT",
+  "modes": {"sdk-cli": "print"},
+  "caps_ms": {"prompt_submitted": 1800000, "turn_finishing": 7200000, "approval_requested": 1800000},
+  "install": {
+    "home_env": "CLAUDE_CONFIG_DIR",
+    "file": "settings.json",
+    "encoding": "argv",
+    "timeout_s": 1,
+    "events": ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd"],
+    "matchers": {"Notification": "permission_prompt"}
+  },
   "events": {
     "SessionStart": {"enroll": true, "source_field": "source", "output": "context"},
     "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context"},

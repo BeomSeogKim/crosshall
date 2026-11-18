@@ -215,10 +215,17 @@ func enrollmentRoot(spec eventSpec, e event) string {
 
 func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo string, want bool, epoch uint64) wire.Request {
 	ref := e.reference(entry)
-	// These synthetic manifests establish neither the launch build nor its mode.
+	// The launch's build and mode, as the hook's environment states them;
+	// "unverified" where the manifest names no source or it does not parse.
 	profile := wire.HookProfile{
 		Adapter: m.Adapter, ManifestRev: m.Revision, Platform: runtime.GOOS + "-" + runtime.GOARCH,
-		VendorVersion: "unverified", Mode: "unverified",
+		VendorVersion: e.VendorVersion, Mode: e.Mode,
+	}
+	if profile.VendorVersion == "" {
+		profile.VendorVersion = "unverified"
+	}
+	if profile.Mode == "" {
+		profile.Mode = "unverified"
 	}
 	req := wire.Request{OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref}
 	if spec.Enroll {
@@ -283,18 +290,28 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 	return append(b, '\n'), err
 }
 
-// dispatcherGone reports a missing readiness marker or a marker whose process
-// no longer exists. The hook then publishes nothing and does not wait.
+// dispatcherGone reports whether the dispatcher has stopped serving this
+// rendezvous. The hook then publishes nothing and does not wait.
 func dispatcherGone(rv *os.Root) bool {
 	raw, err := ident.ReadPrivateFile(rv, "ready", 4096)
 	if err != nil {
 		return true
 	}
 	var marker struct {
-		PID int `json:"pid"`
+		Instance string `json:"instance"`
+		PID      int    `json:"pid"`
+		Lease    bool   `json:"lease"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || marker.PID <= 0 {
 		return true
 	}
+	if marker.Lease {
+		held, err := spool.ReadyLeaseHeld(rv, marker.Instance)
+		if !errors.Is(err, os.ErrPermission) {
+			return !held
+		}
+	}
+	// Older dispatchers omit the lease. A sandbox that denies inspection may
+	// still reach the dispatcher, so retain the legacy PID check there too.
 	return errors.Is(syscall.Kill(marker.PID, 0), syscall.ESRCH)
 }

@@ -243,6 +243,10 @@ func (s *server) publishAdapterFiles(ctx context.Context) error {
 		return err
 	}
 	defer root.Close()
+	return s.publishAdapterFilesAt(ctx, root)
+}
+
+func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error {
 	return s.db.Update(ctx, func(tx store.Tx) error {
 		policy, err := adapterPolicyText(ctx, tx)
 		if err != nil {

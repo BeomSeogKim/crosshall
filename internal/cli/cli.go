@@ -32,6 +32,9 @@ Member commands:
   run -- <command> [args...]                        Run a command with its own identity
 
 Owner commands (from your own shell, not from an agent session):
+  setup [--dry-run]                                 Preview or install user-level adapter hooks
+  setup off                                         Disable adapter effects
+  uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
   owner channel create <name> [--topic "..."]       Create a channel
   owner who --all                                   List all channel bindings
@@ -44,6 +47,7 @@ Owner commands (from your own shell, not from an agent session):
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off]  Change adapter policy
+  owner adapter evidence <file>                     Record a conformance run's results
 
 Other:
   help     Show this help
@@ -89,6 +93,8 @@ type Env struct {
 	Unavailable string
 	// Doctor checks existing local state without launching the dispatcher.
 	Doctor func(context.Context) core.Result
+	// Setup manages the explicitly selected user-level adapter configuration.
+	Setup func(SetupRequest) error
 }
 
 // Run executes the command line with the default environment.
@@ -171,6 +177,8 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	// end note-log
 	case "owner":
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
+	case "setup", "uninstall":
+		return runSetup(env, opts, verb, rest, stdout, stderr)
 	}
 	return o.usage(fmt.Sprintf("unknown command %q; run `crosshall help`", verb))
 }
@@ -216,6 +224,8 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	case args[0] == "who" || args[0] == "log" || args[0] == "doctor" ||
 		(len(args) >= 2 && args[0] == "channel" && args[1] == "default"):
 		return runOwnerViews(ctx, env, opts, args, stdout, stderr)
+	case len(args) >= 2 && args[0] == "adapter" && args[1] == "evidence": // adapter-claude
+		return runAdapterEvidence(ctx, env, opts, args, stdout, stderr)
 	case args[0] == "adapter":
 		return runAdapterPolicy(ctx, env, opts, args, stdout, stderr)
 	// read-ledger

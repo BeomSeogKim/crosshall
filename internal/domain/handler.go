@@ -53,6 +53,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	case ChannelDefault:
 		return s.channelDefault(ctx, tx, caller, req, cmd, now)
 	// end owner-views
+	case AdapterEvidence: // adapter-claude
+		return s.adapterEvidence(ctx, tx, caller, req, cmd, now)
 	case AdapterSet:
 		return s.adapterSet(ctx, tx, caller, req, cmd, now)
 	// read-ledger

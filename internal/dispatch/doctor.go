@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -33,10 +33,13 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	// the state root does not exist yet; an unsafe path needs the owner instead.
 	notRunning := false
 	stateErr := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot)
+	var adapters []doctorAdapter
 	if stateErr == nil {
+		adapters = localDoctorAdapters(cfg.StateRoot)
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
 		rendezvous, err := spool.OpenServerRoot(cfg.Rendezvous)
 		if err == nil {
+			attachDoctorHooks(adapters, rendezvous, time.Now())
 			rendezvous.Close()
 		}
 		permissions.record("rendezvous owned by this user with mode 0700", err)
@@ -59,14 +62,14 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		} else {
 			readiness.record("", errors.New("no live dispatcher readiness marker"))
 		}
-		current, err := doctorStoreVersion(ctx, state)
+		current, err := doctorStoreInfo(ctx, state, adapters)
 		version.record(fmt.Sprintf("schema version %d", current), err)
 		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
 	} else {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
 			check.record("", stateErr)
 		}
-		notRunning = errors.Is(stateErr, fs.ErrNotExist)
+		notRunning = errors.Is(stateErr, os.ErrNotExist)
 	}
 	hint := ""
 	if notRunning {
@@ -76,7 +79,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if !allowsTestClock(cfg.Version) {
 		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
 	}
-	return doctorResult(hint, checks...)
+	return doctorResult(hint, checks, adapters)
 }
 
 func (check *doctorCheck) record(detail string, err error) {
@@ -87,7 +90,7 @@ func (check *doctorCheck) record(detail string, err error) {
 	check.Detail = detail
 }
 
-func doctorResult(hint string, checks ...doctorCheck) core.Result {
+func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter) core.Result {
 	status := core.ExitOK
 	for _, check := range checks {
 		if !check.OK {
@@ -96,33 +99,28 @@ func doctorResult(hint string, checks ...doctorCheck) core.Result {
 		}
 	}
 	data, _ := json.Marshal(struct {
-		Checks []doctorCheck `json:"checks"`
-		Hint   string        `json:"hint,omitempty"`
-	}{checks, hint})
+		Checks   []doctorCheck   `json:"checks"`
+		Hint     string          `json:"hint,omitempty"`
+		Adapters []doctorAdapter `json:"adapters,omitempty"`
+	}{checks, hint, adapters})
 	return core.Result{Status: status, Data: data}
 }
 
-type doctorStoreFS struct{ state *os.Root }
-
-func (files doctorStoreFS) Open(name string) (fs.File, error) {
-	return spool.OpenServerFile(files.state, name, os.O_RDONLY)
-}
-
-func doctorStoreVersion(ctx context.Context, state *os.Root) (int, error) {
-	files := doctorStoreFS{state}
-	// SQLite treats any failed journal lookup as a missing journal. Report an
-	// unsafe journal explicitly so a stale main file cannot look current.
-	for _, name := range []string{"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-journal"} {
-		file, err := files.Open(name)
-		if err != nil {
-			if name != "store.sqlite3" && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return 0, err
-		}
-		file.Close()
+func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapter) (int, error) {
+	names := make([]string, 0, len(adapters))
+	for _, adapter := range adapters {
+		names = append(names, adapter.Adapter)
 	}
-	return store.CheckVersion(ctx, files)
+	version, states, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names)
+	for i := range adapters {
+		adapter := &adapters[i]
+		if state, ok := states[adapter.Adapter]; ok {
+			adapter.Policy = &state.Policy
+			adapter.Evidence = state.Evidence
+			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
+		}
+	}
+	return version, err
 }
 
 func probeOwnerSpool(state *os.Root) error {

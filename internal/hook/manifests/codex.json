@@ -5,6 +5,14 @@
   "session_field": "session_id",
   "session_env": "CODEX_THREAD_ID",
   "turn_field": "turn_id",
+  "caps_ms": {"prompt_submitted": 1800000, "turn_finishing": 7200000, "approval_requested": 1800000},
+  "install": {
+    "home_env": "CODEX_HOME",
+    "file": "hooks.json",
+    "encoding": "shell",
+    "timeout_s": 1,
+    "events": ["SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "SessionEnd"]
+  },
   "events": {
     "SessionStart": {"enroll": true, "source_field": "source", "output": "context"},
     "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context"},

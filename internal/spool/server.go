@@ -19,6 +19,13 @@ import (
 
 const maxPacketBytes = 1 << 20
 
+// ServerFiles opens read-only private files within a pinned server root.
+type ServerFiles struct{ Root *os.Root }
+
+func (f ServerFiles) Open(name string) (fs.File, error) {
+	return OpenServerFile(f.Root, name, os.O_RDONLY)
+}
+
 // BatchLimit caps work from one spool before the dispatcher checks its peers.
 const BatchLimit = 32
 

@@ -19,6 +19,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/dispatch"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/setup"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -89,6 +90,37 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.Start = func(ctx context.Context) error {
 			_, err := paths.launch(true).Start(ctx)
 			return err
+		}
+		env.Setup = func(req cli.SetupRequest) error {
+			executable, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			executable, err = filepath.EvalSymlinks(executable)
+			if err != nil {
+				return err
+			}
+			service := setup.Service{StateRoot: paths.state, Executable: executable,
+				SetPolicy: func(ctx context.Context, adapter string, enabled bool) error {
+					// Give each policy update its own budget after the interactive plan.
+					ctx, cancel := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
+					defer cancel()
+					if err := env.Start(ctx); err != nil {
+						return err
+					}
+					cmd := domain.AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: adapter, Enabled: &enabled}}
+					result, err := transport.Do(ctx, cli.Call{Owner: true, Command: cmd, OpKey: wire.NewID()})
+					if err != nil {
+						return err
+					}
+					if result.Status != core.ExitOK {
+						var detail struct{ Message string }
+						_ = json.Unmarshal(result.Data, &detail)
+						return fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
+					}
+					return nil
+				}}
+			return service.Run(context.Background(), setup.Request(req))
 		}
 	} else {
 		env.Unavailable = pathErr.Error()

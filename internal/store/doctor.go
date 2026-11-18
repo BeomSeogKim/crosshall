@@ -6,16 +6,45 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
-
 	"modernc.org/sqlite/vfs"
+	"net/url"
 )
 
-// CheckVersion inspects an existing store without opening its files for writing.
-func CheckVersion(ctx context.Context, files fs.FS) (int, error) {
+// DoctorAdapterState is the policy and conformance evidence in the store
+// for one adapter. The importer reference is deliberately omitted.
+type DoctorAdapterState struct {
+	Policy             AdapterPolicy
+	Evidence           []DoctorEvidence
+	UnverifiedLaunches int
+}
+
+type DoctorEvidence struct {
+	Version     string `json:"version"`
+	Platform    string `json:"platform"`
+	Mode        string `json:"mode"`
+	ManifestRev string `json:"manifest_rev"`
+	Capability  string `json:"capability"`
+	Level       string `json:"level"`
+}
+
+// InspectDoctorStore reads an existing store without creating or modifying
+// any database file. Missing diagnostics leave that adapter out of the map.
+func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string) (int, map[string]DoctorAdapterState, error) {
+	// SQLite can interpret a failed sidecar lookup as absence. Check the
+	// database and sidecars before opening the diagnostic view.
+	for _, name := range []string{"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-journal"} {
+		file, err := files.Open(name)
+		if err != nil {
+			if name != "store.sqlite3" && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return 0, nil, err
+		}
+		file.Close()
+	}
 	vfsName, readOnly, err := vfs.New(files)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer readOnly.Close()
 	// Exclusive mode keeps the WAL index in memory. The read-only VFS has no
@@ -31,15 +60,63 @@ func CheckVersion(ctx context.Context, files fs.FS) (int, error) {
 	}
 	db, err := sql.Open("sqlite", "file:store.sqlite3?"+query.Encode())
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer db.Close()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, nil, err
+	}
+	defer tx.Rollback()
 	var version int
-	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return 0, err
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return 0, nil, err
 	}
 	if version != len(migrations) {
-		return version, fmt.Errorf("schema version %d, expected %d", version, len(migrations))
+		return version, nil, fmt.Errorf("schema version %d, expected %d", version, len(migrations))
 	}
-	return version, nil
+	states := make(map[string]DoctorAdapterState, len(adapters))
+	for _, name := range adapters {
+		state, err := readDoctorAdapter(ctx, tx, name)
+		if err == nil {
+			states[name] = state
+		}
+	}
+	return version, states, nil
+}
+
+func readDoctorAdapter(ctx context.Context, tx Tx, adapter string) (DoctorAdapterState, error) {
+	policy, err := ReadAdapterPolicy(ctx, tx, adapter)
+	if err != nil {
+		return DoctorAdapterState{}, err
+	}
+	state := DoctorAdapterState{Policy: policy}
+	err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM adapter_launch l
+		WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
+		  AND l.rowid = (SELECT rowid FROM adapter_launch
+		                  WHERE principal_id = l.principal_id
+		                  ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1)
+		  AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
+		  AND (json_extract(l.profile, '$.vendor_version') = 'unverified'
+		       OR json_extract(l.profile, '$.mode') = 'unverified')`, adapter).Scan(&state.UnverifiedLaunches)
+	if err != nil {
+		return DoctorAdapterState{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT vendor_version, platform, mode, manifest_rev, cap, level
+		FROM capability_evidence WHERE vendor = ?
+		ORDER BY vendor_version, platform, mode, manifest_rev, cap`, adapter)
+	if err != nil {
+		return DoctorAdapterState{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e DoctorEvidence
+		if err := rows.Scan(&e.Version, &e.Platform, &e.Mode, &e.ManifestRev, &e.Capability, &e.Level); err != nil {
+			return DoctorAdapterState{}, err
+		}
+		state.Evidence = append(state.Evidence, e)
+	}
+	return state, rows.Err()
 }

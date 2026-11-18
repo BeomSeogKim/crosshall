@@ -56,6 +56,7 @@ const (
 	CodeAlreadySettled     Code = "already_settled"
 	CodeCancelled          Code = "cancelled"
 	CodeKeyConflict        Code = "key_conflict"
+	CodeKeyInUse           Code = "key_in_use"
 	CodeAliasTaken         Code = "alias_taken"
 	CodeOneChannel         Code = "one_channel"
 	CodeOwnerOnly          Code = "owner_only"

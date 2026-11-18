@@ -19,6 +19,9 @@ import (
 // Service implements Handler over the schema version 1 tables.
 type Service struct {
 	Clock core.Clock
+	// RestoreKey rotates a member's keys in the current transaction. False means
+	// the replacement was already used by a principal.
+	RestoreKey func(context.Context, store.Tx, int64, string, string, time.Time) (bool, error)
 }
 
 var _ Handler = (*Service)(nil)
@@ -36,6 +39,14 @@ func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, r
 
 func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Caller, req Request, now time.Time) (core.Result, error) {
 	switch cmd := req.Command.(type) {
+	// owner-views
+	case OwnerWho:
+		return s.ownerWho(ctx, tx, caller, now)
+	case OwnerLog:
+		return s.ownerLog(ctx, tx, caller, cmd)
+	case ChannelDefault:
+		return s.channelDefault(ctx, tx, caller, req, cmd, now)
+	// end owner-views
 	// read-ledger
 	case Read:
 		return s.read(ctx, tx, caller, req, cmd, now)
@@ -54,6 +65,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		// end read-ledger
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)
+	case Restore:
+		return s.restore(ctx, tx, caller, req, cmd, now)
 	case Join:
 		return s.join(ctx, tx, caller, req, cmd, now)
 	case Who:
@@ -64,6 +77,16 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	case Reply:
 		return s.reply(ctx, tx, caller, req, cmd, now)
 		// end ask-reply
+	// note-log
+	case Note:
+		return s.note(ctx, tx, caller, req, cmd, now)
+	case Log:
+		return s.log(ctx, tx, caller, cmd, now)
+	case Leave:
+		return s.leave(ctx, tx, caller, req, cmd, now)
+	case Focus:
+		return s.focus(ctx, tx, caller, req, cmd, now)
+		// end note-log
 	}
 	return core.Result{}, fmt.Errorf("domain: unsupported command %T", req.Command)
 }
@@ -243,30 +266,56 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if caller.Role == core.RoleOwner {
 		return Refuse(core.CodeOwnerOnly, "the owner seat is not available yet", "crosshall owner who --all"), nil
 	}
-	if cmd.Channel == "" {
+	if cmd.Channel == "" && cmd.RepoRoot == "" {
 		return Fail(core.ExitUsage, "", "name the channel to join: crosshall join <channel>", "crosshall join <channel>"), nil
+	}
+	if cmd.RepoRoot != "" && (cmd.Channel != "" || !validRepoRoot(cmd.RepoRoot)) {
+		return Fail(core.ExitUsage, "", "join accepts a channel or one absolute repository root", ""), nil
 	}
 	if msg := ValidText("focus", cmd.Focus); msg != "" {
 		return Fail(core.ExitUsage, "", msg, ""), nil
 	}
 	if cmd.Alias == "owner" {
-		return Refuse(core.CodeAliasTaken, "@owner is reserved", "crosshall join "+cmd.Channel+" --as <alias>"), nil
+		hint := "crosshall join"
+		if cmd.Channel != "" {
+			hint += " " + cmd.Channel
+		}
+		return Refuse(core.CodeAliasTaken, "@owner is reserved", hint+" --as <alias>"), nil
 	}
-	ch, ok, err := channelByName(ctx, tx, cmd.Channel)
+	var principal int64
+	if caller.PrincipalID != nil {
+		principal = *caller.PrincipalID
+	}
+	var (
+		ch    channelRow
+		ok    bool
+		err   error
+		scope string
+	)
+	if cmd.RepoRoot != "" {
+		scope = "repo:" + cmd.RepoRoot
+		if r, found, err := replayRepoJoin(ctx, tx, principal, req.OpKey, scope, cmd); found || err != nil {
+			return r, err
+		}
+		ch, ok, err = defaultChannel(ctx, tx, cmd.RepoRoot)
+	} else {
+		ch, ok, err = channelByName(ctx, tx, cmd.Channel)
+		scope = "channel:" + ch.name
+	}
 	if err != nil {
 		return core.Result{}, err
 	}
 	if !ok {
+		if cmd.RepoRoot != "" {
+			return Refuse(core.CodeNotFound, "this repository has no default channel", "crosshall join <channel>"), nil
+		}
 		return s.unknownChannel(ctx, tx, cmd.Channel)
 	}
 	if ch.state != "active" {
 		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), ""), nil
 	}
 
-	scope := "channel:" + ch.name
-	var principal int64
-	if caller.PrincipalID != nil {
-		principal = *caller.PrincipalID
+	if principal != 0 && cmd.RepoRoot == "" {
 		if r, found, err := replay(ctx, tx, principal, req.OpKey, scope, cmd); err != nil || found {
 			return r, err
 		}
@@ -297,13 +346,21 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			fmt.Sprintf("this session is bound to #%s; a session joins one channel", other),
 			"crosshall who"), nil
 	}
-	if existing.id != 0 && cmd.Alias != "" && cmd.Alias != existing.alias {
-		return Refuse(core.CodeAliasTaken,
-			fmt.Sprintf("you are @%s in #%s; an alias cannot change", existing.alias, ch.name), "crosshall who"), nil
-	}
-
 	alias := cmd.Alias
-	if existing.id != 0 {
+	if existing.id != 0 && cmd.Alias != "" && cmd.Alias != existing.alias {
+		// Only a departed member whose alias was taken while it was away may
+		// come back under another one; its history follows the binding.
+		reclaim := existing.state == "departed"
+		if reclaim {
+			if reclaim, err = aliasLive(ctx, tx, ch.id, existing.alias); err != nil {
+				return core.Result{}, err
+			}
+		}
+		if !reclaim {
+			return Refuse(core.CodeAliasTaken,
+				fmt.Sprintf("you are @%s in #%s; an alias cannot change", existing.alias, ch.name), "crosshall who"), nil
+		}
+	} else if existing.id != 0 {
 		alias = existing.alias
 	}
 	restored := existing.id != 0 && existing.state == "live"
@@ -360,8 +417,8 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			focus = existing.focus
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE binding SET state = 'live', departed_at_ms = NULL, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
-			ms(now), focus, ms(now), existing.id); err != nil {
+			`UPDATE binding SET state = 'live', departed_at_ms = NULL, alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
+			alias, ms(now), focus, ms(now), existing.id); err != nil {
 			return core.Result{}, err
 		}
 		if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {

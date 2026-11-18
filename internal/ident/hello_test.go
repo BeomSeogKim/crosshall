@@ -81,3 +81,11 @@ func TestHelloAfterRollbackAndInterruptedPublication(t *testing.T) {
 		t.Fatalf("version refresh changed membership: version %q, err %v", v, err)
 	}
 }
+
+func TestHelloAcceptsOpaqueFingerprintShapedVendorKey(t *testing.T) {
+	const key = "sha256:abc012def345"
+	id, err := helloIdentity(wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: "codex", Key: key, Intent: "join"})
+	if err != nil || id.Key != key {
+		t.Fatalf("first contact lost the opaque vendor key: %v", err)
+	}
+}

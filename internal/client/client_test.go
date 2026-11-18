@@ -73,12 +73,13 @@ func TestTransportOutcomes(t *testing.T) {
 		t.Fatalf("missing identity: %+v, %v", result, err)
 	}
 	var out bytes.Buffer
-	if status := transport.Whoami(&out); status != core.ExitNotEnrolled || !strings.Contains(out.String(), "not_enrolled") {
+	if status := transport.Whoami(&out, false); status != core.ExitNotEnrolled || !strings.Contains(out.String(), "not_enrolled") {
 		t.Fatalf("unbound whoami: %d %s", status, out.String())
 	}
 	env["CODEX_THREAD_ID"] = "test-thread"
+	displayKey := "sha256:" + (ident.Identity{Vendor: "codex", Key: "test-thread"}).Digest()[:12]
 	out.Reset()
-	if status := transport.Whoami(&out); status != core.ExitUnavailable || !strings.Contains(out.String(), "codex:test-thread unknown") {
+	if status := transport.Whoami(&out, false); status != core.ExitUnavailable || !strings.Contains(out.String(), "codex:"+displayKey+" unknown") {
 		t.Fatalf("unavailable whoami: %d %s", status, out.String())
 	}
 	out.Reset()
@@ -86,8 +87,68 @@ func TestTransportOutcomes(t *testing.T) {
 		Code                    core.Code
 		Vendor, Key, Enrollment string
 	}
-	if status := transport.WhoamiJSON(&out); status != core.ExitUnavailable || json.Unmarshal(out.Bytes(), &receipt) != nil ||
-		receipt.Code != core.CodeUnsent || receipt.Vendor != "codex" || receipt.Key != "test-thread" || receipt.Enrollment != "unknown" {
+	if status := transport.WhoamiJSON(&out, false); status != core.ExitUnavailable || json.Unmarshal(out.Bytes(), &receipt) != nil ||
+		receipt.Code != core.CodeUnsent || receipt.Vendor != "codex" || receipt.Key != displayKey || receipt.Enrollment != "unknown" {
 		t.Fatalf("JSON whoami: %d %s", status, out.String())
+	}
+}
+
+func TestWhoamiKeyDisclosure(t *testing.T) {
+	const key = "fixture-session-key"
+	const digest = "sha256:a1e9751ef75c" // first 12 hex digits of SHA-256("codex" + NUL + key)
+	transport := New(spool.Client{Rendezvous: filepath.Join(t.TempDir(), "absent")})
+	transport.lookup = func(name string) (string, bool) { return key, name == "CODEX_THREAD_ID" }
+	env := cli.Env{Whoami: transport.Whoami, WhoamiJSON: transport.WhoamiJSON}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+		json bool
+	}{
+		{"plain", []string{"whoami"}, digest, false},
+		{"json", []string{"whoami", "--json"}, digest, true},
+		{"full", []string{"whoami", "--full"}, key, false},
+		{"json full", []string{"--json", "whoami", "--full"}, key, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, diag bytes.Buffer
+			exit := cli.RunEnv(context.Background(), env, tc.args, &out, &diag)
+			if exit != core.ExitUnavailable {
+				t.Fatalf("exit %d, want %d", exit, core.ExitUnavailable)
+			}
+			if tc.want == digest && strings.Contains(out.String()+diag.String(), key) {
+				t.Fatal("default diagnostic exposed the session key")
+			}
+			if tc.json {
+				var got struct{ Vendor, Key, Enrollment string }
+				if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.Vendor != "codex" || got.Key != tc.want || got.Enrollment != "unknown" {
+					t.Fatalf("unexpected JSON identity: %+v (%v)", got, err)
+				}
+			} else if !strings.HasPrefix(out.String(), "codex:"+tc.want+" unknown (unsent)") {
+				t.Fatalf("unexpected plain identity %q", out.String())
+			}
+		})
+	}
+}
+
+func TestWhoamiKnownEnrollmentStates(t *testing.T) {
+	id := ident.Identity{Vendor: "codex", Key: "fixture-session-key"}
+	for _, tc := range []struct {
+		result core.Result
+		state  string
+	}{
+		{core.Result{Status: core.ExitOK}, "enrolled"},
+		{core.Result{Status: core.ExitNotEnrolled, Code: core.CodeNotEnrolled,
+			Data: json.RawMessage(`{"message":"fixture-session-key is not enrolled","hint":"check fixture-session-key"}`)}, "not_enrolled"},
+	} {
+		for _, asJSON := range []bool{true, false} {
+			var out bytes.Buffer
+			if code := writeWhoami(&out, id, tc.result, asJSON, false); code != tc.result.Status {
+				t.Fatalf("returned %d, want %d", code, tc.result.Status)
+			}
+			if !strings.Contains(out.String(), "sha256:a1e9751ef75c") || !strings.Contains(out.String(), tc.state) || strings.Contains(out.String(), id.Key) {
+				t.Fatalf("unexpected identity for %s: %q", tc.state, out.String())
+			}
+		}
 	}
 }

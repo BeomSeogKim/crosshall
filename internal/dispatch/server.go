@@ -342,7 +342,9 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
 	var leaves []memberLeaf
 	err := s.db.Update(ctx, func(tx store.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity FROM leaf WHERE state = 'live' ORDER BY digest")
+		// A client may still have its old leaf after a key rotation. Drain
+		// that directory so the resolver can return the retirement refusal.
+		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity FROM leaf ORDER BY digest")
 		if err != nil {
 			return err
 		}
@@ -459,7 +461,8 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return errRefusalRollback
 		}
 		switch request.Command.Verb() {
-		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, "ask", "reply":
+		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
+			domain.VerbNote, domain.VerbLeave, domain.VerbFocus: // note-log
 			if req.OpKey == "" {
 				result = commandError(core.ExitUsage, "", "an operation key is required for this command")
 				return errRefusalRollback

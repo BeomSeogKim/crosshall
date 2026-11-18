@@ -81,6 +81,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})
 		transport.EnableMemberStart(entry, paths.launch(false).Start)
 		env.Transport = transport
+		env.Doctor = paths.launch(false).Doctor
 		env.Whoami = transport.Whoami
 		env.WhoamiJSON = transport.WhoamiJSON
 		env.Start = func(ctx context.Context) error {
@@ -131,7 +132,7 @@ func serve(paths statePaths, pathErr error) int {
 				}
 				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
-			Handle: &domain.Service{Clock: time.Now},
+			Handle: &domain.Service{Clock: time.Now, RestoreKey: ident.RestoreKey},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {
 				var hello wire.Hello
 				if err := json.Unmarshal(raw, &hello); err != nil {

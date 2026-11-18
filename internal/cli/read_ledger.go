@@ -7,7 +7,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -64,6 +63,8 @@ func readLedgerOwner(ctx context.Context, env Env, opts options, args []string, 
 func ledgerOwnerCall(args []string) (Call, error) {
 	call := Call{Owner: true}
 	switch args[0] {
+	case "restore":
+		return restoreCall(args[1:])
 	case "status":
 		if len(args) == 1 || (len(args) == 2 && args[1] == "--all") {
 			call.Command = domain.OwnerStatus{}
@@ -259,7 +260,7 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool) {
 			fmt.Fprintf(w, ", was overdue since %s", ledgerTime(*at))
 		}
 		if late := recipient.LateByMS; late != nil {
-			fmt.Fprintf(w, ", late by %dms", *late)
+			fmt.Fprintf(w, ", late by %s", lateness(*late))
 		}
 		if at := recipient.MoreTimeAtMS; at != nil {
 			fmt.Fprintf(w, ", more time requested at %s", ledgerTime(*at))
@@ -273,9 +274,8 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool) {
 	}
 }
 
-func ledgerTime(ms int64) string {
-	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
-}
+// ledgerTime uses the same local form as ask and reply.
+func ledgerTime(ms int64) string { return clock(ms) }
 
 func ledgerIDs(ids []int64) string {
 	values := make([]string, len(ids))

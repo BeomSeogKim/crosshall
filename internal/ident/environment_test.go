@@ -36,7 +36,7 @@ func TestResolveEnvironment(t *testing.T) {
 		{"bad route", map[string]string{RouteVariable: "not-a-route"}, Identity{}, core.CodeNotEnrolled},
 		{"vendor wins", map[string]string{RouteVariable: "malformed", "CODEX_THREAD_ID": "thread", "CODEX_VERSION": "0.170.0"}, Identity{"codex", "thread", "0.170.0"}, ""},
 		{"claude", map[string]string{"CLAUDE_CODE_SESSION_ID": "c", "AI_AGENT": "claude-code_2-1-327_agent"}, Identity{"claude", "c", "2.1.327"}, ""},
-		{"agy", map[string]string{"ANTIGRAVITY_CONVERSATION_ID": "g", "ANTIGRAVITY_LS_VERSION": "cli-1.5.10"}, Identity{"agy", "g", "unknown"}, ""},
+		{"agy", map[string]string{"ANTIGRAVITY_CONVERSATION_ID": "g", "ANTIGRAVITY_LS_VERSION": "cli-1.5.10"}, Identity{"agy", "g", "ls:cli-1.5.10"}, ""},
 		{"ambiguous", map[string]string{"CODEX_THREAD_ID": "parent-value", "CLAUDE_CODE_SESSION_ID": "child-value"}, Identity{}, core.CodeBindingAmbiguous},
 		{"malformed vendor", map[string]string{"CODEX_THREAD_ID": "", RouteVariable: route}, Identity{}, core.CodeNotEnrolled},
 		{"invalid text", map[string]string{"CODEX_THREAD_ID": "two\nlines"}, Identity{}, core.CodeNotEnrolled},
@@ -145,4 +145,29 @@ func TestVendorIdentityProbe(t *testing.T) {
 		t.Fatal("vendor identity changed across invocations")
 	}
 	t.Logf("%s %s identity present and stable across two invocations", id.Vendor, id.Version)
+}
+
+func TestAntigravityRuntimeVersionDoesNotVerifyTheCLIVersion(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{"cli-1.5.10", "ls:cli-1.5.10"},
+		{"cli-1.5.11", "ls:cli-1.5.11"},
+		{"", "unknown"},
+		{"cli-1.5.10\ninvalid", "unknown"},
+	} {
+		id, err := ResolveEnvironment(lookupMap(map[string]string{
+			"ANTIGRAVITY_CONVERSATION_ID": "test-member", "ANTIGRAVITY_LS_VERSION": tc.value,
+		}))
+		if err != nil || id.Version != tc.want {
+			t.Fatalf("runtime version %q: got %q (%v), want %q", tc.value, id.Version, err, tc.want)
+		}
+		if _, verified := id.Evidence(); verified {
+			t.Fatalf("language server %q verified an unknown CLI release", tc.value)
+		}
+		if tc.want != "unknown" && (!strings.Contains(id.Warning(), "CLI version unknown") || !strings.Contains(id.Warning(), tc.value)) {
+			t.Fatalf("ambiguous version diagnostic: %q", id.Warning())
+		}
+	}
 }

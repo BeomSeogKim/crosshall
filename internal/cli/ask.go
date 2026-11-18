@@ -306,7 +306,7 @@ func renderReply(data []byte, w io.Writer) error {
 		fmt.Fprintf(w, "#%d answers #%d (to @%s).", r.ID, r.Ask, r.To)
 	}
 	if r.LateByMS > 0 {
-		fmt.Fprintf(w, " Late by %s.", age(r.LateByMS/1000))
+		fmt.Fprintf(w, " Late by %s.", lateness(r.LateByMS))
 	}
 	fmt.Fprintln(w)
 	return nil

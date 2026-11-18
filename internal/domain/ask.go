@@ -350,8 +350,11 @@ func receipt(ctx context.Context, tx store.Tx, msg, principal int64, stage, evid
 // deliveries reads the current state of every recipient of a request.
 func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT r.alias_at_commit, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms
-		 FROM recipient r LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
+		`SELECT r.alias_at_commit, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms,
+		        COALESCE(b.state, 'departed')
+		 FROM recipient r JOIN message m ON m.id = r.message_id
+		 LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
+		 LEFT JOIN binding b ON b.principal_id = r.principal_id AND b.channel_id = m.channel_id
 		 WHERE r.message_id = ? ORDER BY r.alias_at_commit`, msg)
 	if err != nil {
 		return nil, err
@@ -363,8 +366,9 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 			d                         Delivery
 			picked, settled, moreTime sql.NullInt64
 			state                     sql.NullString
+			binding                   string
 		)
-		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime); err != nil {
+		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding); err != nil {
 			return nil, err
 		}
 		d.PickedUpAtMS, d.SettledAtMS, d.MoreTimeAtMS = picked.Int64, settled.Int64, moreTime.Int64
@@ -375,6 +379,9 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 			d.State = "more_time"
 		case picked.Valid:
 			d.State = "picked_up"
+		case binding != "live":
+			// Delivery follows the recipient's binding, not its alias.
+			d.State, d.Next = "stored", "held until it rejoins"
 		default:
 			d.State, d.Next = "stored", "waits for its next crosshall command"
 		}

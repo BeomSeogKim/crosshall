@@ -249,3 +249,11 @@ func TestJoinPlainShowsRosterChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestWhoamiRejectsUnrecognizedDisclosureFlags(t *testing.T) {
+	for _, args := range [][]string{{"whoami", "full"}, {"whoami", "--full", "--full"}, {"whoami", "--full", "extra"}} {
+		if _, _, code := run(t, Env{}, args...); code != core.ExitUsage {
+			t.Fatalf("%v: expected usage error, got %d", args, code)
+		}
+	}
+}

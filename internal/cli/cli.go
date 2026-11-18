@@ -22,18 +22,27 @@ Member commands:
   inbox                                             List unread messages and open obligations
   waiting                                           List your outstanding requests
   status                                            Show the channel ledger
-  whoami                                            Show how this session is identified
+  whoami [--full]                                   Show a short identity digest (--full prints the raw key)
   ask @a [@b ...] "..." [--due 30m] [--re <id>|--new]  Ask members for an answer (or --all --each)
   reply <id> "..." [--decline|--more-time]          Answer a request addressed to you
+  note @a [@b ...] "..."                            Tell members something; no answer expected (or --all)
+  log [--since <id>] [--limit <n>]                  Show the channel's history
+  focus "..."                                       Say in one line what you are working on
+  leave                                             Leave your channel
   run -- <command> [args...]                        Run a command with its own identity
 
 Owner commands (from your own shell, not from an agent session):
   owner start                                       Start the dispatcher
   owner channel create <name> [--topic "..."]       Create a channel
+  owner who --all                                   List all channel bindings
+  owner log <channel>                               Show a channel's history
+  owner channel default <channel> [--repo <dir>]     Set a repository's default channel
+  owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
   owner budget grant <channel>/x<id> <units>         Add exchange credit
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
+  owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
 
 Other:
   help     Show this help
@@ -65,9 +74,9 @@ type Env struct {
 	OwnerGate func() string
 	// Start starts the dispatcher if it is not running.
 	Start func(ctx context.Context) error
-	// Whoami and WhoamiJSON print how the caller resolves.
-	Whoami     func(stdout io.Writer) core.ExitCode
-	WhoamiJSON func(stdout io.Writer) core.ExitCode
+	// Whoami and WhoamiJSON display the raw key only on an explicit full request.
+	Whoami     func(stdout io.Writer, full bool) core.ExitCode
+	WhoamiJSON func(stdout io.Writer, full bool) core.ExitCode
 	// RunChild runs a command with a fresh route identity.
 	RunChild func(argv []string) core.ExitCode
 	// NewKey returns a fresh operation key.
@@ -77,6 +86,8 @@ type Env struct {
 	// Unavailable, when set, explains why commands that need the dispatcher
 	// cannot run (for example a development build without CROSSHALL_STATE_DIR).
 	Unavailable string
+	// Doctor checks existing local state without launching the dispatcher.
+	Doctor func(context.Context) core.Result
 }
 
 // Run executes the command line with the default environment.
@@ -112,8 +123,9 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stdout, env.Version)
 		return core.ExitOK
 	case "whoami":
-		if len(rest) != 0 {
-			return o.usage("whoami takes no arguments")
+		full := len(rest) == 1 && rest[0] == "--full"
+		if len(rest) != 0 && !full {
+			return o.usage("usage: crosshall whoami [--full]")
 		}
 		whoami := env.Whoami
 		if opts.json {
@@ -122,7 +134,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		if whoami == nil {
 			return o.unavailableFor(env, "whoami")
 		}
-		return whoami(stdout)
+		return whoami(stdout, full)
 	case "run":
 		if len(rest) < 2 || rest[0] != "--" {
 			return o.usage("usage: crosshall run -- <command> [args...]")
@@ -134,7 +146,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	// read-ledger
 	case domain.VerbRead, domain.VerbInbox, domain.VerbWaiting, domain.VerbStatus:
 		return readLedgerMember(ctx, env, opts, verb, rest, stdout, stderr)
-	// end read-ledger
+		// end read-ledger
 	case "join":
 		cmd, err := parseJoin(rest)
 		if err != nil {
@@ -152,6 +164,10 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	case "reply":
 		return runReply(ctx, env, opts, rest, stdout, stderr)
 	// end ask-reply
+	// note-log
+	case domain.VerbNote, domain.VerbLog, domain.VerbLeave, domain.VerbFocus:
+		return runNoteLog(ctx, env, opts, verb, rest, stdout, stderr)
+	// end note-log
 	case "owner":
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	}
@@ -196,8 +212,11 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			}
 		}
 		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
+	case args[0] == "who" || args[0] == "log" || args[0] == "doctor" ||
+		(len(args) >= 2 && args[0] == "channel" && args[1] == "default"):
+		return runOwnerViews(ctx, env, opts, args, stdout, stderr)
 	// read-ledger
-	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget":
+	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore":
 		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)
 		// end read-ledger
 	}
@@ -311,6 +330,13 @@ func parseJoin(args []string) (domain.Join, error) {
 		if !domain.ValidName(cmd.Channel) {
 			return cmd, fmt.Errorf("invalid channel name %q", args[i])
 		}
+	}
+	if cmd.Channel == "" {
+		root, err := repoRoot("")
+		if err != nil {
+			return cmd, fmt.Errorf("%w; or specify a channel with crosshall join <channel>", err)
+		}
+		cmd.RepoRoot = root
 	}
 	return cmd, nil
 }

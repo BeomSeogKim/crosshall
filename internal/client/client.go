@@ -115,16 +115,16 @@ func (t *Transport) Acknowledge() error {
 // Whoami displays the local identity even if the dispatcher is unavailable.
 // The normal membership check also distinguishes provisional and departed
 // bindings from a live membership.
-func (t *Transport) Whoami(stdout io.Writer) core.ExitCode {
-	return t.whoami(stdout, false)
+func (t *Transport) Whoami(stdout io.Writer, full bool) core.ExitCode {
+	return t.whoami(stdout, false, full)
 }
 
 // WhoamiJSON writes the same identity diagnostic as a single JSON object.
-func (t *Transport) WhoamiJSON(stdout io.Writer) core.ExitCode {
-	return t.whoami(stdout, true)
+func (t *Transport) WhoamiJSON(stdout io.Writer, full bool) core.ExitCode {
+	return t.whoami(stdout, true, full)
 }
 
-func (t *Transport) whoami(stdout io.Writer, asJSON bool) core.ExitCode {
+func (t *Transport) whoami(stdout io.Writer, asJSON, full bool) core.ExitCode {
 	id, err := ident.ResolveEnvironment(t.lookup)
 	var result core.Result
 	if err != nil {
@@ -133,6 +133,10 @@ func (t *Transport) whoami(stdout io.Writer, asJSON bool) core.ExitCode {
 		reply, _ := t.spool.Member(context.Background(), id, wire.Request{Verb: "who"})
 		result = reply.Result
 	}
+	return writeWhoami(stdout, id, result, asJSON, full)
+}
+
+func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON, full bool) core.ExitCode {
 	state := "unknown"
 	switch {
 	case result.Status == core.ExitOK:
@@ -144,10 +148,17 @@ func (t *Transport) whoami(stdout io.Writer, asJSON bool) core.ExitCode {
 	if result.Status != core.ExitOK {
 		_ = json.Unmarshal(result.Data, &message)
 	}
+	displayKey := id.Key
+	if displayKey != "" && !full {
+		displayKey = "sha256:" + id.Digest()[:12]
+		message.Message = strings.ReplaceAll(message.Message, id.Key, displayKey)
+		message.Hint = strings.ReplaceAll(message.Hint, id.Key, displayKey)
+	}
+	var err error
 	if asJSON {
 		data := map[string]any{"v": 1, "ok": result.Status == core.ExitOK, "kind": "whoami", "enrollment": state}
 		if id.Vendor != "" {
-			data["vendor"], data["key"] = id.Vendor, id.Key
+			data["vendor"], data["key"] = id.Vendor, displayKey
 		}
 		if result.Status != core.ExitOK {
 			data["code"], data["message"], data["hint"] = result.Code, message.Message, message.Hint
@@ -156,9 +167,9 @@ func (t *Transport) whoami(stdout io.Writer, asJSON bool) core.ExitCode {
 	} else if id.Vendor == "" {
 		_, err = fmt.Fprintf(stdout, "%s: %s\n", result.Code, message.Message)
 	} else if state == "unknown" && result.Code != "" {
-		_, err = fmt.Fprintf(stdout, "%s:%s %s (%s)\n", id.Vendor, id.Key, state, result.Code)
+		_, err = fmt.Fprintf(stdout, "%s:%s %s (%s)\n", id.Vendor, displayKey, state, result.Code)
 	} else {
-		_, err = fmt.Fprintf(stdout, "%s:%s %s\n", id.Vendor, id.Key, state)
+		_, err = fmt.Fprintf(stdout, "%s:%s %s\n", id.Vendor, displayKey, state)
 	}
 	if err != nil {
 		return core.ExitError

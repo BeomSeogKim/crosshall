@@ -109,12 +109,18 @@ func helloIdentity(h wire.Hello) (Identity, error) {
 	if h.Version != wire.Version || !validRoute(h.Attempt) || (h.Intent != "join" && h.Intent != "lookup") {
 		return Identity{}, fmt.Errorf("invalid first-contact envelope")
 	}
+	id, err := parseVendorKey(h.Vendor, h.Key)
+	id.Version = h.VendorVersion
+	return id, err
+}
+
+func parseVendorKey(vendor, key string) (Identity, error) {
 	var variable string
-	if h.Vendor == "route" {
+	if vendor == "route" {
 		variable = RouteVariable
 	} else {
 		for _, row := range vendorVariables {
-			if h.Vendor == row.vendor {
+			if vendor == row.vendor {
 				variable = row.name
 				break
 			}
@@ -123,12 +129,12 @@ func helloIdentity(h wire.Hello) (Identity, error) {
 	if variable == "" {
 		return Identity{}, &EnvironmentError{core.CodeNotEnrolled, "unknown identity source"}
 	}
-	id, err := ResolveEnvironment(func(k string) (string, bool) { return h.Key, k == variable })
-	if err != nil {
-		return Identity{}, err
-	}
-	id.Version = h.VendorVersion
-	return id, nil
+	return ResolveEnvironment(func(k string) (string, bool) {
+		if k == variable {
+			return key, true
+		}
+		return "", false
+	})
 }
 
 func openMembers(path string) (*os.Root, error) {

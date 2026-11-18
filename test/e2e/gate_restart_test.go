@@ -4,8 +4,9 @@ package e2e
 
 import (
 	"reflect"
+	"slices"
+	"strconv"
 	"testing"
-	"time"
 )
 
 func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
@@ -18,12 +19,11 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 	}
 	members[1].must("read")
 
-	// Use the public command's minimum duration and the committed deadline.
-	wait := time.Until(time.UnixMilli(int64(due)))
-	if wait > time.Minute+time.Second {
-		t.Fatalf("unexpected deadline for a one-minute ask: %v", wait)
-	}
-	time.Sleep(wait + time.Millisecond)
+	// The offset is read when a dispatcher starts. Move forward once, then
+	// use the same offset for the crash/restart comparison below.
+	futureOwner := &participant{w: w, extra: []string{"CROSSHALL_TEST_CLOCK_OFFSET=2m"}}
+	w.kill()
+	futureOwner.must("owner", "start")
 
 	before := owner.must("owner", "status", "--all").obj
 	channel := soleLedgerRow(t, before, "channels")
@@ -46,7 +46,7 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 	}
 
 	w.kill()
-	owner.must("owner", "start")
+	futureOwner.must("owner", "start")
 	after := owner.must("owner", "status", "--all").obj
 	for _, status := range []map[string]any{before, after} {
 		if generated, ok := status["generated_at_ms"].(float64); !ok || generated < due {
@@ -57,6 +57,29 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("ledger changed across restart:\nbefore %v\nafter  %v", before, after)
 	}
+
+	t.Run("more time and late settlement", func(t *testing.T) {
+		id := strconv.FormatInt(int64(askID), 10)
+		members[1].must("reply", id, "--more-time", "I need another review.")
+		status := owner.must("owner", "status", "--all")
+		open := ledgerRecipients(t, status, int64(askID))["tax"]
+		more, ok := open["more_time_at_ms"].(float64)
+		if !ok || more <= due || open["overdue_since_ms"] != due || open["state"] != "open" ||
+			open["settled_at_ms"] != nil || slices.Contains(stages(open), "settled") {
+			t.Fatalf("more time changed the overdue obligation: %v", open)
+		}
+
+		members[1].must("reply", id, "The calculation is correct.")
+		status = owner.must("owner", "status", "--all")
+		request := soleLedgerRow(t, soleLedgerRow(t, status.obj, "channels"), "requests")
+		row := soleLedgerRow(t, request, "recipients")
+		settled, ok := row["settled_at_ms"].(float64)
+		if request["id"] != askID || request["due_at_ms"] != due ||
+			!ok || settled < more || row["late_by_ms"] != settled-due || row["overdue_since_ms"] != nil ||
+			row["state"] != "replied" || !slices.Equal(stages(row), []string{"stored", "picked_up", "settled"}) {
+			t.Fatalf("ledger lost the deadline, late reply or its evidence: %v", request)
+		}
+	})
 }
 
 func soleLedgerRow(t *testing.T, parent map[string]any, field string) map[string]any {

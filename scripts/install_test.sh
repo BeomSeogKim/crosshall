@@ -73,7 +73,20 @@ tag_release() {
 }
 
 tag_release v0.1.0 first
-install_release "$dest" > "$tmp/output"
+# This go keeps its output open for a moment after building, as a process
+# forked by the go command can on Linux ("text file busy"). The installer
+# must still run the new binary.
+mkdir "$tmp/busy-go"
+cat > "$tmp/busy-go/go" <<EOF
+#!/usr/bin/env bash
+"$(command -v go)" "\$@" || exit
+[[ \$1 == build ]] || exit 0
+prev=
+for arg; do [[ \$prev == -o ]] && out=\$arg; prev=\$arg; done
+(exec 3>>"\$out"; sleep 0.5) </dev/null >/dev/null 2>&1 &
+EOF
+chmod +x "$tmp/busy-go/go"
+PATH="$tmp/busy-go:$PATH" install_release "$dest" > "$tmp/output"
 check_release v0.1.0 first
 cp "$target" "$tmp/first"
 

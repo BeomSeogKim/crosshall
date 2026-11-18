@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -27,5 +28,32 @@ func TestCheckStateRoot(t *testing.T) {
 				t.Fatalf("CheckStateRoot returned %v, want error: %t", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestCheckStateRootPhysicalDirectory(t *testing.T) {
+	home := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(home, alias); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, "state", "crosshall")
+	throughAlias := filepath.Join(alias, "state", "crosshall")
+	t.Setenv("XDG_STATE_HOME", filepath.Dir(throughAlias))
+	for _, existing := range []bool{false, true} {
+		if existing {
+			if err := os.MkdirAll(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if CheckStateRoot("dev", throughAlias, root) == nil || CheckStateRoot("test", root, throughAlias) == nil {
+			t.Errorf("the same physical root was allowed (already exists: %v)", existing)
+		}
+		if CheckStateRoot("dev", root, "") == nil {
+			t.Errorf("implicit XDG default was allowed (already exists: %v)", existing)
+		}
+		if err := CheckStateRoot("dev", filepath.Join(alias, "state", "other"), root); err != nil {
+			t.Errorf("separate sibling refused: %v", err)
+		}
 	}
 }

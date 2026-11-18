@@ -182,6 +182,17 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				fmt.Fprintf(w, "  x%d exhausted at %s (episode %d)\n", event.ExchangeID, ledgerTime(event.AtMS), event.Episode)
 			}
 		}
+		if s := r.Self; s != nil {
+			parts := make([]string, 0, len(s.Exchanges))
+			for _, ex := range s.Exchanges {
+				parts = append(parts, fmt.Sprintf("x%d (%d remaining)", ex.ID, ex.Remaining))
+			}
+			taking := "no exchange"
+			if len(parts) > 0 {
+				taking = strings.Join(parts, ", ")
+			}
+			fmt.Fprintf(w, "You (@%s): %d root token(s) to open a new exchange; taking part in %s.\n", s.Alias, s.RootTokens, taking)
+		}
 	case domain.Cancel:
 		var r domain.CancelResult
 		if err := json.Unmarshal(data, &r); err != nil {

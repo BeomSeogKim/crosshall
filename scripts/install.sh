@@ -76,7 +76,20 @@ git -C "$repo" archive "$commit" | tar -x -C "$stage/src"
     -ldflags "-X main.version=$tag" -o "$stage/crosshall" ./cmd/crosshall
 )
 
-version=$("$stage/crosshall" version)
+# On Linux a binary just written by `go build -o` can briefly refuse to run
+# ("text file busy", exit 126) while a process the go command forked still
+# holds it open (https://go.dev/issue/22315). Retry briefly, as go does.
+for delay in 0.1 0.2 0.4 0.8 ''; do
+  status=0
+  version=$("$stage/crosshall" version 2>"$stage/version.err") || status=$?
+  [[ $status == 126 && -n $delay ]] || break
+  sleep "$delay"
+done
+if [[ $status != 0 ]]; then
+  cat "$stage/version.err" >&2
+  echo "The built program did not run." >&2
+  exit 1
+fi
 if [[ $version != "$tag" ]]; then
   echo "Built version does not match $tag." >&2
   exit 1

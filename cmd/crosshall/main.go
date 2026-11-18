@@ -44,13 +44,11 @@ type statePaths struct {
 // $XDG_STATE_HOME/crosshall, else ~/.local/state/crosshall.
 func resolvePaths() (statePaths, error) {
 	var p statePaths
-	if xdg := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(xdg) {
-		p.defaultState = filepath.Join(xdg, "crosshall")
-	} else if home, err := os.UserHomeDir(); err == nil {
-		p.defaultState = filepath.Join(home, ".local", "state", "crosshall")
-	} else {
-		return p, errors.New("cannot find the state directory: set HOME or CROSSHALL_STATE_DIR")
+	defaultRoot, err := dispatch.DefaultStateRoot()
+	if err != nil {
+		return p, err
 	}
+	p.defaultState = defaultRoot
 	p.state = p.defaultState
 	if dir := os.Getenv("CROSSHALL_STATE_DIR"); dir != "" {
 		if !filepath.IsAbs(dir) {
@@ -59,7 +57,7 @@ func resolvePaths() (statePaths, error) {
 		p.state = filepath.Clean(dir)
 	}
 	p.rendezvous = ident.Rendezvous(p.state, os.Geteuid())
-	return p, nil
+	return p, dispatch.CheckStateRoot(version, p.state, p.defaultState)
 }
 
 func (p statePaths) launch(owner bool) dispatch.LaunchConfig {
@@ -77,7 +75,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		RunChild:  ident.RunChild,
 		Stdin:     os.Stdin,
 	}
-	if pathErr == nil && dispatch.CheckStateRoot(version, paths.state, paths.defaultState) == nil {
+	if pathErr == nil {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})
 		transport.EnableMemberStart(entry, paths.launch(false).Start)
 		env.Transport = transport
@@ -89,11 +87,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			return err
 		}
 	} else {
-		reason := pathErr
-		if reason == nil {
-			reason = dispatch.CheckStateRoot(version, paths.state, paths.defaultState)
-		}
-		env.Unavailable = reason.Error()
+		env.Unavailable = pathErr.Error()
 	}
 	// The owner startup path and cold member calls may use this outer limit.
 	// The transport keeps identified member calls within their own allowance.
@@ -107,9 +101,14 @@ func serve(paths statePaths, pathErr error) int {
 		fmt.Fprintln(os.Stderr, "dispatcher:", pathErr)
 		return 1
 	}
+	clock, err := dispatch.DomainClock(version)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dispatcher:", err)
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	resolver := ident.SQLResolver{StateRoot: paths.state, RendezvousRoot: paths.rendezvous, Clock: time.Now}
+	resolver := ident.SQLResolver{StateRoot: paths.state, RendezvousRoot: paths.rendezvous, Clock: clock}
 	cfg := dispatch.Config{
 		LaunchConfig: paths.launch(false),
 		Services: dispatch.Services{
@@ -132,7 +131,7 @@ func serve(paths statePaths, pathErr error) int {
 				}
 				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
-			Handle: &domain.Service{Clock: time.Now, RestoreKey: ident.RestoreKey},
+			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {
 				var hello wire.Hello
 				if err := json.Unmarshal(raw, &hello); err != nil {

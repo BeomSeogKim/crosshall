@@ -114,8 +114,7 @@ func (p *participant) run(args ...string) outcome {
 		p.w.t.Fatalf("crosshall %v: %v", args, err)
 	}
 	if strings.TrimSpace(o.stdout) != "" {
-		dec := json.NewDecoder(strings.NewReader(o.stdout))
-		if err := dec.Decode(&o.obj); err != nil || dec.More() {
+		if err := json.Unmarshal(out.Bytes(), &o.obj); err != nil || o.obj == nil {
 			p.w.t.Fatalf("crosshall %v: stdout is not exactly one JSON object: %q", args, o.stdout)
 		}
 	}
@@ -130,6 +129,17 @@ func (p *participant) must(args ...string) outcome {
 		p.w.t.Fatalf("crosshall %v: exit %d\nstdout %s\nstderr %s", args, o.exit, o.stdout, o.stderr)
 	}
 	return o
+}
+
+func (p *participant) mustPlain(args ...string) string {
+	p.w.t.Helper()
+	cmd := exec.Command(binary, args...)
+	cmd.Dir, cmd.Env = p.w.home, p.env()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		p.w.t.Fatalf("crosshall %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }
 
 // aliases returns the member aliases of a who or join result.
@@ -224,6 +234,28 @@ func (w *world) db() *sql.DB {
 	}
 	w.t.Cleanup(func() { db.Close() })
 	return db
+}
+
+// The three-shell scenario fixture should leave only its own state in HOME.
+// With no vendor integration, no command can produce notification evidence.
+func (w *world) checkShellDelivery() {
+	w.t.Helper()
+	entries, err := os.ReadDir(w.home)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != filepath.Base(w.state) && entry.Name() != "tmp" {
+			w.t.Errorf("shell scenario wrote an unexpected home entry: %s", entry.Name())
+		}
+	}
+	var otherVendors, notifications int
+	err = w.db().QueryRow(`SELECT
+		(SELECT COUNT(*) FROM principal WHERE kind = 'session' AND vendor <> 'route'),
+		(SELECT COUNT(*) FROM receipt WHERE stage = 'notified')`).Scan(&otherVendors, &notifications)
+	if err != nil || otherVendors != 0 || notifications != 0 {
+		w.t.Fatalf("shell scenario has %d non-route participants and %d notification receipts: %v", otherVendors, notifications, err)
+	}
 }
 
 // counts is a coarse fingerprint of everything a member command can change.

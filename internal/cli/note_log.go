@@ -147,7 +147,7 @@ func renderNoteLog(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		renderLog(w, r, c.Limit)
+		renderLog(w, r, c.Limit, "crosshall log")
 	case domain.Leave:
 		var r domain.LeaveResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -177,7 +177,8 @@ func renderNoteLog(cmd domain.Command, data []byte, w io.Writer) error {
 	return nil
 }
 
-func renderLog(w io.Writer, r domain.LogResult, limit int) {
+// renderLog prints a page; a continuation repeats command with --since.
+func renderLog(w io.Writer, r domain.LogResult, limit int, command string) {
 	if len(r.Messages) == 0 {
 		fmt.Fprintf(w, "#%s: no messages.\n", r.Channel)
 	}
@@ -210,8 +211,8 @@ func renderLog(w io.Writer, r domain.LogResult, limit int) {
 	}
 	switch {
 	case r.Next != nil && r.Later > 0:
-		fmt.Fprintf(w, "... %d later: crosshall log --since %d%s\n", r.Later, *r.Next, more)
+		fmt.Fprintf(w, "... %d later: %s --since %d%s\n", r.Later, command, *r.Next, more)
 	case r.Next != nil && r.Earlier > 0:
-		fmt.Fprintf(w, "... %d earlier: crosshall log --since %d%s\n", r.Earlier, *r.Next, more)
+		fmt.Fprintf(w, "... %d earlier: %s --since %d%s\n", r.Earlier, command, *r.Next, more)
 	}
 }

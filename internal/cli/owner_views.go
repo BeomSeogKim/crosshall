@@ -47,10 +47,18 @@ func ownerViewCall(args []string) (Call, error) {
 		}
 		call.Command = domain.OwnerWho{}
 	case "log":
-		if len(args) != 2 || !domain.ValidName(strings.TrimPrefix(args[1], "#")) {
-			return Call{}, fmt.Errorf("usage: crosshall owner log <channel>")
+		usage := fmt.Errorf("usage: crosshall owner log <channel> [--since <id>] [--limit <n>]")
+		if len(args) < 2 || !domain.ValidName(strings.TrimPrefix(args[1], "#")) {
+			return Call{}, usage
 		}
-		call.Command = domain.OwnerLog{Channel: strings.TrimPrefix(args[1], "#")}
+		page, err := parseLog(args[2:])
+		if err != nil && strings.HasPrefix(err.Error(), "usage:") {
+			return Call{}, usage
+		}
+		if err != nil {
+			return Call{}, err
+		}
+		call.Command = domain.OwnerLog{Channel: strings.TrimPrefix(args[1], "#"), Since: page.Since, Limit: page.Limit}
 	case "channel":
 		if len(args) < 3 {
 			return Call{}, fmt.Errorf("usage: crosshall owner channel default <channel> [--repo <directory>]")
@@ -77,7 +85,7 @@ func ownerViewCall(args []string) (Call, error) {
 }
 
 func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
-	switch cmd.(type) {
+	switch c := cmd.(type) {
 	case domain.OwnerWho:
 		var r domain.OwnerWhoResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -106,13 +114,7 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		// Owner history has a named-channel page, so the member continuation
-		// command printed by renderLog would select a different scope.
-		r.Next = nil
-		renderLog(w, r, domain.DefaultLogLimit)
-		if r.Earlier > 0 {
-			fmt.Fprintf(w, "... %d earlier in #%s\n", r.Earlier, r.Channel)
-		}
+		renderLog(w, r, c.Limit, "crosshall owner log "+r.Channel)
 	case domain.ChannelDefault:
 		var r domain.ChannelDefaultResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -134,6 +136,7 @@ type doctorCheck struct {
 func renderDoctor(o outputs, r core.Result) core.ExitCode {
 	var result struct {
 		Checks []doctorCheck `json:"checks"`
+		Hint   string        `json:"hint"`
 	}
 	if err := json.Unmarshal(r.Data, &result); err != nil || len(result.Checks) == 0 {
 		return o.fail(core.ExitError, CodeLocalError, "no diagnostic checks were returned", "")
@@ -141,7 +144,7 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 	if o.json {
 		fields := map[string]any{"v": 1, "ok": r.Status == core.ExitOK, "kind": "owner doctor", "checks": result.Checks}
 		if r.Status != core.ExitOK {
-			fields["code"], fields["message"], fields["hint"] = CodeLocalError, "one or more checks failed", ""
+			fields["code"], fields["message"], fields["hint"] = CodeLocalError, "one or more checks failed", result.Hint
 		}
 		if err := json.NewEncoder(o.stdout).Encode(fields); err != nil {
 			return core.ExitError
@@ -154,6 +157,11 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 			outcome = "PASS"
 		}
 		if _, err := fmt.Fprintf(o.stdout, "%s %s — %s\n", outcome, check.Name, check.Detail); err != nil {
+			return core.ExitError
+		}
+	}
+	if result.Hint != "" {
+		if _, err := fmt.Fprintf(o.stdout, "The dispatcher is not running; next: %s\n", result.Hint); err != nil {
 			return core.ExitError
 		}
 	}

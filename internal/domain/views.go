@@ -61,7 +61,17 @@ type WaitingResult struct {
 
 type StatusResult struct {
 	GeneratedAtMS int64           `json:"generated_at_ms"`
+	Self          *StatusSelf     `json:"self,omitempty"`
 	Channels      []ChannelStatus `json:"channels"`
+}
+
+// StatusSelf is the calling member's own credit: the root tokens that open a
+// new exchange and the balance of each exchange it asked in or was asked in.
+// The owner ledger has none.
+type StatusSelf struct {
+	Alias      string            `json:"alias"`
+	RootTokens int64             `json:"root_tokens"`
+	Exchanges  []ExchangeBalance `json:"exchanges"`
 }
 
 type ChannelStatus struct {
@@ -194,10 +204,39 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 	if err != nil {
 		return core.Result{}, err
 	}
+	self, err := statusSelf(ctx, tx, member)
+	if err != nil {
+		return core.Result{}, err
+	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {
 		return core.Result{}, err
 	}
-	return OK(StatusResult{GeneratedAtMS: ms(now), Channels: []ChannelStatus{ch}})
+	return OK(StatusResult{GeneratedAtMS: ms(now), Self: &self, Channels: []ChannelStatus{ch}})
+}
+
+func statusSelf(ctx context.Context, tx store.Tx, member memberView) (StatusSelf, error) {
+	out := StatusSelf{Exchanges: []ExchangeBalance{}}
+	if err := tx.QueryRowContext(ctx, `SELECT b.alias, p.root_tokens FROM binding b JOIN principal p ON p.id = b.principal_id
+		WHERE b.id = ?`, member.binding).Scan(&out.Alias, &out.RootTokens); err != nil {
+		return out, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.granted, e.spent FROM exchange e WHERE e.channel_id = ? AND EXISTS(
+		SELECT 1 FROM message m LEFT JOIN recipient r ON r.message_id = m.id
+		WHERE m.exchange_id = e.id AND m.kind = 'ask' AND (m.sender_id = ? OR r.principal_id = ?)) ORDER BY e.id`,
+		member.channel, member.principal, member.principal)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var balance ExchangeBalance
+		if err := rows.Scan(&balance.ID, &balance.Granted, &balance.Spent); err != nil {
+			return out, err
+		}
+		balance.Remaining = balance.Granted - balance.Spent
+		out.Exchanges = append(out.Exchanges, balance)
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Caller, cmd OwnerStatus, now time.Time) (core.Result, error) {

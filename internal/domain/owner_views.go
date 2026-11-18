@@ -21,9 +21,11 @@ type OwnerWho struct{}
 func (OwnerWho) command()     {}
 func (OwnerWho) Verb() string { return VerbOwnerWho }
 
-// OwnerLog reads the recent history of a named channel.
+// OwnerLog reads a page of a named channel's history, like the member log.
 type OwnerLog struct {
 	Channel string `json:"channel"`
+	Since   *int64 `json:"since,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
 }
 
 func (OwnerLog) command()     {}
@@ -98,6 +100,10 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 	if !ValidName(cmd.Channel) {
 		return Fail(core.ExitUsage, "", "name the channel to inspect", "crosshall owner log <channel>"), nil
 	}
+	limit, bad := logLimit(Log{Since: cmd.Since, Limit: cmd.Limit})
+	if bad != nil {
+		return *bad, nil
+	}
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
@@ -105,7 +111,7 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 	if !found {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel #%s", cmd.Channel), "crosshall owner who --all"), nil
 	}
-	out, err := ChannelLog(ctx, tx, ch.id, nil, DefaultLogLimit)
+	out, err := ChannelLog(ctx, tx, ch.id, cmd.Since, limit)
 	if err != nil {
 		return core.Result{}, err
 	}

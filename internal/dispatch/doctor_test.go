@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -179,4 +180,78 @@ func readDoctorFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
+	hint := func(r core.Result) string {
+		var data struct {
+			Hint string `json:"hint"`
+		}
+		if err := json.Unmarshal(r.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		return data.Hint
+	}
+	dir := t.TempDir()
+	absent := LaunchConfig{Version: "test", StateRoot: filepath.Join(dir, "state"), Rendezvous: filepath.Join(dir, "rendezvous")}
+	if got := hint(absent.Doctor(t.Context())); got != "crosshall owner start" {
+		t.Errorf("never started: hint %q", got)
+	}
+	stale, lock := doctorFixture(t)
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if got := hint(stale.Doctor(t.Context())); got != "crosshall owner start" {
+		t.Errorf("stopped: hint %q", got)
+	}
+	live, _ := doctorFixture(t)
+	if got := hint(live.Doctor(t.Context())); got != "" {
+		t.Errorf("running: hint %q", got)
+	}
+	insecure, _ := doctorFixture(t)
+	if err := os.Chmod(insecure.Rendezvous, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := hint(insecure.Doctor(t.Context())); got != "" {
+		t.Errorf("running with an unsafe rendezvous: hint %q", got)
+	}
+}
+
+func TestDoctorDoesNotRecommendStartWhenTheLockCannotBeInspected(t *testing.T) {
+	cfg, _ := doctorFixture(t)
+	if err := os.Chmod(filepath.Join(cfg.StateRoot, "dispatcher.lock"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	result := cfg.Doctor(t.Context())
+	var data struct {
+		Checks []doctorCheck `json:"checks"`
+		Hint   string        `json:"hint"`
+	}
+	if err := json.Unmarshal(result.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Hint != "" {
+		t.Errorf("a held lock that cannot be inspected gets the start hint %q", data.Hint)
+	}
+	if lock := data.Checks[0]; lock.OK || !strings.Contains(lock.Detail, "cannot be inspected") || strings.Contains(lock.Detail, "idle") {
+		t.Errorf("lock check %+v, want the inspection error", lock)
+	}
+}
+
+func TestDoctorRecommendsStartWhenTheLockFileIsMissing(t *testing.T) {
+	cfg, lock := doctorFixture(t)
+	lock.Close()
+	if err := os.Remove(filepath.Join(cfg.StateRoot, "dispatcher.lock")); err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		Checks []doctorCheck `json:"checks"`
+		Hint   string        `json:"hint"`
+	}
+	if err := json.Unmarshal(cfg.Doctor(t.Context()).Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Hint != "crosshall owner start" || data.Checks[0].Detail != "dispatcher lock is absent or idle" {
+		t.Errorf("missing lock: hint %q, lock check %+v", data.Hint, data.Checks[0])
+	}
 }

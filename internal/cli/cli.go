@@ -35,7 +35,7 @@ Owner commands (from your own shell, not from an agent session):
   owner start                                       Start the dispatcher
   owner channel create <name> [--topic "..."]       Create a channel
   owner who --all                                   List all channel bindings
-  owner log <channel>                               Show a channel's history
+  owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
   owner channel default <channel> [--repo <dir>]     Set a repository's default channel
   owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
@@ -46,7 +46,7 @@ Owner commands (from your own shell, not from an agent session):
 
 Other:
   help     Show this help
-  version  Print the build version
+  version  Print the build version (also --version)
 `
 
 // Call is one command handed to the transport.
@@ -116,9 +116,9 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return core.ExitOK
-	case "version":
+	case "version", "--version":
 		if len(rest) != 0 {
-			return o.usage("version takes no arguments")
+			return o.usage(verb + " takes no arguments")
 		}
 		fmt.Fprintln(stdout, env.Version)
 		return core.ExitOK

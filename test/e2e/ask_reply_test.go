@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
-	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 )
 
 // grantRoots gives a member root tokens through the owner command.
@@ -69,8 +71,8 @@ func TestAskAndReplyEndToEnd(t *testing.T) {
 }
 
 // The dispatcher commits an ask but its reply file disappears; running the
-// same command again with that key gives back the first result and charges
-// the exchange only once.
+// same command after a pickup preserves the original send and shows the
+// current delivery state for its frozen recipients.
 func TestLostAskResponseDebitsOnce(t *testing.T) {
 	w, _, members := setup(t)
 	form := members[0]
@@ -86,14 +88,26 @@ func TestLostAskResponseDebitsOnce(t *testing.T) {
 	if resp.Status != 0 {
 		t.Fatalf("planted ask failed: %d %s", resp.Status, data)
 	}
-	var first struct{ ID int64 }
+	var first domain.AskResult
 	if err := json.Unmarshal([]byte(data), &first); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	members[1].must("read", strconv.FormatInt(first.ID, 10))
 	again := form.must("ask", "@lint", "@tax", "lost?", "--key", key)
-	if num(t, again, "id") != first.ID {
-		t.Fatalf("replay returned #%v, want #%d", again.obj["id"], first.ID)
+	var replay domain.AskResult
+	if err := json.Unmarshal([]byte(again.stdout), &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.ID != first.ID || replay.Exchange != first.Exchange || replay.DueAtMS != first.DueAtMS ||
+		replay.Debit != first.Debit || replay.Remaining != first.Remaining {
+		t.Fatalf("replay changed the committed send: first=%+v replay=%+v", first, replay)
+	}
+	states := make(map[string]string)
+	for _, recipient := range replay.Recipients {
+		states[recipient.Alias] = recipient.State
+	}
+	if len(replay.Recipients) != 2 || !reflect.DeepEqual(states, map[string]string{"tax": "picked_up", "lint": "stored"}) {
+		t.Fatalf("delivery after tax read: %+v", replay.Recipients)
 	}
 	var asks, spent int
 	db := w.db()

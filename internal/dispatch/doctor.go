@@ -29,6 +29,9 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	permissions := doctorCheck{Name: "rendezvous_permissions"}
 	ownerSpool := doctorCheck{Name: "owner_spool_writable"}
 	var state *os.Root
+	// Starting the dispatcher is the remedy when none holds the lock, or when
+	// the state root does not exist yet; an unsafe path needs the owner instead.
+	notRunning := false
 	stateErr := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot)
 	if stateErr == nil {
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
@@ -42,10 +45,14 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	}
 	if stateErr == nil {
 		defer state.Close()
-		if lockHeld(state) {
+		switch held, err := lockState(state); {
+		case err != nil:
+			lock.record("", fmt.Errorf("dispatcher lock cannot be inspected: %w", err))
+		case held:
 			lock.record("dispatcher lock held", nil)
-		} else {
-			lock.record("", errors.New("dispatcher lock is absent, unsafe, or idle"))
+		default:
+			lock.record("", errors.New("dispatcher lock is absent or idle"))
+			notRunning = true
 		}
 		if marker := readReady(cfg.Rendezvous); marker.live(state) {
 			readiness.record(fmt.Sprintf("dispatcher PID %d is ready", marker.PID), nil)
@@ -59,8 +66,17 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
 			check.record("", stateErr)
 		}
+		notRunning = errors.Is(stateErr, fs.ErrNotExist)
 	}
-	return doctorResult(lock, readiness, version, permissions, ownerSpool)
+	hint := ""
+	if notRunning {
+		hint = "crosshall owner start"
+	}
+	checks := []doctorCheck{lock, readiness, version, permissions, ownerSpool}
+	if !allowsTestClock(cfg.Version) {
+		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
+	}
+	return doctorResult(hint, checks...)
 }
 
 func (check *doctorCheck) record(detail string, err error) {
@@ -71,7 +87,7 @@ func (check *doctorCheck) record(detail string, err error) {
 	check.Detail = detail
 }
 
-func doctorResult(checks ...doctorCheck) core.Result {
+func doctorResult(hint string, checks ...doctorCheck) core.Result {
 	status := core.ExitOK
 	for _, check := range checks {
 		if !check.OK {
@@ -81,7 +97,8 @@ func doctorResult(checks ...doctorCheck) core.Result {
 	}
 	data, _ := json.Marshal(struct {
 		Checks []doctorCheck `json:"checks"`
-	}{checks})
+		Hint   string        `json:"hint,omitempty"`
+	}{checks, hint})
 	return core.Result{Status: status, Data: data}
 }
 

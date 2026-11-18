@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,11 @@ func (cfg LaunchConfig) Start(ctx context.Context) (bool, error) {
 	}
 	if cfg.Owner {
 		if err := os.MkdirAll(cfg.StateRoot, 0700); err != nil {
+			return false, err
+		}
+		// Newly created components now have filesystem identities, including
+		// names the filesystem considers equivalent despite different spelling.
+		if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
 			return false, err
 		}
 	}
@@ -93,7 +99,7 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 	defer logFile.Close()
 	cmd := exec.Command(executable, "__dispatch")
 	cmd.Dir = cfg.StateRoot
-	cmd.Env = dispatcherEnv(cfg.StateRoot)
+	cmd.Env = cfg.dispatcherEnv()
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -102,9 +108,13 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 	return cmd.Process, nil
 }
 
-func dispatcherEnv(stateRoot string) []string {
-	env := []string{"CROSSHALL_STATE_DIR=" + stateRoot}
-	for _, key := range []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME"} {
+func (cfg LaunchConfig) dispatcherEnv() []string {
+	env := []string{"CROSSHALL_STATE_DIR=" + cfg.StateRoot}
+	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME"}
+	if allowsTestClock(cfg.Version) {
+		keys = append(keys, clockOffsetEnv)
+	}
+	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+value)
 		}
@@ -171,13 +181,27 @@ func readReady(rendezvous string) readyMarker {
 }
 
 func lockHeld(state *os.Root) bool {
+	held, _ := lockState(state)
+	return held
+}
+
+// lockState reports whether a dispatcher holds the lock. A missing file or a
+// lock that can be taken means none runs; any other failure is returned,
+// because then it is unknown whether one runs.
+func lockState(state *os.Root) (bool, error) {
 	file, err := spool.OpenServerFile(state, "dispatcher.lock", os.O_RDONLY)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer file.Close()
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
-	return errors.Is(err, syscall.EWOULDBLOCK)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return true, nil
+	}
+	return false, err
 }
 
 func prepareNamedSpool(root *os.Root, name string) error {

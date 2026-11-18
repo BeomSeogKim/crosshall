@@ -22,6 +22,7 @@ func setup(t *testing.T) (*world, *participant, []*participant) {
 		m.must("join", "checkout", "--as", alias)
 		members = append(members, m)
 	}
+	t.Cleanup(w.checkShellDelivery)
 	return w, owner, members
 }
 

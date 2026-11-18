@@ -45,9 +45,9 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, rend
 		}
 		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
-	runTimed(entry, prepare, func(ctx context.Context, rv *os.Root) string {
+	runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		return dispatchEvent(ctx, entry, rv, client, args, stdin, stdout, os.LookupEnv)
+		return dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
 	})
 }
 

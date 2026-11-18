@@ -59,6 +59,7 @@ const (
 	CodeAliasTaken         Code = "alias_taken"
 	CodeOneChannel         Code = "one_channel"
 	CodeOwnerOnly          Code = "owner_only"
+	CodeChannelExists      Code = "channel_exists"
 
 	CodeNotEnrolled      Code = "not_enrolled"
 	CodeBindingAmbiguous Code = "binding_ambiguous"

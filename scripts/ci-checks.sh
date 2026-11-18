@@ -56,6 +56,10 @@ fi
 if ! go test ./...; then
   fail=1
 fi
+# End-to-end checks run the built binary with its dispatcher.
+if ! go vet -tags e2e ./test/e2e/ || ! go test -tags e2e -count=1 ./test/e2e/; then
+  fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "checks passed"

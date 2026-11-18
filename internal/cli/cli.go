@@ -2,29 +2,368 @@
 package cli
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 )
 
-const usage = `Usage: crosshall <command>
+const usage = `Usage: crosshall [--json] [--key <k>] <command>
 
-Commands:
+Member commands:
+  join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
+  who                                               List the members of your channel
+  whoami                                            Show how this session is identified
+  run -- <command> [args...]                        Run a command with its own identity
+
+Owner commands (from your own shell, not from an agent session):
+  owner start                                       Start the dispatcher
+  owner channel create <name> [--topic "..."]       Create a channel
+
+Other:
   help     Show this help
   version  Print the build version
 `
 
-// Run executes the command line and returns the exit status.
+// Call is one command handed to the transport.
+type Call struct {
+	Owner   bool
+	Command domain.Command
+	// OpKey is empty for commands without a durable effect.
+	OpKey string
+}
+
+// Transport delivers a call to the dispatcher and returns its result.
+// Unsent, unknown-outcome and enrollment failures come back as results with
+// exit status 4 or 5; an error means a local failure (exit 1).
+type Transport interface {
+	Do(ctx context.Context, call Call) (core.Result, error)
+}
+
+// Env holds the parts the CLI needs from the other packages. Nil members make
+// the matching commands report that they are unavailable in this build.
+type Env struct {
+	Version   string
+	Transport Transport
+	// OwnerGate returns a non-empty refusal message when this process may not
+	// act as the owner.
+	OwnerGate func() string
+	// Start starts the dispatcher if it is not running.
+	Start func(ctx context.Context) error
+	// Whoami and WhoamiJSON print how the caller resolves.
+	Whoami     func(stdout io.Writer) core.ExitCode
+	WhoamiJSON func(stdout io.Writer) core.ExitCode
+	// RunChild runs a command with a fresh route identity.
+	RunChild func(argv []string) core.ExitCode
+	// NewKey returns a fresh operation key.
+	NewKey func() string
+	// Unavailable, when set, explains why commands that need the dispatcher
+	// cannot run (for example a development build without CROSSHALL_STATE_DIR).
+	Unavailable string
+}
+
+// Run executes the command line with the default environment.
 func Run(args []string, stdout, stderr io.Writer, version string) core.ExitCode {
-	if len(args) == 0 || len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+	return RunEnv(context.Background(), Env{Version: version}, args, stdout, stderr)
+}
+
+type options struct {
+	json bool
+	key  string
+}
+
+// RunEnv executes the command line and returns the exit status.
+func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Writer) core.ExitCode {
+	o := outputs{json: wantsJSON(args), stdout: stdout, stderr: stderr}
+	opts, rest, err := globalFlags(args)
+	if err != nil {
+		return o.usage(err.Error())
+	}
+	if len(rest) == 0 {
 		fmt.Fprint(stdout, usage)
 		return core.ExitOK
 	}
-	if len(args) == 1 && args[0] == "version" {
-		fmt.Fprintln(stdout, version)
+	verb, rest := rest[0], rest[1:]
+	switch verb {
+	case "help", "--help", "-h":
+		fmt.Fprint(stdout, usage)
 		return core.ExitOK
+	case "version":
+		if len(rest) != 0 {
+			return o.usage("version takes no arguments")
+		}
+		fmt.Fprintln(stdout, env.Version)
+		return core.ExitOK
+	case "whoami":
+		if len(rest) != 0 {
+			return o.usage("whoami takes no arguments")
+		}
+		whoami := env.Whoami
+		if opts.json {
+			whoami = env.WhoamiJSON
+		}
+		if whoami == nil {
+			return o.unavailableFor(env, "whoami")
+		}
+		return whoami(stdout)
+	case "run":
+		if len(rest) < 2 || rest[0] != "--" {
+			return o.usage("usage: crosshall run -- <command> [args...]")
+		}
+		if env.RunChild == nil {
+			return o.unavailable("run")
+		}
+		return env.RunChild(rest[1:])
+	case "join":
+		cmd, err := parseJoin(rest)
+		if err != nil {
+			return o.usage(err.Error())
+		}
+		return send(ctx, env, opts, Call{Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
+	case "who":
+		if len(rest) != 0 {
+			return o.usage("who takes no arguments")
+		}
+		return send(ctx, env, opts, Call{Command: domain.Who{}}, stdout, stderr)
+	case "owner":
+		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "Usage: crosshall <help|version>")
-	return core.ExitUsage
+	return o.usage(fmt.Sprintf("unknown command %q; run `crosshall help`", verb))
+}
+
+func runOwner(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
+	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	if len(args) == 0 {
+		return o.usage("usage: crosshall owner <start|channel create>")
+	}
+	if env.OwnerGate != nil {
+		if msg := env.OwnerGate(); msg != "" {
+			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, msg,
+				"run owner commands from your own shell, not from an agent session"), stdout, stderr)
+		}
+	}
+	switch {
+	case len(args) == 1 && args[0] == "start":
+		if env.Start == nil {
+			return o.unavailableFor(env, "owner start")
+		}
+		if err := env.Start(ctx); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, "dispatcher could not start: "+err.Error(), "")
+		}
+		if opts.json {
+			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)
+		} else {
+			fmt.Fprintln(stdout, "dispatcher running")
+		}
+		return core.ExitOK
+	case len(args) >= 2 && args[0] == "channel" && args[1] == "create":
+		cmd, err := parseCreateChannel(args[2:])
+		if err != nil {
+			return o.usage(err.Error())
+		}
+		// Owner commands start the dispatcher on demand.
+		if env.Start != nil {
+			if err := env.Start(ctx); err != nil {
+				return render(opts, cmd, domain.Fail(core.ExitUnavailable, core.CodeUnsent,
+					"dispatcher could not start: "+err.Error(), "crosshall owner start"), stdout, stderr)
+			}
+		}
+		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
+	}
+	return o.usage(fmt.Sprintf("unknown owner command %q", strings.Join(args, " ")))
+}
+
+func send(ctx context.Context, env Env, opts options, call Call, stdout, stderr io.Writer) core.ExitCode {
+	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	if env.Transport == nil {
+		return o.unavailableFor(env, call.Command.Verb())
+	}
+	result, err := env.Transport.Do(ctx, call)
+	if err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	// The roster cursor advances only after the whole result was written.
+	return RenderAndAcknowledge(env.Transport, result, opts.json, stdout, stderr,
+		func(out, diag io.Writer) core.ExitCode { return render(opts, call.Command, result, out, diag) })
+}
+
+func opKey(env Env, opts options) string {
+	if opts.key != "" {
+		return opts.key
+	}
+	if env.NewKey != nil {
+		return env.NewKey()
+	}
+	return NewKey()
+}
+
+// NewKey returns 128 random bits in hex.
+func NewKey() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// globalFlags removes --json and --key from anywhere before a "--".
+func globalFlags(args []string) (options, []string, error) {
+	var opts options
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return opts, append(rest, args[i:]...), nil
+		case a == "--json":
+			opts.json = true
+		case a == "--key":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return opts, nil, fmt.Errorf("--key needs a value")
+			}
+			opts.key = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--key="):
+			opts.key = strings.TrimPrefix(a, "--key=")
+			if opts.key == "" {
+				return opts, nil, fmt.Errorf("--key needs a value")
+			}
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return opts, rest, nil
+}
+
+// flagValue reads "--name value" or "--name=value" at args[i].
+func flagValue(args []string, i int, name string) (string, int, bool, error) {
+	a := args[i]
+	if a == name {
+		if i+1 >= len(args) {
+			return "", i, true, fmt.Errorf("%s needs a value", name)
+		}
+		return args[i+1], i + 1, true, nil
+	}
+	if strings.HasPrefix(a, name+"=") {
+		return strings.TrimPrefix(a, name+"="), i, true, nil
+	}
+	return "", i, false, nil
+}
+
+func parseJoin(args []string) (domain.Join, error) {
+	var cmd domain.Join
+	for i := 0; i < len(args); i++ {
+		if v, j, ok, err := flagValue(args, i, "--as"); ok {
+			if err != nil {
+				return cmd, err
+			}
+			cmd.Alias, i = strings.TrimPrefix(v, "@"), j
+			if !domain.ValidName(cmd.Alias) {
+				return cmd, fmt.Errorf("invalid alias %q: use 1-32 of a-z, 0-9 and -, starting with a letter or digit", v)
+			}
+			continue
+		}
+		if v, j, ok, err := flagValue(args, i, "--focus"); ok {
+			if err != nil {
+				return cmd, err
+			}
+			cmd.Focus, i = v, j
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			return cmd, fmt.Errorf("unknown option %q for join", args[i])
+		}
+		if cmd.Channel != "" {
+			return cmd, fmt.Errorf("join takes one channel")
+		}
+		cmd.Channel = strings.TrimPrefix(args[i], "#")
+		if !domain.ValidName(cmd.Channel) {
+			return cmd, fmt.Errorf("invalid channel name %q", args[i])
+		}
+	}
+	return cmd, nil
+}
+
+func parseCreateChannel(args []string) (domain.CreateChannel, error) {
+	var cmd domain.CreateChannel
+	for i := 0; i < len(args); i++ {
+		if v, j, ok, err := flagValue(args, i, "--topic"); ok {
+			if err != nil {
+				return cmd, err
+			}
+			cmd.Topic, i = v, j
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			return cmd, fmt.Errorf("unknown option %q for channel create", args[i])
+		}
+		if cmd.Name != "" {
+			return cmd, fmt.Errorf("channel create takes one name")
+		}
+		cmd.Name = strings.TrimPrefix(args[i], "#")
+	}
+	if !domain.ValidName(cmd.Name) {
+		return cmd, fmt.Errorf("usage: crosshall owner channel create <name> [--topic \"...\"]; a name is 1-32 of a-z, 0-9 and -")
+	}
+	return cmd, nil
+}
+
+// Codes for failures detected by the CLI itself, before or without a result
+// from the dispatcher.
+const (
+	CodeUsage      core.Code = "usage"
+	CodeLocalError core.Code = "local_error"
+)
+
+// outputs reports a local failure as text on stderr, or as one JSON object
+// on stdout in --json mode, and returns its exit status.
+type outputs struct {
+	json           bool
+	stdout, stderr io.Writer
+}
+
+func (o outputs) fail(status core.ExitCode, code core.Code, msg, hint string) core.ExitCode {
+	if o.json {
+		writeJSON(o.stdout, map[string]any{"v": 1, "ok": false, "code": code, "message": msg, "hint": hint})
+		return status
+	}
+	fmt.Fprintf(o.stderr, "crosshall: %s\n", msg)
+	if hint != "" {
+		fmt.Fprintf(o.stderr, "next: %s\n", hint)
+	}
+	return status
+}
+
+func (o outputs) usage(msg string) core.ExitCode {
+	return o.fail(core.ExitUsage, CodeUsage, msg, "crosshall help")
+}
+
+func (o outputs) unavailableFor(env Env, what string) core.ExitCode {
+	if env.Unavailable != "" {
+		return o.fail(core.ExitError, CodeLocalError, env.Unavailable, "")
+	}
+	return o.unavailable(what)
+}
+
+func (o outputs) unavailable(what string) core.ExitCode {
+	return o.fail(core.ExitError, CodeLocalError, what+" is not available in this build", "")
+}
+
+// wantsJSON reports whether --json appears before any "--", so that even an
+// argument error can be reported as JSON.
+func wantsJSON(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "--json" {
+			return true
+		}
+	}
+	return false
 }

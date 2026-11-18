@@ -2,46 +2,119 @@
 package domain
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+)
+
+// Wire verbs for the commands in this package.
+const (
+	VerbCreateChannel = "owner channel create"
+	VerbJoin          = "join"
+	VerbWho           = "who"
 )
 
 // Request carries typed command arguments and the operation key.
 type Request struct {
 	OpKey   string
 	Command Command
+
+	// Vendor is the label of the caller's key (claude, codex, agy, route),
+	// set by the dispatcher. It names generated aliases and roster rows.
+	Vendor string
+	// Enroll links the caller's authenticated key to a principal created by
+	// a first join, inside the same transaction. The dispatcher sets it when
+	// the caller is unenrolled.
+	Enroll func(ctx context.Context, tx store.Tx, principalID int64) error
+	// Ack is the roster cursor this request acknowledges. The handler treats
+	// it as already seen even if the dispatcher records it after the call.
+	Ack uint64
 }
 
 // Command is a decoded domain command.
 type Command interface {
 	command()
+	// Verb returns the wire verb of the command.
+	Verb() string
 }
 
 // CreateChannel creates a new channel.
 type CreateChannel struct {
-	Name  string
-	Topic string
+	Name  string `json:"name"`
+	Topic string `json:"topic,omitempty"`
 }
 
 func (CreateChannel) command() {}
 
+// Verb returns the wire verb.
+func (CreateChannel) Verb() string { return VerbCreateChannel }
+
 // Join binds the caller to a channel.
 type Join struct {
-	Channel string
-	Alias   string
-	Focus   string
+	Channel string `json:"channel,omitempty"`
+	Alias   string `json:"alias,omitempty"`
+	Focus   string `json:"focus,omitempty"`
 }
 
 func (Join) command() {}
+
+// Verb returns the wire verb.
+func (Join) Verb() string { return VerbJoin }
 
 // Who lists members in the caller's channel.
 type Who struct{}
 
 func (Who) command() {}
 
+// Verb returns the wire verb.
+func (Who) Verb() string { return VerbWho }
+
 // Handler executes a command within the dispatcher-owned transaction.
 type Handler interface {
 	Handle(ctx context.Context, tx store.Tx, caller core.Caller, request Request) (core.Result, error)
+}
+
+// Decode turns a wire verb and its JSON arguments into a typed command.
+// Unknown fields are rejected so that a newer client cannot be misread.
+func Decode(verb string, args json.RawMessage) (Command, error) {
+	var cmd Command
+	switch verb {
+	case VerbCreateChannel:
+		var c CreateChannel
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	case VerbJoin:
+		var c Join
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	case VerbWho:
+		var c Who
+		if err := strictUnmarshal(args, &c); err != nil {
+			return nil, err
+		}
+		cmd = c
+	default:
+		return nil, fmt.Errorf("unknown verb %q", verb)
+	}
+	return cmd, nil
+}
+
+func strictUnmarshal(args json.RawMessage, v any) error {
+	if len(bytes.TrimSpace(args)) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("bad arguments: %w", err)
+	}
+	return nil
 }

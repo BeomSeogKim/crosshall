@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Install from the release tag at HEAD. Local source edits do not enter the binary.
+# Install the release tag at HEAD. Local source edits do not enter the binary.
 set -euo pipefail
 
-usage='Usage: scripts/install.sh [--force] [install-directory]  (default: ~/.local/bin)'
+usage='Usage: scripts/install.sh [--force] [--source] [install-directory]  (default: ~/.local/bin)'
 force=false
+from_source=false
 dest=
 for arg in "$@"; do
   case $arg in
     --help|-h)
       echo "$usage"
       echo 'Use --force to replace an unrecognized file or a symbolic link itself.'
+      echo 'Use --source to skip the release download and build with Go.'
       exit 0 ;;
     --force) force=true ;;
+    --source) from_source=true ;;
     -*) echo "$usage" >&2; exit 2 ;;
     *) [[ -z $dest && -n $arg ]] || { echo "$usage" >&2; exit 2; }
        dest=$arg ;;
@@ -61,21 +64,86 @@ build_go() {
   GOENV=off GOFLAGS= GOTOOLCHAIN=local GOWORK=off TEST_TELEMETRY_DIR="$stage/telemetry" go "$@"
 }
 
+check_incumbent() {
+  local installed
+  [[ ! -L $stage/incumbent && -f $stage/incumbent && -x $stage/incumbent ]] || return 1
+  # Without Go, compare the stable inode with the verified candidate below.
+  command -v go >/dev/null || return 0
+  build_go version -m "$stage/incumbent" | grep -Fx $'\tpath\tgithub.com/BeomSeogKim/crosshall/cmd/crosshall' >/dev/null &&
+    installed=$("$stage/incumbent" version) && [[ $installed == dev || $installed =~ $release ]]
+}
+
 if [[ $force == false && ( -L $target || -e $target ) ]]; then
-  # Inspect and query the same inode. Older crosshall releases print only
-  # the tag, so also require their Go main package before executing them.
+  # Inspect and query the same inode, rather than resolving the path twice.
   ln -P -- "$target" "$stage/incumbent"
-  if [[ -L $stage/incumbent || ! -f $stage/incumbent || ! -x $stage/incumbent ]] ||
-      ! build_go version -m "$stage/incumbent" | grep -Fx $'\tpath\tgithub.com/BeomSeogKim/crosshall/cmd/crosshall' >/dev/null ||
-      ! installed=$("$stage/incumbent" version) || ! [[ $installed == dev || $installed =~ $release ]]; then
+  if ! check_incumbent; then
     echo "Unrecognized entry at $target. Use --force to replace it." >&2
     exit 1
   fi
 fi
 
-mkdir "$stage/src"
-git -C "$repo" archive "$commit" | tar -x -C "$stage/src"
-(
+fetch_prebuilt() {
+  local os arch asset url checksum expected actual archived_commit
+  case $(uname -s) in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) prebuilt_reason='unsupported operating system'; return 1 ;;
+  esac
+  case $(uname -m) in
+    arm64|aarch64) arch=arm64 ;;
+    x86_64|amd64) arch=amd64 ;;
+    *) prebuilt_reason='unsupported architecture'; return 1 ;;
+  esac
+  command -v curl >/dev/null || { prebuilt_reason='curl is unavailable'; return 1; }
+  asset="crosshall-$os-$arch.tar.gz"
+  url="https://github.com/BeomSeogKim/crosshall/releases/download/$tag/$asset"
+  if ! fetch "$url.sha256" "$stage/checksum"; then
+    prebuilt_reason='checksum unavailable'
+    return 1
+  fi
+  checksum=$(cat "$stage/checksum") || { prebuilt_reason='checksum unreadable'; return 1; }
+  expected=${checksum%% *}
+  if ! [[ $expected =~ ^[0-9a-f]{64}$ && $checksum == "$expected  $asset" ]]; then
+    prebuilt_reason='invalid checksum file'
+    return 1
+  fi
+  if ! fetch "$url" "$stage/$asset"; then
+    prebuilt_reason='binary archive unavailable'
+    return 1
+  fi
+  if command -v sha256sum >/dev/null; then
+    actual=$(sha256sum < "$stage/$asset") || { prebuilt_reason='checksum command failed'; return 1; }
+  elif command -v shasum >/dev/null; then
+    actual=$(shasum -a 256 < "$stage/$asset") || { prebuilt_reason='checksum command failed'; return 1; }
+  else
+    prebuilt_reason='no SHA-256 command available'
+    return 1
+  fi
+  if [[ ${actual%% *} != "$expected" ]]; then
+    prebuilt_reason='checksum mismatch'
+    return 1
+  fi
+
+  # Read only the named members and never extract entries onto disk. Check
+  # the archive identifies this checkout, even if a fork reuses the tag name.
+  if ! archived_commit=$(tar -xOzf "$stage/$asset" COMMIT) || [[ $archived_commit != "$commit" ]]; then
+    prebuilt_reason='binary archive does not match this checkout'
+    return 1
+  fi
+  if ! tar -xOzf "$stage/$asset" crosshall > "$stage/crosshall" || ! chmod 755 "$stage/crosshall"; then
+    prebuilt_reason='cannot extract the verified binary'
+    return 1
+  fi
+}
+
+fetch() {
+  curl --disable --fail --silent --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 5 --max-time 60 --output "$2" "$1"
+}
+
+build_source() (
+  mkdir "$stage/src"
+  git -C "$repo" archive "$commit" | tar -x -C "$stage/src"
   cd "$stage/src"
   export CGO_ENABLED=0 GOCACHE="$stage/build-cache"
 
@@ -87,7 +155,7 @@ git -C "$repo" archive "$commit" | tar -x -C "$stage/src"
     url=${url//\#/%23}
     url=${url//\?/%3F}
     url=${url//,/%2C}
-    url=${url//|/%7C}
+    url=${url//\|/%7C}
     export GOPROXY="file://$url,$proxy"
   fi
   export GOPATH="$stage/gopath" GOMODCACHE="$stage/modules"
@@ -95,24 +163,55 @@ git -C "$repo" archive "$commit" | tar -x -C "$stage/src"
     -ldflags "-X main.version=$tag" -o "$stage/crosshall" ./cmd/crosshall
 )
 
-# On Linux a binary just written by `go build -o` can briefly refuse to run
-# ("text file busy", exit 126) while a process the go command forked still
-# holds it open (https://go.dev/issue/22315). Retry briefly, as go does.
-for delay in 0.1 0.2 0.4 0.8 ''; do
-  status=0
-  version=$("$stage/crosshall" version 2>"$stage/version.err") || status=$?
-  [[ $status == 126 && -n $delay ]] || break
-  sleep "$delay"
-done
-if [[ $status != 0 ]]; then
-  cat "$stage/version.err" >&2
-  echo "The built program did not run." >&2
+check_version() {
+  local delay
+  # Linux may briefly return exit 126 for a program just built by Go.
+  for delay in 0.1 0.2 0.4 0.8 ''; do
+    status=0
+    version=$("$stage/crosshall" version 2>"$stage/version.err") || status=$?
+    [[ $status == 126 && -n $delay ]] || break
+    sleep "$delay"
+  done
+  [[ $status == 0 && $version == "$tag" ]]
+}
+
+prebuilt=false
+if [[ $from_source == false ]]; then
+  if fetch_prebuilt; then
+    if check_version; then
+      prebuilt=true
+    else
+      prebuilt_reason='verified binary did not report the release version'
+    fi
+  fi
+  if [[ $prebuilt == false ]]; then
+    printf 'Could not use a prebuilt binary (%s); falling back to a source build.\n' "$prebuilt_reason" >&2
+  fi
+fi
+if [[ $prebuilt == false ]]; then
+  if ! command -v go >/dev/null; then
+    printf 'A source build needs Go %s or later on PATH.\n' \
+      "$(git -C "$repo" show "$commit:go.mod" | awk '$1 == "go" { print $2; exit }')" >&2
+    exit 1
+  fi
+  # A rejected archive may have supplied an executable with the same path.
+  rm -f -- "$stage/crosshall"
+  build_source
+  if ! check_version; then
+    if [[ $status != 0 ]]; then
+      cat "$stage/version.err" >&2
+      echo "The built program did not run." >&2
+    else
+      echo "Built version does not match $tag." >&2
+    fi
+    exit 1
+  fi
+fi
+if [[ -e $stage/incumbent ]] && ! command -v go >/dev/null && ! cmp -s "$stage/incumbent" "$stage/crosshall"; then
+  echo "Could not recognize the existing executable at $target without Go. Use --force to replace it." >&2
   exit 1
 fi
-if [[ $version != "$tag" ]]; then
-  echo "Built version does not match $tag." >&2
-  exit 1
-fi
+
 if [[ $force == true ]]; then
   mv -f -- "$stage/crosshall" "$dest/"
 elif [[ -e $stage/incumbent ]]; then

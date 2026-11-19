@@ -18,8 +18,8 @@ func TestM2OneWayObservationRecovery(t *testing.T) {
 	w, writer, claimed := m2World(t)
 	unclaimed := claimed
 	unclaimed.key = "synthetic-unclaimed-session"
-	claimed.fire("SessionStart", map[string]any{"source": "startup"})
-	unclaimed.fire("SessionStart", map[string]any{"source": "startup"})
+	enrollForRecovery(t, claimed)
+	enrollForRecovery(t, unclaimed)
 	if !rosterHas(t, writer, "claude1") || !rosterHas(t, writer, "claude2") {
 		t.Fatal("both synthetic Claude sessions must be enrolled")
 	}
@@ -30,9 +30,8 @@ func TestM2OneWayObservationRecovery(t *testing.T) {
 	workResponse, workExpiry := queueCleanEnd(t, claimed, "work", "claimed-end")
 	inResponse, inExpiry := queueCleanEnd(t, unclaimed, "in", "unclaimed-end")
 	time.Sleep(time.Until(time.UnixMilli(max(workExpiry, inExpiry))))
+	// The restarted dispatcher publishes ready after its initial scan.
 	w.owner().must("owner", "start")
-	claimed.settle()
-	unclaimed.settle()
 
 	if rosterHas(t, writer, "claude1") {
 		t.Error("the recovered clean end did not depart its member")
@@ -50,8 +49,41 @@ func TestM2OneWayObservationRecovery(t *testing.T) {
 		t.Errorf("recorded %d recovered and %d unclaimed observations, want 1 and 0", workCount, inCount)
 	}
 	for _, response := range []string{workResponse, inResponse} {
-		if _, err := os.Stat(response); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("one-way observation produced a response at %s: %v", response, err)
+		leaf, packet := filepath.Dir(filepath.Dir(response)), filepath.Base(response)
+		for _, area := range []string{"in", "work", "out"} {
+			path := filepath.Join(leaf, area, packet)
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("one-way observation left a packet at %s: %v", path, err)
+			}
+		}
+	}
+}
+
+// The recovery test needs a committed, verified launch for each fixture. A
+// SessionStart can return silently on its callback deadline before enrollment.
+func enrollForRecovery(t *testing.T, c claudeSession) {
+	t.Helper()
+	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
+	db := c.w.db()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c.fire("SessionStart", map[string]any{"source": "startup"})
+		var enrolled bool
+		err := db.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM leaf l
+			JOIN binding b ON b.principal_id = l.principal_id AND b.state = 'live'
+			JOIN adapter_launch a ON a.principal_id = l.principal_id
+			WHERE l.digest = ? AND a.verified = 1 AND a.ended_hook_at_ms IS NULL
+		)`, digest).Scan(&enrolled)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if enrolled {
+			c.waitForConsumption()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("synthetic SessionStart did not commit a verified live binding")
 		}
 	}
 }

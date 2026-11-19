@@ -19,7 +19,7 @@ func setup(t *testing.T) (*world, *participant, []*participant) {
 	var members []*participant
 	for _, alias := range []string{"form", "tax", "lint"} {
 		m := w.member()
-		m.must("join", "checkout", "--as", alias)
+		m.mustFixtureWrite("join", "checkout", "--as", alias)
 		members = append(members, m)
 	}
 	t.Cleanup(w.checkShellDelivery)

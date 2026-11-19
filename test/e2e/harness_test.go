@@ -134,6 +134,22 @@ func (p *participant) must(args ...string) outcome {
 	return o
 }
 
+// mustFixtureWrite permits a single same-key retry when a fixture write may
+// have committed before its reply deadline. The commands under test still use
+// must or run directly.
+func (p *participant) mustFixtureWrite(args ...string) {
+	p.w.t.Helper()
+	key := randomHex(16)
+	keyed := append([]string{"--key", key}, args...)
+	o := p.run(keyed...)
+	if o.obj["code"] == "outcome_unknown" && o.obj["op_key"] == key {
+		o = p.run(keyed...)
+	}
+	if o.exit != 0 {
+		p.w.t.Fatalf("crosshall fixture %v: exit %d\nstdout %s\nstderr %s", args, o.exit, o.stdout, o.stderr)
+	}
+}
+
 func (p *participant) mustPlain(args ...string) string {
 	p.w.t.Helper()
 	cmd := exec.Command(binary, args...)

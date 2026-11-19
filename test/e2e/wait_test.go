@@ -122,9 +122,9 @@ func TestWaitReportsNewAddressedAskWithoutPickup(t *testing.T) {
 	// Deliver unrelated traffic after giving the first snapshot time to run.
 	// Keep the waiter open past the normal three-second cold-start budget.
 	requireWaiting(t, child, 200*time.Millisecond)
-	tax.must("note", "@lint", "unrelated note while waiting")
+	tax.mustFixtureWrite("note", "@lint", "unrelated note while waiting")
 	requireWaiting(t, child, 1200*time.Millisecond)
-	tax.must("note", "@lint", "another unrelated note while waiting")
+	tax.mustFixtureWrite("note", "@lint", "another unrelated note while waiting")
 	requireWaiting(t, child, time.Until(started.Add(3100*time.Millisecond)))
 
 	id := num(t, tax.must("ask", "@form", "new addressed ask", "--due", "10m"), "id")

@@ -225,25 +225,12 @@ func reHints(owed map[int64]int64) string {
 	return strings.Join(hints, "; ")
 }
 
-// charge checks the credit for n recipients. On a shortfall it returns the
-// refusal, after opening an exhaustion episode when the balance is zero.
+// charge checks that the exchange can pay for one request of n units. An ask
+// costs one unit, so a shortfall means a zero balance: it opens an exhaustion
+// episode, once, and returns the refusal with the ways on.
 func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, now time.Time) (*core.Result, error) {
-	bal := a.exchange.balance()
-	if n <= bal {
+	if n <= a.exchange.balance() {
 		return nil, nil
-	}
-	name := "a new exchange"
-	if !a.isNew {
-		name = fmt.Sprintf("x%d", a.exchange.id)
-	}
-	hint := ""
-	if !a.isNew {
-		hint = fmt.Sprintf("ask the owner: crosshall owner budget grant %s/x%d <units>", m.channelName, a.exchange.id)
-	}
-	if bal > 0 || a.isNew {
-		r := Refuse(core.CodeInsufficientCredit,
-			fmt.Sprintf("%s has %d left; this request needs %d", name, bal, n), hint)
-		return &r, nil
 	}
 	if !a.exchange.episodeOpen {
 		if _, err := tx.ExecContext(ctx,
@@ -256,7 +243,10 @@ func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, 
 		}
 	}
 	r := Refuse(core.CodeBudgetExhausted,
-		fmt.Sprintf("x%d has no credit left; this request needs %d", a.exchange.id, n), hint)
+		fmt.Sprintf("x%d has no units left; a request costs %d", a.exchange.id, n),
+		fmt.Sprintf("open a new exchange with crosshall ask --new (needs a root token), ask the owner to run "+
+			"crosshall owner budget grant %s/x%d <units>, or send a crosshall reply or crosshall note, which cost nothing",
+			m.channelName, a.exchange.id))
 	return &r, nil
 }
 

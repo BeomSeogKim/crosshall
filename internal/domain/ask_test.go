@@ -91,7 +91,7 @@ func TestAskFansOutAtomically(t *testing.T) {
 	r := f.ask(a, Ask{To: []string{"@a11y", "tax", "tax"}, Body: "review refund rounding"}, "k1")
 	wantOK(t, r)
 	got := decode[AskResult](t, r)
-	if got.Debit != 2 || got.Remaining != DefaultCredit-2 || !got.NewExchange || got.DueAtMS != f.now.Add(DefaultDue).UnixMilli() {
+	if got.Debit != 1 || got.Remaining != DefaultCredit-1 || !got.NewExchange || got.DueAtMS != f.now.Add(DefaultDue).UnixMilli() {
 		t.Fatalf("result %+v", got)
 	}
 	if len(got.Recipients) != 2 || got.Recipients[0].Alias != "a11y" || got.Recipients[0].State != "stored" {
@@ -103,10 +103,10 @@ func TestAskFansOutAtomically(t *testing.T) {
 		`SELECT COUNT(*) FROM obligation WHERE state = 'open'`:                          2,
 		`SELECT COUNT(*) FROM receipt WHERE stage = 'stored'`:                           2,
 		`SELECT granted FROM exchange`:                                                  DefaultCredit,
-		`SELECT spent FROM exchange`:                                                    2,
+		`SELECT spent FROM exchange`:                                                    1,
 		`SELECT COUNT(*) FROM exchange WHERE root_message_id = ` + itoa(got.ID):         1,
 		`SELECT COUNT(*) FROM budget_event WHERE reason = 'initial' AND delta = 8`:      1,
-		`SELECT COUNT(*) FROM budget_event WHERE reason = 'debit' AND delta = -2`:       1,
+		`SELECT COUNT(*) FROM budget_event WHERE reason = 'debit' AND delta = -1`:       1,
 		`SELECT COUNT(*) FROM budget_event WHERE reason = 'roots' AND delta = -1`:       1,
 		`SELECT COUNT(*) FROM binding WHERE alias = 'form' AND context_exchange_id = 1`: 1,
 	} {
@@ -130,7 +130,7 @@ func TestAskToTheWholeChannel(t *testing.T) {
 	for _, d := range got.Recipients {
 		aliases = append(aliases, d.Alias)
 	}
-	if !reflect.DeepEqual(aliases, []string{"a11y", "tax"}) || got.Debit != 2 {
+	if !reflect.DeepEqual(aliases, []string{"a11y", "tax"}) || got.Debit != 1 {
 		t.Fatalf("audience %v debit %d", aliases, got.Debit)
 	}
 }
@@ -247,23 +247,20 @@ func TestBudgetExhaustionOpensOneEpisode(t *testing.T) {
 	}
 }
 
-func TestInsufficientCreditIsNotExhaustion(t *testing.T) {
+// With one unit left, a request to several members still fits: it spends the
+// last unit, and only the next request is refused.
+func TestAFanOutCanSpendTheLastUnit(t *testing.T) {
 	f, a, _, _ := channel3(t)
 	f.roots(a, 1)
 	wantOK(t, f.ask(a, Ask{To: []string{"tax"}, Body: "q"}, ""))
 	if _, err := f.db.Exec(`UPDATE exchange SET spent = granted - 1`); err != nil {
 		t.Fatal(err)
 	}
-	before := f.state()
-	r := f.ask(a, Ask{To: []string{"tax", "a11y"}, Body: "both"}, "")
-	wantCode(t, r, core.ExitRefused, core.CodeInsufficientCredit)
-	if msg := decode[Refusal](t, r).Message; msg != "x1 has 1 left; this request needs 2" {
-		t.Fatalf("message %q", msg)
+	got := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax", "a11y"}, Body: "both"}, ""))
+	if got.Debit != 1 || got.Remaining != 0 || len(got.Recipients) != 2 {
+		t.Fatalf("result %+v", got)
 	}
-	if f.state() != before {
-		t.Fatal("insufficient credit wrote something")
-	}
-	wantOK(t, f.ask(a, Ask{To: []string{"tax"}, Body: "one"}, ""))
+	wantCode(t, f.ask(a, Ask{To: []string{"tax"}, Body: "one"}, ""), core.ExitRefused, core.CodeBudgetExhausted)
 }
 
 func TestAskReplayShowsCurrentDelivery(t *testing.T) {

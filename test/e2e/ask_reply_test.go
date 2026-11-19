@@ -40,7 +40,7 @@ func TestAskAndReplyEndToEnd(t *testing.T) {
 
 	q := form.must("ask", "@tax", "@lint", "review refund rounding", "--due", "10m")
 	id := num(t, q, "id")
-	if q.obj["debit"] != float64(2) || q.obj["remaining"] != float64(6) || q.obj["new_exchange"] != true {
+	if q.obj["debit"] != float64(1) || q.obj["remaining"] != float64(7) || q.obj["new_exchange"] != true {
 		t.Fatalf("ask result %v", q.obj)
 	}
 
@@ -114,7 +114,7 @@ func TestLostAskResponseDebitsOnce(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM message WHERE kind = 'ask'`).Scan(&asks); err != nil || asks != 1 {
 		t.Fatalf("%d asks (%v)", asks, err)
 	}
-	if err := db.QueryRow(`SELECT spent FROM exchange`).Scan(&spent); err != nil || spent != 2 {
-		t.Fatalf("spent %d (%v), want 2", spent, err)
+	if err := db.QueryRow(`SELECT spent FROM exchange`).Scan(&spent); err != nil || spent != 1 {
+		t.Fatalf("spent %d (%v), want 1", spent, err)
 	}
 }

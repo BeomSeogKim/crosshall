@@ -230,3 +230,25 @@ func TestReplyPlainShowsDelivery(t *testing.T) {
 		t.Fatalf("output %q", out)
 	}
 }
+
+// An ask that spends an exchange's last unit says so. It describes its own
+// debit only: an owner grant can add units later, and a replay is frozen.
+func TestAskSaysWhenItSpentTheLastUnit(t *testing.T) {
+	defer func(f func() time.Time) { now = f }(now)
+	base := time.Date(2026, 11, 18, 13, 0, 0, 0, time.Local)
+	now = func() time.Time { return base }
+	due := base.Add(30 * time.Minute).UnixMilli()
+	for _, tc := range []struct {
+		remaining int64
+		want      string
+	}{
+		{1, "#42 stored. due 13:30. exchange x7: 1 left.\n"},
+		{0, "#42 stored. due 13:30. exchange x7: 0 left; this request spent its last unit.\n"},
+	} {
+		ft := &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Exchange: 7, DueAtMS: due, Debit: 1, Remaining: tc.remaining})}
+		out, _, _ := run(t, Env{Transport: ft}, "ask", "@tax", "review")
+		if !strings.HasPrefix(out, tc.want) {
+			t.Errorf("remaining %d: got %q, want prefix %q", tc.remaining, out, tc.want)
+		}
+	}
+}

@@ -18,6 +18,8 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+const startupTimeout = 3 * time.Second
+
 // LaunchConfig contains the resolved paths and host eligibility used by Start.
 type LaunchConfig struct {
 	Version          string
@@ -35,35 +37,12 @@ func (cfg LaunchConfig) Start(ctx context.Context) (bool, error) {
 }
 
 func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signal) error) (bool, error) {
-	if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
-		return false, err
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if !filepath.IsAbs(cfg.StateRoot) || !filepath.IsAbs(cfg.Rendezvous) {
-		return false, errors.New("dispatcher paths must be absolute")
-	}
-	if cfg.Owner {
-		if err := os.MkdirAll(cfg.StateRoot, 0700); err != nil {
-			return false, err
-		}
-		// Newly created components now have filesystem identities, including
-		// names the filesystem considers equivalent despite different spelling.
-		if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
-			return false, err
-		}
-	}
-	state, err := spool.OpenServerRoot(cfg.StateRoot)
+	state, err := cfg.openStartState(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer state.Close()
-	if cfg.Owner {
-		if err := prepareNamedSpool(state, "owner"); err != nil {
-			return false, err
-		}
-	}
+
 	previous := readReady(cfg.Rendezvous)
 	live, err := previous.liveness(state, probe)
 	if live || (!cfg.Owner && err != nil) {
@@ -81,7 +60,7 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 	}
 	defer process.Release()
 
-	wait, cancel := context.WithTimeout(ctx, 3*time.Second)
+	wait, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -92,10 +71,47 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 		}
 		select {
 		case <-wait.Done():
-			return true, fmt.Errorf("dispatcher did not become ready; see dispatcher.log: %w", wait.Err())
+			return true, startupError(wait.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func (cfg LaunchConfig) openStartState(ctx context.Context) (*os.Root, error) {
+	if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(cfg.StateRoot) || !filepath.IsAbs(cfg.Rendezvous) {
+		return nil, errors.New("dispatcher paths must be absolute")
+	}
+	if cfg.Owner {
+		if err := os.MkdirAll(cfg.StateRoot, 0700); err != nil {
+			return nil, err
+		}
+		// Newly created components now have filesystem identities, including
+		// names the filesystem considers equivalent despite different spelling.
+		if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {
+			return nil, err
+		}
+	}
+	state, err := spool.OpenServerRoot(cfg.StateRoot)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Owner {
+		if err := prepareNamedSpool(state, "owner"); err != nil {
+			state.Close()
+			return nil, err
+		}
+	}
+	return state, nil
+}
+
+func startupError(err error) error {
+	return fmt.Errorf("dispatcher did not become ready; see dispatcher.log: %w", err)
 }
 
 func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, error) {
@@ -163,6 +179,7 @@ type readyMarker struct {
 	Version  int    `json:"v"`
 	PID      int    `json:"pid"`
 	Lease    bool   `json:"lease,omitempty"`
+	Probe    bool   `json:"probe,omitempty"`
 }
 
 func (r readyMarker) live(state *os.Root) bool {

@@ -1,0 +1,135 @@
+package dispatch
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
+)
+
+// Allow a dispatcher using the 250 ms fallback scan to answer a probe,
+// without letting one silent instance consume the startup deadline.
+const readinessProbeTimeout = 300 * time.Millisecond
+
+// StartReady backs the explicit owner start command. Success means a
+// dispatcher answered and was still the ready instance when checked.
+func (cfg LaunchConfig) StartReady(ctx context.Context) error {
+	if !cfg.Owner {
+		return errors.New("readiness confirmation requires owner startup")
+	}
+	wait, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+	state, err := cfg.openStartState(wait)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var exited <-chan bool
+	var launchFailed bool
+	for wait.Err() == nil {
+		held, err := lockState(state)
+		if err != nil {
+			return err
+		}
+		if wait.Err() != nil {
+			break
+		}
+		if held {
+			marker := cfg.readinessCandidate()
+			if marker.Instance != "" && cfg.probeReadiness(wait, marker) {
+				held, err = lockState(state)
+				if err != nil {
+					return err
+				}
+				if held && cfg.readinessCandidate() == marker && wait.Err() == nil {
+					return nil
+				}
+			}
+		} else if exited == nil && !launchFailed {
+			exited, err = cfg.startCandidate(state)
+			if err != nil {
+				return err
+			}
+		}
+		select {
+		case cleanExit := <-exited:
+			exited = nil
+			// A contender that lost the lock exits normally. A daemon
+			// that failed during startup should leave its error in the log.
+			launchFailed = !cleanExit
+		case <-ticker.C:
+		case <-wait.Done():
+		}
+	}
+	return startupError(wait.Err())
+}
+
+func (cfg LaunchConfig) startCandidate(state *os.Root) (<-chan bool, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	process, err := cfg.spawn(state, executable)
+	if err != nil {
+		return nil, err
+	}
+	exited := make(chan bool, 1)
+	go func() {
+		result, err := process.Wait()
+		exited <- err == nil && result.Success()
+	}()
+	return exited, nil
+}
+
+func (cfg LaunchConfig) readinessCandidate() readyMarker {
+	root, err := spool.OpenServerRoot(cfg.Rendezvous)
+	if err != nil {
+		return readyMarker{}
+	}
+	defer root.Close()
+	marker := readReadyAt(root)
+	if marker.Instance == "" || marker.PID <= 0 || marker.Version != wire.Version {
+		return readyMarker{}
+	}
+	if marker.Lease {
+		if held, err := spool.ReadyLeaseHeld(root, marker.Instance); err != nil || !held {
+			return readyMarker{}
+		}
+	} else if marker.Probe {
+		return readyMarker{}
+	}
+	return marker
+}
+
+func (cfg LaunchConfig) probeReadiness(ctx context.Context, marker readyMarker) bool {
+	probe, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
+	defer cancel()
+	args, err := json.Marshal(wire.Readiness{Instance: marker.Instance})
+	if err != nil {
+		return false
+	}
+	client := spool.Client{StateRoot: cfg.StateRoot, Rendezvous: cfg.Rendezvous}
+	reply, err := client.Owner(probe, wire.Request{Verb: wire.VerbOwnerReady, Args: args})
+	if err != nil {
+		return false
+	}
+	if reply.Status == core.ExitOK {
+		var response wire.Readiness
+		return json.Unmarshal(reply.Data, &response) == nil && response.Instance == marker.Instance
+	}
+	// An older installed dispatcher answers an unknown owner verb with
+	// this exact rejection. The caller still rechecks its marker and lock.
+	if !marker.Probe && reply.Status == core.ExitUsage && reply.Code == "" {
+		var refusal struct{ Message string }
+		return json.Unmarshal(reply.Data, &refusal) == nil && refusal.Message == "invalid command arguments"
+	}
+	return false
+}

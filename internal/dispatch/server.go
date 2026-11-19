@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,6 +64,7 @@ type server struct {
 	db              *store.Store
 	watch           *fsnotify.Watcher
 	ready           readyMarker
+	readyMu         sync.Mutex
 	readyLease      *os.File
 	nextReap        time.Time
 	lastLogged      string
@@ -128,16 +130,9 @@ func Serve(ctx context.Context, cfg Config) error {
 	var instance [16]byte
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher,
-		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true}}
-	defer func() {
-		if r, err := spool.OpenServerRoot(cfg.Rendezvous); err == nil {
-			r.Remove("ready")
-			r.Close()
-		}
-		if s.readyLease != nil {
-			s.readyLease.Close()
-		}
-	}()
+		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
+	stopWatching := s.withdrawReadyOnCancel(ctx)
+	defer stopWatching()
 	if err := s.scan(ctx); err != nil {
 		return err
 	}
@@ -315,6 +310,11 @@ func (s *server) scan(ctx context.Context) error {
 }
 
 func (s *server) publishReady(ctx context.Context, root *os.Root) error {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sameLease := false
 	if s.readyLease != nil {
 		held, statErr := s.readyLease.Stat()
@@ -342,7 +342,40 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 	if err := s.publishAdapterFilesAt(ctx, root); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return spool.PublishServerFile(root, "ready", s.ready)
+}
+
+// Withdraw readiness as soon as shutdown starts, even if a scan is still
+// unwinding. Wait for the withdrawal before releasing the state lock.
+func (s *server) withdrawReadyOnCancel(ctx context.Context) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		s.withdrawReady()
+		close(done)
+	})
+	return func() {
+		if stop() {
+			s.withdrawReady()
+		} else {
+			<-done
+		}
+	}
+}
+
+func (s *server) withdrawReady() {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if s.readyLease != nil {
+		s.readyLease.Close()
+		s.readyLease = nil
+	}
+	if root, err := spool.OpenServerRoot(s.cfg.Rendezvous); err == nil {
+		root.Remove("ready")
+		root.Close()
+	}
 }
 
 func (s *server) runSpool(dir *os.Root, reap bool, now time.Time, handle func(string, []byte) (core.Result, error)) {
@@ -497,6 +530,22 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if resolved.Refusal != nil {
 			result = *resolved.Refusal
 			return errRefusalRollback
+		}
+		if req.Verb == wire.VerbOwnerReady {
+			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
+				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "readiness confirmation requires owner ingress")
+				return errRefusalRollback
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var probe wire.Readiness
+			if err := json.Unmarshal(req.Args, &probe); err != nil || probe.Instance != s.ready.Instance || probe.Instance == "" {
+				result = commandError(core.ExitRefused, "", "dispatcher readiness instance changed")
+				return errRefusalRollback
+			}
+			result, err = domain.OK(wire.Readiness{Instance: s.ready.Instance})
+			return err
 		}
 		var hook *domain.AdapterContext
 		if isHook {

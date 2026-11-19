@@ -34,3 +34,10 @@ type Response struct {
 	Attempt string `json:"attempt"`
 	core.Result
 }
+
+const VerbOwnerReady = "owner ready"
+
+// Readiness binds a probe and its reply to a dispatcher instance.
+type Readiness struct {
+	Instance string `json:"instance"`
+}

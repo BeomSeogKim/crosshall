@@ -9,12 +9,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -191,7 +193,7 @@ func (p *participant) keyDigest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// dispatcherPIDs lists the processes holding the dispatcher lock.
+// dispatcherPIDs lists the processes with the dispatcher lock file open.
 func (w *world) dispatcherPIDs() []int {
 	out, err := exec.Command("lsof", "-t", filepath.Join(w.state, "dispatcher.lock")).Output()
 	if err != nil {
@@ -213,15 +215,29 @@ func (w *world) kill() {
 	if len(pids) == 0 {
 		w.t.Fatal("no dispatcher holds the lock")
 	}
+	lock, err := os.Open(filepath.Join(w.state, "dispatcher.lock"))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer lock.Close()
 	for _, pid := range pids {
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Kill()
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			w.t.Fatalf("signal dispatcher %d: %v", pid, err)
 		}
 	}
+	// Process enumeration can lose sight of an exiting process before the
+	// kernel releases its flock.
 	deadline := time.Now().Add(5 * time.Second)
-	for len(w.dispatcherPIDs()) > 0 {
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			w.t.Fatalf("probe dispatcher lock: %v", err)
+		}
 		if time.Now().After(deadline) {
-			w.t.Fatal("dispatcher did not exit after SIGKILL")
+			w.t.Fatal("dispatcher lock remained held after SIGKILL")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

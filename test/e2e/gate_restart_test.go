@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -22,8 +25,32 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 	// The offset is read when a dispatcher starts. Move forward once, then
 	// use the same offset for the crash/restart comparison below.
 	futureOwner := &participant{w: w, extra: []string{"CROSSHALL_TEST_CLOCK_OFFSET=2m"}}
-	w.kill()
-	futureOwner.must("owner", "start")
+	readInstance := func() string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(w.rendezvous(), "ready"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ready struct {
+			Instance string `json:"instance"`
+		}
+		if err := json.Unmarshal(raw, &ready); err != nil || ready.Instance == "" {
+			t.Fatalf("invalid dispatcher ready marker %q: %v", raw, err)
+		}
+		return ready.Instance
+	}
+	restart := func() {
+		t.Helper()
+		previous := readInstance()
+		w.kill()
+		futureOwner.must("owner", "start")
+		current := readInstance()
+		if current == previous {
+			t.Fatalf("owner start reused the stopped dispatcher instance %q", current)
+		}
+		assertReadyLease(t, w.rendezvous(), current, true)
+	}
+	restart()
 
 	before := owner.must("owner", "status", "--all").obj
 	channel := soleLedgerRow(t, before, "channels")
@@ -45,8 +72,7 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 		t.Fatalf("expected the request exchange to retain its debit: %v", exchange)
 	}
 
-	w.kill()
-	futureOwner.must("owner", "start")
+	restart()
 	after := owner.must("owner", "status", "--all").obj
 	for _, status := range []map[string]any{before, after} {
 		if generated, ok := status["generated_at_ms"].(float64); !ok || generated < due {

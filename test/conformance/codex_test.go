@@ -354,12 +354,12 @@ func codexEvidenceDir(dir string) (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-func codexBinary(t *testing.T, root string) string {
+func codexBinary(t *testing.T, root string, buildFlags ...string) string {
 	t.Helper()
 	dir := filepath.Join(root, "owner's fixture bin")
 	codexMust(t, os.Mkdir(dir, 0700))
 	exe := filepath.Join(dir, "crosshall")
-	if override := os.Getenv("CROSSHALL_CONFORMANCE_CROSSHALL"); override != "" {
+	if override := os.Getenv("CROSSHALL_CONFORMANCE_CROSSHALL"); override != "" && len(buildFlags) == 0 {
 		source, err := os.Open(codexOutsideVendorHomes(t, override))
 		codexMust(t, err)
 		defer source.Close()
@@ -387,7 +387,8 @@ func codexBinary(t *testing.T, root string) string {
 	codexMust(t, err)
 	var caches struct{ GOMODCACHE, GOCACHE string }
 	codexMust(t, json.Unmarshal(raw, &caches))
-	cmd := exec.Command("go", "build", "-o", exe, "./cmd/crosshall")
+	args := append([]string{"build", "-o", exe}, buildFlags...)
+	cmd := exec.Command("go", append(args, "./cmd/crosshall")...)
 	cmd.Dir = "../.."
 	cmd.Env = append(goEnv, "HOME="+filepath.Join(root, "home"), "TMPDIR="+filepath.Join(root, "tmp"),
 		"GOMODCACHE="+codexOutsideVendorHomes(t, caches.GOMODCACHE), "GOCACHE="+codexOutsideVendorHomes(t, caches.GOCACHE))

@@ -256,12 +256,12 @@ func TestStartRestoresOutsideRepoAndJoinsOnlyThroughDefault(t *testing.T) {
 	}
 }
 
-func TestDirtyPromptAckMakesOnlyTheNoticePathClean(t *testing.T) {
+func TestDirtyPromptAckAndUnverifiedStopsStayOneWay(t *testing.T) {
 	rv, dir, leaf := runFixture(t)
 	if err := os.WriteFile(filepath.Join(leaf, "stamp"), []byte("fixture-host fixture-gen 2 9\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// The reminder path exists only while the reminder policy is on.
+	// The parked reminder policy does not activate the turn-end check.
 	if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("codex 1 1 7\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,11 +288,11 @@ func TestDirtyPromptAckMakesOnlyTheNoticePathClean(t *testing.T) {
 	}{
 		{"UserPromptSubmit", "first", false},
 		{"UserPromptSubmit", "second", true},
-		{"Stop", "second", false},
 		{"Stop", "second", true},
-		{"Stop", "third", false},
+		{"Stop", "second", true},
+		{"Stop", "third", true},
 	} {
-		out, outcome := simulate(t, rv, transport, callback.name, map[string]any{"turn_id": callback.turn})
+		out, outcome := simulate(t, rv, transport, callback.name, map[string]any{"turn_id": callback.turn, "stop_hook_active": false})
 		if out != "" || len(oneWays) == 0 || oneWays[len(oneWays)-1] != callback.clean || (outcome == "clean") != callback.clean {
 			t.Fatalf("%s/%s: calls %v, outcome %q, output %q", callback.name, callback.turn, oneWays, outcome, out)
 		}

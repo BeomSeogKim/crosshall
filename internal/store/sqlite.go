@@ -23,7 +23,10 @@ var adapterSchema string
 //go:embed migrations/003_owner_depart.sql
 var ownerDepartSchema string
 
-var migrations = []string{initialSchema, adapterSchema, ownerDepartSchema}
+//go:embed migrations/004_turn_end_notice.sql
+var turnEndNoticeSchema string
+
+var migrations = []string{initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema}
 
 // Store owns the dispatcher's single SQLite connection.
 type Store struct {

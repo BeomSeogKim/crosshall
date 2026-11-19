@@ -88,8 +88,11 @@ type event struct {
 	Fact           string
 	VendorVersion  string
 	Mode           string
+	stopActive     string
 	name           string
 }
+
+const stopActiveField = "stop_hook_active"
 
 // Turn callbacks keep their native identity across re-delivery. Lifecycle
 // callbacks have no native event ID, so also carry the publication time.
@@ -135,12 +138,13 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	}
 
 	e := event{
-		Identity: id,
-		name:     spec.Name,
-		Fact:     spec.Fact,
-		TurnRef:  fields[m.TurnField],
-		Source:   fields[spec.SourceField],
-		Reason:   fields[spec.ReasonField],
+		Identity:   id,
+		name:       spec.Name,
+		Fact:       spec.Fact,
+		TurnRef:    fields[m.TurnField],
+		Source:     fields[spec.SourceField],
+		Reason:     fields[spec.ReasonField],
+		stopActive: fields[stopActiveField],
 	}
 	if (spec.TurnRequired && e.TurnRef == "") || (spec.Enroll && e.Source == "") {
 		return event{}, errHookInput
@@ -184,6 +188,9 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, er
 	if spec.Enroll {
 		selected = append(selected, "cwd")
 	}
+	if spec.Stop {
+		selected = append(selected, stopActiveField)
+	}
 	fields := make(map[string]string)
 	for dec.More() {
 		tok, err := dec.Token()
@@ -198,7 +205,17 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, er
 		if key == "" || !slices.Contains(selected, key) {
 			continue
 		}
-		if _, duplicated := fields[key]; duplicated {
+		_, duplicated := fields[key]
+		if key == stopActiveField {
+			flag := string(bytes.TrimSpace(raw))
+			if duplicated || (flag != "true" && flag != "false") {
+				// Keep the ordinary observation, with no continuation offer.
+				flag = ""
+			}
+			fields[key] = flag
+			continue
+		}
+		if duplicated {
 			return nil, errHookInput
 		}
 		var value string

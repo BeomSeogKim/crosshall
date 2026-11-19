@@ -24,12 +24,16 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 						"level":"candidate","reason":"The native tool-call ID was observed."}]},
 				"evidence":[{"version":"2.1.327","platform":"darwin-arm64","mode":"print",
 				"manifest_rev":"claude-1","capability":"enroll","level":"tested"}],
+				"turn_end_notice":{"available":true,"date":"20261119","committed_claims":2,
+					"extra_model_requests_per_continuation":1},
 				"unverified_launches":2,
 				"hooks":{"date":"20261119","p95_ms":150,"counts":{"clean":2,"deadline":2,"rpc":1},
 					"recorded_starts":5,"helper_timeouts":2,"missed_deadlines":1,"vendor_timeouts":null}},
 				{"adapter":"codex","intended":5,"reminder":{"available":false,"release_state":"parked",
 					"reason":"The release has no active reminder path.","extra_model_requests":1,
-					"provenance":"Fixed crosshall text sent to the model.","evidence":[{"level":"unknown"}]}}]
+					"provenance":"Fixed crosshall text sent to the model.","evidence":[{"level":"unknown"}]},
+				 "turn_end_notice":{"available":false,"date":"20261119","committed_claims":0,
+					"extra_model_requests_per_continuation":1}}]
 			}`)}
 		},
 	}
@@ -42,6 +46,8 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		`reply reminder evidence candidate for "9.1.42" "darwin-arm64" "print" "claude-1" — The native tool-call ID was observed.`,
 		"reply reminder evidence unknown\n",
 		"extra model requests per reminder 1 — Fixed crosshall text sent to the model.",
+		"turn-end notice available, committed claims 2 on 20261119 UTC, 1 extra model request per continuation",
+		"turn-end notice unavailable, committed claims 0 on 20261119 UTC, 1 extra model request per continuation",
 		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode",
 		"p95 150 ms", "clean=2 deadline=2 rpc=1",
 		"recorded starts 5, helper timeouts 2, missed deadlines 1, vendor timeouts unknown", "hook counters unknown"} {
@@ -52,8 +58,14 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	out, _, code = run(t, env, "--json", "owner", "doctor")
 	var data struct {
 		Adapters []struct {
-			Adapter  string
-			Hooks    json.RawMessage
+			Adapter       string
+			Hooks         json.RawMessage
+			TurnEndNotice *struct {
+				Available                         bool
+				Date                              string
+				CommittedClaims                   int `json:"committed_claims"`
+				ExtraModelRequestsPerContinuation int `json:"extra_model_requests_per_continuation"`
+			} `json:"turn_end_notice"`
 			Reminder *struct {
 				Available          *bool
 				Reason, Provenance string
@@ -84,5 +96,12 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	if r := data.Adapters[1].Reminder; r == nil || len(r.Evidence) != 1 ||
 		r.Evidence[0].Level != "unknown" || r.Evidence[0].Mode != "" {
 		t.Errorf("Codex reminder evidence: %+v", r)
+	}
+	for i, wantClaims := range []int{2, 0} {
+		a := data.Adapters[i]
+		if n := a.TurnEndNotice; n == nil || n.Date != "20261119" || n.ExtraModelRequestsPerContinuation != 1 ||
+			n.Available != (i == 0) || n.CommittedClaims != wantClaims {
+			t.Errorf("%s turn-end notice: %+v", a.Adapter, n)
+		}
 	}
 }

@@ -71,3 +71,19 @@ func TestJoinHintStatesTheHistoryContract(t *testing.T) {
 		}
 	}
 }
+
+// The turn-end rule is part of the protocol, stated once in the join hint in
+// words that name no vendor and no adapter, so a shell-only member can follow
+// it with crosshall inbox alone.
+func TestJoinHintStatesTheTurnEndRule(t *testing.T) {
+	hint := domain.Hint("tax", "checkout")
+	const rule = "- Before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn."
+	if strings.Count(hint, rule) != 1 {
+		t.Fatalf("hint lacks the turn-end rule exactly once:\n%s", hint)
+	}
+	for _, vendor := range []string{"Claude", "Codex", "Antigravity", "hook", "adapter", "vendor"} {
+		if strings.Contains(strings.ToLower(hint), strings.ToLower(vendor)) {
+			t.Errorf("hint names %q:\n%s", vendor, hint)
+		}
+	}
+}

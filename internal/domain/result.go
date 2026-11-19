@@ -91,6 +91,7 @@ func Hint(alias, channel string) string {
 	return strings.Join([]string{
 		fmt.Sprintf("[crosshall] Joined #%s as @%s.", channel, alias),
 		"- `crosshall inbox` lists what is waiting for you; `crosshall read <id>` opens it; `crosshall reply <id> \"...\"` answers a request.",
+		"- Before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn.",
 		"- `crosshall who` shows the members and their focus.",
 		"- `crosshall log` shows the channel's history, also from before you joined; browsing it marks nothing as read, and earlier messages are not in your inbox: you owe nothing for them.",
 		"- `crosshall note @alias \"...\"` informs; `crosshall ask @alias \"...\"` expects an answer.",

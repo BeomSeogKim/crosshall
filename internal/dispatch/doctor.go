@@ -37,6 +37,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	stateErr := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot)
 	var adapters []doctorAdapter
 	var warnings []string
+	now := time.Now()
 	if stateErr == nil {
 		adapters = localDoctorAdapters(cfg.StateRoot)
 		for _, adapter := range adapters {
@@ -47,7 +48,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
 		rendezvous, err := spool.OpenServerRoot(cfg.Rendezvous)
 		if err == nil {
-			attachDoctorHooks(adapters, rendezvous, time.Now())
+			attachDoctorHooks(adapters, rendezvous, now)
 			rendezvous.Close()
 		}
 		permissions.record("rendezvous owned by this user with mode 0700", err)
@@ -70,7 +71,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		} else {
 			readiness.record("", errors.New("no live dispatcher readiness marker"))
 		}
-		snapshot, err := doctorStoreInfo(ctx, state, adapters)
+		snapshot, err := doctorStoreInfo(ctx, state, adapters, now)
 		version.record(fmt.Sprintf("schema version %d", snapshot.SchemaVersion), err)
 		for _, v := range snapshot.IdentityVersions {
 			id := ident.Identity{Vendor: "agy", Version: v}
@@ -124,12 +125,12 @@ func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, w
 	return core.Result{Status: status, Data: data}
 }
 
-func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapter) (store.DoctorSnapshot, error) {
+func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapter, now time.Time) (store.DoctorSnapshot, error) {
 	names := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
 		names = append(names, adapter.Adapter)
 	}
-	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names, "agy")
+	snapshot, err := store.InspectDoctorStoreAt(ctx, spool.ServerFiles{Root: state}, names, "agy", now)
 	for i := range adapters {
 		adapter := &adapters[i]
 		if state, ok := snapshot.Adapters[adapter.Adapter]; ok {
@@ -137,6 +138,7 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 			adapter.Evidence = state.Evidence
 			adapter.SetReminderEvidence(state.Evidence)
 			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
+			adapter.TurnEndNotice = &state.TurnEndNotice
 		}
 	}
 	return snapshot, err

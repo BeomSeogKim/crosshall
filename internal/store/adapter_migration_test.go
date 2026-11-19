@@ -116,7 +116,7 @@ func TestOwnerDepartureMigrationPreservesExistingLedger(t *testing.T) {
 	if err := v2.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := Open(ctx, root)
+	upgraded, err := openWithMigrations(ctx, root, []string{initialSchema, adapterSchema, ownerDepartSchema})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -502,9 +502,17 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			return core.Result{}, err
 		}
 	}
-	if cmd.Fact == FactPromptSubmitted && cmd.WantOutput && live {
-		if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
-			return core.Result{}, err
+	if live && cmd.WantOutput {
+		switch cmd.Fact {
+		case FactPromptSubmitted:
+			if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
+				return core.Result{}, err
+			}
+		case FactTurnFinishing:
+			out.TurnEndLine, err = claimTurnEndNotice(ctx, tx, principal, b.channel, cmd, now)
+			if err != nil {
+				return core.Result{}, err
+			}
 		}
 	}
 	return OK(out)

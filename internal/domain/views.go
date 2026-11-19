@@ -139,10 +139,11 @@ type Receipt struct {
 }
 
 type ExchangeBalance struct {
-	ID        int64 `json:"id"`
-	Granted   int64 `json:"granted"`
-	Spent     int64 `json:"spent"`
-	Remaining int64 `json:"remaining"`
+	ID              int64 `json:"id"`
+	Granted         int64 `json:"granted"`
+	Spent           int64 `json:"spent"`
+	Remaining       int64 `json:"remaining"`
+	ParentRequestID int64 `json:"parent_request_id,omitempty"`
 }
 
 type BudgetExhaustion struct {
@@ -322,14 +323,14 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 		}
 		out.JoinPool = &pool
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id, granted, spent FROM exchange WHERE channel_id = ? ORDER BY id", ch.id)
+	rows, err := tx.QueryContext(ctx, "SELECT id, granted, spent, COALESCE(parent_request_id, 0) FROM exchange WHERE channel_id = ? ORDER BY id", ch.id)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var balance ExchangeBalance
-		if err := rows.Scan(&balance.ID, &balance.Granted, &balance.Spent); err != nil {
+		if err := rows.Scan(&balance.ID, &balance.Granted, &balance.Spent, &balance.ParentRequestID); err != nil {
 			return out, err
 		}
 		balance.Remaining = balance.Granted - balance.Spent

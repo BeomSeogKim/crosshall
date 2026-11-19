@@ -28,8 +28,9 @@ func (e exchangeRow) balance() int64 { return e.granted - e.spent }
 // attribution is where an ask's debit goes: an existing exchange, or a new
 // one opened with a root token.
 type attribution struct {
-	exchange exchangeRow
-	isNew    bool
+	exchange        exchangeRow
+	isNew           bool
+	parentRequestID int64
 }
 
 // member is the caller's live binding, resolved for a member verb.
@@ -102,10 +103,13 @@ func openObligationExchanges(ctx context.Context, tx store.Tx, m member) (map[in
 }
 
 // attribute decides which exchange an ask belongs to. The first rule that
-// applies wins: an explicit --re, an explicit --new, the exchange where the
-// caller owes an answer, the exchange it last took part in, else a new one.
+// applies wins: a linked handoff, an explicit --re, an explicit --new, the
+// exchange where the caller owes an answer, its last exchange, else a new one.
 // A non-nil result is a refusal to return instead.
 func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution, *core.Result, error) {
+	if cmd.New && cmd.Re != 0 {
+		return linkedRoot(ctx, tx, m, cmd.Re)
+	}
 	owed, err := openObligationExchanges(ctx, tx, m)
 	if err != nil {
 		return attribution{}, nil, err
@@ -139,10 +143,16 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 			return attribution{}, &r, nil
 		}
 		if _, ok := owed[exchange.Int64]; len(owed) > 0 && !ok {
-			r := Refuse(core.CodeBadRoot,
-				fmt.Sprintf("#%d belongs to x%d, but you owe an answer in another exchange. Use --re with a request you owe.", cmd.Re, exchange.Int64),
-				readOwedHint(owed))
-			return attribution{}, &r, nil
+			linked, err := canFollowHandoff(ctx, tx, m, exchange.Int64)
+			if err != nil {
+				return attribution{}, nil, err
+			}
+			if !linked {
+				r := Refuse(core.CodeBadRoot,
+					fmt.Sprintf("#%d belongs to x%d, but you owe an answer in another exchange. Use --re with a request you owe.", cmd.Re, exchange.Int64),
+					readOwedHint(owed))
+				return attribution{}, &r, nil
+			}
 		}
 		return existing(ctx, tx, m, exchange.Int64)
 	}
@@ -183,6 +193,45 @@ func existing(ctx context.Context, tx store.Tx, m member, id int64) (attribution
 	return attribution{exchange: e}, nil, nil
 }
 
+// The opener can explicitly follow its handoff while still owing its parent.
+// This does not change implicit routing or permit an unrelated exchange.
+func canFollowHandoff(ctx context.Context, tx store.Tx, m member, exchange int64) (bool, error) {
+	var linked bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM exchange child JOIN obligation o ON o.message_id = child.parent_request_id
+		WHERE child.id = ? AND child.channel_id = ? AND child.opened_by_id = ?
+			AND o.principal_id = child.opened_by_id AND o.state = 'open'
+	)`, exchange, m.channel, m.principal).Scan(&linked)
+	return linked, err
+}
+
+func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64) (attribution, *core.Result, error) {
+	var remaining int64
+	var read bool
+	err := tx.QueryRowContext(ctx, `SELECT e.granted - e.spent, r.picked_up_at_ms IS NOT NULL
+		FROM message msg JOIN exchange e ON e.id = msg.exchange_id AND e.channel_id = msg.channel_id
+		JOIN obligation o ON o.message_id = msg.id AND o.principal_id = ?
+		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
+		WHERE msg.id = ? AND msg.channel_id = ? AND msg.kind = 'ask' AND o.state = 'open'`,
+		m.principal, request, m.channel).Scan(&remaining, &read)
+	if errors.Is(err, sql.ErrNoRows) {
+		r := Refuse(core.CodeBadRoot, fmt.Sprintf("#%d is not an open request you owe", request), "crosshall inbox")
+		return attribution{}, &r, nil
+	}
+	if err != nil {
+		return attribution{}, nil, err
+	}
+	if !read {
+		return unreadRoot(request)
+	}
+	if remaining > 0 {
+		r := Refuse(core.CodeBadRoot, fmt.Sprintf("the exchange for #%d still has units", request),
+			fmt.Sprintf("continue it with crosshall ask @alias \"...\" --re %d", request))
+		return attribution{}, &r, nil
+	}
+	return rootCredit(ctx, tx, m, request)
+}
+
 // newRoot checks that the caller may open a new exchange: nothing owed, no
 // request addressed to it left unread (even one already answered or
 // cancelled), and a root token.
@@ -192,6 +241,10 @@ func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (
 			"you owe an answer. Reply first, or replace --new with --re <request-id> to follow up on the request.", readOwedHint(owed))
 		return attribution{}, &r, nil
 	}
+	return rootCredit(ctx, tx, m, 0)
+}
+
+func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int64) (attribution, *core.Result, error) {
 	var unread sql.NullInt64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT MIN(r.message_id) FROM recipient r JOIN message msg ON msg.id = r.message_id
@@ -200,10 +253,7 @@ func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (
 		return attribution{}, nil, err
 	}
 	if unread.Valid {
-		r := Refuse(core.CodeMustAnswerFirst,
-			fmt.Sprintf("request #%d addressed to you is still unread", unread.Int64),
-			fmt.Sprintf("crosshall read %d", unread.Int64))
-		return attribution{}, &r, nil
+		return unreadRoot(unread.Int64)
 	}
 	var tokens int64
 	if err := tx.QueryRowContext(ctx, `SELECT root_tokens FROM principal WHERE id = ?`, m.principal).Scan(&tokens); err != nil {
@@ -215,7 +265,13 @@ func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (
 			fmt.Sprintf("ask the owner: crosshall owner budget grant %s/@%s --roots 1", m.channelName, m.alias))
 		return attribution{}, &r, nil
 	}
-	return attribution{exchange: exchangeRow{granted: DefaultCredit}, isNew: true}, nil, nil
+	return attribution{exchange: exchangeRow{granted: DefaultCredit}, isNew: true, parentRequestID: parentRequestID}, nil, nil
+}
+
+func unreadRoot(request int64) (attribution, *core.Result, error) {
+	r := Refuse(core.CodeMustAnswerFirst, fmt.Sprintf("request #%d addressed to you is still unread", request),
+		fmt.Sprintf("crosshall read %d", request))
+	return attribution{}, &r, nil
 }
 
 func readOwedHint(owed map[int64]int64) string {
@@ -244,20 +300,39 @@ func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, 
 			return nil, err
 		}
 	}
-	r := Refuse(core.CodeBudgetExhausted,
-		fmt.Sprintf("x%d has no units left; a request costs %d", a.exchange.id, n),
-		fmt.Sprintf("open a new exchange with crosshall ask --new (needs a root token), ask the owner to run "+
-			"crosshall owner budget grant %s/x%d <units>, or send a crosshall reply or crosshall note, which cost nothing",
-			m.channelName, a.exchange.id))
+	var direct sql.NullInt64
+	var owed int
+	if err := tx.QueryRowContext(ctx, `SELECT MIN(CASE WHEN msg.exchange_id = ? THEN msg.id END), COUNT(*)
+		FROM obligation o JOIN message msg ON msg.id = o.message_id
+		WHERE o.principal_id = ? AND o.state = 'open' AND msg.channel_id = ?`,
+		a.exchange.id, m.principal, m.channel).Scan(&direct, &owed); err != nil {
+		return nil, err
+	}
+	next := fmt.Sprintf("ask the owner to run crosshall owner budget grant %s/x%d <units>, or send a crosshall reply or crosshall note, which cost nothing",
+		m.channelName, a.exchange.id)
+	switch {
+	case direct.Valid:
+		next = fmt.Sprintf("after reading #%d, fund a linked handoff with crosshall ask @alias \"...\" --new --re %d (needs a root token), or ",
+			direct.Int64, direct.Int64) + next
+	case owed == 0:
+		next = "open a new exchange with crosshall ask --new (needs a root token), or " + next
+	}
+	r := Refuse(core.CodeBudgetExhausted, fmt.Sprintf("x%d has no units left; a request costs %d", a.exchange.id, n), next)
 	return &r, nil
 }
 
 // open creates the exchange for a new root, spends the caller's root token,
 // and records both. The root message is linked by finish once it exists.
-func open(ctx context.Context, tx store.Tx, m member, now time.Time) (int64, error) {
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE principal SET root_tokens = root_tokens - 1 WHERE id = ? AND root_tokens > 0`, m.principal); err != nil {
+func open(ctx context.Context, tx store.Tx, m member, parentRequestID int64, now time.Time) (int64, error) {
+	spend, err := tx.ExecContext(ctx,
+		`UPDATE principal SET root_tokens = root_tokens - 1 WHERE id = ? AND root_tokens > 0`, m.principal)
+	if err != nil {
 		return 0, err
+	}
+	if n, err := spend.RowsAffected(); err != nil {
+		return 0, err
+	} else if n != 1 {
+		return 0, errors.New("domain: missing root token at exchange open")
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO budget_event (principal_id, delta, reason, by_id, at_ms) VALUES (?, -1, 'roots', ?, ?)`,
@@ -267,9 +342,9 @@ func open(ctx context.Context, tx store.Tx, m member, now time.Time) (int64, err
 	// The root message does not exist yet; a unique negative placeholder
 	// satisfies the deferred foreign key until it is set below.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO exchange (channel_id, root_message_id, opened_by_id, granted)
-		 VALUES (?, -1 - (SELECT COALESCE(MAX(id), 0) FROM exchange), ?, ?)`,
-		m.channel, m.principal, DefaultCredit)
+		`INSERT INTO exchange (channel_id, root_message_id, opened_by_id, granted, parent_request_id)
+		 VALUES (?, -1 - (SELECT COALESCE(MAX(id), 0) FROM exchange), ?, ?, NULLIF(?, 0))`,
+		m.channel, m.principal, DefaultCredit, parentRequestID)
 	if err != nil {
 		return 0, err
 	}

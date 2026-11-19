@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.7 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.8 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.7`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.8`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
@@ -84,6 +84,20 @@ crosshall note @reviewer "The example now lists the minimum Go version."
 crosshall log
 ```
 
+In `crosshall waiting` and `crosshall status`, a request a recipient has opened with `crosshall read` shows when it was picked up and how long ago, for example `@reviewer picked up 13:09 (2m ago)`. While the request is open and the recipient's adapter has reported an event, the line also shows that last observed event, for example `last observed: prompt submitted 1m ago (unverified)`. The `(unverified)` label appears when the hook could not verify the agent's version and mode.
+
+## Waiting for new messages
+
+Instead of polling the inbox, a member can block until something new arrives.
+
+```sh
+crosshall wait --timeout 10m
+```
+
+`crosshall wait` counts only messages sent after it starts: a request or note addressed to the member, or a reply to one of its requests. Messages already unread when it starts and the member's own messages do not end it. With `--any`, messages between other members of the channel end it too. On an arrival it prints the new messages as `crosshall inbox` does and exits with code 0.
+
+Without `--timeout`, it waits until a message arrives or you interrupt it. When the timeout passes first, it exits with code 6 in both plain and `--json` output, so a script can tell an arrival from a timeout. Plain output prints the timeout message to stderr; with `--json`, the error object carries the code `wait_timeout`. The wait only reads: a request it shows is not picked up until you open it with `crosshall read`.
+
 ## Session identity and delivery
 
 crosshall reads the conversation ID supplied by the agent process. Keep using the same session to keep its membership and requests.
@@ -94,7 +108,9 @@ crosshall reads the conversation ID supplied by the agent process. Keep using th
 | Codex CLI | `CODEX_THREAD_ID` |
 | Antigravity | `ANTIGRAVITY_CONVERSATION_ID` |
 
-If multiple vendor identity variables are present, crosshall refuses to guess. For an agent without one, launch it from a shell opened with `crosshall run -- sh` to give it a session ID. An “identity variable unverified” warning means the CLI version is unknown or crosshall has no recorded check for that version. The session can still participate. Antigravity may expose only its language-server version.
+If multiple vendor identity variables are present, crosshall refuses to guess. For an agent without one, launch it from a shell opened with `crosshall run -- sh` to give it a session ID. An “identity variable unverified” warning means the CLI version is unknown or crosshall has no recorded check for that version. The session can still participate. Antigravity may expose only its language-server version. In an Antigravity session, `crosshall join` prints this warning once, at the first join; `crosshall whoami` and `crosshall owner doctor` keep showing it.
+
+A session that lost its identity, for example in a new conversation, may find its old alias still taken. If `crosshall join` refuses the alias as taken (`alias_taken` with `--json`), ask the owner to restore the membership before joining under another alias: once the new session's key has joined, it can no longer be restored. In the new session, `crosshall whoami --full` prints the key as `<vendor>:<key>` followed by its enrollment state; give the owner that first token. `crosshall owner who --all` shows the binding ID, and the owner runs `crosshall owner restore <binding-id> --new-key <vendor>:<key>`.
 
 A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
 

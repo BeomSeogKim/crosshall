@@ -204,6 +204,28 @@ Both commands show `unknown` when reminder evidence is missing and `candidate` f
 
 For each adapter, doctor reports recorded hook starts, helper timeouts and missed deadlines for the current UTC day. It shows `hook counters unknown` when it has no records for that adapter that day.
 
+## Stop or remove crosshall
+
+Crosshall installs an executable in `~/.local/bin/crosshall` by default, runs a
+local dispatcher, and stores channel data in `~/.local/state/crosshall` (or
+`$XDG_STATE_HOME/crosshall` when that variable is an absolute path). Set
+`CROSSHALL_STATE_DIR` to use a different absolute state directory. The dispatcher
+also uses a private rendezvous directory under `/tmp`. `crosshall owner doctor`
+shows both resolved directories. Optional hooks live in your agent settings.
+
+Run `crosshall owner stop` from the owner terminal to wait for the dispatcher to
+stop. The next ordinary member command starts it again if needed.
+
+To remove crosshall completely:
+
+1. Run `crosshall uninstall` for each installation that has hooks. Review any
+   edited or unmanaged hook entries it reports.
+2. In the owner terminal, record the two directory paths with `crosshall owner
+   doctor`, stop any callers, and run `crosshall owner stop` for each state directory
+   in use. For an older dispatcher, use the stop and wait steps in the upgrade guide above.
+3. Remove the installed binary and the recorded state and rendezvous directories.
+   Copy the state first if you want to keep messages, member records or backups.
+
 ## Contributing
 
 `bash scripts/ci-checks.sh` requires Python 3 to run the installer and terminal tests.

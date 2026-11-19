@@ -41,6 +41,7 @@ Owner commands (from your own shell, not from an agent session):
   setup off                                         Disable adapter effects
   uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
+  owner stop                                        Stop the dispatcher and wait for it to exit
   owner channel create <name> [--topic "..."]       Create a channel
   owner who --all                                   List all channel bindings
   owner depart <binding-id> --seen <token>           Mark a binding departed
@@ -89,6 +90,8 @@ type Env struct {
 	Start func(ctx context.Context) error
 	// StartReady confirms a dispatcher response for the explicit owner start.
 	StartReady func(ctx context.Context) error
+	// Stop waits for the running dispatcher to release its lock.
+	Stop func(ctx context.Context) (bool, error)
 	// Whoami and WhoamiJSON display the raw key only on an explicit full request.
 	Whoami     func(stdout io.Writer, full bool) core.ExitCode
 	WhoamiJSON func(stdout io.Writer, full bool) core.ExitCode
@@ -208,7 +211,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 func runOwner(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
 	if len(args) == 0 {
-		return o.usage("usage: crosshall owner <start|channel create>")
+		return o.usage("usage: crosshall owner <start|stop|channel create>")
 	}
 	if env.OwnerGate != nil {
 		if msg := env.OwnerGate(); msg != "" {
@@ -232,6 +235,22 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)
 		} else {
 			fmt.Fprintln(stdout, "dispatcher running")
+		}
+		return core.ExitOK
+	case len(args) == 1 && args[0] == "stop":
+		if env.Stop == nil {
+			return o.unavailableFor(env, "owner stop")
+		}
+		stopped, err := env.Stop(ctx)
+		if err != nil {
+			return o.fail(core.ExitError, CodeLocalError, "could not stop the dispatcher: "+err.Error(), "crosshall owner doctor")
+		}
+		if opts.json {
+			fmt.Fprintf(stdout, `{"v":1,"ok":true,"kind":"owner stop","stopped":%t}`+"\n", stopped)
+		} else if stopped {
+			fmt.Fprintln(stdout, "dispatcher stopped")
+		} else {
+			fmt.Fprintln(stdout, "no dispatcher is running")
 		}
 		return core.ExitOK
 	case len(args) >= 2 && args[0] == "channel" && args[1] == "create":

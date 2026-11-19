@@ -97,7 +97,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if !allowsTestClock(cfg.Version) {
 		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
 	}
-	return doctorResult(hint, checks, adapters, warnings)
+	return cfg.doctorResult(hint, checks, adapters, warnings)
 }
 
 func (check *doctorCheck) record(detail string, err error) {
@@ -108,7 +108,7 @@ func (check *doctorCheck) record(detail string, err error) {
 	check.Detail = detail
 }
 
-func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {
+func (cfg LaunchConfig) doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {
 	status := core.ExitOK
 	for _, check := range checks {
 		if !check.OK {
@@ -117,11 +117,13 @@ func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, w
 		}
 	}
 	data, _ := json.Marshal(struct {
-		Checks   []doctorCheck   `json:"checks"`
-		Hint     string          `json:"hint,omitempty"`
-		Adapters []doctorAdapter `json:"adapters,omitempty"`
-		Warnings []string        `json:"warnings,omitempty"`
-	}{checks, hint, adapters, warnings})
+		StateDir   string          `json:"state_dir,omitempty"`
+		Rendezvous string          `json:"rendezvous,omitempty"`
+		Checks     []doctorCheck   `json:"checks"`
+		Hint       string          `json:"hint,omitempty"`
+		Adapters   []doctorAdapter `json:"adapters,omitempty"`
+		Warnings   []string        `json:"warnings,omitempty"`
+	}{cfg.StateRoot, cfg.Rendezvous, checks, hint, adapters, warnings})
 	return core.Result{Status: status, Data: data}
 }
 

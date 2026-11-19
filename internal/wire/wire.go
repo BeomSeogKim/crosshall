@@ -35,9 +35,12 @@ type Response struct {
 	core.Result
 }
 
-const VerbOwnerReady = "owner ready"
+const (
+	VerbOwnerReady = "owner ready"
+	VerbOwnerStop  = "owner stop"
+)
 
-// Readiness binds a probe and its reply to a dispatcher instance.
-type Readiness struct {
+// DispatcherInstance binds an owner control request and reply to one daemon.
+type DispatcherInstance struct {
 	Instance string `json:"instance"`
 }

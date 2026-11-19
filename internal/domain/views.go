@@ -106,6 +106,7 @@ type LedgerRecipient struct {
 	BindingID         *int64    `json:"binding_id"`
 	Alias             string    `json:"alias"`
 	State             string    `json:"state"`
+	BindingState      string    `json:"binding_state,omitempty"`
 	StoredAtMS        int64     `json:"stored_at_ms"`
 	PickedUpAtMS      *int64    `json:"picked_up_at_ms"`
 	SettledAtMS       *int64    `json:"settled_at_ms"`
@@ -340,7 +341,7 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 // A nonzero waitingFor scopes the view to an asker's unsettled or unread work.
 func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64, owner bool, now time.Time) ([]LedgerRequest, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.sender_id, COALESCE(sb.alias, ''), m.exchange_id, m.due_at_ms, m.created_at_ms,
-		r.principal_id, b.id, r.alias_at_commit, o.state, r.picked_up_at_ms, o.settled_at_ms, o.more_time_at_ms,
+		r.principal_id, b.id, r.alias_at_commit, o.state, COALESCE(b.state, 'departed'), r.picked_up_at_ms, o.settled_at_ms, o.more_time_at_ms,
 		EXISTS(SELECT 1 FROM message p JOIN recipient pr ON pr.message_id = p.id AND pr.principal_id = m.sender_id
 			WHERE p.in_reply_to = m.id AND p.kind = 'reply' AND p.sender_id = r.principal_id AND pr.picked_up_at_ms IS NULL),
 		(SELECT json_group_array(json_object('stage', stage, 'at_ms', at_ms, 'evidence', evidence))
@@ -363,9 +364,9 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 	for rows.Next() {
 		var m LedgerRequest
 		var r LedgerRecipient
-		var receipts string
+		var receipts, bindingState string
 		if err := rows.Scan(&m.ID, &m.SenderID, &m.Sender, &m.ExchangeID, &m.DueAtMS, &r.StoredAtMS,
-			&r.PrincipalID, &r.BindingID, &r.Alias, &r.State, &r.PickedUpAtMS, &r.SettledAtMS, &r.MoreTimeAtMS,
+			&r.PrincipalID, &r.BindingID, &r.Alias, &r.State, &bindingState, &r.PickedUpAtMS, &r.SettledAtMS, &r.MoreTimeAtMS,
 			&r.ReplyUnread, &receipts); err != nil {
 			return nil, err
 		}
@@ -380,6 +381,9 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		}
 		r.setDeadlineState(m.DueAtMS, ms(now))
 		if r.State == "open" {
+			if bindingState == "departed" {
+				r.BindingState = bindingState
+			}
 			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
 				return nil, err
 			}

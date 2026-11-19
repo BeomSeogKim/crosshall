@@ -97,6 +97,7 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		if len(r.Channels) == 0 {
 			fmt.Fprintln(w, "No channels.")
 		}
+		hasToken := false
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s", ch.Name)
 			if ch.Topic != "" {
@@ -108,13 +109,30 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 				if focus == "" {
 					focus = "focus unset"
 				}
-				activity := "last command " + age(member.LastCommandAgoS) + " ago"
-				if member.Observed != nil {
-					activity = observedText(member.Observed) + "; " + activity
+				state := member.BindingState
+				if member.EvidenceStale {
+					state += ", stale"
 				}
-				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, %s\n",
-					member.Alias, member.BindingID, member.BindingState, member.Vendor, focus, member.Route, activity)
+				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, %s",
+					member.Alias, member.BindingID, state, member.Vendor, focus, member.Route, ownerEvidenceText(member))
+				if member.Observed != nil {
+					fmt.Fprintf(w, "; last observed: %s", observedText(member.Observed))
+				}
+				if len(member.OpenRequests) > 0 {
+					fmt.Fprint(w, "; open requests:")
+					for _, id := range member.OpenRequests {
+						fmt.Fprintf(w, " #%d", id)
+					}
+				}
+				if member.DepartToken != "" {
+					fmt.Fprintf(w, "; depart token: %s", member.DepartToken)
+					hasToken = true
+				}
+				fmt.Fprintln(w)
 			}
+		}
+		if hasToken {
+			fmt.Fprintln(w, "To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.")
 		}
 	case domain.OwnerLog:
 		var r domain.LogResult
@@ -132,6 +150,24 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		return fmt.Errorf("no owner display for %T", cmd)
 	}
 	return nil
+}
+
+func ownerEvidenceText(member domain.OwnerMember) string {
+	evidence := member.LastEvidence
+	if evidence == nil {
+		return "last evidence: unknown (joined " + age(member.LastCommandAgoS) + " ago)"
+	}
+	switch evidence.Fact {
+	case "unknown":
+		return "last evidence: unknown for " + age(evidence.AgeS)
+	case "command":
+		return "last command " + age(evidence.AgeS) + " ago"
+	}
+	fact := factWords[evidence.Fact]
+	if fact == "" {
+		fact = evidence.Fact
+	}
+	return "last evidence: " + fact + " " + age(evidence.AgeS) + " ago"
 }
 
 type doctorCheck struct {

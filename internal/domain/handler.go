@@ -51,6 +51,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	// owner-views
 	case OwnerWho:
 		return s.ownerWho(ctx, tx, caller, now)
+	case OwnerDepart:
+		return s.ownerDepart(ctx, tx, caller, req, cmd, now)
 	case OwnerLog:
 		return s.ownerLog(ctx, tx, caller, cmd)
 	case ChannelDefault:
@@ -341,11 +343,14 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		alias, state, focus string
 		rosterAck           uint64
 		hintAcked           bool
+		departedByOwner     bool
 	}
 	if principal != 0 {
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, channel_id, alias, state, focus, roster_ack_seq, hint_acked FROM binding WHERE principal_id = ? ORDER BY id LIMIT 1`, principal).
-			Scan(&existing.id, &existing.channel, &existing.alias, &existing.state, &existing.focus, &existing.rosterAck, &existing.hintAcked)
+			`SELECT id, channel_id, alias, state, focus, roster_ack_seq, hint_acked, departed_by_owner
+			FROM binding WHERE principal_id = ? ORDER BY id LIMIT 1`, principal).
+			Scan(&existing.id, &existing.channel, &existing.alias, &existing.state, &existing.focus, &existing.rosterAck,
+				&existing.hintAcked, &existing.departedByOwner)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return core.Result{}, err
 		}
@@ -386,6 +391,11 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			}
 		} else if taken, err := aliasLive(ctx, tx, ch.id, alias); err != nil {
 			return core.Result{}, err
+		} else if taken && existing.departedByOwner && cmd.Alias == "" {
+			alias, err = generateAlias(ctx, tx, ch.id, req.Vendor)
+			if err != nil {
+				return core.Result{}, err
+			}
 		} else if taken {
 			taken := fmt.Sprintf("@%s is taken in #%s", alias, ch.name)
 			retry := fmt.Sprintf("crosshall join %s --as <another alias>", ch.name)
@@ -438,8 +448,11 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			focus = existing.focus
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0, alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
-			alias, ms(now), focus, ms(now), existing.id); err != nil {
+			`UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0, departed_by_owner = 0,
+			owner_hook_fence_ms = CASE WHEN departed_by_owner = 1 THEN MAX(COALESCE(owner_hook_fence_ms, 0), ?)
+				ELSE owner_hook_fence_ms END,
+			alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
+			ms(now), alias, ms(now), focus, ms(now), existing.id); err != nil {
 			return core.Result{}, err
 		}
 		if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {

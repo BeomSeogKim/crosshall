@@ -90,22 +90,32 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 }
 
 type hookBinding struct {
-	id, channel  int64
-	alias, state string
-	channelName  string
-	dnd          bool
-	byHook       bool // departed by a clean session end, so a start restores it
+	id, channel    int64
+	alias, state   string
+	channelName    string
+	dnd            bool
+	byHook         bool // departed by a clean session end, so a start restores it
+	ownerHookFence sql.NullInt64
 }
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.alias, b.state, c.name, b.dnd, b.departed_by_hook
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook)
+		Scan(&b.id, &b.channel, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
 	return b, err == nil, err
+}
+
+func hookLaunchAfterFence(ctx context.Context, tx store.Tx, principal int64, launch string, fence, at int64) (bool, error) {
+	var fresh bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?
+			AND started_hook_at_ms > ? AND started_hook_at_ms <= ?)`,
+		principal, launch, fence, at).Scan(&fresh)
+	return fresh, err
 }
 
 // --- enroll ---------------------------------------------------------------
@@ -131,12 +141,24 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return s.hookAutoJoin(ctx, tx, req, cmd, 0, now)
 	}
 	principal := *caller.PrincipalID
-	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
-		return okOrErr(out, err) // a replay of a claimed callback prints nothing
-	}
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {
 		return core.Result{}, err
+	}
+	if found && b.ownerHookFence.Valid {
+		if !b.byHook && b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
+			return OK(out)
+		}
+		if cmd.Source == "compact" {
+			// Compaction can refresh a fresh launch but cannot establish one.
+			fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
+			if err != nil || !fresh {
+				return okOrErr(out, err)
+			}
+		}
+	}
+	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
+		return okOrErr(out, err) // a replay of a claimed callback prints nothing
 	}
 	if !found {
 		return s.hookAutoJoin(ctx, tx, req, cmd, principal, now)
@@ -366,12 +388,21 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
 		return okOrErr(out, err)
 	}
-	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
-		return okOrErr(out, err)
-	}
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {
 		return core.Result{}, err
+	}
+	if found && b.ownerHookFence.Valid {
+		if b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
+			return OK(out)
+		}
+		fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
+		if err != nil || !fresh {
+			return okOrErr(out, err)
+		}
+	}
+	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
+		return okOrErr(out, err)
 	}
 	before, err := presenceOf(ctx, tx, principal, now)
 	if err != nil {

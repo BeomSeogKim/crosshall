@@ -86,6 +86,12 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(w, "Restored binding %d.\n", r.BindingID)
+	case domain.OwnerDepart:
+		var r domain.OwnerDepartResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "@%s in #%s departed (binding %d).\n", r.Alias, r.Channel, r.BindingID)
 	case domain.CreateChannel:
 		var r domain.ChannelResult
 		if err := json.Unmarshal(data, &r); err != nil {

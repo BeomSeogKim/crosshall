@@ -178,16 +178,24 @@ type doctorCheck struct {
 
 func renderDoctor(o outputs, r core.Result) core.ExitCode {
 	var result struct {
-		Checks   []doctorCheck   `json:"checks"`
-		Hint     string          `json:"hint"`
-		Adapters json.RawMessage `json:"adapters"`
-		Warnings []string        `json:"warnings"`
+		StateDir   string          `json:"state_dir"`
+		Rendezvous string          `json:"rendezvous"`
+		Checks     []doctorCheck   `json:"checks"`
+		Hint       string          `json:"hint"`
+		Adapters   json.RawMessage `json:"adapters"`
+		Warnings   []string        `json:"warnings"`
 	}
 	if err := json.Unmarshal(r.Data, &result); err != nil || len(result.Checks) == 0 {
 		return o.fail(core.ExitError, CodeLocalError, "no diagnostic checks were returned", "")
 	}
 	if o.json {
 		fields := map[string]any{"v": 1, "ok": r.Status == core.ExitOK, "kind": "owner doctor", "checks": result.Checks}
+		if result.StateDir != "" {
+			fields["state_dir"] = result.StateDir
+		}
+		if result.Rendezvous != "" {
+			fields["rendezvous"] = result.Rendezvous
+		}
 		if len(result.Warnings) != 0 {
 			fields["warnings"] = result.Warnings
 		}
@@ -201,6 +209,16 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 			return core.ExitError
 		}
 		return r.Status
+	}
+	if result.StateDir != "" {
+		if _, err := fmt.Fprintf(o.stdout, "State directory: %s\n", result.StateDir); err != nil {
+			return core.ExitError
+		}
+	}
+	if result.Rendezvous != "" {
+		if _, err := fmt.Fprintf(o.stdout, "Rendezvous directory: %s\n", result.Rendezvous); err != nil {
+			return core.ExitError
+		}
 	}
 	for _, check := range result.Checks {
 		outcome := "FAIL"

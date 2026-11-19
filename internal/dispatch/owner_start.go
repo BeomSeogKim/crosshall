@@ -110,26 +110,30 @@ func (cfg LaunchConfig) readinessCandidate() readyMarker {
 }
 
 func (cfg LaunchConfig) probeReadiness(ctx context.Context, marker readyMarker) bool {
+	reply, err := cfg.requestInstance(ctx, wire.VerbOwnerReady, marker.Instance)
+	return err == nil && (answersForInstance(reply, marker.Instance) || !marker.Probe && unknownOwnerVerb(reply))
+}
+
+func (cfg LaunchConfig) requestInstance(ctx context.Context, verb, instance string) (spool.Reply, error) {
 	probe, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
 	defer cancel()
-	args, err := json.Marshal(wire.Readiness{Instance: marker.Instance})
+	args, err := json.Marshal(wire.DispatcherInstance{Instance: instance})
 	if err != nil {
-		return false
+		return spool.Reply{}, err
 	}
 	client := spool.Client{StateRoot: cfg.StateRoot, Rendezvous: cfg.Rendezvous}
-	reply, err := client.Owner(probe, wire.Request{Verb: wire.VerbOwnerReady, Args: args})
-	if err != nil {
-		return false
-	}
-	if reply.Status == core.ExitOK {
-		var response wire.Readiness
-		return json.Unmarshal(reply.Data, &response) == nil && response.Instance == marker.Instance
-	}
+	return client.Owner(probe, wire.Request{Verb: verb, Args: args})
+}
+
+func answersForInstance(reply spool.Reply, instance string) bool {
+	var response wire.DispatcherInstance
+	return reply.Status == core.ExitOK && json.Unmarshal(reply.Data, &response) == nil && response.Instance == instance
+}
+
+func unknownOwnerVerb(reply spool.Reply) bool {
 	// An older installed dispatcher answers an unknown owner verb with
-	// this exact rejection. The caller still rechecks its marker and lock.
-	if !marker.Probe && reply.Status == core.ExitUsage && reply.Code == "" {
-		var refusal struct{ Message string }
-		return json.Unmarshal(reply.Data, &refusal) == nil && refusal.Message == "invalid command arguments"
-	}
-	return false
+	// this exact rejection.
+	var refusal struct{ Message string }
+	return reply.Status == core.ExitUsage && reply.Code == "" &&
+		json.Unmarshal(reply.Data, &refusal) == nil && refusal.Message == "invalid command arguments"
 }

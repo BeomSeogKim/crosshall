@@ -98,6 +98,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			return err
 		}
 		env.StartReady = paths.launch(true).StartReady
+		env.Stop = paths.launch(true).Stop
 		env.Setup = func(req cli.SetupRequest) error {
 			executable, err := os.Executable()
 			if err != nil {

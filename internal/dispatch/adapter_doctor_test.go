@@ -90,7 +90,7 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 		if _, err := doctorStoreInfo(ctx, state, adapters, now); err != nil {
 			t.Fatal(err)
 		}
-		raw := doctorResult("", nil, adapters, nil).Data
+		raw := (LaunchConfig{}).doctorResult("", nil, adapters, nil).Data
 		var got struct {
 			Adapters []struct {
 				Adapter       string

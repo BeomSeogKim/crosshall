@@ -66,6 +66,7 @@ type server struct {
 	ready           readyMarker
 	readyMu         sync.Mutex
 	readyLease      *os.File
+	cancel          context.CancelFunc
 	nextReap        time.Time
 	lastLogged      string
 	adapterSequence uint64
@@ -80,6 +81,8 @@ func Serve(ctx context.Context, cfg Config) error {
 	if cfg.Resolve == nil || cfg.Decode == nil || cfg.Handle == nil || cfg.Hello == nil {
 		return errors.New("dispatcher services are incomplete")
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if err := prepareDaemonProcess(); err != nil {
 		return err
 	}
@@ -129,7 +132,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 	var instance [16]byte
 	rand.Read(instance[:])
-	s := server{cfg: cfg, state: state, db: db, watch: watcher,
+	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
 	stopWatching := s.withdrawReadyOnCancel(ctx)
 	defer stopWatching()
@@ -290,6 +293,9 @@ func (s *server) scan(ctx context.Context) error {
 	s.runSpool(owner, reap, now, func(id string, raw []byte) (core.Result, error) {
 		return s.command(ctx, Arrival{Path: filepath.Join(s.cfg.StateRoot, "owner"), Dir: owner, Owner: true}, id, raw)
 	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	leaves, err := s.leaves(ctx)
 	if err != nil {
 		return err
@@ -504,6 +510,9 @@ func (s *server) hello(ctx context.Context, id string, raw []byte) (core.Result,
 }
 
 func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []byte) (core.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return core.Result{}, err
+	}
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
@@ -531,20 +540,20 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result = *resolved.Refusal
 			return errRefusalRollback
 		}
-		if req.Verb == wire.VerbOwnerReady {
+		if req.Verb == wire.VerbOwnerReady || req.Verb == wire.VerbOwnerStop {
 			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
-				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "readiness confirmation requires owner ingress")
+				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "dispatcher control requires owner ingress")
 				return errRefusalRollback
 			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			var probe wire.Readiness
+			var probe wire.DispatcherInstance
 			if err := json.Unmarshal(req.Args, &probe); err != nil || probe.Instance != s.ready.Instance || probe.Instance == "" {
 				result = commandError(core.ExitRefused, "", "dispatcher readiness instance changed")
 				return errRefusalRollback
 			}
-			result, err = domain.OK(wire.Readiness{Instance: s.ready.Instance})
+			result, err = domain.OK(wire.DispatcherInstance{Instance: s.ready.Instance})
 			return err
 		}
 		var hook *domain.AdapterContext
@@ -625,6 +634,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			s.logFailure(err)
 			return unknownOutcome("adapter state publication failed after commit", req.OpKey), nil
 		}
+	}
+	if req.Verb == wire.VerbOwnerStop && result.Status == core.ExitOK {
+		// Acknowledge the request only after retiring readiness. The
+		// owner waits separately for the state lock to be released.
+		s.cancel()
+		s.withdrawReady()
 	}
 	return result, nil
 }

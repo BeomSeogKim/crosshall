@@ -33,13 +33,13 @@ func TestReadinessProbeUsesOwnerIngressAndCurrentInstance(t *testing.T) {
 		{"member", "current", false, core.ExitRefused, core.CodeOwnerOnly},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args, _ := json.Marshal(wire.Readiness{Instance: tc.instance})
+			args, _ := json.Marshal(wire.DispatcherInstance{Instance: tc.instance})
 			got := s.fixtureRequest(t, Arrival{Owner: tc.owner}, wire.Request{Verb: wire.VerbOwnerReady, Args: args})
 			if got.Status != tc.status || got.Code != tc.code {
 				t.Fatalf("unexpected readiness reply: %+v", got)
 			}
 			if tc.status == core.ExitOK {
-				var out wire.Readiness
+				var out wire.DispatcherInstance
 				if err := json.Unmarshal(got.Data, &out); err != nil || out.Instance != s.ready.Instance {
 					t.Fatalf("readiness reply does not name the serving instance: %s, %v", got.Data, err)
 				}

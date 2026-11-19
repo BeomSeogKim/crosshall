@@ -36,6 +36,18 @@ crosshall version
 
 The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.12`. Include `~/.local/bin` on PATH in your agent sessions too.
 
+For release tags with binary assets, the installer downloads the archive
+for macOS or Linux on arm64 or x86-64 and verifies its SHA-256 checksum
+before it unpacks the executable. The checksum verifies archive integrity.
+The builder's identity remains unverified. This path uses curl and either
+`sha256sum` or `shasum`. GNU tar also needs `gzip` on PATH to read the
+archive.
+
+If there is no verified archive, the installer reports why and builds from
+the checked-out tag with Go. Use `./scripts/install.sh --source` to choose
+the source build directly. Without Go, replacing a different existing
+executable at the destination requires `--force`.
+
 On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
 The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry.

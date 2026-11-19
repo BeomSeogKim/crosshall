@@ -1,0 +1,38 @@
+name: release binaries
+
+on:
+  pull_request:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and reproduce the four archives
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=dev
+          if [[ $RELEASE_REF_TYPE == tag ]]; then
+            version=$RELEASE_REF_NAME
+          fi
+          bash scripts/release.sh "$version" "$RUNNER_TEMP/crosshall-release"
+          bash scripts/release.sh "$version" "$RUNNER_TEMP/crosshall-repeat"
+          diff -rq "$RUNNER_TEMP/crosshall-release" "$RUNNER_TEMP/crosshall-repeat"
+      - name: Retain tag artifacts for the release
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosshall-release-binaries
+          path: ${{ runner.temp }}/crosshall-release/
+          if-no-files-found: error

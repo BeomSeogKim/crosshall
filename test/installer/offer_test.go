@@ -105,7 +105,7 @@ esac
 		}
 		f.CheckTargets(t)
 		args := append([]string{"-B", terminal}, terminalArgs...)
-		cmd := exec.Command(python, append(args, "--", script, dest)...)
+		cmd := exec.Command(python, append(args, "--", script, "--source", dest)...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("binary installation failed: %v: %s", err, output)

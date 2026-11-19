@@ -23,6 +23,11 @@ The repository is trunk-based.
   on `main`.
 - History on `main` is linear. Force pushes and branch deletion are blocked.
 - Releases are tags on `main` that follow [Semantic Versioning](https://semver.org/).
+  The release workflow retains the four archives and their SHA-256 files
+  as a tag-run artifact. Attach all eight files to the GitHub release.
+  To reproduce a tag build locally, check out the tag and run
+  `bash scripts/release.sh <tag> <output-directory>` with the Go version
+  in `go.mod`.
 
 ## Pull requests
 

@@ -1,0 +1,12 @@
+# Module version target notice-files
+github.com/dustin/go-humanize v1.1.0 all LICENSE
+github.com/fsnotify/fsnotify v1.10.1 all LICENSE
+github.com/google/uuid v1.6.0 all LICENSE
+github.com/mattn/go-isatty v0.0.24 darwin LICENSE
+github.com/ncruces/go-strftime v1.1.0 darwin LICENSE
+github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec all LICENSE
+golang.org/x/sys v0.49.0 all LICENSE PATENTS
+modernc.org/libc v1.80.1 all LICENSE AUTHORS LICENSE-3RD-PARTY.md
+modernc.org/mathutil v1.7.1 all LICENSE AUTHORS
+modernc.org/memory v1.12.1 all LICENSE AUTHORS LICENSE-GO LICENSE-MMAP-GO
+modernc.org/sqlite v1.62.0 all LICENSE AUTHORS LICENSE-3RD-PARTY.md LICENSE-SQLITE LICENSE-SQLITE_VEC

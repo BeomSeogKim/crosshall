@@ -181,13 +181,15 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 		return p.pending(err)
 	}
 	result := promptResult{Kind: "setup", DryRun: !p.req.Apply}
+	var previewed []string
 	for _, plan := range plans {
 		o := outcomeOf(plan)
 		switch {
 		case plan.Err != nil:
-			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retry(plan)
+			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
 		case !p.req.Apply:
 			o.Outcome, o.Plan = "previewed", &plan
+			previewed = append(previewed, scopeOf(plan)...)
 			if err := p.printPlan(plan); err != nil {
 				return err
 			}
@@ -200,8 +202,8 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 		result.Vendors = append(result.Vendors, o)
 	}
 	note := ""
-	if !p.req.Apply && !p.req.DryRun {
-		note = "Nothing was changed. To install without questions: crosshall setup " + strings.Join(names, " ") + " --apply"
+	if !p.req.DryRun && len(previewed) > 0 {
+		note = "Nothing was changed. To install without questions: crosshall setup " + strings.Join(previewed, " ") + " --apply"
 	}
 	return p.finish(result, note)
 }
@@ -222,7 +224,7 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 	for _, plan := range plans {
 		if plan.Err != nil {
 			o := outcomeOf(plan)
-			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retry(plan)
+			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
 			result.Vendors = append(result.Vendors, o)
 			fmt.Fprintf(p.out, "%s: %v\n", plan.Name, plan.Err)
 			continue
@@ -280,7 +282,7 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 	}
 	switch {
 	case err != nil:
-		o.Outcome, o.Error, o.Retry = "failed", err.Error(), retry(c.plan)
+		o.Outcome, o.Error, o.Retry = "failed", err.Error(), retryAfter(c.plan, err)
 	case c.plan.Recovery:
 		o.Outcome, o.Retry = "recovered", retry(c.plan)
 	case c.plan.Action == "uninstall":
@@ -325,7 +327,7 @@ func (p *prompter) uninstall(ctx context.Context) error {
 	for _, plan := range plans {
 		o := outcomeOf(plan)
 		if plan.Err != nil {
-			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retry(plan)
+			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
 			result.Vendors = append(result.Vendors, o)
 			continue
 		}
@@ -471,6 +473,21 @@ func scopeOf(plan VendorPlan) []string {
 		return plan.Adapters
 	}
 	return []string{plan.Adapter}
+}
+
+type refusalWithNext struct {
+	message string
+	next    string
+}
+
+func (e *refusalWithNext) Error() string { return e.message }
+
+func retryAfter(plan VendorPlan, err error) string {
+	var refusal *refusalWithNext
+	if errors.As(err, &refusal) {
+		return refusal.next
+	}
+	return retry(plan)
 }
 
 // retry is the command that repeats a plan's action over its scope.

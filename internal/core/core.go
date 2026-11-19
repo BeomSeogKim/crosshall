@@ -65,6 +65,7 @@ const (
 
 	CodeNotEnrolled      Code = "not_enrolled"
 	CodeBindingAmbiguous Code = "binding_ambiguous"
+	CodeBindingChanged   Code = "binding_changed"
 	CodeKeyRetired       Code = "key_retired"
 	CodeLeafMismatch     Code = "leaf_mismatch"
 

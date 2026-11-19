@@ -40,6 +40,7 @@ Owner commands (from your own shell, not from an agent session):
   owner start                                       Start the dispatcher
   owner channel create <name> [--topic "..."]       Create a channel
   owner who --all                                   List all channel bindings
+  owner depart <binding-id> --seen <token>           Mark a binding departed
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
   owner channel default <channel> [--repo <dir>]     Set a repository's default channel
   owner doctor                                      Check local dispatcher state
@@ -245,7 +246,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	case args[0] == "adapter":
 		return runAdapterPolicy(ctx, env, opts, args, stdout, stderr)
 	// read-ledger
-	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore":
+	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore" || args[0] == "depart":
 		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)
 		// end read-ledger
 	}

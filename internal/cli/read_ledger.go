@@ -65,6 +65,18 @@ func ledgerOwnerCall(args []string) (Call, error) {
 	switch args[0] {
 	case "restore":
 		return restoreCall(args[1:])
+	case "depart":
+		usage := fmt.Errorf("usage: crosshall owner depart <binding-id> --seen <token> (get the binding ID and token from crosshall owner who --all)")
+		if len(args) < 3 {
+			return Call{}, usage
+		}
+		binding, err := parsePositive(args[1])
+		token, last, found, flagErr := flagValue(args, 2, "--seen")
+		if err != nil || flagErr != nil || !found || last != len(args)-1 || !domain.ValidDepartureToken(token) {
+			return Call{}, usage
+		}
+		call.Command = domain.OwnerDepart{BindingID: binding, Seen: token}
+		return call, nil
 	case "status":
 		if len(args) == 1 || (len(args) == 2 && args[1] == "--all") {
 			call.Command = domain.OwnerStatus{}
@@ -267,6 +279,9 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 		}
 		if recipient.ReplyUnread {
 			state += ", unread reply"
+		}
+		if recipient.State == "open" && recipient.BindingState == "departed" {
+			state += ", recipient departed"
 		}
 		fmt.Fprintf(w, "  @%s %s", recipient.Alias, state)
 		if at := recipient.OverdueSinceMS; at != nil {

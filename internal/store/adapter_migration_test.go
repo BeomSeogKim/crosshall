@@ -53,7 +53,7 @@ func TestAdapterMigrationPreservesLedgerAndBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	v2, err := Open(ctx, root)
+	v2, err := openWithMigrations(ctx, root, []string{initialSchema, adapterSchema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +101,33 @@ func TestAdapterMigrationPreservesLedgerAndBackup(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported schema version 2") {
 		t.Fatalf("v1 refusal: %v", err)
+	}
+}
+
+func TestOwnerDepartureMigrationPreservesExistingLedger(t *testing.T) {
+	root := t.TempDir()
+	ctx := t.Context()
+	v2, err := openWithMigrations(ctx, root, []string{initialSchema, adapterSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAdapterLedger(t, v2)
+	before := adapterLedgerSnapshot(t, v2.db, 2)
+	if err := v2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	if after := adapterLedgerSnapshot(t, upgraded.db, 3); after != before {
+		t.Fatalf("departure migration changed the ledger\nbefore: %s\nafter: %s", before, after)
+	}
+	var flagged int
+	if err := upgraded.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM binding
+		WHERE departed_by_owner <> 0 OR owner_hook_fence_ms IS NOT NULL`).Scan(&flagged); err != nil || flagged != 0 {
+		t.Fatalf("existing bindings gained departure history: rows=%d err=%v", flagged, err)
 	}
 }
 

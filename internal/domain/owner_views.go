@@ -43,7 +43,18 @@ type OwnerWhoChannel struct {
 
 type OwnerMember struct {
 	Member
-	BindingState string `json:"binding_state"`
+	BindingState  string         `json:"binding_state"`
+	LastEvidence  *OwnerEvidence `json:"last_evidence"`
+	EvidenceStale bool           `json:"evidence_stale"`
+	OpenRequests  []int64        `json:"open_request_ids"`
+	DepartToken   string         `json:"depart_token,omitempty"`
+}
+
+type OwnerEvidence struct {
+	Fact   string `json:"fact"`
+	Source string `json:"source"`
+	AtMS   int64  `json:"at_ms"`
+	AgeS   int64  `json:"age_s"`
 }
 
 func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {
@@ -51,21 +62,26 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		return Refuse(core.CodeOwnerOnly, "the owner can list bindings across channels", "crosshall who"), nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.name, c.topic, b.id, b.principal_id, b.alias, b.state, b.focus, p.vendor,
-		COALESCE((SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id=b.principal_id AND o.kind='command'), b.joined_at_ms)
+		b.joined_at_ms, cmd.observed_at_ms, cmd.source
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
+		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
+			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
 		ORDER BY c.id, b.id`)
 	if err != nil {
 		return core.Result{}, err
 	}
 	defer rows.Close()
 	out := OwnerWhoResult{Channels: []OwnerWhoChannel{}}
+	nowMS := ms(now)
+	const commandCap = 30 * time.Minute
 	var previous int64
 	for rows.Next() {
 		var channel int64
 		var name, topic string
-		var binding, principal, seen sql.NullInt64
-		var alias, bindingState, focus, vendor sql.NullString
-		if err := rows.Scan(&channel, &name, &topic, &binding, &principal, &alias, &bindingState, &focus, &vendor, &seen); err != nil {
+		var binding, principal, joined, commandAt sql.NullInt64
+		var alias, bindingState, focus, vendor, commandSource sql.NullString
+		if err := rows.Scan(&channel, &name, &topic, &binding, &principal, &alias, &bindingState, &focus, &vendor,
+			&joined, &commandAt, &commandSource); err != nil {
 			return core.Result{}, err
 		}
 		if len(out.Channels) == 0 || channel != previous {
@@ -73,13 +89,22 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			previous = channel
 		}
 		if binding.Valid {
+			seenAt := joined.Int64
+			if commandAt.Valid {
+				seenAt = commandAt.Int64
+			}
 			member := OwnerMember{
 				Member: Member{
 					Alias: alias.String, Focus: focus.String, Vendor: vendor.String, BindingID: binding.Int64,
-					State: "unknown", LastCommandAgoS: max((ms(now)-seen.Int64)/1000, 0), Route: "pull",
+					State: "unknown", LastCommandAgoS: max((nowMS-seenAt)/1000, 0), Route: "pull",
 					principal: principal.Int64,
 				},
-				BindingState: bindingState.String,
+				BindingState:  bindingState.String,
+				EvidenceStale: nowMS-seenAt >= commandCap.Milliseconds(),
+			}
+			if commandAt.Valid {
+				member.LastEvidence = &OwnerEvidence{Fact: "command", Source: commandSource.String,
+					AtMS: commandAt.Int64, AgeS: member.LastCommandAgoS}
 			}
 			if member.BindingState == "departed" {
 				member.Route = "unavailable"
@@ -94,13 +119,51 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	rows.Close()
 	for i := range out.Channels {
 		for j := range out.Channels[i].Members {
-			m := &out.Channels[i].Members[j].Member
-			if err := withPresence(ctx, tx, m.principal, m, now); err != nil {
+			m := &out.Channels[i].Members[j]
+			fact, err := latestFact(ctx, tx, m.principal)
+			if err != nil {
 				return core.Result{}, err
+			}
+			if fact != nil {
+				observed := fact.At(nowMS)
+				m.Observed = &observed
+				if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
+					m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
+					m.EvidenceStale = !observed.Current
+				}
+			}
+			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)
+			if err != nil {
+				return core.Result{}, err
+			}
+			if m.BindingState == "live" {
+				m.DepartToken, err = departureToken(ctx, tx, m.BindingID, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
 			}
 		}
 	}
 	return OK(out)
+}
+
+func ownerOpenRequests(ctx context.Context, tx store.Tx, binding int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT o.message_id FROM binding b
+		JOIN obligation o ON o.principal_id=b.principal_id JOIN message m ON m.id=o.message_id
+		WHERE b.id=? AND m.channel_id=b.channel_id AND o.state='open' ORDER BY o.message_id`, binding)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller, cmd OwnerLog) (core.Result, error) {

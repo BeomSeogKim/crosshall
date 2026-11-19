@@ -25,18 +25,32 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.11 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.12 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.11`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.12`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
 The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry.
+
+**Upgrading to rc.12.** rc.12 migrates the database to schema 4. The installer replaces the binary but does not stop a running dispatcher, so first stop it and back up:
+1. `crosshall owner doctor` shows the dispatcher's PID. Stop it with `kill <pid>`.
+2. Wait until `crosshall owner doctor` reports that the dispatcher is not running.
+3. Copy your Crosshall state directory.
+4. Install rc.12 and run `crosshall owner start`.
+
+When you upgrade from rc.11, the first rc.12 dispatcher start also copies the schema 3 database to `store-v3-*.sqlite3` beside `store.sqlite3`. The rc.11 dispatcher does not start on schema 4.
+
+What changes for a member:
+- The join hint carries the six member rules of [PROTOCOL.md](PROTOCOL.md).
+- A result points to the inbox only when something is unread or owed.
+- A request the owner cancelled before you read it is listed apart, with no answer owed.
+- Every suggested wait is `crosshall wait --existing --work-only --timeout 9m`.
 
 **Upgrading to rc.10.** rc.10 uses the same database schema as rc.9. Earlier Codex hooks still get their state directory from the environment Codex runs them in. With a shared daemon, that environment comes from the session that started it.
 
@@ -128,7 +142,7 @@ A session that lost its identity, for example in a new conversation, may find it
 
 A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
 
-Every member follows one rule: before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn. Notes, replies and roster changes are not requests. The full set of member rules is in [PROTOCOL.md](PROTOCOL.md). `crosshall join` states the rule. A member without an adapter follows it by hand.
+Members follow the member rules in [PROTOCOL.md](PROTOCOL.md). `crosshall join` states them, and a member without an adapter follows them by hand.
 
 ### When a member goes quiet
 
@@ -164,7 +178,17 @@ Migrate scripts that piped answers to rc.6 setup to this named form. With input 
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
 
-An adapter only checks the turn-end rule; it does not replace it. When a turn ends while a request addressed to the session is unread, the adapter continues that turn once with the `[crosshall] pending:` line. It does so only if the check is available for this build and mode. Claude Code receives the line as Stop hook context and Codex as the Stop hook's block reason. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. `crosshall owner doctor` shows per adapter whether the turn-end notice is available, and how many continuations it committed today. It is available only when three things hold. The owner has imported tested evidence for that exact build and mode, recorded by a conformance run that observed the continuation. The adapter policy is on. The running session's build and mode can be verified. A stock Codex session cannot be verified, so it stays unavailable.
+An adapter only checks the turn-end rule; it does not replace it. When a turn ends while a request addressed to the session is unread, the adapter continues that turn once with the `[crosshall] pending:` line. It does so only if the check is available for this build and mode. Claude Code receives the line as Stop hook context and Codex as the Stop hook's block reason. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. `crosshall owner doctor` shows per adapter whether the turn-end notice is available, and how many continuations it committed today. It is available only when three things hold. The owner has imported tested evidence for that exact build and mode, recorded by a conformance run that observed the continuation. The adapter policy is on. The running session's build and mode can be verified.
+
+To make the check available for Claude Code in print mode (`claude -p`), work from the release checkout with `claude` and Go on PATH:
+1. Create an output directory outside your home and resolve its physical path, so it contains no symbolic link: `out="$(cd "$(mktemp -d)" && pwd -P)"`.
+2. Run `CROSSHALL_CONFORMANCE_OUT="$out" go test -tags conformance -count=1 -run '^TestClaudeCodeTurnEndConformance$' ./test/conformance`. The run uses temporary homes and a local stand-in for the model, so it makes no billed requests.
+3. Import the file it writes to `"$out"` with `crosshall owner adapter evidence <file>`.
+4. Turn the adapter on with `crosshall owner adapter set claude --enabled on`.
+
+`crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations.
+
+Interactive Claude Code sessions do not report a verified mode, and stock Codex sessions cannot be verified. For both, the check stays unavailable.
 
 At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 

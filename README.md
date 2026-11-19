@@ -111,7 +111,9 @@ crosshall setup --dry-run claude codex
 crosshall setup claude codex --apply
 ```
 
-`--apply` installs the named vendors' base hooks without reading input or granting Claude permissions. Migrate scripts that piped answers to rc.6 setup to this named form. With input or output redirected, `crosshall setup claude` previews the plan, while bare `crosshall setup` prints the scripted form and exits with code 2.
+`--apply` reads no input. For a new setup, it installs only the named vendors' base hooks. If it can resume an interrupted setup for the same vendors, it applies the edits you already approved, including any Claude allow rules.
+
+Migrate scripts that piped answers to rc.6 setup to this named form. With input or output redirected, `crosshall setup claude` previews the plan, while bare `crosshall setup` prints the scripted form and exits with code 2.
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
 

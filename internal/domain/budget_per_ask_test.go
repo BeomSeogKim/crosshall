@@ -67,8 +67,8 @@ func TestTwoAgentLoopStopsAfterEightRequests(t *testing.T) {
 	}
 }
 
-// The refusal for lack of units names the three ways on: a new exchange, an
-// owner grant, or a reply or a note, which cost nothing.
+// Without a root token the refusal gives a complete owner grant command and
+// explains that replies and notes are free.
 func TestBudgetRefusalNamesTheWaysOn(t *testing.T) {
 	f, a, _, _ := channel3(t)
 	f.roots(a, 1)
@@ -81,7 +81,7 @@ func TestBudgetRefusalNamesTheWaysOn(t *testing.T) {
 	if refusal.Message != "x1 has no units left; a request costs 1" {
 		t.Fatalf("message %q", refusal.Message)
 	}
-	for _, want := range []string{"crosshall ask --new", "crosshall owner budget grant checkout/x1 <units>", "crosshall reply", "crosshall note"} {
+	for _, want := range []string{"You have no root tokens.", "crosshall owner budget grant checkout/x1 1", "crosshall reply", "crosshall note"} {
 		if !strings.Contains(refusal.Hint, want) {
 			t.Errorf("hint %q lacks %q", refusal.Hint, want)
 		}

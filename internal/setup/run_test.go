@@ -3,6 +3,7 @@ package setup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -43,6 +44,32 @@ func runSetupTest(t *testing.T, service Service, action, input string, dry bool)
 		Action: action, DryRun: dry, Input: strings.NewReader(input), Output: &out, Prompt: io.Discard,
 	})
 	return out.String(), err
+}
+
+func TestUninstallScopeNoticeKeepsJSONClean(t *testing.T) {
+	s, f, _ := realSetup(t)
+	f.CheckTargets(t)
+	for _, adapters := range [][]string{nil, {"claude"}} {
+		var output bytes.Buffer
+		req := Request{Action: "uninstall", Adapters: adapters, DryRun: true,
+			Input: strings.NewReader(""), Output: &output, Prompt: io.Discard}
+		if err := s.Run(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		const notice = "Uninstall removes only crosshall-managed hooks and related settings.\n" +
+			"For full removal, see https://github.com/BeomSeogKim/crosshall/blob/main/docs/operations.md#removing-crosshall"
+		if strings.Count(output.String(), notice) != 1 {
+			t.Errorf("uninstall %v output: %s", adapters, output.String())
+		}
+		output.Reset()
+		req.JSON = true
+		if err := s.Run(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		if !json.Valid(output.Bytes()) || strings.Contains(output.String(), "docs/operations.md") {
+			t.Errorf("uninstall %v JSON output: %s", adapters, output.String())
+		}
+	}
 }
 
 func TestSetupResumesAfterFileWriteBeforePolicyConfirmation(t *testing.T) {

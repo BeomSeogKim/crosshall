@@ -68,6 +68,12 @@ type ApprovalOffer struct {
 }
 
 func (s Service) Run(ctx context.Context, req Request) error {
+	if req.Action == "uninstall" && !req.JSON {
+		if _, err := fmt.Fprintln(req.Output, "Uninstall removes only crosshall-managed hooks and related settings.\n"+
+			"For full removal, see https://github.com/BeomSeogKim/crosshall/blob/main/docs/operations.md#removing-crosshall"); err != nil {
+			return err
+		}
+	}
 	// The per-vendor forms of issue #25. An unnamed --dry-run keeps its rc.6
 	// output, as do a bare uninstall and setup off; the command line stops an
 	// unnamed setup without a terminal before it reaches here.

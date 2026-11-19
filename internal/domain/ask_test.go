@@ -255,6 +255,57 @@ func TestBudgetExhaustionOpensOneEpisode(t *testing.T) {
 	}
 }
 
+func TestBudgetExhaustionHintUsesTheCallersAvailableOptions(t *testing.T) {
+	f, opener, worker, _ := channel3(t)
+	f.roots(opener, 1)
+	parent := decode[AskResult](t, f.ask(opener, Ask{To: []string{"tax"}, Body: "check the totals"}, ""))
+	if _, err := f.db.Exec(`UPDATE exchange SET spent = granted WHERE id = ?`, parent.Exchange); err != nil {
+		t.Fatal(err)
+	}
+	parentID := itoa(parent.ID)
+	ownerGrant := "crosshall owner budget grant checkout/x" + itoa(parent.Exchange) + " 1"
+	checkHint := func(caller session, cmd Ask, want, exclude string) {
+		t.Helper()
+		r := f.ask(caller, cmd, "")
+		wantCode(t, r, core.ExitRefused, core.CodeBudgetExhausted)
+		hint := decode[Refusal](t, r).Hint
+		for _, part := range []string{want, ownerGrant, "crosshall reply", "crosshall note"} {
+			if !strings.Contains(hint, part) {
+				t.Fatalf("hint %q missing %q", hint, part)
+			}
+		}
+		if exclude != "" && strings.Contains(hint, exclude) {
+			t.Fatalf("hint %q unexpectedly contains %q", hint, exclude)
+		}
+	}
+	another := Ask{To: []string{"a11y"}, Body: "another topic"}
+	handoff := Ask{To: []string{"a11y"}, Body: "review the totals", Re: parent.ID}
+	checkHint(opener, another, "You have no root tokens.", "--new")
+	checkHint(worker, handoff, "You have no root tokens.", "--new")
+
+	f.roots(opener, 1)
+	checkHint(opener, another, "rerun this ask with --new and no --re", "crosshall ask --new")
+	another.New = true
+	second := decode[AskResult](t, f.ask(opener, another, ""))
+	if second.Exchange == parent.Exchange || !second.NewExchange {
+		t.Fatalf("suggested --new did not open an exchange: %+v", second)
+	}
+
+	f.roots(worker, 1)
+	checkHint(worker, handoff, "Run crosshall read "+parentID, "--new --re")
+	wantOK(t, f.run(worker, Read{IDs: []int64{parent.ID}}, "read-parent"))
+	other := decode[AskResult](t, f.ask(opener, Ask{To: []string{"tax"}, Body: "another review", Re: second.ID}, ""))
+	checkHint(worker, handoff, "Run crosshall read "+itoa(other.ID), "--new --re")
+	wantOK(t, f.run(worker, Read{IDs: []int64{other.ID}}, "read-other"))
+
+	checkHint(worker, handoff, "--new --re "+parentID, "crosshall ask @alias")
+	handoff.New = true
+	child := decode[AskResult](t, f.ask(worker, handoff, ""))
+	if child.ParentRequestID != parent.ID || child.Remaining != 7 {
+		t.Fatalf("suggested linked handoff did not use the parent: %+v", child)
+	}
+}
+
 // With one unit left, a request to several members still fits: it spends the
 // last unit, and only the next request is refused.
 func TestAFanOutCanSpendTheLastUnit(t *testing.T) {

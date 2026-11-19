@@ -60,7 +60,7 @@ func ResolveEnvironment(lookup func(string) (string, bool)) (Identity, error) {
 	case 0:
 		route, ok := lookup(RouteVariable)
 		if !ok {
-			return Identity{}, &EnvironmentError{core.CodeNotEnrolled, "no session identity; start with crosshall run"}
+			return Identity{}, &EnvironmentError{core.CodeNotEnrolled, "no session identity"}
 		}
 		if !validRoute(route) {
 			return Identity{}, &EnvironmentError{core.CodeNotEnrolled, "invalid CROSSHALL_ROUTE"}
@@ -73,7 +73,7 @@ func ResolveEnvironment(lookup func(string) (string, bool)) (Identity, error) {
 		caller.Version = runtimeVersion(caller.Vendor, lookup)
 		return caller, nil
 	default:
-		return Identity{}, &EnvironmentError{core.CodeBindingAmbiguous, "ambiguous session variables: " + strings.Join(found, ", ") + "; start with crosshall run"}
+		return Identity{}, &EnvironmentError{core.CodeBindingAmbiguous, "ambiguous session variables: " + strings.Join(found, ", ")}
 	}
 }
 

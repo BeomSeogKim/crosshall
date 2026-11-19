@@ -39,8 +39,10 @@ Member commands:
   leave                                             Leave your channel
   run -- <command> [args...]                        Run a command with its own identity
 
-Owner commands (from your own shell, not from an agent session):
+Owner commands (from a separate owner terminal):
   setup [--dry-run]                                 Preview or install user-level adapter hooks
+  setup <vendor> [--apply]                           Set up a vendor, or apply without prompting
+  setup status                                      Inspect installed hooks and adapter policy
   setup off                                         Disable adapter effects
   uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
@@ -222,7 +224,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	if env.OwnerGate != nil {
 		if msg := env.OwnerGate(); msg != "" {
 			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, msg,
-				"run owner commands from your own shell, not from an agent session"), stdout, stderr)
+				"rerun this command from your separate owner terminal"), stdout, stderr)
 		}
 	}
 	switch {

@@ -15,13 +15,13 @@ func TestJoinExplainsAnUnknownCLIVersion(t *testing.T) {
 	join := []string{"--key", "enroll-once", "join", "demo", "--as", "reviewer"}
 	checkReceipt := func(out string) {
 		t.Helper()
-		for _, want := range []string{"Joined #demo as @reviewer", "could not detect the claude CLI version", "Run `crosshall whoami` to check your current enrollment."} {
+		for _, want := range []string{"Joined #demo as @reviewer", "Join succeeded. Crosshall could not detect the Claude Code version", "No action is needed for this warning."} {
 			if !strings.Contains(out, want) {
 				t.Errorf("join output lacks %q:\n%s", want, out)
 			}
 		}
-		if strings.Contains(out, "Your membership is active") {
-			t.Errorf("receipt claims current membership:\n%s", out)
+		if strings.Contains(out, "Your membership is active") || strings.Contains(out, "Run `crosshall whoami` to check your current enrollment.") {
+			t.Errorf("warning implies a current membership check is needed:\n%s", out)
 		}
 	}
 	checkReceipt(reviewer.mustPlain(join...))

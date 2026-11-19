@@ -130,10 +130,13 @@ func TestFanoutSpendsTheLastUnitAndTheRefusalNamesTheWaysOn(t *testing.T) {
 	if message != fmt.Sprintf("x%d has no units left; a request costs 1", exchange) {
 		t.Fatalf("refusal message: %s", message)
 	}
-	for _, want := range []string{"crosshall ask --new", fmt.Sprintf("crosshall owner budget grant checkout/x%d <units>", exchange), "crosshall reply", "crosshall note"} {
+	for _, want := range []string{"You have no root tokens.", fmt.Sprintf("crosshall owner budget grant checkout/x%d 1", exchange), "crosshall reply", "crosshall note"} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("refusal hint lacks %q: %s", want, hint)
 		}
+	}
+	if strings.Contains(hint, "--new") {
+		t.Fatalf("unfunded refusal suggests opening an exchange: %s", hint)
 	}
 	after := checkoutLedger(t, owner)
 	if after.Exchanges[0].Spent != 8 || after.Exchanges[0].Remaining != 0 || len(after.BudgetExhaustions) != 1 {

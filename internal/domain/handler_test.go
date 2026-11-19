@@ -433,7 +433,7 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	f.owner(CreateChannel{Name: "checkout"}, "")
 	a, b, c := f.newSession("claude"), f.newSession("codex"), f.newSession("agy")
 	first := decode[JoinResult](t, f.join(a, Join{Channel: "checkout", Alias: "form"}, ""))
-	if first.RosterSeq == 0 || first.Hint == "" {
+	if first.RosterSeq == 0 || !strings.Contains(first.Hint, "Act on outstanding work before rearming.") {
 		t.Fatalf("first join %+v", first)
 	}
 	// The first response was lost: a re-join with a fresh key and no ack

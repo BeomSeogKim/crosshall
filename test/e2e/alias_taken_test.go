@@ -22,9 +22,22 @@ func TestATakenAliasNextStepPutsRestoreFirst(t *testing.T) {
 	cmd.Dir, cmd.Env = w.home, fresh.env()
 	out, err := cmd.CombinedOutput()
 	exit, _ := err.(*exec.ExitError)
-	if exit == nil || exit.ExitCode() != 3 ||
-		!strings.Contains(string(out), "next: if this session lost its identity, ask the owner to run crosshall owner restore first; a new session can run crosshall join checkout --as <another alias>") {
+	if exit == nil || exit.ExitCode() != 3 {
 		t.Fatalf("exit %v:\n%s", err, out)
+	}
+	remaining := string(out)
+	for _, step := range []string{
+		"next: To recover the old membership, run crosshall whoami --full",
+		"only to the owner",
+		"crosshall owner who --all",
+		"crosshall owner restore with that ID as its first argument and --new-key set to the token",
+		"crosshall join checkout chooses an unused alias",
+	} {
+		_, rest, found := strings.Cut(remaining, step)
+		if !found {
+			t.Fatalf("missing or out-of-order recovery step %q:\n%s", step, out)
+		}
+		remaining = rest
 	}
 	if o := fresh.run("inbox"); o.exit != 4 || o.obj["code"] != "not_enrolled" {
 		t.Fatalf("the refused join enrolled the key: %d %v", o.exit, o.obj)

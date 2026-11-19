@@ -245,19 +245,12 @@ func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (
 }
 
 func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int64) (attribution, *core.Result, error) {
-	var unread sql.NullInt64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT MIN(r.message_id) FROM recipient r JOIN message msg ON msg.id = r.message_id
-		 WHERE r.principal_id = ? AND r.owes = 1 AND r.picked_up_at_ms IS NULL AND msg.channel_id = ?`,
-		m.principal, m.channel).Scan(&unread); err != nil {
+	tokens, unread, err := rootCreditState(ctx, tx, m)
+	if err != nil {
 		return attribution{}, nil, err
 	}
-	if unread.Valid {
-		return unreadRoot(unread.Int64)
-	}
-	var tokens int64
-	if err := tx.QueryRowContext(ctx, `SELECT root_tokens FROM principal WHERE id = ?`, m.principal).Scan(&tokens); err != nil {
-		return attribution{}, nil, err
+	if unread != 0 {
+		return unreadRoot(unread)
 	}
 	if tokens < 1 {
 		r := Refuse(core.CodeNoRootCredit,
@@ -266,6 +259,16 @@ func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int6
 		return attribution{}, &r, nil
 	}
 	return attribution{exchange: exchangeRow{granted: DefaultCredit}, isNew: true, parentRequestID: parentRequestID}, nil, nil
+}
+
+// The unread guard covers every addressed request, including settled ones.
+// Use the same guard when explaining how to open a new exchange.
+func rootCreditState(ctx context.Context, tx store.Tx, m member) (tokens, unread int64, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT p.root_tokens, COALESCE((
+		 SELECT MIN(r.message_id) FROM recipient r JOIN message msg ON msg.id = r.message_id
+		 WHERE r.principal_id = p.id AND r.owes = 1 AND r.picked_up_at_ms IS NULL AND msg.channel_id = ?
+	), 0) FROM principal p WHERE p.id = ?`, m.channel, m.principal).Scan(&tokens, &unread)
+	return
 }
 
 func unreadRoot(request int64) (attribution, *core.Result, error) {
@@ -300,22 +303,36 @@ func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, 
 			return nil, err
 		}
 	}
-	var direct sql.NullInt64
-	var owed int
-	if err := tx.QueryRowContext(ctx, `SELECT MIN(CASE WHEN msg.exchange_id = ? THEN msg.id END), COUNT(*)
-		FROM obligation o JOIN message msg ON msg.id = o.message_id
-		WHERE o.principal_id = ? AND o.state = 'open' AND msg.channel_id = ?`,
-		a.exchange.id, m.principal, m.channel).Scan(&direct, &owed); err != nil {
+	tokens, unread, err := rootCreditState(ctx, tx, m)
+	if err != nil {
 		return nil, err
 	}
-	next := fmt.Sprintf("ask the owner to run crosshall owner budget grant %s/x%d <units>, or send a crosshall reply or crosshall note, which cost nothing",
+	var direct sql.NullInt64
+	var owed int
+	if tokens > 0 && unread == 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT MIN(CASE WHEN msg.exchange_id = ? AND msg.kind = 'ask'
+				AND r.picked_up_at_ms IS NOT NULL THEN msg.id END), COUNT(*)
+			FROM obligation o JOIN message msg ON msg.id = o.message_id
+			JOIN recipient r USING (message_id, principal_id)
+			WHERE o.principal_id = ? AND o.state = 'open' AND msg.channel_id = ?`,
+			a.exchange.id, m.principal, m.channel).Scan(&direct, &owed); err != nil {
+			return nil, err
+		}
+	}
+	next := fmt.Sprintf("Ask the owner to run crosshall owner budget grant %s/x%d 1. Use crosshall reply for an answer or crosshall note for information. Both are free.",
 		m.channelName, a.exchange.id)
 	switch {
+	case tokens == 0:
+		next = "You have no root tokens. " + next
+	case unread != 0:
+		next = fmt.Sprintf("You have root tokens. Run crosshall read %d before opening a new exchange. ", unread) + next
 	case direct.Valid:
-		next = fmt.Sprintf("after reading #%d, fund a linked handoff with crosshall ask @alias \"...\" --new --re %d (needs a root token), or ",
-			direct.Int64, direct.Int64) + next
+		next = fmt.Sprintf("You have root tokens. To fund a linked handoff, rerun this ask with --new --re %d in place of any --re option. ",
+			direct.Int64) + next
 	case owed == 0:
-		next = "open a new exchange with crosshall ask --new (needs a root token), or " + next
+		next = "You have root tokens. To open a new exchange, rerun this ask with --new and no --re. " + next
+	default:
+		next = "You have root tokens and owe answers in other exchanges. " + next
 	}
 	r := Refuse(core.CodeBudgetExhausted, fmt.Sprintf("x%d has no units left; a request costs %d", a.exchange.id, n), next)
 	return &r, nil

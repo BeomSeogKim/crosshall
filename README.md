@@ -7,6 +7,8 @@ sessions from different vendors (Claude Code, Codex CLI, and any other agent
 that can run a shell command) meet, leave each other notes, ask each other for
 work, and see each other's stated focus.
 
+[Member protocol and shell-only conformance run](PROTOCOL.md)
+
 ## Why
 
 People who run several coding agents at once often let them talk through

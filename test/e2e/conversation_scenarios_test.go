@@ -94,7 +94,7 @@ func TestFanoutAtomicityAndWaitingUntilRepliesAreRead(t *testing.T) {
 	}
 	before := committed()
 	if before.messages != 1 || before.recipients != 2 || before.obligations != 2 || before.receipts != 2 ||
-		before.exchanges != 1 || before.spent != 2 || num(t, ask, "debit") != 2 {
+		before.exchanges != 1 || before.spent != 1 || num(t, ask, "debit") != 1 {
 		t.Fatalf("two-target ask: %+v, response %s", before, ask.stdout)
 	}
 	bad := sender.run("ask", "@tax", "@lint", "@missing", "Another check")

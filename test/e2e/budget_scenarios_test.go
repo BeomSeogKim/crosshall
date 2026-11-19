@@ -5,7 +5,6 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,7 +37,8 @@ func TestExhaustedExchangeAndRootTokens(t *testing.T) {
 	grantRoots(t, w, "form", 1)
 	var asks []string
 	var exchange int64
-	for i := 0; i < 4; i++ {
+	// Eight requests to the whole channel spend the exchange: one unit each.
+	for i := 0; i < 8; i++ {
 		q := form.must("ask", "--all", "--each", fmt.Sprintf("Review issue %d", i))
 		asks = append(asks, strconv.FormatInt(num(t, q, "id"), 10))
 		exchange = num(t, q, "exchange")
@@ -100,7 +100,10 @@ func TestExhaustedExchangeAndRootTokens(t *testing.T) {
 	requireBudgetRefusal(t, tax.run("ask", "--new", "@form", "A second topic"), "no_root_credit")
 }
 
-func TestInsufficientFanoutKeepsPartialCredit(t *testing.T) {
+// A request to the whole channel costs one unit, so with one unit left it still
+// goes out, says it spent the last unit, and the next request is refused with
+// the ways on.
+func TestFanoutSpendsTheLastUnitAndTheRefusalNamesTheWaysOn(t *testing.T) {
 	w, owner, members := setup(t)
 	form := members[0]
 	for _, alias := range []string{"schema", "copy", "index"} {
@@ -108,23 +111,33 @@ func TestInsufficientFanoutKeepsPartialCredit(t *testing.T) {
 	}
 	grantRoots(t, w, "form", 1)
 	form.must("ask", "--all", "--each", "Review the draft")
-	form.must("ask", "@tax", "One more detail")
-	before := checkoutLedger(t, owner)
-	if len(before.Exchanges) != 1 || before.Exchanges[0].Remaining != 2 || len(before.BudgetExhaustions) != 0 {
-		t.Fatalf("unexpected starting balance: %+v", before.Exchanges)
+	for i := 0; i < 6; i++ {
+		form.must("ask", "@tax", fmt.Sprintf("Detail %d", i))
 	}
-	out := form.run("ask", "--all", "--each", "Review the revision")
-	requireBudgetRefusal(t, out, "insufficient_credit")
+	before := checkoutLedger(t, owner)
+	if len(before.Exchanges) != 1 || before.Exchanges[0].Spent != 7 || before.Exchanges[0].Remaining != 1 {
+		t.Fatalf("seven requests to one and to five members should spend seven units: %+v", before.Exchanges)
+	}
+	exchange := before.Exchanges[0].ID
+	plain := form.mustPlain("ask", "--all", "--each", "Review the revision")
+	if !strings.Contains(plain, "0 left; this request spent its last unit.") {
+		t.Fatalf("last-unit ask did not say so: %s", plain)
+	}
+	out := form.run("ask", "@tax", "One more detail")
+	requireBudgetRefusal(t, out, "budget_exhausted")
 	message, _ := out.obj["message"].(string)
-	if !strings.Contains(message, "2 left") || !strings.Contains(message, "needs 5") {
-		t.Fatalf("refusal omits remaining or required units: %s", message)
+	hint, _ := out.obj["hint"].(string)
+	if message != fmt.Sprintf("x%d has no units left; a request costs 1", exchange) {
+		t.Fatalf("refusal message: %s", message)
+	}
+	for _, want := range []string{"crosshall ask --new", fmt.Sprintf("crosshall owner budget grant checkout/x%d <units>", exchange), "crosshall reply", "crosshall note"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("refusal hint lacks %q: %s", want, hint)
+		}
 	}
 	after := checkoutLedger(t, owner)
-	if !reflect.DeepEqual(after.Requests, before.Requests) || !slices.Equal(after.Exchanges, before.Exchanges) || len(after.BudgetExhaustions) != 0 {
-		t.Fatal("partial-credit refusal changed the requests, balance or exhaustion history")
-	}
-	if sent := form.must("ask", "@tax", "A smaller revision"); num(t, sent, "debit") != 1 || num(t, sent, "remaining") != 1 {
-		t.Fatalf("smaller send failed to use the remaining credit: %s", sent.stdout)
+	if after.Exchanges[0].Spent != 8 || after.Exchanges[0].Remaining != 0 || len(after.BudgetExhaustions) != 1 {
+		t.Fatalf("expected the exchange spent and one exhaustion event: %+v %+v", after.Exchanges, after.BudgetExhaustions)
 	}
 }
 
@@ -132,7 +145,7 @@ func TestConcurrentAsksSpendLastUnitOnce(t *testing.T) {
 	w, owner, members := setup(t)
 	form := members[0]
 	grantRoots(t, w, "form", 1)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 6; i++ {
 		form.must("ask", "--all", "--each", fmt.Sprintf("Section %d", i))
 	}
 	last := form.must("ask", "@tax", "Clarify a section")
@@ -169,7 +182,7 @@ func TestConcurrentAsksSpendLastUnitOnce(t *testing.T) {
 		t.Fatalf("expected exactly one successful ask, got %d", wins)
 	}
 	ledger := checkoutLedger(t, owner)
-	if len(ledger.Exchanges) != 1 || ledger.Exchanges[0].Spent != 8 || ledger.Exchanges[0].Remaining != 0 || len(ledger.Requests) != 5 {
+	if len(ledger.Exchanges) != 1 || ledger.Exchanges[0].Spent != 8 || ledger.Exchanges[0].Remaining != 0 || len(ledger.Requests) != 8 {
 		t.Fatalf("race did not commit exactly one debit and request: %+v", ledger)
 	}
 	for _, req := range ledger.Requests {
@@ -178,4 +191,28 @@ func TestConcurrentAsksSpendLastUnitOnce(t *testing.T) {
 		}
 	}
 	t.Fatalf("owner ledger lacks the winner's single open obligation for request %d", winner)
+}
+
+// The last-unit line describes the ask's own debit. After an owner grant, a
+// replay of that ask returns the same frozen result and forecasts nothing,
+// and a fresh request in the exchange goes out.
+func TestLastUnitLineMakesNoForecastAfterAGrant(t *testing.T) {
+	w, owner, members := setup(t)
+	form := members[0]
+	grantRoots(t, w, "form", 1)
+	for i := 0; i < 7; i++ {
+		form.must("ask", "@tax", fmt.Sprintf("Detail %d", i))
+	}
+	last := form.mustPlain("ask", "@tax", "Last detail", "--key", "last-unit")
+	exchange := checkoutLedger(t, owner).Exchanges[0].ID
+	owner.must("owner", "budget", "grant", fmt.Sprintf("checkout/x%d", exchange), "1")
+	replay := form.mustPlain("ask", "@tax", "Last detail", "--key", "last-unit")
+	for _, out := range []string{last, replay} {
+		if !strings.Contains(out, "0 left; this request spent its last unit.") || strings.Contains(out, "will be refused") {
+			t.Fatalf("last-unit line: %s", out)
+		}
+	}
+	if fresh := form.must("ask", "@tax", "After the grant"); num(t, fresh, "exchange") != exchange || num(t, fresh, "remaining") != 0 {
+		t.Fatalf("fresh ask after the grant: %s", fresh.stdout)
+	}
 }

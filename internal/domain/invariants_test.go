@@ -88,7 +88,7 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 		if result.Status != core.ExitOK && result.Status != core.ExitRefused {
 			t.Fatalf("unexpected exit %d (%s): %s", result.Status, result.Code, result.Data)
 		}
-		if result.Code == core.CodeBudgetExhausted || result.Code == core.CodeInsufficientCredit {
+		if result.Code == core.CodeBudgetExhausted {
 			covered["unfunded exchange"] = true
 		}
 		if ask, ok := command.(Ask); ok && result.Status == core.ExitOK {
@@ -132,20 +132,21 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 
 func assertInvariantCredit(t *testing.T, f *fixture) {
 	t.Helper()
-	var exchange, spent, granted, owed int64
-	err := f.db.QueryRow(`SELECT id, spent, granted, owed FROM (
+	// A request costs one unit whatever its audience, so an exchange's spend
+	// equals its number of requests.
+	var exchange, spent, granted, asks int64
+	err := f.db.QueryRow(`SELECT id, spent, granted, asks FROM (
 		SELECT e.id, e.spent, e.granted, (
-			SELECT COUNT(*) FROM message m JOIN recipient r ON r.message_id = m.id
-			WHERE m.exchange_id = e.id AND m.kind = 'ask' AND r.owes = 1
-		) AS owed FROM exchange e
-	) WHERE spent > granted OR spent <> owed ORDER BY id LIMIT 1`).Scan(&exchange, &spent, &granted, &owed)
+			SELECT COUNT(*) FROM message m WHERE m.exchange_id = e.id AND m.kind = 'ask'
+		) AS asks FROM exchange e
+	) WHERE spent > granted OR spent <> asks ORDER BY id LIMIT 1`).Scan(&exchange, &spent, &granted, &asks)
 	if err == sql.ErrNoRows {
 		return
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Fatalf("exchange %d spent %d of %d for %d owed recipients", exchange, spent, granted, owed)
+	t.Fatalf("exchange %d spent %d of %d for %d requests", exchange, spent, granted, asks)
 }
 
 type invariantRecipientKey struct {

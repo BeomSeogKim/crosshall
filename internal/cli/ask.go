@@ -264,7 +264,12 @@ func renderAsk(data []byte, w io.Writer) error {
 	if r.NewExchange {
 		ex += " (new)"
 	}
-	fmt.Fprintf(w, "#%d stored. due %s. exchange %s: %d left.\n", r.ID, clock(r.DueAtMS), ex, r.Remaining)
+	if r.Remaining == 0 {
+		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: 0 left; this request spent its last unit.\n",
+			r.ID, clock(r.DueAtMS), ex)
+	} else {
+		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: %d left.\n", r.ID, clock(r.DueAtMS), ex, r.Remaining)
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, d := range r.Recipients {
 		fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d))

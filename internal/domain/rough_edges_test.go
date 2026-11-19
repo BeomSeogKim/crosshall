@@ -52,9 +52,9 @@ func TestMemberStatusShowsOwnRootTokensAndExchanges(t *testing.T) {
 		tokens int64
 		want   []ExchangeBalance
 	}{
-		{a, "form", 1, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 2, Remaining: 6}}},
-		{b, "tax", 0, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 2, Remaining: 6}}},
-		{c, "a11y", 0, []ExchangeBalance{{ID: x2.Exchange, Granted: 8, Spent: 2, Remaining: 6}}},
+		{a, "form", 1, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
+		{b, "tax", 0, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
+		{c, "a11y", 0, []ExchangeBalance{{ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
 	} {
 		got := decode[StatusResult](t, f.run(tc.s, Status{}, "")).Self
 		if got == nil || got.Alias != tc.alias || got.RootTokens != tc.tokens || !reflect.DeepEqual(got.Exchanges, tc.want) {

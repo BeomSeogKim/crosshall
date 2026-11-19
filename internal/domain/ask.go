@@ -264,7 +264,8 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
-	n := int64(len(to))
+	// A request costs one unit whatever the number of recipients (#29).
+	const n = int64(1)
 	if refusal, err := charge(ctx, tx, m, a, n, now); err != nil || refusal != nil {
 		return deref(refusal), err
 	}

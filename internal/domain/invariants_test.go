@@ -232,7 +232,7 @@ func assertInvariantOverdue(t *testing.T, f *fixture, recipients map[invariantRe
 			}
 			projected[key] = true
 			covered[row.State] = true
-			overdue := r.obligation.state.String == "open" && f.now.UnixMilli() >= due
+			overdue := r.obligation.state.String == "open" && f.now.UnixMilli() > due
 			if (row.OverdueSinceMS != nil) != overdue || (overdue && *row.OverdueSinceMS != due) {
 				t.Fatalf("request %d recipient %d overdue since %v, want present=%t with deadline %d",
 					ask.ID, row.PrincipalID, row.OverdueSinceMS, overdue, due)

@@ -21,7 +21,10 @@ Member commands:
   who                                               List the members of your channel
   read [<id>...]                                    Read messages
   inbox                                             List unread messages and open obligations
-  wait [--any] [--timeout <duration>]               Wait for a new message
+  wait [--any | --work-only] [--existing] [--timeout <duration>]
+                                                    Wait for messages (timeout exits 6)
+                                                    --existing also wakes for already unread messages
+                                                    --work-only accepts addressed requests and replies
   waiting                                           List your outstanding requests
   status                                            Show the channel ledger
   whoami [--full]                                   Show a short identity digest (--full prints the raw key)

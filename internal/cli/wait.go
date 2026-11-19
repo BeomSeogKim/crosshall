@@ -11,10 +11,15 @@ import (
 )
 
 const (
-	waitUsage     = "usage: crosshall wait [--any] [--timeout <positive duration, e.g. 30s>]"
+	waitUsage     = "usage: crosshall wait [--any | --work-only] [--existing] [--timeout <positive duration, e.g. 30s>]"
 	waitFirstPoll = 100 * time.Millisecond
 	waitMaxPoll   = time.Second
 )
+
+type waitResult struct {
+	domain.InboxResult
+	Reason string `json:"reason,omitempty"`
+}
 
 func runWait(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
@@ -23,6 +28,14 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--any" && !cmd.Any {
 			cmd.Any = true
+			continue
+		}
+		if args[i] == "--existing" && !cmd.Existing {
+			cmd.Existing = true
+			continue
+		}
+		if args[i] == "--work-only" && !cmd.WorkOnly {
+			cmd.WorkOnly = true
 			continue
 		}
 		value, last, found, err := flagValue(args, i, "--timeout")
@@ -34,6 +47,9 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 			return o.usage(waitUsage)
 		}
 		i = last
+	}
+	if cmd.Any && cmd.WorkOnly {
+		return o.usage(waitUsage)
 	}
 	if env.Transport == nil {
 		return o.unavailableFor(env, cmd.Verb())
@@ -76,7 +92,14 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 			return o.fail(core.ExitError, CodeLocalError, "malformed wait snapshot", "")
 		}
 		if len(snapshot.Unread) != 0 {
-			arrival, err := domain.OK(snapshot.InboxResult)
+			out := waitResult{InboxResult: snapshot.InboxResult}
+			if cmd.Existing {
+				out.Reason = "arrived"
+				if cmd.Cursor == nil {
+					out.Reason = "existing"
+				}
+			}
+			arrival, err := domain.OK(out)
 			if err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}

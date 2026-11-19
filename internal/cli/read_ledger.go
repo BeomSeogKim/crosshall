@@ -162,7 +162,7 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintln(w, "Arrived during the wait")
 		}
 		if len(r.Unread) == 0 && len(r.Owed) == 0 && len(r.Cancelled) == 0 {
-			fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 30s.")
+			fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.")
 		}
 		printInboxItems(w, "Unread", r.Unread, false)
 		printInboxItems(w, "Cancelled by the owner (no answer owed)", r.Cancelled, false)
@@ -375,6 +375,9 @@ func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, 
 
 // PrintInboxPointer is shared with whoami, which renders its own identity result.
 func PrintInboxPointer(w io.Writer, unread, owed int, left bool) error {
+	if unread == 0 && owed == 0 {
+		return nil // nothing waits: no pointer
+	}
 	if left {
 		_, err := fmt.Fprintf(w, "[crosshall] %d unread, %d owed. After rejoining, run crosshall inbox.\n", unread, owed)
 		return err

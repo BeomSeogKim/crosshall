@@ -40,7 +40,8 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 		} else {
 			fmt.Fprintf(stderr, "crosshall: %s\n", refusal.Message)
 			_, inbox := cmd.(domain.Inbox)
-			inboxInTrailer := !inbox && trailer.OwedCount != nil && refusal.Hint == "crosshall inbox"
+			waits := trailer.OwedCount != nil && (len(trailer.Pending) > 0 || *trailer.OwedCount > 0)
+			inboxInTrailer := !inbox && waits && refusal.Hint == "crosshall inbox"
 			if refusal.Hint != "" && !inboxInTrailer {
 				fmt.Fprintf(stderr, "next: %s\n", refusal.Hint)
 			}

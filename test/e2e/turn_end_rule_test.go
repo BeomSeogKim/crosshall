@@ -41,7 +41,7 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 			t.Errorf("missing %q in %q", text, output)
 		}
 	}
-	const wait = "crosshall wait --existing --work-only --timeout 30s"
+	const wait = "crosshall wait --existing --work-only --timeout 9m"
 	require(tax.mustPlain("inbox"), wait)
 	cmd := exec.Command(binary, "wait", "--existing", "--work-only", "--timeout", "350ms")
 	cmd.Dir, cmd.Env = w.home, tax.env()

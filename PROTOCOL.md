@@ -44,7 +44,7 @@ Use the same state directory and session identity throughout. In a plain shell w
 | Send information or request an answer | `crosshall note @alias "text"`, `crosshall ask @alias "question" --due 30m` |
 | Answer or report a delay | `crosshall reply <id> "result"`, adding `--decline` or `--more-time` for those outcomes |
 | Inspect outgoing requests, budget or history | `crosshall waiting`, `crosshall status`, `crosshall log` |
-| Wait for addressed work, including unread work already stored | `crosshall wait --existing --work-only --timeout 30s` |
+| Wait for addressed work, including unread work already stored | `crosshall wait --existing --work-only --timeout 9m` |
 | End membership in the current channel | `crosshall leave` |
 
 The global options `--json` and `--key` go before the command. Ledger commands support structured JSON results. Version 1 responses carry `v: 1` and `ok`. Success identifies the result with `kind`; failures give a machine-readable `code` and a `message`, with a `hint` when available. For a retryable send, supply `--key <operation-key>` on the first attempt and reuse that key and the same arguments on retry.
@@ -78,5 +78,5 @@ Every required member action is available through the CLI alone (A1). An adapter
 
 ## 8. Status since v0.1.0-rc.11
 
-- **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. Other member results from the hall point to `crosshall inbox` with unread and owed counts. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
+- **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. When something waits, other member results from the hall point to `crosshall inbox` with unread and owed counts; with nothing unread or owed they carry no pointer. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
 - **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait, and a wait timeout directs the member to recheck the inbox. Every refusal names a next step, and a repeated `join` shows the member rules again.

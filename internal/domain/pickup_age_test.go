@@ -81,9 +81,8 @@ func TestNoAdapterAndNoPickupLeaveTheirFieldsOut(t *testing.T) {
 	}
 }
 
-// A taken alias tells a session that has never joined to ask the owner for
-// a restore before joining under another alias, in the hint itself: a key
-// that has joined can no longer be restored.
+// A taken alias gives a new member a usable join command first, then
+// explains how to recover an existing membership while the key is unused.
 func TestATakenAliasPointsAtOwnerRestore(t *testing.T) {
 	f, _ := adapterChannel(t)
 	other := f.newSession("claude")
@@ -93,8 +92,9 @@ func TestATakenAliasPointsAtOwnerRestore(t *testing.T) {
 		t.Fatalf("%s %s", r.Code, r.Data)
 	}
 	position := -1
-	for _, step := range []string{"crosshall whoami --full", "only to the owner", "crosshall owner who --all",
-		"old binding ID", "crosshall owner restore", "first argument", "--new-key", "For a new member, crosshall join checkout"} {
+	for _, step := range []string{"For a new member, crosshall join checkout", "crosshall whoami --full", "only to the owner",
+		"crosshall owner who --all", "old binding ID", "crosshall owner restore", "first argument", "--new-key",
+		"Joining under another alias makes this session's key ineligible for owner restore."} {
 		next := strings.Index(refusal.Hint, step)
 		if next <= position {
 			t.Fatalf("expected %q in order in hint %q", step, refusal.Hint)

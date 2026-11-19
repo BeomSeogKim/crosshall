@@ -46,29 +46,44 @@ func runSetupTest(t *testing.T, service Service, action, input string, dry bool)
 	return out.String(), err
 }
 
-func TestUninstallScopeNoticeKeepsJSONClean(t *testing.T) {
-	s, f, _ := realSetup(t)
+func TestUninstallWithoutFootprintSkipsPlanAndMutation(t *testing.T) {
+	s, f, policies := realSetup(t)
 	f.CheckTargets(t)
 	for _, adapters := range [][]string{nil, {"claude"}} {
-		var output bytes.Buffer
-		req := Request{Action: "uninstall", Adapters: adapters, DryRun: true,
-			Input: strings.NewReader(""), Output: &output, Prompt: io.Discard}
-		if err := s.Run(t.Context(), req); err != nil {
-			t.Fatal(err)
+		for _, dry := range []bool{false, true} {
+			var output, prompts bytes.Buffer
+			input := strings.NewReader("yes\n")
+			req := Request{Action: "uninstall", Adapters: adapters, DryRun: dry,
+				Input: input, Output: &output, Prompt: &prompts}
+			if err := s.Run(t.Context(), req); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); !strings.HasPrefix(got, "No crosshall adapter hooks are installed") ||
+				!strings.Contains(got, "run crosshall owner doctor") ||
+				!strings.Contains(got, "docs/operations.md#removing-crosshall in your release checkout") ||
+				strings.Contains(got, "https://") || strings.Contains(got, "policy") || strings.Contains(got, "[y/N]") {
+				t.Errorf("uninstall %v output: %s", adapters, got)
+			}
+			output.Reset()
+			req.JSON = true
+			if err := s.Run(t.Context(), req); err != nil {
+				t.Fatal(err)
+			}
+			if prompts.Len() != 0 || input.Len() != len("yes\n") {
+				t.Errorf("uninstall %v prompted or read input: %q", adapters, prompts.String())
+			}
+			var result map[string]any
+			if err := json.Unmarshal(output.Bytes(), &result); err != nil || result["kind"] != "uninstall" ||
+				result["ok"] != true || result["dry_run"] != dry || strings.Contains(output.String(), "docs/operations.md") {
+				t.Errorf("uninstall %v JSON output: %s (%v)", adapters, output.String(), err)
+			}
 		}
-		const notice = "Uninstall removes only crosshall-managed hooks and related settings.\n" +
-			"For full removal, see https://github.com/BeomSeogKim/crosshall/blob/main/docs/operations.md#removing-crosshall"
-		if strings.Count(output.String(), notice) != 1 {
-			t.Errorf("uninstall %v output: %s", adapters, output.String())
-		}
-		output.Reset()
-		req.JSON = true
-		if err := s.Run(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-		if !json.Valid(output.Bytes()) || strings.Contains(output.String(), "docs/operations.md") {
-			t.Errorf("uninstall %v JSON output: %s", adapters, output.String())
-		}
+	}
+	if len(policies) != 0 {
+		t.Errorf("uninstall wrote policies: %v", policies)
+	}
+	if _, err := os.Stat(f.State); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("uninstall created state: %v", err)
 	}
 }
 

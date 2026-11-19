@@ -66,23 +66,37 @@ publish_fixture
 cat > "$tools/curl" <<'FETCH'
 #!/bin/sh
 set -eu
-while [ "$#" -gt 2 ]; do shift; done
+report_status=false
+while [ "$#" -gt 2 ]; do
+  case "$1" in
+    --write-out) [ "$2" = '%{http_code}' ]; report_status=true ;;
+  esac
+  shift
+done
 destination=$1
 url=$2
+respond() {
+  if [ "$report_status" = true ]; then printf '%s' "$1"; fi
+  exit "$2"
+}
 case "$url" in
   "https://github.com/BeomSeogKim/crosshall/releases/download/v0.8.0/$TEST_ASSET"|\
   "https://github.com/BeomSeogKim/crosshall/releases/download/v0.8.0/$TEST_ASSET.sha256") ;;
-  *) echo "unexpected URL: $url" >&2; exit 1 ;;
+  *) printf 'unexpected URL: %s\n' "$url" >> "$TEST_FETCHES"; exit 1 ;;
 esac
 file=${url##*/}
 printf '%s\n' "$file" >> "$TEST_FETCHES"
 case "$TEST_CASE:$file" in
-  missing:*.sha256|missing-archive:"$TEST_ASSET") exit 22 ;;
+  missing:*.sha256|missing-archive:"$TEST_ASSET") respond 404 22 ;;
+  checksum-blocked:*.sha256) respond 403 22 ;;
+  checksum-network:*.sha256) respond 000 7 ;;
+  checksum-timeout:*.sha256) respond 000 28 ;;
   bad:*.sha256)
     printf '%064d  %s\n' 0 "$TEST_ASSET" > "$destination"
-    exit 0 ;;
+    respond 200 0 ;;
 esac
 cat "$TEST_ASSETS/$file" > "$destination"
+respond 200 0
 FETCH
 chmod +x "$tools/curl"
 
@@ -101,6 +115,8 @@ install good "$tmp/install location" || fail "verified install failed: $(cat "$t
 target="$tmp/install location/crosshall"
 cmp -s "$target" "$payload/crosshall" || fail 'verified archive was not installed'
 [[ $(cat "$tmp/executions") == archive ]] || fail 'wrong verified program'
+asset_requests=$(printf '%s\n' "$asset.sha256" "$asset")
+[[ $(cat "$tmp/fetches") == "$asset_requests" ]] || fail 'verified install made unexpected network calls'
 # The installation receipt gains a path and next steps with the installer
 # guidance change. Require the exact release version in either receipt.
 case $(cat "$tmp/output") in
@@ -136,10 +152,14 @@ case "$1" in
 esac
 GO
 chmod +x "$tools/go"
-for test_case in bad missing missing-archive wrong-commit; do
+checksum_reason="no verified release archive found for $version on $os/$arch because the checksum is unavailable"
+for test_case in bad missing checksum-blocked checksum-network checksum-timeout missing-archive wrong-commit; do
+  expected_requests=$asset_requests
   case "$test_case" in
     bad) reason='checksum mismatch' ;;
-    missing) reason="no verified release archive found for $version on $os/$arch because the checksum is unavailable" ;;
+    missing) reason="no release archive is published for $version on $os/$arch"; expected_requests=$asset.sha256 ;;
+    checksum-blocked) reason=$checksum_reason; expected_requests=$asset.sha256 ;;
+    checksum-network|checksum-timeout) reason="could not reach the release for $version on $os/$arch"; expected_requests=$asset.sha256 ;;
     missing-archive) reason="release archive unavailable for $version on $os/$arch" ;;
     wrong-commit)
       reason='binary archive does not match this checkout'
@@ -150,9 +170,7 @@ for test_case in bad missing missing-archive wrong-commit; do
   cmp -s "$tmp/$test_case/crosshall" "$repo/from-source" || fail "unverified binary installed for $test_case"
   [[ $(cat "$tmp/executions") == source ]] || fail "unverified binary ran for $test_case"
   grep -Fq "$reason); falling back to a source build" "$tmp/errors" || fail "no fallback reason for $test_case"
-  if [[ $test_case == missing && $(cat "$tmp/fetches") != "$asset.sha256" ]]; then
-    fail 'downloaded archive without a checksum'
-  fi
+  [[ $(cat "$tmp/fetches") == "$expected_requests" ]] || fail "unexpected network calls for $test_case"
 done
 
 if [[ -L $tools/gzip ]]; then

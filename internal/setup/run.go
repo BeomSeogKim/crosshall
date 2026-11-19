@@ -68,10 +68,33 @@ type ApprovalOffer struct {
 }
 
 func (s Service) Run(ctx context.Context, req Request) error {
-	if req.Action == "uninstall" && !req.JSON {
-		if _, err := fmt.Fprintln(req.Output, "Uninstall removes only crosshall-managed hooks and related settings.\n"+
-			"For full removal, see https://github.com/BeomSeogKim/crosshall/blob/main/docs/operations.md#removing-crosshall"); err != nil {
+	if req.Action == "uninstall" {
+		empty, err := s.noUninstallFootprint(ctx, req.Adapters)
+		if err != nil {
 			return err
+		}
+		if !req.JSON {
+			scope := "Uninstall removes only crosshall-managed hooks and related settings."
+			if empty {
+				scope = "No crosshall adapter hooks are installed"
+				if len(req.Adapters) > 0 {
+					scope += " for " + strings.Join(req.Adapters, ", ")
+				}
+				scope += "."
+			}
+			_, err := fmt.Fprintln(req.Output, scope+"\n"+
+				"For full removal, run crosshall owner doctor in a plain terminal to find the state directories.\n"+
+				"Then follow docs/operations.md#removing-crosshall in your release checkout.")
+			if err != nil || empty {
+				return err
+			}
+		} else if empty {
+			if len(req.Adapters) > 0 {
+				return json.NewEncoder(req.Output).Encode(promptResult{
+					Version: 1, OK: true, Kind: "uninstall", DryRun: req.DryRun, Vendors: []vendorOutcome{},
+				})
+			}
+			return printResult(req, displayPlan(req, operation{}, nil, false))
 		}
 	}
 	// The per-vendor forms of issue #25. An unnamed --dry-run keeps its rc.6

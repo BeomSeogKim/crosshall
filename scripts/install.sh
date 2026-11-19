@@ -84,6 +84,7 @@ fi
 
 fetch_prebuilt() {
   local os arch asset url checksum expected actual archived_commit
+  local checksum_http curl_status=0
   case $(uname -s) in
     Darwin) os=darwin ;;
     Linux) os=linux ;;
@@ -97,8 +98,16 @@ fetch_prebuilt() {
   command -v curl >/dev/null || { prebuilt_reason='curl is unavailable'; return 1; }
   asset="crosshall-$os-$arch.tar.gz"
   url="https://github.com/BeomSeogKim/crosshall/releases/download/$tag/$asset"
-  if ! fetch "$url.sha256" "$stage/checksum"; then
-    prebuilt_reason="no verified release archive found for $tag on $os/$arch because the checksum is unavailable"
+  checksum_http=$(fetch "$url.sha256" "$stage/checksum" --write-out '%{http_code}') || curl_status=$?
+  if (( curl_status != 0 )); then
+    case "$curl_status:$checksum_http" in
+      22:404)
+        prebuilt_reason="no release archive is published for $tag on $os/$arch" ;;
+      5:*|6:*|7:*|28:*)
+        prebuilt_reason="could not reach the release for $tag on $os/$arch" ;;
+      *)
+        prebuilt_reason="no verified release archive found for $tag on $os/$arch because the checksum is unavailable" ;;
+    esac
     return 1
   fi
   checksum=$(cat "$stage/checksum") || { prebuilt_reason='checksum unreadable'; return 1; }
@@ -141,8 +150,10 @@ fetch_prebuilt() {
 }
 
 fetch() {
+  local url=$1 target=$2
+  shift 2
   curl --disable --fail --silent --location --proto '=https' --proto-redir '=https' \
-    --connect-timeout 5 --max-time 60 --output "$2" "$1"
+    --connect-timeout 5 --max-time 60 "$@" --output "$target" "$url"
 }
 
 build_source() (

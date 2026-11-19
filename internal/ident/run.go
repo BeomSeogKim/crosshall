@@ -44,7 +44,7 @@ func Exec(argv []string) error {
 		return err
 	}
 	if id, err := ResolveEnvironment(os.LookupEnv); err == nil {
-		fmt.Fprintf(os.Stderr, "[crosshall] This shell already has identity %s:sha256:%s. The new command gets a new identity.\n",
+		fmt.Fprintf(os.Stderr, "[crosshall] This shell already has identity %s:sha256:%s. The new command gets a new identity. When it exits, you return to this identity.\n",
 			id.Vendor, id.Digest()[:12])
 	}
 	if opensMemberShell(argv) {

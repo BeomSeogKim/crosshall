@@ -95,6 +95,11 @@ type Env struct {
 	Doctor func(context.Context) core.Result
 	// Setup manages the explicitly selected user-level adapter configuration.
 	Setup func(SetupRequest) error
+	// SetupTerminal reports whether standard input and output are both a
+	// terminal, so setup may ask questions. Nil means no terminal.
+	SetupTerminal func() bool
+	// SetupAdapters lists the shipped hook adapters a setup may name.
+	SetupAdapters []string
 }
 
 // Run executes the command line with the default environment.

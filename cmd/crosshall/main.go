@@ -18,6 +18,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/dispatch"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/setup"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -75,10 +76,14 @@ func (p statePaths) launch(owner bool) dispatch.LaunchConfig {
 func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	args := os.Args[1:]
 	env := cli.Env{
-		Version:   version,
-		OwnerGate: ident.OwnerGate,
-		RunChild:  ident.RunChild,
-		Stdin:     os.Stdin,
+		Version:       version,
+		OwnerGate:     ident.OwnerGate,
+		RunChild:      ident.RunChild,
+		Stdin:         os.Stdin,
+		SetupTerminal: func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+	}
+	for _, spec := range hook.InstallSpecs() {
+		env.SetupAdapters = append(env.SetupAdapters, spec.Adapter)
 	}
 	if pathErr == nil {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})

@@ -16,12 +16,13 @@ import (
 )
 
 type installTarget struct {
-	Spec     hook.InstallSpec
-	Path     string
-	Current  fileSnapshot
-	Build    build
-	Wanted   []Entry
-	Evidence []store.DoctorEvidence
+	Spec       hook.InstallSpec
+	Path       string
+	PathSource string
+	Current    fileSnapshot
+	Build      build
+	Wanted     []Entry
+	Evidence   []store.DoctorEvidence
 }
 
 func verifyHome(home string) error {
@@ -39,43 +40,64 @@ func verifyHome(home string) error {
 func (s Service) targets(ctx context.Context, j journal) ([]installTarget, error) {
 	var targets []installTarget
 	for _, spec := range hook.InstallSpecs() {
-		b, err := currentBuild(spec)
+		target, err := s.preflightInstall(spec, j)
 		if errors.Is(err, exec.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%s executable: %w", spec.Adapter, err)
-		}
-		home, path, err := configPath(spec)
-		if err != nil {
 			return nil, err
 		}
-		if err := verifyHome(home); err != nil {
-			return nil, err
-		}
-		old := j.Files[spec.Adapter]
-		if old.Path != "" && old.Path != path {
-			return nil, fmt.Errorf("%s has journal entries in another configuration home", spec.Adapter)
-		}
-		current, err := readConfig(path)
-		if err != nil {
-			return nil, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
-		}
-		if old.Latest.Dir != "" && old.Latest.Dir != current.DirIdentity {
-			return nil, fmt.Errorf("%s configuration directory has changed since installation", spec.Adapter)
-		}
-		if current.Exists && len(current.Bytes) == 0 {
-			return nil, fmt.Errorf("%s configuration is empty; expected a JSON object", spec.Adapter)
-		}
-		wanted, err := hookEntries(spec, s.Executable)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := entryMatches(current.Bytes, wanted); err != nil {
-			return nil, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
-		}
-		targets = append(targets, installTarget{Spec: spec, Path: path, Current: current, Build: b, Wanted: wanted})
+		targets = append(targets, target)
 	}
+	s.completeTargets(ctx, j, targets)
+	return targets, nil
+}
+
+func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarget, error) {
+	target := installTarget{Spec: spec}
+	b, err := currentBuild(spec)
+	if err != nil {
+		return target, fmt.Errorf("%s executable: %w", spec.Adapter, err)
+	}
+	location, err := resolveConfigPath(spec)
+	target.Path, target.PathSource = location.Path, location.Source
+	if err != nil {
+		return target, err
+	}
+	if err := verifyHome(location.Home); err != nil {
+		return target, err
+	}
+	old := j.Files[spec.Adapter]
+	if old.Path != "" && old.Path != target.Path {
+		return target, fmt.Errorf("%s has journal entries in another configuration home (%q); resolved %q", spec.Adapter, old.Path, target.Path)
+	}
+	for _, retained := range j.Retained {
+		if retained.Adapter == spec.Adapter && retained.Path != target.Path {
+			return target, fmt.Errorf("%s has retained hooks to inspect in another configuration home (%q); resolved %q", spec.Adapter, retained.Path, target.Path)
+		}
+	}
+	current, err := readConfig(target.Path)
+	if err != nil {
+		return target, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
+	}
+	if old.Latest.Dir != "" && old.Latest.Dir != current.DirIdentity {
+		return target, fmt.Errorf("%s configuration directory has changed since installation", spec.Adapter)
+	}
+	if current.Exists && len(current.Bytes) == 0 {
+		return target, fmt.Errorf("%s configuration is empty; expected a JSON object", spec.Adapter)
+	}
+	wanted, err := hookEntries(spec, s.Executable)
+	if err != nil {
+		return target, err
+	}
+	if _, err := entryMatches(current.Bytes, wanted); err != nil {
+		return target, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
+	}
+	target.Current, target.Build, target.Wanted = current, b, wanted
+	return target, nil
+}
+
+func (s Service) completeTargets(ctx context.Context, j journal, targets []installTarget) {
 	for i := range targets {
 		target := &targets[i]
 		previous := j.Builds[target.Spec.Adapter]
@@ -87,7 +109,6 @@ func (s Service) targets(ctx context.Context, j journal) ([]installTarget, error
 		target.Build.Version = version
 	}
 	s.attachEvidence(ctx, targets)
-	return targets, nil
 }
 
 func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
@@ -262,17 +283,7 @@ func recordedHookExecutable(spec hook.InstallSpec, entry Entry) (string, error) 
 func makeUninstall(j journal) operation {
 	op := operation{Action: "uninstall", Retained: slices.Clone(j.Retained)}
 	for _, spec := range hook.InstallSpecs() {
-		op.Adapters = append(op.Adapters, spec.Adapter)
-		record, ok := j.Files[spec.Adapter]
-		if !ok {
-			continue
-		}
-		e, err := planRemoval(spec, record)
-		if err != nil {
-			op.Retained = append(op.Retained, retainedFile{spec.Adapter, record.Path, err.Error()})
-			continue
-		}
-		op.Edits = append(op.Edits, e)
+		addRemoval(&op, spec, j)
 	}
 	for adapter, record := range j.Files {
 		if !slices.Contains(op.Adapters, adapter) {
@@ -282,13 +293,27 @@ func makeUninstall(j journal) operation {
 	return op
 }
 
+func addRemoval(op *operation, spec hook.InstallSpec, j journal) {
+	op.Adapters = append(op.Adapters, spec.Adapter)
+	record, ok := j.Files[spec.Adapter]
+	if !ok {
+		return
+	}
+	e, err := planRemoval(spec, record)
+	if err != nil {
+		op.Retained = append(op.Retained, retainedFile{spec.Adapter, record.Path, err.Error()})
+		return
+	}
+	op.Edits = append(op.Edits, e)
+}
+
 func planRemoval(spec hook.InstallSpec, record ownedFile) (edit, error) {
 	home, path, err := configPath(spec)
 	if err != nil {
 		return edit{}, err
 	}
 	if path != record.Path {
-		return edit{}, errors.New("journal belongs to another configuration home")
+		return edit{}, fmt.Errorf("journal belongs to another configuration home (%q); resolved %q", record.Path, path)
 	}
 	if err := verifyHome(home); err != nil {
 		return edit{}, err
@@ -367,7 +392,7 @@ func verifyTargets(op operation) error {
 				return err
 			}
 			if selected != e.Path {
-				return fmt.Errorf("%s pending plan belongs to another configuration home", spec.Adapter)
+				return fmt.Errorf("%s pending plan belongs to another configuration home (%q); resolved %q", spec.Adapter, e.Path, selected)
 			}
 			if err := verifyHome(home); err != nil {
 				return err

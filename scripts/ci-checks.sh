@@ -63,6 +63,9 @@ fi
 if ! bash scripts/install_test.sh; then
   fail=1
 fi
+if ! go test -tags installer -count=1 ./test/installer/; then
+  fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "checks passed"

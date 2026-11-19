@@ -95,19 +95,49 @@ func (w *limitedOutput) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
+type configTarget struct {
+	Home   string
+	Path   string
+	Source string
+}
+
 func configPath(spec hook.InstallSpec) (home, config string, err error) {
-	home = os.Getenv("HOME")
-	config = os.Getenv(spec.HomeEnv)
-	for _, selected := range []struct{ variable, value string }{{"HOME", home}, {spec.HomeEnv, config}} {
-		if selected.value == "" || !filepath.IsAbs(selected.value) || filepath.Clean(selected.value) != selected.value ||
-			selected.value == "/" || strings.ContainsAny(selected.value, "\r\n\x00") {
-			return "", "", fmt.Errorf("%s must explicitly name an absolute configuration home", selected.variable)
+	target, err := resolveConfigPath(spec)
+	return target.Home, target.Path, err
+}
+
+// resolveConfigPath selects a path without opening vendor settings. Callers
+// verify the home and open the target through the filesystem guards.
+func resolveConfigPath(spec hook.InstallSpec) (configTarget, error) {
+	home := os.Getenv("HOME")
+	if !validConfigHome(home) {
+		return configTarget{}, errors.New("HOME must explicitly name an absolute configuration home")
+	}
+	config, overridden := os.LookupEnv(spec.HomeEnv)
+	source := "override"
+	if overridden {
+		if !validConfigHome(config) {
+			return configTarget{}, fmt.Errorf("%s must explicitly name an absolute configuration home", spec.HomeEnv)
+		}
+	} else {
+		source = "default"
+		switch spec.Adapter {
+		case "claude":
+			config = filepath.Join(home, ".claude")
+		case "codex":
+			config = filepath.Join(home, ".codex")
+		default:
+			return configTarget{}, fmt.Errorf("no default configuration home for adapter %s", spec.Adapter)
 		}
 	}
 	if spec.File != filepath.Base(spec.File) || spec.File == "." || spec.File == ".." {
-		return "", "", errors.New("invalid adapter install filename")
+		return configTarget{}, errors.New("invalid adapter install filename")
 	}
-	return home, filepath.Join(config, spec.File), nil
+	return configTarget{Home: home, Path: filepath.Join(config, spec.File), Source: source}, nil
+}
+
+func validConfigHome(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/" && !strings.ContainsAny(path, "\r\n\x00")
 }
 
 func hookEntries(spec hook.InstallSpec, executable string) ([]Entry, error) {

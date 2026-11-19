@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -15,25 +17,48 @@ type SetupRequest struct {
 	Input  io.Reader
 	Output io.Writer
 	Prompt io.Writer
+	// Adapters names the vendors a setup or uninstall is limited to.
+	Adapters []string
+	// Apply installs the named vendors without reading input.
+	Apply bool
+	// Offer is the installer's private form: ask only when eligible.
+	Offer bool
+	// Terminal reports that standard input and output are a terminal.
+	Terminal bool
 }
+
+const setupUsage = "usage: setup [--dry-run] [claude|codex ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run] [names]"
+
+// scriptedForm is printed when an unnamed setup cannot ask questions.
+const scriptedForm = `setup asks about each agent in a terminal; nothing was changed.
+To install from a script, name the agents and add --apply:
+  crosshall setup claude codex --apply
+To preview first:
+  crosshall setup --dry-run claude codex
+Answers piped to setup, as in v0.1.0-rc.6, are no longer read.`
 
 func runSetup(env Env, opts options, action string, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
 	if env.OwnerGate != nil {
 		if msg := env.OwnerGate(); msg != "" {
+			if action == "setup" && slices.Equal(args, []string{"--offer"}) {
+				return core.ExitOK // the installer's offer stays silent for an agent
+			}
 			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, msg,
 				"run adapter installation from your own shell"), stdout, stderr)
 		}
 	}
-	req := SetupRequest{Action: action, JSON: opts.json, Input: env.Stdin, Output: stdout, Prompt: stderr}
-	switch {
-	case len(args) == 0:
-	case len(args) == 1 && args[0] == "--dry-run":
-		req.DryRun = true
-	case len(args) == 1 && args[0] == "off" && action == "setup":
-		req.Action = "off"
-	default:
-		return o.usage("usage: setup [--dry-run] | setup off | uninstall [--dry-run]")
+	req, ok := parseSetup(action, args, env.SetupAdapters)
+	if !ok {
+		return o.usage(setupUsage)
+	}
+	req.JSON, req.Input, req.Output, req.Prompt = opts.json, env.Stdin, stdout, stderr
+	req.Terminal = env.SetupTerminal != nil && env.SetupTerminal()
+	if req.Offer && (!req.Terminal || env.Setup == nil) {
+		return core.ExitOK // the installer's offer: silent when it cannot ask
+	}
+	if req.Action == "setup" && !req.DryRun && !req.Apply && !req.Offer && len(req.Adapters) == 0 && !req.Terminal {
+		return o.fail(core.ExitUsage, CodeUsage, scriptedForm, "crosshall setup claude codex --apply")
 	}
 	if env.Setup == nil {
 		return o.unavailableFor(env, action)
@@ -42,7 +67,43 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 		req.Input = strings.NewReader("")
 	}
 	if err := env.Setup(req); err != nil {
+		var result interface{ Reported() bool }
+		if errors.As(err, &result) && result.Reported() {
+			return core.ExitError
+		}
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
 	return core.ExitOK
+}
+
+// parseSetup reads the setup and uninstall forms. Vendor names must be
+// shipped hook adapters, each named once.
+func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
+	req := SetupRequest{Action: action}
+	if action == "setup" && len(args) == 1 {
+		switch args[0] {
+		case "off", "status":
+			req.Action = args[0]
+			return req, true
+		case "--offer":
+			req.Offer = true
+			return req, true
+		}
+	}
+	for _, arg := range args {
+		switch {
+		case arg == "--dry-run" && !req.DryRun:
+			req.DryRun = true
+		case arg == "--apply" && action == "setup" && !req.Apply:
+			req.Apply = true
+		case slices.Contains(adapters, arg) && !slices.Contains(req.Adapters, arg):
+			req.Adapters = append(req.Adapters, arg)
+		default:
+			return req, false
+		}
+	}
+	if req.Apply && (req.DryRun || len(req.Adapters) == 0) {
+		return req, false
+	}
+	return req, true
 }

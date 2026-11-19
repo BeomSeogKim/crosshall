@@ -387,8 +387,16 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		} else if taken, err := aliasLive(ctx, tx, ch.id, alias); err != nil {
 			return core.Result{}, err
 		} else if taken {
-			return Refuse(core.CodeAliasTaken, fmt.Sprintf("@%s is taken in #%s", alias, ch.name),
-				fmt.Sprintf("crosshall join %s --as <another alias>", ch.name)), nil
+			taken := fmt.Sprintf("@%s is taken in #%s", alias, ch.name)
+			retry := fmt.Sprintf("crosshall join %s --as <another alias>", ch.name)
+			if existing.id != 0 {
+				// A departed member is already enrolled: a restore cannot apply.
+				return Refuse(core.CodeAliasTaken, taken, retry), nil
+			}
+			// A key that has joined can no longer be restored, so a session
+			// that lost its identity must not take the retry first.
+			return Refuse(core.CodeAliasTaken, taken+". Joining under another alias makes this session's key ineligible for owner restore.",
+				"if this session lost its identity, ask the owner to run crosshall owner restore first; a new session can run "+retry), nil
 		}
 	}
 

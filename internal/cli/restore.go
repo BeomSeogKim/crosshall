@@ -9,7 +9,7 @@ import (
 )
 
 func restoreCall(args []string) (Call, error) {
-	usage := errors.New("usage: crosshall owner restore <binding-id> --new-key <vendor>:<key> (get the key with crosshall whoami --full)")
+	usage := errors.New("usage: crosshall owner restore <binding-id> --new-key <vendor>:<key> (the binding ID is the number crosshall owner who --all shows; get the key with crosshall whoami --full)")
 	if len(args) < 2 {
 		return Call{}, usage
 	}

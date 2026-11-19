@@ -56,8 +56,9 @@ type InboxItem struct {
 }
 
 type WaitingResult struct {
-	Channel  string          `json:"channel"`
-	Requests []LedgerRequest `json:"requests"`
+	GeneratedAtMS int64           `json:"generated_at_ms"`
+	Channel       string          `json:"channel"`
+	Requests      []LedgerRequest `json:"requests"`
 }
 
 type StatusResult struct {
@@ -114,6 +115,10 @@ type LedgerRecipient struct {
 	LateByMS          *int64    `json:"late_by_ms"`
 	ReplyUnread       bool      `json:"reply_unread,omitempty"`
 	Receipts          []Receipt `json:"receipts"`
+	// Observed is the recipient's last adapter fact, for an open obligation
+	// only: what it was last seen doing, with no judgement attached. It is
+	// in absolute time, so the ledger does not change with the clock.
+	Observed *ObservedFact `json:"observed,omitempty"`
 }
 
 type Receipt struct {
@@ -190,7 +195,7 @@ func (s *Service) waiting(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if err := observe(ctx, tx, member.principal, now); err != nil {
 		return core.Result{}, err
 	}
-	return OK(WaitingResult{Channel: member.name, Requests: requests})
+	return OK(WaitingResult{GeneratedAtMS: ms(now), Channel: member.name, Requests: requests})
 }
 
 func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {
@@ -374,6 +379,11 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 			r.ReplyUnread = false
 		}
 		r.setDeadlineState(m.DueAtMS, ms(now))
+		if r.State == "open" {
+			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
+				return nil, err
+			}
+		}
 		if len(out) == 0 || out[len(out)-1].ID != m.ID {
 			out = append(out, m)
 		}

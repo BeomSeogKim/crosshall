@@ -157,7 +157,7 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintln(w, "No outstanding requests.")
 		}
 		for _, req := range r.Requests {
-			printLedgerRequest(w, req, false)
+			printLedgerRequest(w, req, false, r.GeneratedAtMS)
 		}
 	case domain.Status, domain.OwnerStatus:
 		var r domain.StatusResult
@@ -173,7 +173,7 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				fmt.Fprintf(w, "  @%s (%s, binding %d)\n", binding.Alias, binding.State, binding.ID)
 			}
 			for _, req := range ch.Requests {
-				printLedgerRequest(w, req, true)
+				printLedgerRequest(w, req, true, r.GeneratedAtMS)
 			}
 			for _, ex := range ch.Exchanges {
 				fmt.Fprintf(w, "  x%d: %d remaining (%d spent of %d)\n", ex.ID, ex.Remaining, ex.Spent, ex.Granted)
@@ -251,12 +251,17 @@ func printInboxItems(w io.Writer, title string, items []domain.InboxItem) {
 	}
 }
 
-func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool) {
+// printLedgerRequest prints a request and its recipients. nowMS is when the
+// ledger was generated: it gives the pickup age and the observed fact's age.
+func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS int64) {
 	fmt.Fprintf(w, "#%d from @%s, due %s (x%d)\n", r.ID, r.Sender, ledgerTime(r.DueAtMS), r.ExchangeID)
 	for _, recipient := range r.Recipients {
 		state := recipient.State
-		if state == "open" && recipient.PickedUpAtMS != nil {
-			state = "picked up"
+		if at := recipient.PickedUpAtMS; state == "open" && at != nil {
+			state = "picked up " + ledgerTime(*at)
+			if nowMS != 0 {
+				state += " (" + age((nowMS-*at)/1000) + " ago)"
+			}
 		} else if state == "open" {
 			state = "stored"
 		}
@@ -275,6 +280,10 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool) {
 		}
 		if at := recipient.MoreTimeAtMS; at != nil {
 			fmt.Fprintf(w, ", more time requested at %s", ledgerTime(*at))
+		}
+		if o := recipient.Observed; o != nil && nowMS != 0 {
+			seen := o.At(nowMS)
+			fmt.Fprintf(w, "; last observed: %s", observedText(&seen))
 		}
 		fmt.Fprintln(w)
 		if full {

@@ -30,12 +30,37 @@ type Observed struct {
 	Verified bool `json:"verified"`
 }
 
-// presenceOf projects the principal's effective fact: the latest, in causal
-// order, among the observations of its latest launch. Nil means no adapter fact.
+// ObservedFact is a member's effective adapter fact in absolute time.
+type ObservedFact struct {
+	Fact         string `json:"fact"`
+	Source       string `json:"source"`
+	AtMS         int64  `json:"at_ms"`
+	FreshUntilMS *int64 `json:"fresh_until_ms,omitempty"`
+	Verified     bool   `json:"verified"`
+}
+
+// At is the fact as seen at nowMS: its age, and whether its cap has passed.
+func (f ObservedFact) At(nowMS int64) Observed {
+	return Observed{Fact: f.Fact, Source: f.Source, AgeS: max((nowMS-f.AtMS)/1000, 0),
+		Current: f.FreshUntilMS == nil || nowMS < *f.FreshUntilMS, Verified: f.Verified}
+}
+
+// presenceOf projects the principal's effective fact as of now. Nil means
+// no adapter fact.
 func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time) (*Observed, error) {
+	f, err := latestFact(ctx, tx, principal)
+	if f == nil || err != nil {
+		return nil, err
+	}
+	o := f.At(ms(now))
+	return &o, nil
+}
+
+// latestFact is the principal's effective fact: the latest, in causal
+// order, among the observations of its latest launch. Nil means no adapter fact.
+func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFact, error) {
 	var (
-		o       Observed
-		hookAt  int64
+		o       ObservedFact
 		fresh   sql.NullInt64
 		adapter string
 	)
@@ -63,7 +88,7 @@ func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time
 		                  WHERE c.turn_ref IS NOT NULL AND s.turn_ref = c.turn_ref AND s.stage > c.stage)
 		ORDER BY c.position DESC, c.stage DESC, c.hook_at_ms DESC, c.seq DESC
 		LIMIT 1`, principal, futureSlackMS).
-		Scan(&o.Fact, &adapter, &hookAt, &fresh)
+		Scan(&o.Fact, &adapter, &o.AtMS, &fresh)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -71,8 +96,9 @@ func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time
 		return nil, err
 	}
 	o.Source = adapterOf(adapter)
-	o.AgeS = max((ms(now)-hookAt)/1000, 0)
-	o.Current = !fresh.Valid || ms(now) < fresh.Int64
+	if fresh.Valid {
+		o.FreshUntilMS = &fresh.Int64
+	}
 	return &o, nil
 }
 

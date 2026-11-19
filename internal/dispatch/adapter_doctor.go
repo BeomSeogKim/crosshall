@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/setup"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -22,9 +23,13 @@ type doctorAdapter struct {
 }
 
 type doctorHookActivity struct {
-	Date   string         `json:"date"`
-	Counts map[string]int `json:"counts"`
-	P95MS  int            `json:"p95_ms"`
+	Date            string         `json:"date"`
+	Counts          map[string]int `json:"counts"`
+	P95MS           int            `json:"p95_ms"`
+	RecordedStarts  int            `json:"recorded_starts"`
+	HelperTimeouts  int            `json:"helper_timeouts"`
+	MissedDeadlines int            `json:"missed_deadlines"`
+	VendorTimeouts  *int           `json:"vendor_timeouts"` // The vendor's backstop is not observable here.
 }
 
 func localDoctorAdapters(stateRoot string) []doctorAdapter {
@@ -88,7 +93,12 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		}
 		slices.Sort(latencies)
 		p95 := latencies[(95*len(latencies)+99)/100-1]
-		adapter.Hooks = &doctorHookActivity{Date: date, Counts: counts[adapter.Adapter], P95MS: p95}
+		beforeDeadline, _ := slices.BinarySearch(latencies, int(hook.Budget.Milliseconds()))
+		adapter.Hooks = &doctorHookActivity{
+			Date: date, Counts: counts[adapter.Adapter], P95MS: p95,
+			RecordedStarts: len(latencies), HelperTimeouts: counts[adapter.Adapter]["deadline"],
+			MissedDeadlines: len(latencies) - beforeDeadline,
+		}
 	}
 }
 

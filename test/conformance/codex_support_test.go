@@ -16,11 +16,14 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 var codexPaths = map[string]string{
@@ -164,6 +167,34 @@ func codexCommand(t *testing.T, bin string, env []string, port string) []string 
 	}
 }
 
+// macOS cannot stack sandbox-exec profiles. The outer vendor-home and network
+// restrictions also apply to every tool process. Limit writes to this run's
+// private files and dispatcher exchange before selecting the outer sandbox.
+func codexToolCommand(t *testing.T, bin string, env []string, port, root string) []string {
+	t.Helper()
+	prefix := codexCommand(t, bin, env, port)
+	if !slices.Contains(env, codexRootKey+"="+root) {
+		t.Fatal("tool sandbox root differs from the validated fixture home")
+	}
+	if runtime.GOOS == "darwin" {
+		if len(prefix) != 4 || prefix[0] != "/usr/bin/sandbox-exec" || prefix[1] != "-p" {
+			t.Fatal("tool fixture requires the outer macOS sandbox")
+		}
+		physicalTmp, err := filepath.EvalSymlinks("/tmp")
+		codexMust(t, err)
+		rv := filepath.Join(physicalTmp, filepath.Base(ident.Rendezvous(filepath.Join(root, "state"), os.Geteuid())))
+		prefix[2] += fmt.Sprintf(`(deny file-write*)(allow file-write* (subpath %q) (subpath %q) (literal "/dev/null"))`, root, rv)
+	}
+	return prefix
+}
+
+func codexToolSandbox() string {
+	if runtime.GOOS == "darwin" {
+		return "danger-full-access" // the OS profile above encloses both the CLI and its children
+	}
+	return "workspace-write"
+}
+
 func TestCodexIsolation(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0700); err != nil {
@@ -239,6 +270,9 @@ func startCodexFixture(t *testing.T, markers map[string]string) *codexFixture {
 		f.requests = append(f.requests, counts)
 		number := len(f.requests)
 		f.mu.Unlock()
+		if number == 1 {
+			logRequestTokenSamples(t, "codex", body, "hint", "roster", "pending")
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, codexResponseStream, number)
 	}))

@@ -286,6 +286,32 @@ type codexResult struct {
 	Level string `json:"level"`
 	Check string `json:"check"`
 }
+
+// Only the measured vendor build, platform, mode and adapter revision have a
+// negative result. A different tuple needs its own conformance measurements.
+func codexReminderEvidence(version, platform, mode, revision string) codexResult {
+	if version == "0.170.0" && platform == "darwin-arm64" && mode == "exec" && revision == "codex-1" {
+		return codexResult{"reminder", "unavailable", "The hook could not verify its launch version or mode. This run did not measure whether the read process receives the native tool-call ID."}
+	}
+	return codexResult{"reminder", "candidate", "No reminder verdict was established for this build, platform, mode and manifest revision."}
+}
+
+func TestCodexReminderEvidenceScope(t *testing.T) {
+	for _, tc := range []struct{ version, platform, mode, revision, level string }{
+		{"0.170.0", "darwin-arm64", "exec", "codex-1", "unavailable"},
+		{"0.169.0-alpha.11.1", "darwin-arm64", "exec", "codex-1", "candidate"},
+		{"0.170.0", "linux-arm64", "exec", "codex-1", "candidate"},
+		{"0.170.0", "darwin-amd64", "exec", "codex-1", "candidate"},
+		{"0.170.0", "darwin-arm64", "interactive", "codex-1", "candidate"},
+		{"0.170.0", "darwin-arm64", "exec", "codex-2", "candidate"},
+	} {
+		got := codexReminderEvidence(tc.version, tc.platform, tc.mode, tc.revision)
+		if got.Cap != "reminder" || got.Level != tc.level || got.Check == "" {
+			t.Errorf("%v: got %+v", tc, got)
+		}
+	}
+}
+
 type codexEvidence struct {
 	Vendor   string        `json:"vendor"`
 	Version  string        `json:"vendor_version"`
@@ -499,17 +525,29 @@ func TestCodexExecConformance(t *testing.T) {
 			t.Fatalf("quiet turn %s callback counts: %q", event, data)
 		}
 	}
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	reminder := codexReminderEvidence(match[1], platform, "exec", manifest.Revision)
+	if reminder.Level == "unavailable" {
+		var unverified bool
+		err := db.QueryRow(`SELECT COUNT(*) > 0 AND COUNT(*) = SUM(
+			json_extract(profile, '$.vendor_version') = 'unverified' AND json_extract(profile, '$.mode') = 'unverified')
+			FROM adapter_launch WHERE json_extract(profile, '$.adapter') = 'codex'`).Scan(&unverified)
+		codexMust(t, err)
+		if !unverified {
+			t.Fatal("Codex supplied new launch provenance; re-evaluate reminder availability")
+		}
+	}
 	codexLedger(t, db)
 	codexMust(t, db.Close())
 	stop()
 	if markers := codexTurn(t, prefix, env, other, model, "Say OK."); len(markers) != 0 {
 		t.Fatalf("dispatcher outage added context: %v", markers)
 	}
-	e := codexEvidence{"codex", match[1], runtime.GOOS + "-" + runtime.GOARCH, "exec", manifest.Revision, time.Now().UnixMilli(), []codexResult{
+	e := codexEvidence{"codex", match[1], platform, "exec", manifest.Revision, time.Now().UnixMilli(), []codexResult{
 		{"enroll", "tested", "SessionStart enrolled once and supplied the hint and roster with developer role. Resume preserved membership."},
 		{"boundary", "tested", "One prompt offered one unread ID with developer role, without its body or pickup. Four resumed callbacks emitted zero bytes. Quiet and dispatcher-outage turns each made one model request."},
 		{"observe", "candidate", "Prompt, Stop and SessionEnd observations recorded. Approval was not exercised. The session-scoped end preserved membership."},
-		{"reminder", "candidate", "No pickup or Stop continuation was exercised."},
+		reminder,
 	}}
 	file, contents := codexEvidenceFile(t, root, e)
 	switch os.Getenv("CROSSHALL_CONFORMANCE_OUTPUT_ONLY") {

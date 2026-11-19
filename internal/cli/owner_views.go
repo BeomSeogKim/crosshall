@@ -193,15 +193,27 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			Enabled, Reminder bool
 			Epoch             uint64
 		}
+		Reminder *struct {
+			Provenance         string
+			ReleaseState       string `json:"release_state"`
+			ExtraModelRequests int    `json:"extra_model_requests"`
+			Evidence           []struct {
+				Version, Platform, Mode, Level, Reason string
+				ManifestRev                            string `json:"manifest_rev"`
+			}
+		}
 		Evidence []struct {
 			Version, Platform, Mode, Capability, Level string
 			ManifestRev                                string `json:"manifest_rev"`
 		}
 		UnverifiedLaunches *int `json:"unverified_launches"`
 		Hooks              *struct {
-			Date   string
-			Counts map[string]int
-			P95MS  int `json:"p95_ms"`
+			Date            string
+			Counts          map[string]int
+			P95MS           int `json:"p95_ms"`
+			RecordedStarts  int `json:"recorded_starts"`
+			HelperTimeouts  int `json:"helper_timeouts"`
+			MissedDeadlines int `json:"missed_deadlines"`
 		}
 	}
 	if err := json.Unmarshal(raw, &adapters); err != nil {
@@ -229,6 +241,24 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			}
 			fmt.Fprintf(&output, "  policy %s, reminder %s, epoch %d\n", policy, reminder, a.Policy.Epoch)
 		}
+		if a.Reminder != nil {
+			fmt.Fprintf(&output, "  reply reminder %s (no opt-in)\n", a.Reminder.ReleaseState)
+			for _, evidence := range a.Reminder.Evidence {
+				fmt.Fprintf(&output, "  reply reminder evidence %s", evidence.Level)
+				if evidence.Version != "" {
+					fmt.Fprintf(&output, " for %q %q", evidence.Version, evidence.Platform)
+					if evidence.Mode != "" {
+						fmt.Fprintf(&output, " %q", evidence.Mode)
+					}
+					fmt.Fprintf(&output, " %q", evidence.ManifestRev)
+				}
+				if evidence.Reason != "" {
+					fmt.Fprintf(&output, " — %s", evidence.Reason)
+				}
+				fmt.Fprintln(&output)
+			}
+			fmt.Fprintf(&output, "  extra model requests per reminder %d — %s\n", a.Reminder.ExtraModelRequests, a.Reminder.Provenance)
+		}
 		if a.UnverifiedLaunches != nil {
 			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)
 		}
@@ -246,6 +276,8 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				fmt.Fprintf(&output, " %s=%d", outcome, a.Hooks.Counts[outcome])
 			}
 			fmt.Fprintln(&output)
+			fmt.Fprintf(&output, "  recorded starts %d, helper timeouts %d, missed deadlines %d, vendor timeouts unknown\n",
+				a.Hooks.RecordedStarts, a.Hooks.HelperTimeouts, a.Hooks.MissedDeadlines)
 		}
 	}
 	_, err := io.WriteString(w, output.String())

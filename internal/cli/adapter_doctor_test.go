@@ -15,13 +15,21 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		Doctor: func(context.Context) core.Result {
 			return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{
 				"checks": [{"name":"lock","ok":true,"detail":"dispatcher lock held"}],
-				"adapters":[{"adapter":"claude","executable":"/bin/claude","version":"2.1.327",
+				"adapters":[{"adapter":"claude","executable":"/bin/claude","version":"9.1.42",
 				"install_state":"installed","installed":5,"intended":6,"drifted":1,"trust":"unknown",
 				"policy":{"enabled":true,"reminder":false,"epoch":7},
+				"reminder":{"available":false,"release_state":"parked","reason":"The release has no active reminder path.",
+					"extra_model_requests":1,"provenance":"Fixed crosshall text sent to the model.",
+					"evidence":[{"version":"9.1.42","platform":"darwin-arm64","mode":"print","manifest_rev":"claude-1",
+						"level":"candidate","reason":"The native tool-call ID was observed."}]},
 				"evidence":[{"version":"2.1.327","platform":"darwin-arm64","mode":"print",
 				"manifest_rev":"claude-1","capability":"enroll","level":"tested"}],
 				"unverified_launches":2,
-				"hooks":{"date":"20261119","p95_ms":10,"counts":{"clean":2,"rpc":1}}}]
+				"hooks":{"date":"20261119","p95_ms":150,"counts":{"clean":2,"deadline":2,"rpc":1},
+					"recorded_starts":5,"helper_timeouts":2,"missed_deadlines":1,"vendor_timeouts":null}},
+				{"adapter":"codex","intended":5,"reminder":{"available":false,"release_state":"parked",
+					"reason":"The release has no active reminder path.","extra_model_requests":1,
+					"provenance":"Fixed crosshall text sent to the model.","evidence":[{"level":"unknown"}]}}]
 			}`)}
 		},
 	}
@@ -29,8 +37,14 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	if code != core.ExitOK {
 		t.Fatalf("doctor diagnostics exit %d: %s", code, out)
 	}
-	for _, want := range []string{"/bin/claude", "2.1.327", "5/6 installed", "1 drifted", "epoch 7",
-		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode", "p95 10 ms", "clean=2 rpc=1"} {
+	for _, want := range []string{"/bin/claude", "9.1.42", "5/6 installed", "1 drifted", "policy on, reminder off, epoch 7",
+		"reply reminder parked (no opt-in)",
+		`reply reminder evidence candidate for "9.1.42" "darwin-arm64" "print" "claude-1" — The native tool-call ID was observed.`,
+		"reply reminder evidence unknown\n",
+		"extra model requests per reminder 1 — Fixed crosshall text sent to the model.",
+		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode",
+		"p95 150 ms", "clean=2 deadline=2 rpc=1",
+		"recorded starts 5, helper timeouts 2, missed deadlines 1, vendor timeouts unknown", "hook counters unknown"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in %s", want, out)
 		}
@@ -38,12 +52,37 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	out, _, code = run(t, env, "--json", "owner", "doctor")
 	var data struct {
 		Adapters []struct {
-			Adapter string
-			Hooks   json.RawMessage
+			Adapter  string
+			Hooks    json.RawMessage
+			Reminder *struct {
+				Available          *bool
+				Reason, Provenance string
+				ReleaseState       string `json:"release_state"`
+				ExtraModelRequests int    `json:"extra_model_requests"`
+				Evidence           []struct {
+					Version, Platform, Mode, Level, Reason string
+					ManifestRev                            string `json:"manifest_rev"`
+				}
+			}
 		}
 	}
 	if err := json.Unmarshal([]byte(out), &data); code != core.ExitOK || err != nil ||
-		len(data.Adapters) != 1 || data.Adapters[0].Adapter != "claude" || len(data.Adapters[0].Hooks) == 0 {
+		len(data.Adapters) != 2 || data.Adapters[0].Adapter != "claude" || len(data.Adapters[0].Hooks) == 0 ||
+		data.Adapters[1].Adapter != "codex" || len(data.Adapters[1].Hooks) != 0 {
 		t.Fatalf("doctor diagnostics JSON exit %d: %s (%v)", code, out, err)
+	}
+	if r := data.Adapters[0].Reminder; r == nil || r.Available == nil || *r.Available ||
+		r.ReleaseState != "parked" || r.Reason != "The release has no active reminder path." ||
+		r.ExtraModelRequests != 1 || r.Provenance != "Fixed crosshall text sent to the model." {
+		t.Errorf("Claude reminder status: %+v", r)
+	} else if len(r.Evidence) != 1 || r.Evidence[0].Level != "candidate" ||
+		r.Evidence[0].Version != "9.1.42" || r.Evidence[0].Platform != "darwin-arm64" ||
+		r.Evidence[0].Mode != "print" || r.Evidence[0].ManifestRev != "claude-1" ||
+		r.Evidence[0].Reason != "The native tool-call ID was observed." {
+		t.Errorf("Claude reminder evidence: %+v", r.Evidence)
+	}
+	if r := data.Adapters[1].Reminder; r == nil || len(r.Evidence) != 1 ||
+		r.Evidence[0].Level != "unknown" || r.Evidence[0].Mode != "" {
+		t.Errorf("Codex reminder evidence: %+v", r)
 	}
 }

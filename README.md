@@ -40,7 +40,8 @@ For release tags with binary assets, the installer downloads the archive
 for macOS or Linux on arm64 or x86-64 and verifies its SHA-256 checksum
 before it unpacks the executable. The checksum verifies archive integrity.
 The builder's identity remains unverified. This path uses curl and either
-`sha256sum` or `shasum`.
+`sha256sum` or `shasum`. GNU tar also needs `gzip` on PATH to read the
+archive.
 
 If there is no verified archive, the installer reports why and builds from
 the checked-out tag with Go. Use `./scripts/install.sh --source` to choose

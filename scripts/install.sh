@@ -126,7 +126,11 @@ fetch_prebuilt() {
 
   # Read only the named members and never extract entries onto disk. Check
   # the archive identifies this checkout, even if a fork reuses the tag name.
-  if ! archived_commit=$(tar -xOzf "$stage/$asset" COMMIT) || [[ $archived_commit != "$commit" ]]; then
+  if ! archived_commit=$(tar -xOzf "$stage/$asset" COMMIT); then
+    prebuilt_reason='cannot read the verified gzip archive with tar'
+    return 1
+  fi
+  if [[ $archived_commit != "$commit" ]]; then
     prebuilt_reason='binary archive does not match this checkout'
     return 1
   fi

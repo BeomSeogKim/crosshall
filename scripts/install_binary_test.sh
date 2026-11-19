@@ -16,6 +16,9 @@ fail() { echo "install_binary_test: $*" >&2; exit 1; }
 for tool in awk bash cat chmod cmp dirname git grep ln mkdir mktemp mv rm sleep tar uname; do
   ln -s "$(command -v "$tool")" "$tools/$tool"
 done
+if tar --version | grep -q 'GNU tar'; then
+  ln -s "$(command -v gzip)" "$tools/gzip"
+fi
 if command -v sha256sum >/dev/null; then
   ln -s "$(command -v sha256sum)" "$tools/sha256sum"
   digest() { sha256sum < "$1"; }
@@ -150,4 +153,13 @@ for test_case in bad missing wrong-commit; do
     fail 'downloaded archive without a checksum'
   fi
 done
+
+if [[ -L $tools/gzip ]]; then
+  rm -- "$tools/gzip"
+  install good "$tmp/no-gzip" || fail "no fallback without gzip: $(cat "$tmp/errors")"
+  cmp -s "$tmp/no-gzip/crosshall" "$repo/from-source" || fail 'did not install from source without gzip'
+  [[ $(cat "$tmp/executions") == source ]] || fail 'archive executable ran without gzip'
+  grep -Fq 'cannot read the verified gzip archive with tar); falling back to a source build' "$tmp/errors" ||
+    fail "wrong diagnostic without gzip: $(cat "$tmp/errors")"
+fi
 printf '%s\n' 'binary installer checks passed'

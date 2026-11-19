@@ -50,6 +50,8 @@ type ReplyResult struct {
 	DueAtMS    int64  `json:"due_at_ms"`
 	LateByMS   int64  `json:"late_by_ms,omitempty"`
 	Obligation string `json:"obligation"`
+	// A final response may settle the request before its recipient reads it.
+	OriginalUnread bool `json:"original_unread,omitempty"`
 	// Delivery is the reply's own state on its way to the asker, current as
 	// of this response (also on a replay).
 	Delivery Delivery `json:"delivery"`
@@ -90,7 +92,7 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 		if err != nil || r.Status != core.ExitOK {
 			return r, err
 		}
-		return withCurrentReplyDelivery(ctx, tx, r)
+		return withCurrentReplyDelivery(ctx, tx, r, m.principal)
 	}
 
 	var (
@@ -108,8 +110,11 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 		return core.Result{}, err
 	}
 	var state string
+	var unread bool
 	err = tx.QueryRowContext(ctx,
-		`SELECT state FROM obligation WHERE message_id = ? AND principal_id = ?`, cmd.To, m.principal).Scan(&state)
+		`SELECT o.state, r.picked_up_at_ms IS NULL FROM obligation o
+		 JOIN recipient r USING (message_id, principal_id)
+		 WHERE o.message_id = ? AND o.principal_id = ?`, cmd.To, m.principal).Scan(&state, &unread)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Refuse(core.CodeNotObligated, fmt.Sprintf("#%d was not addressed to you", cmd.To), "crosshall inbox"), nil
 	}
@@ -153,6 +158,7 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 			return core.Result{}, err
 		}
 	} else {
+		out.OriginalUnread = unread
 		out.Obligation = "replied"
 		if cmd.Outcome == OutcomeDecline {
 			out.Obligation = "declined"
@@ -199,8 +205,9 @@ func replyDelivery(ctx context.Context, tx store.Tx, id int64) (Delivery, error)
 	return d[0], nil
 }
 
-// withCurrentReplyDelivery refreshes a replayed reply's delivery to the asker.
-func withCurrentReplyDelivery(ctx context.Context, tx store.Tx, r core.Result) (core.Result, error) {
+// Refresh both sides on replay: the asker may have read the reply and the
+// recipient may have read the original request since the first response.
+func withCurrentReplyDelivery(ctx context.Context, tx store.Tx, r core.Result, principal int64) (core.Result, error) {
 	var out ReplyResult
 	if err := json.Unmarshal(r.Data, &out); err != nil {
 		return core.Result{}, err
@@ -210,5 +217,12 @@ func withCurrentReplyDelivery(ctx context.Context, tx store.Tx, r core.Result) (
 		return core.Result{}, err
 	}
 	out.Delivery = d
+	if out.Outcome != OutcomeMoreTime {
+		err := tx.QueryRowContext(ctx, `SELECT picked_up_at_ms IS NULL FROM recipient
+			WHERE message_id = ? AND principal_id = ?`, out.Ask, principal).Scan(&out.OriginalUnread)
+		if err != nil {
+			return core.Result{}, err
+		}
+	}
 	return OK(out)
 }

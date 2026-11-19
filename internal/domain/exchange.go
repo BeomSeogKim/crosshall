@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -138,8 +140,8 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 		}
 		if _, ok := owed[exchange.Int64]; len(owed) > 0 && !ok {
 			r := Refuse(core.CodeBadRoot,
-				fmt.Sprintf("#%d belongs to x%d, but you owe answers elsewhere", cmd.Re, exchange.Int64),
-				reHints(owed))
+				fmt.Sprintf("#%d belongs to x%d, but you owe an answer in another exchange. Use --re with a request you owe.", cmd.Re, exchange.Int64),
+				readOwedHint(owed))
 			return attribution{}, &r, nil
 		}
 		return existing(ctx, tx, m, exchange.Int64)
@@ -157,8 +159,8 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 		}
 	default:
 		r := Refuse(core.CodeAmbiguousRoot,
-			"you owe answers in more than one exchange; say which one this request belongs to",
-			reHints(owed))
+			"you owe answers in multiple exchanges. Use --re with the ID of the request you want to continue.",
+			readOwedHint(owed))
 		return attribution{}, &r, nil
 	}
 
@@ -187,7 +189,7 @@ func existing(ctx context.Context, tx store.Tx, m member, id int64) (attribution
 func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (attribution, *core.Result, error) {
 	if len(owed) > 0 {
 		r := Refuse(core.CodeMustAnswerFirst,
-			"you owe an answer; settle it, or continue that exchange", reHints(owed))
+			"you owe an answer. Reply first, or replace --new with --re <request-id> to follow up on the request.", readOwedHint(owed))
 		return attribution{}, &r, nil
 	}
 	var unread sql.NullInt64
@@ -216,13 +218,13 @@ func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (
 	return attribution{exchange: exchangeRow{granted: DefaultCredit}, isNew: true}, nil, nil
 }
 
-func reHints(owed map[int64]int64) string {
-	var hints []string
-	for ex, ask := range owed {
-		hints = append(hints, fmt.Sprintf("x%d: --re %d", ex, ask))
+func readOwedHint(owed map[int64]int64) string {
+	var command strings.Builder
+	command.WriteString("crosshall read")
+	for _, id := range slices.Sorted(maps.Values(owed)) {
+		fmt.Fprintf(&command, " %d", id)
 	}
-	sortStrings(hints)
-	return strings.Join(hints, "; ")
+	return command.String()
 }
 
 // charge checks that the exchange can pay for one request of n units. An ask

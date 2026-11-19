@@ -64,14 +64,16 @@ type Delivery struct {
 
 // AskResult is the data of a committed request.
 type AskResult struct {
-	ID          int64      `json:"id"`
-	Channel     string     `json:"channel"`
-	Exchange    int64      `json:"exchange"`
-	NewExchange bool       `json:"new_exchange"`
-	DueAtMS     int64      `json:"due_at_ms"`
-	Debit       int64      `json:"debit"`
-	Remaining   int64      `json:"remaining"`
-	Recipients  []Delivery `json:"recipients"`
+	ID                     int64      `json:"id"`
+	Channel                string     `json:"channel"`
+	Exchange               int64      `json:"exchange"`
+	NewExchange            bool       `json:"new_exchange"`
+	ExchangeOpener         string     `json:"exchange_opener,omitempty"`
+	ExchangeOpenerDeparted bool       `json:"exchange_opener_departed,omitempty"`
+	DueAtMS                int64      `json:"due_at_ms"`
+	Debit                  int64      `json:"debit"`
+	Remaining              int64      `json:"remaining"`
+	Recipients             []Delivery `json:"recipients"`
 }
 
 func sortedUnique(in []string) []string {
@@ -87,8 +89,6 @@ func sortedUnique(in []string) []string {
 	sort.Strings(out)
 	return out
 }
-
-func sortStrings(s []string) { sort.Strings(s) }
 
 // ParseDue reads a request deadline: a duration such as 90s, 30m or 2h,
 // from one minute to one day. Empty means the default.
@@ -253,7 +253,11 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		if err != nil || r.Status != core.ExitOK {
 			return r, err
 		}
-		return withCurrentDelivery(ctx, tx, r)
+		var out AskResult
+		if err := json.Unmarshal(r.Data, &out); err != nil {
+			return core.Result{}, err
+		}
+		return askReceipt(ctx, tx, m.principal, out)
 	}
 
 	to, refusal, err := audience(ctx, tx, m, cmd)
@@ -320,10 +324,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: a.isNew,
 		DueAtMS: ms(now.Add(due)), Debit: n, Remaining: a.exchange.balance() - n,
 	}
-	if out.Recipients, err = deliveries(ctx, tx, id); err != nil {
-		return core.Result{}, err
-	}
-	r, err := OK(out)
+	r, err := askReceipt(ctx, tx, m.principal, out)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -391,12 +392,17 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 	return out, rows.Err()
 }
 
-// withCurrentDelivery refreshes the recipient states of a replayed request:
-// the frozen parts come from the first result, delivery is as of now.
-func withCurrentDelivery(ctx context.Context, tx store.Tx, r core.Result) (core.Result, error) {
-	var out AskResult
-	if err := json.Unmarshal(r.Data, &out); err != nil {
-		return core.Result{}, err
+// Resolve the opener by principal, since a departed member's alias can be reused.
+// A replay keeps its original debit and refreshes delivery and display names.
+func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult) (core.Result, error) {
+	if !out.NewExchange {
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(b.alias, ''), COALESCE(b.state = 'departed', 0)
+			FROM exchange e LEFT JOIN binding b ON b.principal_id = e.opened_by_id
+				AND b.channel_id = e.channel_id AND b.principal_id <> ?
+			WHERE e.id = ?`, sender, out.Exchange).Scan(&out.ExchangeOpener, &out.ExchangeOpenerDeparted)
+		if err != nil {
+			return core.Result{}, err
+		}
 	}
 	d, err := deliveries(ctx, tx, out.ID)
 	if err != nil {

@@ -191,8 +191,8 @@ func TestFollowUpsStayInTheirExchange(t *testing.T) {
 	}
 	r := f.ask(c, Ask{To: []string{"form"}, Body: "which?"}, "")
 	wantCode(t, r, core.ExitRefused, core.CodeAmbiguousRoot)
-	if hint := decode[Refusal](t, r).Hint; hint == "" {
-		t.Fatal("ambiguous_root without --re hints")
+	if hint := decode[Refusal](t, r).Hint; hint != "crosshall read "+itoa(sub.ID)+" "+itoa(x2c.ID) {
+		t.Fatalf("unexpected owed request hint %q", hint)
 	}
 	via := decode[AskResult](t, f.ask(c, Ask{To: []string{"form"}, Body: "for x2", Re: x2c.ID}, ""))
 	if via.Exchange != x2.Exchange {
@@ -212,6 +212,12 @@ func TestReRules(t *testing.T) {
 	wantCode(t, f.ask(c, Ask{To: []string{"form"}, Body: "x", Re: 999}, ""), core.ExitRefused, core.CodeNotFound)
 	if got := decode[AskResult](t, f.ask(c, Ask{To: []string{"form"}, Body: "x", Re: x2.ID}, "")); got.Exchange != x2.Exchange {
 		t.Fatalf("--re to x2 went to x%d", got.Exchange)
+	}
+	other := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "another x2 request", Re: x2.ID}, ""))
+	wrong := f.ask(b, Ask{To: []string{"a11y"}, Body: "continue x1", Re: x1.ID}, "")
+	wantCode(t, wrong, core.ExitRefused, core.CodeBadRoot)
+	if hint := decode[Refusal](t, wrong).Hint; hint != "crosshall read "+itoa(other.ID) {
+		t.Fatalf("wrong exchange refusal pointed to %q", hint)
 	}
 }
 

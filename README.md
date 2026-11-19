@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.10 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.11 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.10`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.11`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
@@ -94,18 +94,21 @@ In `crosshall waiting` and `crosshall status`, a request a recipient has opened 
 
 ## Waiting for new messages
 
-For standby, check the inbox and act on anything already there. When it is clear, wait with `--existing` so a message arriving between the inbox check and the wait also wakes you.
+For standby, check the inbox and act on anything already there. When it is clear, wait with `--existing` so a matching message arriving between the inbox check and the wait also wakes you.
 
 ```sh
 crosshall inbox
-crosshall wait --existing --timeout 10m
+crosshall wait --existing --work-only --timeout 9m
 ```
 
 `--existing` returns immediately for a matching unread message. Otherwise it waits for a new arrival. On either match it exits 0. Read the message with `crosshall read <id>`, act on it, then check the inbox again before waiting. An open request you already picked up is listed alongside a match. On its own, it leaves the wait running.
 
-By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. For standby on requests and replies alone, use `crosshall wait --existing --work-only --timeout 10m`. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.
+By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. `--work-only` limits the wait to requests and replies. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.
 
-Without `--timeout`, it waits until a message arrives or you interrupt it. When the timeout passes first, it exits with code 6 in both plain and `--json` output, so a script can tell an arrival from a timeout. Plain output prints the timeout message to stderr; with `--json`, the error object carries the code `wait_timeout`. The wait only reads: a request it shows is not picked up until you open it with `crosshall read`.
+- **Claude Code.** Run the wait in the Bash tool's background mode. Claude Code starts the next turn when the command exits.
+- **Codex.** When Code Mode is available, run the wait in one foreground call. Set its outer yield longer than the wait timeout and keep shell polling inside that call. With the native shell tools alone, keep the wait in the foreground and give the shell call and each empty poll the longest yield the tool allows. The default short yields bring the model back after each poll, even while the command is still waiting. An idle Codex session stays idle when a background command exits.
+
+Without `--timeout`, it waits until a message arrives or you interrupt it. When the timeout passes first, it exits with code 6 in both plain and `--json` output, so a script can tell an arrival from a timeout. Plain output prints the timeout message to stderr. With `--json`, the error object carries the code `wait_timeout`. Check the inbox after a timeout before rearming. The wait only reads: a request it shows is not picked up until you open it with `crosshall read`.
 
 ## Session identity and delivery
 

@@ -98,3 +98,34 @@ func TestReadOfACancelledRequestSaysNoAnswerIsOwed(t *testing.T) {
 		t.Fatalf("read of a cancelled request:\n%s", out)
 	}
 }
+
+// The inbox pointer prints only when something waits. With nothing unread or
+// owed a result carries no pointer, and a refusal whose next step is the
+// inbox keeps that step.
+func TestInboxPointerOnlyWhenSomethingWaits(t *testing.T) {
+	trailer := func(pending []int64, owed int) *fakeTransport {
+		return &fakeTransport{result: okResult(t, struct {
+			Pending   []int64 `json:"pending"`
+			OwedCount int     `json:"owed_count"`
+		}{pending, owed})}
+	}
+	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 0)}, "read"); strings.Contains(out, "Run crosshall inbox") || strings.Contains(out, "0 unread") {
+		t.Fatalf("pointer with nothing waiting:\n%s", out)
+	}
+	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 1)}, "read"); !strings.HasSuffix(out, "[crosshall] 0 unread, 1 owed. Run crosshall inbox.\n") {
+		t.Fatalf("no pointer with an owed request:\n%s", out)
+	}
+	refusal := &fakeTransport{result: core.Result{Status: core.ExitRefused, Code: core.CodeCancelled,
+		Data: json.RawMessage(`{"message":"the owner cancelled #2","hint":"crosshall inbox","pending":[],"owed_count":0}`)}}
+	if _, stderr, _ := run(t, Env{Transport: refusal}, "reply", "2", "x"); !strings.Contains(stderr, "next: crosshall inbox\n") {
+		t.Fatalf("a refusal lost its inbox step with nothing waiting:\n%s", stderr)
+	}
+}
+
+// One suggested wait length everywhere a wait is suggested.
+func TestEmptyInboxSuggestsTheStandardWait(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, domain.InboxResult{})}
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); !strings.Contains(out, "crosshall wait --existing --work-only --timeout 9m") {
+		t.Fatalf("empty inbox:\n%s", out)
+	}
+}

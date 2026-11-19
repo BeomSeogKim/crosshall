@@ -149,14 +149,27 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	if !ok || caller.Role != core.RoleMember {
 		return notEnrolled(), nil
 	}
+	out, err := inboxItems(ctx, tx, member, false)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if err := observe(ctx, tx, member.principal, now); err != nil {
+		return core.Result{}, err
+	}
+	return OK(out)
+}
+
+// inboxItems serves both the inbox command and read-only wait snapshots.
+func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bool) (InboxResult, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms, r.picked_up_at_ms IS NULL
 		FROM recipient r JOIN message m ON m.id = r.message_id
 		LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
 		LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
 		WHERE r.principal_id = ? AND m.channel_id = ? AND (r.picked_up_at_ms IS NULL OR o.state = 'open')
-		ORDER BY m.id`, member.principal, member.channel)
+			AND (NOT ? OR m.kind <> 'note')
+		ORDER BY m.id`, member.principal, member.channel, workOnly)
 	if err != nil {
-		return core.Result{}, err
+		return InboxResult{}, err
 	}
 	defer rows.Close()
 	out := InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}}
@@ -164,7 +177,7 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 		var item InboxItem
 		var unread bool
 		if err := rows.Scan(&item.ID, &item.Kind, &item.Sender, &item.DueAtMS, &unread); err != nil {
-			return core.Result{}, err
+			return InboxResult{}, err
 		}
 		if unread {
 			out.Unread = append(out.Unread, item)
@@ -172,13 +185,7 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 			out.Owed = append(out.Owed, item)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return core.Result{}, err
-	}
-	if err := observe(ctx, tx, member.principal, now); err != nil {
-		return core.Result{}, err
-	}
-	return OK(out)
+	return out, rows.Err()
 }
 
 func (s *Service) waiting(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {

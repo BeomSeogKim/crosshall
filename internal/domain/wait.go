@@ -10,10 +10,12 @@ import (
 const VerbWait = "wait"
 
 // Wait requests one read-only snapshot. The first request establishes the
-// starting cursor without returning messages.
+// starting cursor and optionally returns inbox work already present.
 type Wait struct {
-	Any    bool        `json:"any,omitempty"`
-	Cursor *WaitCursor `json:"cursor,omitempty"`
+	Any      bool        `json:"any,omitempty"`
+	Existing bool        `json:"existing,omitempty"`
+	WorkOnly bool        `json:"work_only,omitempty"`
+	Cursor   *WaitCursor `json:"cursor,omitempty"`
 }
 
 func (Wait) command()     {}
@@ -40,6 +42,9 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	if !ok {
 		return notEnrolled(), nil
 	}
+	if cmd.Any && cmd.WorkOnly {
+		return Fail(core.ExitUsage, "", "--any and --work-only cannot be used together", ""), nil
+	}
 	if cmd.Cursor != nil {
 		if cmd.Cursor.BindingID != member.binding {
 			return Refuse(core.CodeDeparted, "membership changed while waiting", "run crosshall wait again"), nil
@@ -58,7 +63,16 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&out.Cursor.MessageID); err != nil {
 		return core.Result{}, err
 	}
-	if cmd.Cursor == nil || cmd.Cursor.MessageID >= out.Cursor.MessageID {
+	if cmd.Cursor == nil {
+		if cmd.Existing {
+			out.InboxResult, err = inboxItems(ctx, tx, member, cmd.WorkOnly)
+			if err != nil {
+				return core.Result{}, err
+			}
+		}
+		return OK(out)
+	}
+	if cmd.Cursor.MessageID >= out.Cursor.MessageID {
 		return OK(out)
 	}
 
@@ -66,10 +80,11 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 		FROM message m
 		LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
 		WHERE m.id > ? AND m.channel_id = ? AND m.sender_id <> ?
+			AND (NOT ? OR m.kind <> 'note')
 			AND (? OR EXISTS (
 				SELECT 1 FROM recipient r WHERE r.message_id = m.id AND r.principal_id = ?
 			))
-		ORDER BY m.id`, cmd.Cursor.MessageID, member.channel, member.principal, cmd.Any, member.principal)
+		ORDER BY m.id`, cmd.Cursor.MessageID, member.channel, member.principal, cmd.WorkOnly, cmd.Any, member.principal)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -83,6 +98,13 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	}
 	if err := rows.Err(); err != nil {
 		return core.Result{}, err
+	}
+	if cmd.Existing && len(out.Unread) != 0 {
+		inbox, err := inboxItems(ctx, tx, member, cmd.WorkOnly)
+		if err != nil {
+			return core.Result{}, err
+		}
+		out.Owed = inbox.Owed
 	}
 	return OK(out)
 }

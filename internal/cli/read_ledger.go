@@ -151,9 +151,15 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			printReadMessage(w, message)
 		}
 	case domain.Inbox, domain.Wait:
-		var r domain.InboxResult
+		var r waitResult
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
+		}
+		switch r.Reason {
+		case "existing":
+			fmt.Fprintln(w, "Already in your inbox")
+		case "arrived":
+			fmt.Fprintln(w, "Arrived during the wait")
 		}
 		if len(r.Unread) == 0 && len(r.Owed) == 0 {
 			fmt.Fprintln(w, "Inbox is empty.")

@@ -267,3 +267,29 @@ func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {
 		t.Fatalf("republished policy: %q", got)
 	}
 }
+
+// The turn_end mirror lists only the profiles with tested turn_end evidence,
+// so a Stop hook can skip waiting where the check is unavailable. An evidence
+// import invalidates it before commit, like the policy mirror.
+func TestTurnEndMirrorListsTestedProfiles(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	s.fixtureSQL(t, `
+		INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
+		('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'turn_end', 'tested', 'r', 1),
+		('codex', '0.170.0', 'darwin-arm64', 'exec', 'codex-1', 'turn_end', 'candidate', 'r', 1),
+		('claude', '2.1.400', 'darwin-arm64', 'print', 'claude-1', 'boundary', 'tested', 'r', 1)
+	`)
+	if err := s.publishAdapterFiles(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := root.ReadFile("turn_end")
+	if err != nil || string(raw) != "claude 2.1.327 darwin-arm64 print claude-1\n" {
+		t.Fatalf("turn_end mirror %q (%v)", raw, err)
+	}
+	if err := s.invalidateAdapterFile(domain.VerbAdapterEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Stat("turn_end"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an evidence import left the turn_end mirror in place: %v", err)
+	}
+}

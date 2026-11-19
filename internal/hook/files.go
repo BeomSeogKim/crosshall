@@ -56,6 +56,27 @@ func readPolicy(rv *os.Root, adapter string) (adapterPolicy, error) {
 	return policy, nil
 }
 
+// turnEndListed reports whether the dispatcher lists this exact profile as
+// having tested turn_end evidence. Any read or format problem means not
+// listed: the Stop then publishes one-way, which can only skip a wait.
+func turnEndListed(rv *os.Root, profile ...string) bool {
+	data, err := ident.ReadPrivateFile(rv, "turn_end", 64<<10)
+	if err != nil {
+		return false
+	}
+	want := strings.Join(profile, " ")
+	rows, complete := strings.CutSuffix(string(data), "\n")
+	if !complete {
+		return false
+	}
+	for _, line := range strings.Split(rows, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
 // hasDefault is only a hint for a first join. The dispatcher rechecks it in the enrollment transaction.
 func hasDefault(ctx context.Context, rv *os.Root, repo string) (bool, error) {
 	if err := ctx.Err(); err != nil {

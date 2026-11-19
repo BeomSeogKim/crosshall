@@ -487,7 +487,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	if isHook || isWait {
 		req.Ack = 0 // Neither output acknowledges an ordinary roster.
 	}
-	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault
+	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault || req.Verb == domain.VerbAdapterEvidence
 	var result core.Result
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)

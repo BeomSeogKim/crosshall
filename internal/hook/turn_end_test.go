@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,11 +47,12 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 		calls                      int
 		want, active, output       bool
 		err                        error
-		oldEpoch                   bool
+		oldEpoch, unlisted         bool
 	}{
 		{name: "available", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true},
 		{name: "continued elsewhere", event: "Stop", flag: `,"stop_hook_active":true`, outcome: "clean", calls: 1, active: true},
 		{name: "missing flag", event: "Stop", outcome: "clean", calls: 1},
+		{name: "check unavailable for this build", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1, unlisted: true},
 		{name: "wrong flag type", event: "Stop", flag: `,"stop_hook_active":"false"`, outcome: "clean", calls: 1},
 		{name: "duplicate flag", event: "Stop", flag: `,"stop_hook_active":true,"stop_hook_active":false`, outcome: "clean", calls: 1},
 		{name: "failure Stop", event: "StopFailure", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1},
@@ -77,6 +79,12 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(dir, "policy"), []byte(policy), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if !tc.unlisted {
+				listed := "claude 2.1.327 " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-1\n"
+				if err := os.WriteFile(filepath.Join(dir, "turn_end"), []byte(listed), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tc.offline {
 				if err := os.Remove(filepath.Join(dir, "ready")); err != nil {

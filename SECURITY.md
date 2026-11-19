@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-There is no release yet. Once releases exist, the latest release is the only
-supported version until stated otherwise here.
+v0.1.0 is the first release. The latest release is the only supported version
+until stated otherwise here.
 
 ## Reporting a vulnerability
 

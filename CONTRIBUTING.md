@@ -42,6 +42,8 @@ The repository is trunk-based.
   bash scripts/ci-checks.sh
   ```
 
+  It needs Go and Python 3; Python runs the installer and terminal tests.
+
 - Resolve review conversations before merging.
 
 ## Sign your commits

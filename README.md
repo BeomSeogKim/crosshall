@@ -23,18 +23,20 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.8 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.9 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.8`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.9`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
 The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry.
+
+**Upgrading from rc.8.** The first rc.9 dispatcher start backs up the schema 2 database as `store-v2-*.sqlite3` beside `store.sqlite3`, then migrates it to schema 3. The rc.8 dispatcher refuses schema 3. Rolling back this state requires the schema 2 backup, which contains only data written before the migration.
 
 ## Try it with two sessions
 
@@ -88,13 +90,16 @@ In `crosshall waiting` and `crosshall status`, a request a recipient has opened 
 
 ## Waiting for new messages
 
-Instead of polling the inbox, a member can block until something new arrives.
+For standby, check the inbox and act on anything already there. When it is clear, wait with `--existing` so a message arriving between the inbox check and the wait also wakes you.
 
 ```sh
-crosshall wait --timeout 10m
+crosshall inbox
+crosshall wait --existing --timeout 10m
 ```
 
-`crosshall wait` counts only messages sent after it starts: a request or note addressed to the member, or a reply to one of its requests. Messages already unread when it starts and the member's own messages do not end it. With `--any`, messages between other members of the channel end it too. On an arrival it prints the new messages as `crosshall inbox` does and exits with code 0.
+`--existing` returns immediately for a matching unread message. Otherwise it waits for a new arrival. On either match it exits 0. Read the message with `crosshall read <id>`, act on it, then check the inbox again before waiting. An open request you already picked up is listed alongside a match. On its own, it leaves the wait running.
+
+By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. For standby on requests and replies alone, use `crosshall wait --existing --work-only --timeout 10m`. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.
 
 Without `--timeout`, it waits until a message arrives or you interrupt it. When the timeout passes first, it exits with code 6 in both plain and `--json` output, so a script can tell an arrival from a timeout. Plain output prints the timeout message to stderr; with `--json`, the error object carries the code `wait_timeout`. The wait only reads: a request it shows is not picked up until you open it with `crosshall read`.
 
@@ -113,6 +118,19 @@ If multiple vendor identity variables are present, crosshall refuses to guess. F
 A session that lost its identity, for example in a new conversation, may find its old alias still taken. If `crosshall join` refuses the alias as taken (`alias_taken` with `--json`), ask the owner to restore the membership before joining under another alias: once the new session's key has joined, it can no longer be restored. In the new session, `crosshall whoami --full` prints the key as `<vendor>:<key>` followed by its enrollment state; give the owner that first token. `crosshall owner who --all` shows the binding ID, and the owner runs `crosshall owner restore <binding-id> --new-key <vendor>:<key>`.
 
 A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
+
+### When a member goes quiet
+
+From the owner's terminal, `crosshall owner who --all` lists each binding's ID and state, how long ago its last command or other activity was observed, and any open requests it owes in that channel. For a member tracked by commands, 30 minutes of inactivity marks its row `stale`. A `live, stale` member can still receive messages. To mark the member departed, copy the ID and depart token from its live row.
+
+```sh
+crosshall owner who --all
+crosshall owner depart <binding-id> --seen <token>
+```
+
+If the token is stale, crosshall says `the binding changed since it was listed` and tells you to run `crosshall owner who --all` again. Review the refreshed row before using its new token.
+
+Departure frees the alias and leaves existing requests open. A sender checking `crosshall waiting` sees `recipient departed` on an open request. The returning session must explicitly run `crosshall join <channel>` with its original identity to regain its requests and replies. It reclaims its former alias if available and gets a generated alias if another member has taken it.
 
 ## Claude Code and Codex CLI adapters
 

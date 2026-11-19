@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,7 +8,10 @@ import (
 
 const codexStateAssignment = "CROSSHALL_STATE_DIR="
 
-var errCodexLegacyHooks = errors.New("Codex has legacy or edited Crosshall hooks; run crosshall uninstall from the original state root and review any retained hooks, or use a separate CODEX_HOME")
+var errCodexLegacyHooks = &refusalWithNext{
+	message: "Codex has legacy or edited Crosshall hooks. From the state directory that installed the hooks, run crosshall uninstall codex and review any retained hooks, or use a separate CODEX_HOME",
+	next:    "CROSSHALL_STATE_DIR='<original-state-directory>' crosshall uninstall codex",
+}
 
 type codexHookRoute struct {
 	event      string
@@ -144,7 +146,10 @@ func codexInstallBase(target installTarget, record ownedFile) ([]byte, bool, err
 			continue
 		}
 		if route.root != target.StateRoot {
-			return nil, false, fmt.Errorf("Codex hooks in this CODEX_HOME already target Crosshall state root %q; use that root or a separate CODEX_HOME", route.root)
+			return nil, false, &refusalWithNext{
+				message: fmt.Sprintf("Codex hooks in this CODEX_HOME already target Crosshall state root %q. Use that root or a separate CODEX_HOME", route.root),
+				next:    codexStateAssignment + shellQuote(route.root) + " crosshall setup codex",
+			}
 		}
 		if expected := wantCommands[route.event]; expected != "" && route.command != expected {
 			return nil, false, errCodexLegacyHooks

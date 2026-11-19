@@ -47,7 +47,7 @@ type HookEventArgs struct {
 	Epoch          uint64      `json:"epoch"`
 	Receipt        string      `json:"receipt,omitempty"`
 	ToolCallID     string      `json:"tool_call_id,omitempty"`
-	// ContinuationActive is reserved for the reminder capability.
+	// ContinuationActive reports that a vendor Stop hook is already continuing the turn.
 	ContinuationActive bool `json:"continuation_active,omitempty"`
 }
 
@@ -62,6 +62,7 @@ type HookResult struct {
 	Omitted      int             `json:"omitted,omitempty"`
 	OfferID      int64           `json:"offer_id,omitempty"`
 	PendingLine  string          `json:"pending_line,omitempty"`
+	TurnEndLine  string          `json:"turn_end_line,omitempty"`
 	ReminderText string          `json:"reminder_text,omitempty"`
 	Ack          *HookAck        `json:"ack,omitempty"`
 	Epoch        uint64          `json:"epoch"`

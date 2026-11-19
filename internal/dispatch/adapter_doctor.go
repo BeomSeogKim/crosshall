@@ -16,10 +16,11 @@ import (
 
 type doctorAdapter struct {
 	setup.InstallStatus
-	Policy             *store.AdapterPolicy   `json:"policy,omitempty"`
-	Evidence           []store.DoctorEvidence `json:"evidence,omitempty"`
-	UnverifiedLaunches *int                   `json:"unverified_launches,omitempty"`
-	Hooks              *doctorHookActivity    `json:"hooks,omitempty"`
+	Policy             *store.AdapterPolicy       `json:"policy,omitempty"`
+	Evidence           []store.DoctorEvidence     `json:"evidence,omitempty"`
+	UnverifiedLaunches *int                       `json:"unverified_launches,omitempty"`
+	Hooks              *doctorHookActivity        `json:"hooks,omitempty"`
+	TurnEndNotice      *store.DoctorTurnEndNotice `json:"turn_end_notice,omitempty"`
 }
 
 type doctorHookActivity struct {

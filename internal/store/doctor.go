@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"modernc.org/sqlite/vfs"
 	"net/url"
+	"time"
+
+	"modernc.org/sqlite/vfs"
 )
 
 // DoctorAdapterState is the policy and conformance evidence in the store
@@ -16,6 +18,7 @@ type DoctorAdapterState struct {
 	Policy             AdapterPolicy
 	Evidence           []DoctorEvidence
 	UnverifiedLaunches int
+	TurnEndNotice      DoctorTurnEndNotice
 }
 
 type DoctorEvidence struct {
@@ -25,6 +28,14 @@ type DoctorEvidence struct {
 	ManifestRev string `json:"manifest_rev"`
 	Capability  string `json:"capability"`
 	Level       string `json:"level"`
+}
+
+// DoctorTurnEndNotice reports live eligibility and durable claims for one UTC day.
+type DoctorTurnEndNotice struct {
+	Available                         bool   `json:"available"`
+	Date                              string `json:"date"`
+	CommittedClaims                   int    `json:"committed_claims"`
+	ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
 }
 
 // DoctorSnapshot contains the diagnostics read in one store transaction.
@@ -38,6 +49,11 @@ type DoctorSnapshot struct {
 // any database file. A nonempty identityVendor also requests the distinct
 // session versions recorded for that vendor.
 func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, identityVendor string) (DoctorSnapshot, error) {
+	return InspectDoctorStoreAt(ctx, files, adapters, identityVendor, time.Now())
+}
+
+// InspectDoctorStoreAt uses the caller's clock for the UTC diagnostics day.
+func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, identityVendor string, now time.Time) (DoctorSnapshot, error) {
 	var snapshot DoctorSnapshot
 	// SQLite can interpret a failed sidecar lookup as absence. Check the
 	// database and sidecars before opening the diagnostic view.
@@ -84,8 +100,9 @@ func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, ide
 		return snapshot, fmt.Errorf("schema version %d, expected %d", snapshot.SchemaVersion, len(migrations))
 	}
 	snapshot.Adapters = make(map[string]DoctorAdapterState, len(adapters))
+	day := now.UTC().Truncate(24 * time.Hour)
 	for _, name := range adapters {
-		state, err := readDoctorAdapter(ctx, tx, name)
+		state, err := readDoctorAdapter(ctx, tx, name, day)
 		if err == nil {
 			snapshot.Adapters[name] = state
 		}
@@ -109,21 +126,38 @@ func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, ide
 	return snapshot, nil
 }
 
-func readDoctorAdapter(ctx context.Context, tx Tx, adapter string) (DoctorAdapterState, error) {
+func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time) (DoctorAdapterState, error) {
 	policy, err := ReadAdapterPolicy(ctx, tx, adapter)
 	if err != nil {
 		return DoctorAdapterState{}, err
 	}
 	state := DoctorAdapterState{Policy: policy}
+	state.TurnEndNotice.Date = day.Format("20060102")
+	state.TurnEndNotice.ExtraModelRequestsPerContinuation = 1
 	err = tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM adapter_launch l
-		WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
-		  AND l.rowid = (SELECT rowid FROM adapter_launch
-		                  WHERE principal_id = l.principal_id
-		                  ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1)
-		  AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
-		  AND (json_extract(l.profile, '$.vendor_version') = 'unverified'
-		       OR json_extract(l.profile, '$.mode') = 'unverified')`, adapter).Scan(&state.UnverifiedLaunches)
+		WITH live_profile AS (
+			SELECT json_extract(l.profile, '$.vendor_version') AS version,
+			       json_extract(l.profile, '$.platform') AS platform,
+			       json_extract(l.profile, '$.mode') AS mode,
+			       json_extract(l.profile, '$.manifest_rev') AS manifest_rev
+			FROM adapter_launch l
+			WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
+			  AND l.rowid = (SELECT rowid FROM adapter_launch
+			                  WHERE principal_id = l.principal_id
+			                  ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1)
+			  AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
+		)
+		SELECT (SELECT COUNT(*) FROM live_profile WHERE version = 'unverified' OR mode = 'unverified'),
+		       ? AND EXISTS (
+		           SELECT 1 FROM live_profile p JOIN capability_evidence e
+		             ON e.vendor_version = p.version AND e.platform = p.platform
+		            AND e.mode = p.mode AND e.manifest_rev = p.manifest_rev
+		           WHERE e.vendor = ? AND e.cap = 'turn_end' AND e.level = 'tested'
+		             AND p.version NOT IN ('', 'unverified') AND p.mode NOT IN ('', 'unverified')
+		       ),
+		       (SELECT COUNT(*) FROM turn_end_notice WHERE adapter = ? AND at_ms >= ? AND at_ms < ?)`,
+		adapter, policy.Enabled, adapter, adapter, day.UnixMilli(), day.AddDate(0, 0, 1).UnixMilli()).
+		Scan(&state.UnverifiedLaunches, &state.TurnEndNotice.Available, &state.TurnEndNotice.CommittedClaims)
 	if err != nil {
 		return DoctorAdapterState{}, err
 	}

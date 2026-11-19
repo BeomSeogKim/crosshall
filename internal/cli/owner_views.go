@@ -252,7 +252,13 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			ManifestRev                                string `json:"manifest_rev"`
 		}
 		UnverifiedLaunches *int `json:"unverified_launches"`
-		Hooks              *struct {
+		TurnEndNotice      *struct {
+			Available                         bool
+			Date                              string
+			CommittedClaims                   int `json:"committed_claims"`
+			ExtraModelRequestsPerContinuation int `json:"extra_model_requests_per_continuation"`
+		} `json:"turn_end_notice"`
+		Hooks *struct {
 			Date            string
 			Counts          map[string]int
 			P95MS           int `json:"p95_ms"`
@@ -303,6 +309,16 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				fmt.Fprintln(&output)
 			}
 			fmt.Fprintf(&output, "  extra model requests per reminder %d — %s\n", a.Reminder.ExtraModelRequests, a.Reminder.Provenance)
+		}
+		if notice := a.TurnEndNotice; notice == nil {
+			fmt.Fprintln(&output, "  turn-end notice status unknown")
+		} else {
+			status := "unavailable"
+			if notice.Available {
+				status = "available"
+			}
+			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
+				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)
 		}
 		if a.UnverifiedLaunches != nil {
 			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)

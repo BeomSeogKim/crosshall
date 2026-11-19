@@ -13,6 +13,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/setup"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -24,6 +25,126 @@ type reminderDiagnostic struct {
 	Evidence           []struct {
 		Version, Platform, Mode, Level string
 		ManifestRev                    string `json:"manifest_rev"`
+	}
+}
+
+func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
+	cfg, _ := doctorFixture(t)
+	ctx := t.Context()
+	db, err := store.Open(ctx, cfg.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	state, err := spool.OpenServerRoot(cfg.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	update := func(t *testing.T, stmt string, args ...any) {
+		t.Helper()
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			_, err := tx.ExecContext(ctx, stmt, args...)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	update(t, `
+		INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms)
+		VALUES ('claude', 1, 0, 1, 1), ('codex', 1, 0, 1, 1);
+		INSERT INTO channel(id, name, created_at_ms) VALUES (1, 'dev', 1);
+		INSERT INTO principal(id, kind, vendor, created_at_ms) VALUES (1, 'session', 'claude', 1), (2, 'session', 'codex', 1);
+		INSERT INTO binding(principal_id, channel_id, alias, state, joined_at_ms)
+		VALUES (1, 1, 'doctor-claude', 'live', 1), (2, 1, 'doctor-codex', 'live', 1);
+		INSERT INTO adapter_launch(principal_id, launch_ref, profile, verified, started_hook_at_ms) VALUES
+		  (1, 'old-claude', '{"adapter":"claude","vendor_version":"2.1.327","platform":"darwin-arm64","mode":"print","manifest_rev":"claude-1"}', 1, 1),
+		  (1, 'current-claude', '{"adapter":"claude","vendor_version":"2.1.327","platform":"darwin-arm64","mode":"print","manifest_rev":"claude-1"}', 1, 2),
+		  (2, 'isolated-codex', '{"adapter":"codex","vendor_version":"0.170.0","platform":"darwin-arm64","mode":"exec","manifest_rev":"codex-1"}', 0, 1),
+		  (2, 'session', '{"adapter":"codex","vendor_version":"unverified","platform":"darwin-arm64","mode":"unverified","manifest_rev":"codex-1"}', 0, 2);
+		INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
+		VALUES ('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'turn_end', 'tested', 'fixture', 1),
+		       ('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'reminder', 'tested', 'fixture', 1),
+		       ('codex', '0.170.0', 'darwin-arm64', 'exec', 'codex-1', 'turn_end', 'tested', 'fixture', 1);
+		INSERT INTO turn(principal_id, launch_ref, turn_ref, opened_hook_at_ms)
+		VALUES (1, 'old-claude', 'yesterday', 1), (1, 'current-claude', 'start', 2),
+		       (1, 'current-claude', 'end', 3), (1, 'current-claude', 'tomorrow', 4);
+	`)
+	day := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
+	now := day.Add(16 * time.Hour).In(time.FixedZone("KST", 9*60*60))
+	nextDay := day.Add(24 * time.Hour)
+	update(t, `
+		INSERT INTO turn_end_notice(principal_id, adapter, launch_ref, turn_ref, at_ms)
+		VALUES (1, 'claude', 'old-claude', 'yesterday', ?),
+		       (1, 'claude', 'current-claude', 'start', ?),
+		       (1, 'claude', 'current-claude', 'end', ?),
+		       (1, 'claude', 'current-claude', 'tomorrow', ?)`,
+		day.UnixMilli()-1, day.UnixMilli(), nextDay.UnixMilli()-1, nextDay.UnixMilli())
+
+	check := func(t *testing.T, wantClaudeAvailable bool) {
+		t.Helper()
+		adapters := []doctorAdapter{
+			{InstallStatus: setup.InstallStatus{Adapter: "claude"}},
+			{InstallStatus: setup.InstallStatus{Adapter: "codex"}},
+		}
+		if _, err := doctorStoreInfo(ctx, state, adapters, now); err != nil {
+			t.Fatal(err)
+		}
+		raw := doctorResult("", nil, adapters, nil).Data
+		var got struct {
+			Adapters []struct {
+				Adapter       string
+				TurnEndNotice *struct {
+					Available                         *bool
+					Date                              string
+					CommittedClaims                   *int `json:"committed_claims"`
+					ExtraModelRequestsPerContinuation int  `json:"extra_model_requests_per_continuation"`
+				} `json:"turn_end_notice"`
+			}
+		}
+		if err := json.Unmarshal(raw, &got); err != nil || len(got.Adapters) != 2 {
+			t.Fatalf("doctor JSON: %s (%v)", raw, err)
+		}
+		for i, want := range []struct {
+			adapter   string
+			available bool
+			claims    int
+		}{{"claude", wantClaudeAvailable, 2}, {"codex", false, 0}} {
+			a := got.Adapters[i]
+			n := a.TurnEndNotice
+			if a.Adapter != want.adapter || n == nil || n.Available == nil || *n.Available != want.available ||
+				n.Date != "20261119" || n.CommittedClaims == nil || *n.CommittedClaims != want.claims ||
+				n.ExtraModelRequestsPerContinuation != 1 {
+				t.Errorf("doctor JSON: %s, want %s available=%t claims=%d", raw, want.adapter, want.available, want.claims)
+			}
+		}
+	}
+	check(t, true)
+	for _, test := range []struct {
+		name, disable, restore string
+	}{
+		{"policy off", "UPDATE adapter_policy SET enabled = 0 WHERE adapter = 'claude'",
+			"UPDATE adapter_policy SET enabled = 1 WHERE adapter = 'claude'"},
+		{"latest launch ended", "UPDATE adapter_launch SET ended_hook_at_ms = 3 WHERE launch_ref = 'current-claude'",
+			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE launch_ref = 'current-claude'"},
+		{"binding departed", "UPDATE binding SET state = 'departed' WHERE principal_id = 1",
+			"UPDATE binding SET state = 'live' WHERE principal_id = 1"},
+		{"wrong version", "UPDATE capability_evidence SET vendor_version = '2.1.328' WHERE vendor = 'claude' AND cap = 'turn_end'",
+			"UPDATE capability_evidence SET vendor_version = '2.1.327' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+		{"wrong platform", "UPDATE capability_evidence SET platform = 'linux-amd64' WHERE vendor = 'claude' AND cap = 'turn_end'",
+			"UPDATE capability_evidence SET platform = 'darwin-arm64' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+		{"wrong mode", "UPDATE capability_evidence SET mode = 'interactive' WHERE vendor = 'claude' AND cap = 'turn_end'",
+			"UPDATE capability_evidence SET mode = 'print' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+		{"wrong manifest", "UPDATE capability_evidence SET manifest_rev = 'claude-2' WHERE vendor = 'claude' AND cap = 'turn_end'",
+			"UPDATE capability_evidence SET manifest_rev = 'claude-1' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+		{"candidate", "UPDATE capability_evidence SET level = 'candidate' WHERE vendor = 'claude' AND cap = 'turn_end'",
+			"UPDATE capability_evidence SET level = 'tested' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			update(t, test.disable)
+			defer update(t, test.restore)
+			check(t, false)
+		})
 	}
 }
 

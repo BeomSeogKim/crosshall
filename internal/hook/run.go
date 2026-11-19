@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -89,17 +90,12 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err != nil {
 		return "refused"
 	}
-	var effect, turn string
-	switch {
-	case spec.Enroll || spec.Notice:
-		effect = "notice"
-	case spec.Stop && policy.Reminder:
-		// Without the reminder a stop has nothing to evaluate: it publishes
-		// one-way like any observation, so a quiet turn waits on nothing.
-		effect, turn = "reminder", e.TurnRef
-	}
-	clean := !spec.Enroll && effect != "" && stampClean(rv, leaf, gen, effect, turn)
-	want := effect != "" && !clean
+	notice := spec.Enroll || spec.Notice
+	// The continuation needs a concrete profile. Unknown builds still
+	// publish their lifecycle observation without waiting for a reply.
+	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified"
+	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
+	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	if dispatcherGone(rv) {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
@@ -137,8 +133,8 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 			return "refused"
 		}
 	}
-	if result.Ack != nil && !hookExpired(ctx) {
-		_ = saveSeen(rv, leaf, gen, effect, turn, *result.Ack)
+	if notice && result.Ack != nil && !hookExpired(ctx) {
+		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	return "rpc"
 }
@@ -243,14 +239,17 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		req.Args, _ = json.Marshal(wire.HookEventArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
 			Fact: e.Fact, TurnRef: e.TurnRef, HookAtMS: entry.UnixMilli(), WantOutput: want, Epoch: epoch,
+			ContinuationActive: e.stopActive == "true",
 		})
 	}
 	return req
 }
 
-// present renders only the fields appropriate for this boundary. Slice one
-// never requests a continuation of the vendor's turn.
+// present renders only the fields appropriate for this boundary.
 func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
+	if spec.Stop {
+		return presentTurnEnd(spec, result.TurnEndLine)
+	}
 	if spec.Output != "context" || !(spec.Enroll || spec.Notice) {
 		return nil, nil
 	}
@@ -283,15 +282,50 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
+	return presentContext(spec.Name, strings.Join(parts, "\n"))
+}
+
+func presentContext(event, text string) ([]byte, error) {
 	type contextOutput struct {
 		Event   string `json:"hookEventName"`
 		Context string `json:"additionalContext"`
 	}
 	payload := struct {
 		Output contextOutput `json:"hookSpecificOutput"`
-	}{contextOutput{spec.Name, strings.Join(parts, "\n")}}
+	}{contextOutput{event, text}}
 	b, err := json.Marshal(payload)
 	return append(b, '\n'), err
+}
+
+func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
+	if line == "" {
+		return nil, nil
+	}
+	ids, ok := strings.CutPrefix(line, "[crosshall] pending: ")
+	if !ok || len(ids) > 20*domain.OfferCap || strings.Count(ids, " ") >= domain.OfferCap {
+		return nil, errors.New("invalid turn-end line")
+	}
+	var previous int64
+	for _, value := range strings.Split(ids, " ") {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= previous || strconv.FormatInt(id, 10) != value {
+			return nil, errors.New("invalid turn-end message id")
+		}
+		previous = id
+	}
+	switch spec.Output {
+	case "context":
+		return presentContext(spec.Name, line)
+	case "block":
+		payload := struct {
+			Decision string `json:"decision"`
+			Reason   string `json:"reason"`
+		}{"block", line}
+		b, err := json.Marshal(payload)
+		return append(b, '\n'), err
+	default:
+		return nil, nil
+	}
 }
 
 // dispatcherGone reports whether the dispatcher has stopped serving this

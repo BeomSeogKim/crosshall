@@ -126,6 +126,8 @@ A session that lost its identity, for example in a new conversation, may find it
 
 A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
 
+Every member follows one rule: before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn. Notes, replies and roster changes are not requests. `crosshall join` states the rule. A member without an adapter follows it by hand.
+
 ### When a member goes quiet
 
 From the owner's terminal, `crosshall owner who --all` lists each binding's ID and state, how long ago its last command or other activity was observed, and any open requests it owes in that channel. For a member tracked by commands, 30 minutes of inactivity marks its row `stale`. A `live, stale` member can still receive messages. To mark the member departed, copy the ID and depart token from its live row.
@@ -159,6 +161,8 @@ crosshall setup claude codex --apply
 Migrate scripts that piped answers to rc.6 setup to this named form. With input or output redirected, `crosshall setup claude` previews the plan, while bare `crosshall setup` prints the scripted form and exits with code 2.
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
+
+An adapter only checks the turn-end rule; it does not replace it. When a turn ends while a request addressed to the session is unread, the adapter continues that turn once with the `[crosshall] pending:` line. It does so only if the check is available for this build and mode. Claude Code receives the line as Stop hook context and Codex as the Stop hook's block reason. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. `crosshall owner doctor` shows per adapter whether the turn-end notice is available, and how many continuations it committed today. It is available only when three things hold. The owner has imported tested evidence for that exact build and mode, recorded by a conformance run that observed the continuation. The adapter policy is on. The running session's build and mode can be verified. A stock Codex session cannot be verified, so it stays unavailable.
 
 At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 

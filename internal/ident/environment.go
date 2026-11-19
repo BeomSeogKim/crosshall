@@ -118,6 +118,11 @@ func (id Identity) Evidence() (source string, verified bool) {
 	return "", false
 }
 
+// UnknownAntigravityCLI distinguishes language-server evidence from a CLI version.
+func (id Identity) UnknownAntigravityCLI() bool {
+	return id.Vendor == "agy" && (id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, "ls:"))
+}
+
 // Warning is shared by member views and owner diagnostics.
 func (id Identity) Warning() string {
 	source, verified := id.Evidence()
@@ -125,8 +130,12 @@ func (id Identity) Warning() string {
 		return ""
 	}
 	version := id.Version
-	if marker, ok := strings.CutPrefix(version, "ls:"); id.Vendor == "agy" && ok {
-		return fmt.Sprintf("identity variable unverified on agy: CLI version unknown (language server %s)", marker)
+	if id.UnknownAntigravityCLI() {
+		msg := "identity variable unverified on agy: CLI version unknown"
+		if number, ok := strings.CutPrefix(version, "ls:cli-"); ok && validVersion(number) {
+			return fmt.Sprintf("%s (language server cli-%s)", msg, number)
+		}
+		return msg
 	}
 	if version == "" {
 		version = "unknown"
@@ -153,12 +162,16 @@ func runtimeVersion(vendor string, lookup func(string) (string, bool)) string {
 			version, prefix = number, "ls:cli-"
 		}
 	}
-	if version == "" || version[0] < '0' || version[0] > '9' ||
-		strings.IndexFunc(version, func(r rune) bool {
-			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' ||
-				r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '+')
-		}) >= 0 {
+	if !validVersion(version) {
 		return "unknown"
 	}
 	return prefix + version
+}
+
+func validVersion(version string) bool {
+	return version != "" && version[0] >= '0' && version[0] <= '9' &&
+		strings.IndexFunc(version, func(r rune) bool {
+			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' ||
+				r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '+')
+		}) < 0
 }

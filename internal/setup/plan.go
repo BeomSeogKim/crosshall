@@ -124,13 +124,13 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 	for _, target := range targets {
 		names = append(names, target.Spec.Adapter)
 	}
-	_, evidence, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names)
+	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names, "")
 	if err != nil {
 		return
 	}
 	for i := range targets {
 		target := &targets[i]
-		for _, e := range evidence[target.Spec.Adapter].Evidence {
+		for _, e := range snapshot.Adapters[target.Spec.Adapter].Evidence {
 			if e.Version == target.Build.Version && e.Platform == target.Build.Platform && e.ManifestRev == target.Build.Revision {
 				target.Evidence = append(target.Evidence, e)
 			}

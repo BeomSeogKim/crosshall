@@ -79,4 +79,6 @@ type Result struct {
 	Status ExitCode        `json:"status"`
 	Code   Code            `json:"code"`
 	Data   json.RawMessage `json:"data"`
+	// JoinHintAcked is current delivery metadata, populated after operation replay.
+	JoinHintAcked bool `json:"join_hint_acked,omitempty"`
 }

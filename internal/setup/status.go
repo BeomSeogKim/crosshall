@@ -143,11 +143,11 @@ func inspectStatusState(ctx context.Context, path string) (journal, bool, map[st
 	if absent {
 		return j, journalErr == nil, nil, true
 	}
-	_, policies, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, adapterNames())
+	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, adapterNames(), "")
 	if err != nil {
-		policies = nil
+		return j, journalErr == nil, nil, false
 	}
-	return j, journalErr == nil, policies, false
+	return j, journalErr == nil, snapshot.Adapters, false
 }
 
 func statusAdapterName(adapter string) string {

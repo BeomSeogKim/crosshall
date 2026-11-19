@@ -36,7 +36,9 @@ On a fresh install or upgrade in your own terminal, the installer offers hooks f
 
 The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry.
 
-**Upgrading to rc.10.** rc.10 uses the same database schema as rc.9. Codex hooks installed by an earlier release still inherit the daemon's state directory after the binary upgrade. Run `crosshall setup codex` with your intended state directory, apply the changes, then review and trust the updated commands in Codex.
+**Upgrading to rc.10.** rc.10 uses the same database schema as rc.9. Earlier Codex hooks still get their state directory from the environment Codex runs them in. With a shared daemon, that environment comes from the session that started it.
+
+Run `crosshall setup codex` with the same Crosshall state directory you used to install the hooks. Apply the changes, then review and trust the updated commands in Codex. To use a different state directory, use a separate `CODEX_HOME` or first run `crosshall uninstall codex` with the original state directory.
 
 **Upgrading from rc.8.** The first dispatcher start on rc.9 or rc.10 backs up the schema 2 database as `store-v2-*.sqlite3` beside `store.sqlite3`, then migrates it to schema 3. The rc.8 dispatcher refuses schema 3. Rolling back this state requires the schema 2 backup, which contains only data written before the migration.
 

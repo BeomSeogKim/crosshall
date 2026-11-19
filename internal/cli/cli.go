@@ -87,6 +87,8 @@ type Env struct {
 	OwnerGate func() string
 	// Start starts the dispatcher if it is not running.
 	Start func(ctx context.Context) error
+	// StartReady confirms a dispatcher response for the explicit owner start.
+	StartReady func(ctx context.Context) error
 	// Whoami and WhoamiJSON display the raw key only on an explicit full request.
 	Whoami     func(stdout io.Writer, full bool) core.ExitCode
 	WhoamiJSON func(stdout io.Writer, full bool) core.ExitCode
@@ -216,10 +218,14 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	}
 	switch {
 	case len(args) == 1 && args[0] == "start":
-		if env.Start == nil {
+		start := env.StartReady
+		if start == nil {
+			start = env.Start
+		}
+		if start == nil {
 			return o.unavailableFor(env, "owner start")
 		}
-		if err := env.Start(ctx); err != nil {
+		if err := start(ctx); err != nil {
 			return o.fail(core.ExitError, CodeLocalError, "dispatcher could not start: "+err.Error(), "")
 		}
 		if opts.json {

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,9 +132,30 @@ func (p *participant) must(args ...string) outcome {
 	p.w.t.Helper()
 	o := p.run(args...)
 	if o.exit != 0 {
+		if len(args) == 2 && args[0] == "owner" && args[1] == "start" {
+			p.w.logDispatcher()
+		}
 		p.w.t.Fatalf("crosshall %v: exit %d\nstdout %s\nstderr %s", args, o.exit, o.stdout, o.stderr)
 	}
 	return o
+}
+
+func (w *world) logDispatcher() {
+	w.t.Helper()
+	file, err := os.Open(filepath.Join(w.state, "dispatcher.log"))
+	if err != nil {
+		w.t.Logf("dispatcher.log unavailable: %v", err)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		w.t.Logf("read dispatcher.log: %v", err)
+		return
+	}
+	const tail = 4 << 10
+	data, err := io.ReadAll(io.NewSectionReader(file, max(0, info.Size()-tail), tail))
+	w.t.Logf("dispatcher.log tail: %q (read error: %v)", data, err)
 }
 
 // mustFixtureWrite permits a single same-key retry when a fixture write may

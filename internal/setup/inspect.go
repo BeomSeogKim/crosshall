@@ -34,7 +34,7 @@ func Inspect(stateRoot string) []InstallStatus {
 		}
 		status.SetReminderEvidence(nil)
 		if err == nil && journalErr == nil && j.Pending == nil {
-			inspectInstall(&status, spec, executable, j.Files[spec.Adapter])
+			inspectInstall(&status, spec, executable, stateRoot, j.Files[spec.Adapter])
 		}
 		statuses = append(statuses, status)
 	}
@@ -46,7 +46,7 @@ func (s *InstallStatus) SetReminderEvidence(evidence []store.DoctorEvidence) {
 	s.Reminder = releaseReminderStatus(s.Adapter, s.Version, s.platform, s.revision, evidence)
 }
 
-func inspectInstall(status *InstallStatus, spec hook.InstallSpec, executable string, record ownedFile) {
+func inspectInstall(status *InstallStatus, spec hook.InstallSpec, executable, stateRoot string, record ownedFile) {
 	home, path, err := configPath(spec)
 	if err != nil || verifyHome(home) != nil {
 		return
@@ -59,11 +59,20 @@ func inspectInstall(status *InstallStatus, spec hook.InstallSpec, executable str
 	if err != nil {
 		return
 	}
-	_ = inspectHookEntries(status, spec, executable, path, record, current, doc)
+	_ = inspectHookEntries(status, spec, executable, stateRoot, path, record, current, doc)
 }
 
-func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable, path string, record ownedFile, current fileSnapshot, doc *configNode) error {
-	expected, err := hookEntries(spec, executable)
+func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable, stateRoot, path string, record ownedFile, current fileSnapshot, doc *configNode) error {
+	recognized := 0
+	if spec.Adapter == "codex" {
+		routes, err := codexHookRoutes(doc, executable, record.Entries)
+		if err != nil {
+			return err
+		}
+		recognized = len(routes)
+		status.CodexHookStateRouting = codexHookStateRouting(routes)
+	}
+	expected, err := hookEntries(spec, executable, stateRoot)
 	if err != nil {
 		return err
 	}
@@ -80,7 +89,7 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 			drifted++
 		}
 	}
-	status.Installed, status.Drifted = installed, drifted
+	status.Installed, status.Drifted = installed, max(drifted, recognized-installed)
 	if record.Path != "" {
 		if path != record.Path || current.DirIdentity != record.Latest.Dir {
 			status.Drifted += len(record.Entries)
@@ -111,37 +120,44 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 // recognizableHooks checks for older or edited Crosshall commands as well as
 // exact installed entries. Its result gates the installer offer, not ownership.
 func recognizableHooks(doc *configNode, spec hook.InstallSpec) (int, error) {
+	count := 0
+	err := visitConfigHooks(doc, func(event string, handler *configNode) {
+		if recognizableHook(handler, spec, event) {
+			count++
+		}
+	})
+	return count, err
+}
+
+func visitConfigHooks(doc *configNode, visit func(string, *configNode)) error {
 	if doc == nil {
-		return 0, nil
+		return nil
 	}
 	if doc.kind != '{' {
-		return 0, errInvalidConfig
+		return errInvalidConfig
 	}
 	hooks := doc.field("hooks")
 	if hooks == nil {
-		return 0, nil
+		return nil
 	}
 	if hooks.kind != '{' {
-		return 0, errInvalidConfig
+		return errInvalidConfig
 	}
-	count := 0
 	for _, event := range hooks.fields {
 		if event.value.kind != '[' {
-			return 0, errInvalidConfig
+			return errInvalidConfig
 		}
 		for _, group := range event.value.items {
 			handlers, err := configHookHandlers(group)
 			if err != nil {
-				return 0, err
+				return err
 			}
 			for _, handler := range handlers {
-				if recognizableHook(handler, spec, event.key) {
-					count++
-				}
+				visit(event.key, handler)
 			}
 		}
 	}
-	return count, nil
+	return nil
 }
 
 func recognizableHook(handler *configNode, spec hook.InstallSpec, event string) bool {
@@ -160,27 +176,37 @@ func recognizableHook(handler *configNode, spec hook.InstallSpec, event string) 
 			}
 		}
 	} else {
+		if spec.Adapter == "codex" {
+			route, ok := parseCodexHookCommand(command, event)
+			return ok && (route.root != "" || isCrosshallExecutable(route.executable))
+		}
 		var ok bool
 		command, ok = strings.CutSuffix(strings.TrimSpace(command), " hook "+spec.Adapter+" "+event)
 		if !ok {
 			return false
 		}
-		if len(command) >= 2 && strings.HasPrefix(command, "'") && strings.HasSuffix(command, "'") {
-			path := strings.ReplaceAll(command[1:len(command)-1], "'\"'\"'", "'")
-			if shellQuote(path) != command {
-				return false
-			}
-			command = path
-		} else if len(command) >= 2 && command[0] == '"' && command[len(command)-1] == '"' {
-			command = command[1 : len(command)-1]
-			// Only recognize a literal shell word, without expansion or escapes.
-			if strings.ContainsAny(command, "\"\\$`") {
-				return false
-			}
-		} else if strings.ContainsAny(command, "'\"\\`$&;|<>()*?[]{}!#~") ||
-			strings.IndexFunc(command, unicode.IsSpace) >= 0 {
+		command, ok = literalShellExecutable(command)
+		if !ok {
 			return false
 		}
 	}
+	return isCrosshallExecutable(command)
+}
+
+func literalShellExecutable(command string) (string, bool) {
+	if len(command) >= 2 && strings.HasPrefix(command, "'") && strings.HasSuffix(command, "'") {
+		path := strings.ReplaceAll(command[1:len(command)-1], "'\"'\"'", "'")
+		return path, shellQuote(path) == command
+	}
+	if len(command) >= 2 && command[0] == '"' && command[len(command)-1] == '"' {
+		path := command[1 : len(command)-1]
+		// Only recognize a literal shell word, without expansion or escapes.
+		return path, !strings.ContainsAny(path, "\"\\$`")
+	}
+	return command, !strings.ContainsAny(command, "'\"\\`$&;|<>()*?[]{}!#~") &&
+		strings.IndexFunc(command, unicode.IsSpace) < 0
+}
+
+func isCrosshallExecutable(command string) bool {
 	return command == "crosshall" || (filepath.IsAbs(command) && filepath.Base(command) == "crosshall")
 }

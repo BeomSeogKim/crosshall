@@ -278,7 +278,11 @@ func (e edit) materialize(raw []byte) ([]byte, error) {
 		return nil, nil
 	}
 	if len(e.Restore) != 0 {
-		return undoInsertions(raw, e.Restore)
+		restored, err := undoInsertions(raw, e.Restore)
+		if err != nil || len(e.Add) == 0 {
+			return restored, err
+		}
+		raw = restored
 	}
 	if len(e.Add) != 0 {
 		updated, _, err := addEntries(raw, e.Add)

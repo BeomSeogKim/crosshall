@@ -27,6 +27,83 @@ type reminderDiagnostic struct {
 	}
 }
 
+func TestDoctorExplainsCodexSharedDaemonRouting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("PATH", t.TempDir())
+	cfg, _ := doctorFixture(t)
+	config := filepath.Join(home, ".codex")
+	t.Setenv("CODEX_HOME", config)
+	if err := os.Mkdir(config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	command := "/fixture/bin/crosshall hook codex SessionStart"
+	pinned := "CROSSHALL_STATE_DIR='" + cfg.StateRoot + "' " + command
+	manual := `CROSSHALL_STATE_DIR="/another state" /fixture/bin/crosshall hook codex Stop`
+	for _, test := range []struct {
+		name, route, detail string
+		commands            map[string][]string
+	}{
+		{name: "absent"},
+		{"legacy", "inherited", "use that environment", map[string][]string{"SessionStart": {command}}},
+		{"pinned", "pinned", "pin the Crosshall state root", map[string][]string{"SessionStart": {pinned}}},
+		{"mixed", "mixed", "mix state roots or routing styles", map[string][]string{"SessionStart": {command, pinned}}},
+		{"pinned_and_uncertain", "uncertain", "uncertain state routing", map[string][]string{"SessionStart": {pinned}, "Stop": {manual}}},
+		{"uncertain_only", "uncertain", "uncertain state routing", map[string][]string{"Stop": {manual}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			type handler struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			}
+			if len(test.commands) > 0 {
+				hooks := make(map[string][]map[string][]handler)
+				for event, commands := range test.commands {
+					handlers := make([]handler, 0, len(commands))
+					for _, cmd := range commands {
+						handlers = append(handlers, handler{"command", cmd, 1})
+					}
+					hooks[event] = []map[string][]handler{{"hooks": handlers}}
+				}
+				configJSON := map[string]any{"hooks": hooks}
+				raw, err := json.Marshal(configJSON)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(config, "hooks.json"), raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := cfg.Doctor(t.Context())
+			if result.Status != core.ExitOK {
+				t.Fatalf("routing changed doctor exit to %v: %s", result.Status, result.Data)
+			}
+			var data struct {
+				Adapters []struct {
+					Adapter string `json:"adapter"`
+					Route   string `json:"codex_hook_state_routing"`
+				} `json:"adapters"`
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal(result.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data.Adapters) != 2 || data.Adapters[0].Route != "" || data.Adapters[1].Adapter != "codex" || data.Adapters[1].Route != test.route {
+				t.Errorf("doctor adapters = %+v, want Codex route %q", data.Adapters, test.route)
+			}
+			if test.route == "" {
+				if len(data.Warnings) != 0 {
+					t.Errorf("warnings without Codex hooks: %q", data.Warnings)
+				}
+			} else if len(data.Warnings) != 1 || !strings.Contains(data.Warnings[0], "can run in a shared managed daemon") || !strings.Contains(data.Warnings[0], test.detail) {
+				t.Errorf("warnings = %q, want conditional daemon and %q", data.Warnings, test.detail)
+			}
+		})
+	}
+}
+
 func TestDoctorReportsAdapterEvidenceAndTodayCounters(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")

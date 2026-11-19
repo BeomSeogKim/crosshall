@@ -189,6 +189,27 @@ func sameAdapterScope(a, b []string) bool {
 	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
+func (p VendorPlan) resumedLegacyCodex() bool {
+	if !p.Resume || p.Action != "setup" {
+		return false
+	}
+	for _, e := range p.op.Edits {
+		if e.Adapter != "codex" {
+			continue
+		}
+		entries := e.Add
+		if e.Record != nil {
+			entries = e.Record.Entries
+		}
+		for _, entry := range entries {
+			if route, err := recordedCodexRoute(entry); err == nil && route.root == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func newVendorPlan(op operation, targets []installTarget, j journal, digest string, resume bool) VendorPlan {
 	view := displayPlan(Request{Action: op.Action}, op, targets, resume)
 	p := VendorPlan{

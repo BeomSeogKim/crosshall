@@ -39,6 +39,11 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	var warnings []string
 	if stateErr == nil {
 		adapters = localDoctorAdapters(cfg.StateRoot)
+		for _, adapter := range adapters {
+			if warning := codexHookRoutingWarning(adapter.CodexHookStateRouting); warning != "" {
+				warnings = append(warnings, warning)
+			}
+		}
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
 		rendezvous, err := spool.OpenServerRoot(cfg.Rendezvous)
 		if err == nil {

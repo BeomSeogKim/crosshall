@@ -5,8 +5,34 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func TestConfigFileSerializesReplacementAcrossJournals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	before, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A locally opened directory lock stands in for another state root's
+	// setup, with a separate journal but the same vendor target.
+	lock, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceConfig(path, before, []byte("{}\n"), 0600, false); err == nil {
+		t.Fatal("replaced a configuration during another state root's write")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("configuration was written under another setup's lock: %v", err)
+	}
+}
 
 func TestConfigFileProvidesStagedIdentityBeforePublication(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")

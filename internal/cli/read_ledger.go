@@ -243,7 +243,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		if r.ExchangeID != 0 {
-			fmt.Fprintf(w, "#%s/x%d: added %d units, %d remaining.\n", r.Channel, r.ExchangeID, r.Units, r.Remaining)
+			unit := "unit"
+			if r.Units != 1 {
+				unit = "units"
+			}
+			fmt.Fprintf(w, "#%s/x%d: added %d %s, %d remaining.\n", r.Channel, r.ExchangeID, r.Units, unit, r.Remaining)
 		} else if r.Pool != 0 {
 			fmt.Fprintf(w, "#%s: added %d root token(s) to the join pool, %d in the pool.\n", r.Channel, r.Pool, r.JoinPool)
 		} else {

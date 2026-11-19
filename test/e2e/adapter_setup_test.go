@@ -313,6 +313,41 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdapterUninstallWithoutHooksDoesNotWritePolicy(t *testing.T) {
+	f := newSetupWorld(t)
+	originals := make(map[string]setupFile)
+	for adapter, path := range f.paths {
+		originals[adapter] = readSetupFile(t, path)
+	}
+	f.apply("", "owner", "start")
+	for _, args := range [][]string{{"uninstall"}, {"uninstall", "claude"}} {
+		out := f.apply("yes\n", args...)
+		if out.stderr != "" || out.obj["kind"] != "uninstall" || out.obj["ok"] != true || out.obj["applied"] == true {
+			t.Fatalf("%v wrote a plan or applied changes: %s, stderr %q", args, out.stdout, out.stderr)
+		}
+	}
+	for adapter, path := range f.paths {
+		assertSetupFile(t, path, originals[adapter], true)
+	}
+	if _, err := os.Stat(filepath.Join(f.state, "install-journal.json")); !os.IsNotExist(err) {
+		t.Errorf("uninstall created the install journal: %v", err)
+	}
+	db := f.db()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM adapter_policy").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("uninstall wrote %d policies: %v", count, err)
+	}
+	f.apply("", "owner", "adapter", "set", "claude", "--enabled", "on")
+	out := f.apply("yes\n", "uninstall")
+	if out.obj["applied"] != true {
+		t.Fatalf("uninstall failed to disable a saved policy: %s", out.stdout)
+	}
+	var enabled bool
+	if err := db.QueryRow("SELECT enabled FROM adapter_policy WHERE adapter = 'claude'").Scan(&enabled); err != nil || enabled {
+		t.Fatalf("Claude policy after uninstall was enabled = %t: %v", enabled, err)
+	}
+}
+
 func TestAdapterSetupRejectsAnExplicitlyEmptyVendorHome(t *testing.T) {
 	f := newSetupWorld(t)
 	path := f.paths["claude"]

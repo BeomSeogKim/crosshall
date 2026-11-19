@@ -8,10 +8,9 @@ import (
 	"testing"
 )
 
-// A fresh session refused an alias is told, in its plain next step, to ask
-// for a restore before taking another alias, and the refusal leaves its key
-// unenrolled and so still restorable.
-func TestATakenAliasNextStepPutsRestoreFirst(t *testing.T) {
+// The new-member command comes first. The recovery path still explains why
+// a replacement session must restore its old binding before joining.
+func TestATakenAliasNextStepPutsNewMemberFirst(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
 	owner.must("owner", "start")
@@ -25,13 +24,17 @@ func TestATakenAliasNextStepPutsRestoreFirst(t *testing.T) {
 	if exit == nil || exit.ExitCode() != 3 {
 		t.Fatalf("exit %v:\n%s", err, out)
 	}
+	if !strings.HasPrefix(string(out), "crosshall: @form is taken in #checkout\nnext: For a new member,") {
+		t.Fatalf("the new-member option did not lead the refusal:\n%s", out)
+	}
 	remaining := string(out)
 	for _, step := range []string{
-		"next: To recover the old membership, run crosshall whoami --full",
+		"next: For a new member, crosshall join checkout chooses an unused alias.",
+		"To recover the old membership, run crosshall whoami --full",
 		"only to the owner",
 		"crosshall owner who --all",
 		"crosshall owner restore with that ID as its first argument and --new-key set to the token",
-		"crosshall join checkout chooses an unused alias",
+		"Joining under another alias makes this session's key ineligible for owner restore.",
 	} {
 		_, rest, found := strings.Cut(remaining, step)
 		if !found {

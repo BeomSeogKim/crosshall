@@ -254,7 +254,7 @@ func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int6
 	}
 	if tokens < 1 {
 		r := Refuse(core.CodeNoRootCredit,
-			"you have no credit to start a new exchange",
+			"you have no root tokens to start a new exchange",
 			fmt.Sprintf("ask the owner: crosshall owner budget grant %s/@%s --roots 1", m.channelName, m.alias))
 		return attribution{}, &r, nil
 	}

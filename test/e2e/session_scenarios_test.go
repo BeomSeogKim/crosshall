@@ -126,7 +126,7 @@ func TestRunAnnouncesMemberShellAndNestedIdentity(t *testing.T) {
 	const shellNotice = "[crosshall] Starting a crosshall member shell. Type exit to return.\n"
 	const commandOutput = "command output\n"
 	nestedNotice := "[crosshall] This shell already has identity route:sha256:" +
-		parent.keyDigest()[:12] + ". The new command gets a new identity.\n"
+		parent.keyDigest()[:12] + ". The new command gets a new identity. When it exits, you return to this identity.\n"
 	for _, tc := range []struct {
 		name   string
 		args   []string
@@ -163,6 +163,24 @@ func TestRunAnnouncesMemberShellAndNestedIdentity(t *testing.T) {
 		got.obj["hint"] != "rerun this command from your separate owner terminal" {
 		t.Fatalf("wrong member-shell refusal: exit %d, %s", got.exit, got.stdout)
 	}
+}
+
+func TestAFormerMemberAndANewSessionGetTheSameEnrollmentMessage(t *testing.T) {
+	w := newWorld(t)
+	w.owner().must("owner", "channel", "create", "checkout", "--pool", "0")
+	member := w.member()
+	checkNotInChannel := func() {
+		t.Helper()
+		got := member.run("who")
+		if got.exit != 4 || got.obj["code"] != "not_enrolled" ||
+			got.obj["message"] != "this session is not in a channel" {
+			t.Fatalf("unenrolled response: exit %d, %s", got.exit, got.stdout)
+		}
+	}
+	checkNotInChannel()
+	member.must("join", "checkout", "--as", "reviewer")
+	member.must("leave")
+	checkNotInChannel()
 }
 
 func TestDevBinaryRefusesDefaultStateDirectory(t *testing.T) {

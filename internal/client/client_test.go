@@ -170,7 +170,7 @@ func TestWhoamiKnownEnrollmentStates(t *testing.T) {
 func TestWhoamiFullExplainsHowToRestoreMembership(t *testing.T) {
 	id := ident.Identity{Vendor: "codex", Key: "fixture-session-key"}
 	result := core.Result{Status: core.ExitNotEnrolled, Code: core.CodeNotEnrolled,
-		Data: json.RawMessage(`{"message":"session has not joined a channel","hint":"crosshall join <channel>"}`)}
+		Data: json.RawMessage(`{"message":"this session is not in a channel","hint":"crosshall join <channel>"}`)}
 	for _, asJSON := range []bool{false, true} {
 		var out bytes.Buffer
 		if code := writeWhoami(&out, id, result, asJSON, true); code != core.ExitNotEnrolled {
@@ -187,7 +187,7 @@ func TestWhoamiFullExplainsHowToRestoreMembership(t *testing.T) {
 			}
 			if err := json.Unmarshal(out.Bytes(), &got); err != nil ||
 				got.Vendor != id.Vendor || got.Key != id.Key || got.Enrollment != "not_enrolled" ||
-				got.Code != result.Code || got.Message != "session has not joined a channel" ||
+				got.Code != result.Code || got.Message != "this session is not in a channel" ||
 				!strings.Contains(got.Hint, "crosshall join <channel>") {
 				t.Fatalf("unexpected JSON identity: %+v (%v)", got, err)
 			}

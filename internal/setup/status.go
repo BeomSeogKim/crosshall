@@ -120,6 +120,30 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 	return statuses, nil
 }
 
+func (s Service) noUninstallFootprint(ctx context.Context, adapters []string) (bool, error) {
+	statuses, err := s.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	selected := 0
+	for _, status := range statuses {
+		if !status.HookAdapter || len(adapters) > 0 && !slices.Contains(adapters, status.Adapter) {
+			continue
+		}
+		if status.Footprint != "none" {
+			return false, nil
+		}
+		selected++
+	}
+	if len(adapters) > 0 {
+		return selected == len(adapters), nil
+	}
+	// Bare uninstall also reports journal records for unknown adapters,
+	// which have no status row.
+	j, _, err := readJournal(s.StateRoot)
+	return len(j.Files) == 0 && len(j.Retained) == 0 && j.Pending == nil, err
+}
+
 func inspectStatusState(ctx context.Context, path string) (journal, bool, map[string]store.DoctorAdapterState, bool) {
 	state, err := openSetupState(path, false)
 	if errors.Is(err, os.ErrNotExist) {

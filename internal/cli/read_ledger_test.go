@@ -36,6 +36,25 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 	}
 }
 
+func TestBudgetGrantPrintsUnitOrUnits(t *testing.T) {
+	for _, tc := range []struct {
+		arg   string
+		units int64
+		want  string
+	}{
+		{"1", 1, "#checkout/x3: added 1 unit, 5 remaining.\n"},
+		{"2", 2, "#checkout/x3: added 2 units, 5 remaining.\n"},
+	} {
+		ft := &fakeTransport{result: okResult(t, domain.BudgetGrantResult{
+			Channel: "checkout", ExchangeID: 3, Units: tc.units, Remaining: 5,
+		})}
+		stdout, stderr, code := run(t, Env{Transport: ft}, "owner", "budget", "grant", "checkout/x3", tc.arg)
+		if code != core.ExitOK || stdout != tc.want || stderr != "" {
+			t.Fatalf("grant %s: exit=%d stdout=%q stderr=%q want=%q", tc.arg, code, stdout, stderr, tc.want)
+		}
+	}
+}
+
 func TestPendingUsesPlainTrailerOrJSONField(t *testing.T) {
 	const id = int64(9007199254740993)
 	ft := &fakeTransport{result: okResult(t, struct {

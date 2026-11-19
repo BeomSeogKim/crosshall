@@ -42,7 +42,7 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 		return reg, &EnvironmentError{core.CodeKeyRetired, "session key has been retired"}
 	}
 	if !principal.Valid && hello.Intent != "join" {
-		return reg, &EnvironmentError{core.CodeNotEnrolled, "session has not joined a channel"}
+		return reg, &EnvironmentError{core.CodeNotEnrolled, "this session is not in a channel"}
 	}
 
 	reg.rendezvous, reg.digest, reg.version = rendezvous, id.Digest(), id.Version

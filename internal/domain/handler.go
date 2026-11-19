@@ -412,10 +412,11 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			}
 			// A key that has joined can no longer be restored, so a session
 			// that lost its identity must not take the retry first.
+			newMember := fmt.Sprintf("For a new member, crosshall join %s chooses an unused alias. ", ch.name)
 			recover := "To recover the old membership, run crosshall whoami --full in this session and privately give its first vendor:key token only to the owner. " +
-				"The owner runs crosshall owner who --all to find the old binding ID, then runs crosshall owner restore with that ID as its first argument and --new-key set to the token."
-			return Refuse(core.CodeAliasTaken, taken+". Joining under another alias makes this session's key ineligible for owner restore.",
-				recover+fmt.Sprintf(" For a new member, crosshall join %s chooses an unused alias.", ch.name)), nil
+				"The owner runs crosshall owner who --all to find the old binding ID, then runs crosshall owner restore with that ID as its first argument and --new-key set to the token. " +
+				"Joining under another alias makes this session's key ineligible for owner restore."
+			return Refuse(core.CodeAliasTaken, taken, newMember+recover), nil
 		}
 	}
 

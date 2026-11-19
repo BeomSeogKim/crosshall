@@ -611,7 +611,7 @@ func acknowledgeRoster(ctx context.Context, tx store.Tx, bindingID *int64, curso
 
 func unknownOutcome(message, key string) core.Result {
 	if key == "" {
-		return domain.Fail(core.ExitUnavailable, core.CodeOutcomeUnknown, message, "")
+		return domain.Fail(core.ExitUnavailable, core.CodeOutcomeUnknown, message, "crosshall log shows whether it was stored; check before sending again")
 	}
 	if strings.ContainsAny(key, " \t\r\n'\"\\;$`&|*?()<>[]~!#{}") {
 		key = "'" + strings.ReplaceAll(key, "'", "'\\''") + "'"

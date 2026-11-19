@@ -48,13 +48,13 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 		return core.Result{}, err
 	}
 	if cmd.Any && cmd.WorkOnly {
-		return waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "", &summary)
+		return waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "crosshall wait --any, or crosshall wait --work-only", &summary)
 	}
 	if cmd.Cursor != nil && cmd.Cursor.BindingID != member.binding {
 		return waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", &summary)
 	}
 	if cmd.Cursor != nil && cmd.Cursor.MessageID < 0 {
-		return waitFailure(core.ExitUsage, "", "invalid wait cursor", "", &summary)
+		return waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary)
 	}
 
 	out := WaitSnapshot{

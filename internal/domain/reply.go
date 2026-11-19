@@ -118,9 +118,9 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 	}
 	switch state {
 	case "replied", "declined":
-		return Refuse(core.CodeAlreadySettled, fmt.Sprintf("you already %s #%d", state, cmd.To), ""), nil
+		return Refuse(core.CodeAlreadySettled, fmt.Sprintf("you already %s #%d", state, cmd.To), "it needs no further reply; to add something, use crosshall note"), nil
 	case "cancelled":
-		return Refuse(core.CodeCancelled, fmt.Sprintf("the owner cancelled #%d", cmd.To), ""), nil
+		return Refuse(core.CodeCancelled, fmt.Sprintf("the owner cancelled #%d", cmd.To), "no answer is owed; crosshall inbox"), nil
 	}
 
 	var askerAlias string

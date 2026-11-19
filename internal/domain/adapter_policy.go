@@ -24,13 +24,13 @@ func ValidAdapterName(adapter string) bool {
 
 func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd AdapterSet, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can change adapter policy", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can change adapter policy", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if req.OpKey == "" {
-		return Fail(core.ExitUsage, "", "an operation key is required for this command", ""), nil
+		return Fail(core.ExitUsage, "", "an operation key is required for this command", "run it through the crosshall command, which supplies the key"), nil
 	}
 	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil {
-		return Fail(core.ExitUsage, "", "choose claude or codex and at least one policy switch", ""), nil
+		return Fail(core.ExitUsage, "", "choose claude or codex and at least one policy switch", "crosshall owner adapter set claude --enabled on"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {

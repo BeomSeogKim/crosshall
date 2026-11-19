@@ -77,7 +77,7 @@ func TestJoinHintStatesTheHistoryContract(t *testing.T) {
 // it with crosshall inbox alone.
 func TestJoinHintStatesTheTurnEndRule(t *testing.T) {
 	hint := domain.Hint("tax", "checkout")
-	const rule = "- Before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn."
+	const rule = "- Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn."
 	if strings.Count(hint, rule) != 1 {
 		t.Fatalf("hint lacks the turn-end rule exactly once:\n%s", hint)
 	}

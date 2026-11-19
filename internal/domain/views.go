@@ -269,7 +269,7 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 		return Refuse(core.CodeOwnerOnly, "the full ledger requires the owner", "crosshall status"), nil
 	}
 	if cmd.Channel != "" && !ValidName(cmd.Channel) {
-		return Fail(core.ExitUsage, "", "invalid channel name", ""), nil
+		return Fail(core.ExitUsage, "", "invalid channel name", "crosshall owner status --all lists the channels"), nil
 	}
 	channels := []channelRow{}
 	rows, err := tx.QueryContext(ctx, "SELECT id, name FROM channel WHERE (? = '' OR name = ?) ORDER BY id", cmd.Channel, cmd.Channel)

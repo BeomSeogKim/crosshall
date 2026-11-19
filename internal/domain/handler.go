@@ -224,10 +224,10 @@ func (s *Service) createChannel(ctx context.Context, tx store.Tx, caller core.Ca
 			"run `crosshall owner channel create` from your own shell"), nil
 	}
 	if !ValidName(cmd.Name) {
-		return Fail(core.ExitUsage, "", fmt.Sprintf("invalid channel name %q", cmd.Name), ""), nil
+		return Fail(core.ExitUsage, "", fmt.Sprintf("invalid channel name %q", cmd.Name), "crosshall owner channel create <name>, with letters, digits and hyphens"), nil
 	}
 	if msg := ValidText("topic", cmd.Topic); msg != "" {
-		return Fail(core.ExitUsage, "", msg, ""), nil
+		return Fail(core.ExitUsage, "", msg, "crosshall help"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -285,10 +285,10 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		return Fail(core.ExitUsage, "", "name the channel to join: crosshall join <channel>", "crosshall join <channel>"), nil
 	}
 	if cmd.RepoRoot != "" && (cmd.Channel != "" || !validRepoRoot(cmd.RepoRoot)) {
-		return Fail(core.ExitUsage, "", "join accepts a channel or one absolute repository root", ""), nil
+		return Fail(core.ExitUsage, "", "join accepts a channel or one absolute repository root", "crosshall join <channel> --as <alias>"), nil
 	}
 	if msg := ValidText("focus", cmd.Focus); msg != "" {
-		return Fail(core.ExitUsage, "", msg, ""), nil
+		return Fail(core.ExitUsage, "", msg, "crosshall join <channel> --as <alias>"), nil
 	}
 	if cmd.Alias == "owner" {
 		hint := "crosshall join"
@@ -327,7 +327,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		return s.unknownChannel(ctx, tx, cmd.Channel)
 	}
 	if ch.state != "active" {
-		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), ""), nil
+		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "crosshall join <channel> with an active channel"), nil
 	}
 
 	if principal != 0 && cmd.RepoRoot == "" {
@@ -362,7 +362,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 		return Refuse(core.CodeOneChannel,
 			fmt.Sprintf("this session is bound to #%s; a session joins one channel", other),
-			"crosshall who"), nil
+			fmt.Sprintf("crosshall join %s returns this session there; a new session (for a shell, crosshall run -- sh) can join #%s", other, ch.name)), nil
 	}
 	alias := cmd.Alias
 	if existing.id != 0 && cmd.Alias != "" && cmd.Alias != existing.alias {
@@ -482,7 +482,8 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	}
 	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq}
 	// The hint and the full roster repeat until a later command acknowledges
-	// them; after that a re-join shows only what changed since the cursor.
+	// them; after that a re-join shows the hint again under "Already in" and,
+	// of the roster, only what changed since the cursor.
 	if !restored || !(existing.hintAcked || req.Ack > 0) {
 		out.Hint = Hint(alias, ch.name)
 		members, err := roster(ctx, tx, ch.id, principal, now)
@@ -495,6 +496,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 		out.Members = members
 	} else {
+		out.Hint = RepeatHint(alias, ch.name)
 		changes, err := rosterChanges(ctx, tx, ch.id, effectiveAck(existing.rosterAck, req.Ack, seq), principal, now)
 		if err != nil {
 			return core.Result{}, err

@@ -56,17 +56,17 @@ type BudgetGrantResult struct {
 
 func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Cancel, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can cancel requests", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can cancel requests", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if !ValidName(cmd.Channel) || cmd.ID < 1 {
-		return Fail(core.ExitUsage, "", "cancel requires a channel and a positive request ID", ""), nil
+		return Fail(core.ExitUsage, "", "cancel requires a channel and a positive request ID", "crosshall owner cancel <channel>/<id>"), nil
 	}
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
 	}
 	if !found {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), "crosshall owner status --all lists the channels"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -79,7 +79,7 @@ func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, r
 	var askID int64
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM message WHERE id = ? AND channel_id = ? AND kind = 'ask'`,
 		cmd.ID, ch.id).Scan(&askID); errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no request %d in #%s", cmd.ID, ch.name), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no request %d in #%s", cmd.ID, ch.name), "crosshall owner status --channel "+ch.name), nil
 	} else if err != nil {
 		return core.Result{}, err
 	}
@@ -115,19 +115,19 @@ func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, r
 
 func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd BudgetGrant, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can grant credit", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can grant credit", "run it from the owner's own shell, not an agent session"), nil
 	}
 	exchange := cmd.ExchangeID > 0 && cmd.Units > 0 && cmd.Alias == "" && cmd.Roots == 0
 	member := cmd.ExchangeID == 0 && cmd.Units == 0 && ValidName(cmd.Alias) && cmd.Roots > 0
 	if !ValidName(cmd.Channel) || (!exchange && !member) {
-		return Fail(core.ExitUsage, "", "grant positive units to one exchange or positive roots to one member", ""), nil
+		return Fail(core.ExitUsage, "", "grant positive units to one exchange or positive roots to one member", "crosshall owner budget grant <channel>/x<id> <units>, or <channel>/@<alias> --roots <n>"), nil
 	}
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
 	}
 	if !found {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), "crosshall owner status --all lists the channels"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -154,13 +154,13 @@ func grantUnits(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant
 	err := tx.QueryRowContext(ctx, `SELECT granted, spent FROM exchange WHERE id = ? AND channel_id = ?`,
 		cmd.ExchangeID, ch.id).Scan(&granted, &spent)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no exchange x%d in #%s", cmd.ExchangeID, ch.name), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no exchange x%d in #%s", cmd.ExchangeID, ch.name), "crosshall owner status --channel "+ch.name), nil
 	}
 	if err != nil {
 		return core.Result{}, err
 	}
 	if granted > math.MaxInt64-cmd.Units {
-		return Fail(core.ExitUsage, "", "grant exceeds the exchange credit limit", ""), nil
+		return Fail(core.ExitUsage, "", "grant exceeds the exchange credit limit", "grant fewer units"), nil
 	}
 	granted += cmd.Units
 	if _, err := tx.ExecContext(ctx, `UPDATE exchange SET granted = ?, episode_open = 0 WHERE id = ?`,
@@ -181,13 +181,13 @@ func grantRoots(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant
 		WHERE b.channel_id = ? AND b.alias = ? AND b.state = 'live' AND p.kind = 'session'`,
 		ch.id, cmd.Alias).Scan(&principal, &roots)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", cmd.Alias, ch.name), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", cmd.Alias, ch.name), "crosshall owner who --all"), nil
 	}
 	if err != nil {
 		return core.Result{}, err
 	}
 	if roots > math.MaxInt64-cmd.Roots {
-		return Fail(core.ExitUsage, "", "grant exceeds the member root token limit", ""), nil
+		return Fail(core.ExitUsage, "", "grant exceeds the member root token limit", "grant fewer root tokens"), nil
 	}
 	roots += cmd.Roots
 	if _, err := tx.ExecContext(ctx, `UPDATE principal SET root_tokens = ? WHERE id = ?`, roots, principal); err != nil {

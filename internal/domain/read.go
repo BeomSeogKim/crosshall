@@ -96,7 +96,7 @@ func (s *Service) read(ctx context.Context, tx store.Tx, caller core.Caller, req
 	ids := make([]int64, 0, len(cmd.IDs))
 	for _, id := range cmd.IDs {
 		if id <= 0 {
-			return Fail(core.ExitUsage, "", "message IDs must be positive integers", ""), nil
+			return Fail(core.ExitUsage, "", "message IDs must be positive integers", "crosshall inbox lists the message IDs"), nil
 		}
 		if !unique[id] {
 			ids = append(ids, id)

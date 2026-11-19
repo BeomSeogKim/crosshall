@@ -59,7 +59,7 @@ func departureToken(ctx context.Context, tx store.Tx, binding, principal int64) 
 func (s *Service) ownerDepart(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd OwnerDepart, now time.Time) (core.Result, error) {
 	const list = "crosshall owner who --all"
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can depart a binding", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can depart a binding", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if cmd.BindingID <= 0 || !ValidDepartureToken(cmd.Seen) || req.OpKey == "" {
 		return Fail(core.ExitUsage, "", "depart requires a binding ID and its listing token", list), nil

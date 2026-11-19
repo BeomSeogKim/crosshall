@@ -35,20 +35,20 @@ func validRepoRoot(root string) bool {
 
 func (s *Service) channelDefault(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd ChannelDefault, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can set a repository default", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can set a repository default", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if req.OpKey == "" {
-		return Fail(core.ExitUsage, "", "an operation key is required for this command", ""), nil
+		return Fail(core.ExitUsage, "", "an operation key is required for this command", "run it through the crosshall command, which supplies the key"), nil
 	}
 	if !ValidName(cmd.Channel) || !validRepoRoot(cmd.RepoRoot) {
-		return Fail(core.ExitUsage, "", "a repository default needs a channel name and an absolute repository root", ""), nil
+		return Fail(core.ExitUsage, "", "a repository default needs a channel name and an absolute repository root", "crosshall owner channel default <channel> --repo <dir>"), nil
 	}
 	channel, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
 	}
 	if !found {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), "crosshall owner status --all lists the channels"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -59,7 +59,7 @@ func (s *Service) channelDefault(ctx context.Context, tx store.Tx, caller core.C
 		return r, err
 	}
 	if channel.state != "active" {
-		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", channel.name), ""), nil
+		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", channel.name), "choose an active channel: crosshall owner status --all"), nil
 	}
 	write, err := tx.ExecContext(ctx, `INSERT INTO repo_default(repo_root, channel_id) VALUES (?, ?)
 		ON CONFLICT(repo_root) DO UPDATE SET channel_id = excluded.channel_id
@@ -112,10 +112,10 @@ func replayRepoJoin(ctx context.Context, tx store.Tx, principal int64, key, scop
 		return core.Result{}, false, err
 	}
 	if !exists {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel #%s", original.Channel), ""), true, nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel #%s", original.Channel), "the owner can list the channels (crosshall owner status --all); a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>"), true, nil
 	}
 	if ch.state != "active" {
-		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), ""), true, nil
+		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "the owner can list the active channels (crosshall owner status --all); a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>"), true, nil
 	}
 	return r, true, nil
 }

@@ -29,6 +29,9 @@ var _ Handler = (*Service)(nil)
 // Handle runs one command inside the caller's transaction. A refusal is a
 // result, not an error; an error means the transaction must be rolled back.
 func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, req Request) (core.Result, error) {
+	if cmd, ok := req.Command.(Wait); ok {
+		return waitSnapshot(ctx, tx, caller, cmd)
+	}
 	now := s.now()
 	result, err := s.handleCommand(ctx, tx, caller, req, now)
 	if err != nil {

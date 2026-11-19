@@ -84,7 +84,15 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 		if resolveErr != nil {
 			return identityFailure(resolveErr), nil
 		}
-		memberCtx, cancel := t.memberCommandContext(ctx)
+		var memberCtx context.Context
+		var cancel context.CancelFunc
+		if req.Verb == domain.VerbWait {
+			// Each snapshot has a normal request budget. An observer uses
+			// the running dispatcher without attempting to start one.
+			memberCtx, cancel = context.WithDeadline(ctx, spool.Deadline(time.Now(), false))
+		} else {
+			memberCtx, cancel = t.memberCommandContext(ctx)
+		}
 		defer cancel()
 		reply, err = t.spool.Member(memberCtx, id, req)
 	}

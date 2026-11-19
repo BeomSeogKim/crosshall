@@ -114,6 +114,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[Read](args)
 	case VerbInbox:
 		return decodeLedgerCommand[Inbox](args)
+	case VerbWait:
+		return decodeLedgerCommand[Wait](args)
 	case VerbWaiting:
 		return decodeLedgerCommand[Waiting](args)
 	case VerbStatus:

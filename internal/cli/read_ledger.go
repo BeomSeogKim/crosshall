@@ -138,7 +138,7 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		for _, message := range r.Messages {
 			printReadMessage(w, message)
 		}
-	case domain.Inbox:
+	case domain.Inbox, domain.Wait:
 		var r domain.InboxResult
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err

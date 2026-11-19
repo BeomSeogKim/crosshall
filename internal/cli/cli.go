@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -20,6 +21,7 @@ Member commands:
   who                                               List the members of your channel
   read [<id>...]                                    Read messages
   inbox                                             List unread messages and open obligations
+  wait [--any] [--timeout <duration>]               Wait for a new message
   waiting                                           List your outstanding requests
   status                                            Show the channel ledger
   whoami [--full]                                   Show a short identity digest (--full prints the raw key)
@@ -74,6 +76,8 @@ type Transport interface {
 type Env struct {
 	Version   string
 	Transport Transport
+	// CommandDeadline is the invocation budget for ordinary commands.
+	CommandDeadline time.Time
 	// OwnerGate returns a non-empty refusal message when this process may not
 	// act as the owner.
 	OwnerGate func() string
@@ -124,6 +128,11 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return core.ExitOK
 	}
 	verb, rest := rest[0], rest[1:]
+	if verb != domain.VerbWait && !env.CommandDeadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, env.CommandDeadline)
+		defer cancel()
+	}
 	switch verb {
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
@@ -159,6 +168,8 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	case domain.VerbRead, domain.VerbInbox, domain.VerbWaiting, domain.VerbStatus:
 		return readLedgerMember(ctx, env, opts, verb, rest, stdout, stderr)
 		// end read-ledger
+	case domain.VerbWait:
+		return runWait(ctx, env, opts, rest, stdout, stderr)
 	case "join":
 		cmd, err := parseJoin(rest)
 		if err != nil {

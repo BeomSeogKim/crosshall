@@ -117,6 +117,7 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 		if state, ok := states[adapter.Adapter]; ok {
 			adapter.Policy = &state.Policy
 			adapter.Evidence = state.Evidence
+			adapter.SetReminderEvidence(state.Evidence)
 			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
 		}
 	}

@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -369,10 +371,12 @@ type fixture struct {
 	mu       sync.Mutex
 	requests []string
 	during   map[int]func()
+	// bash answers request n with a Bash tool call running this command.
+	bash map[int]string
 }
 
 func newFixture(t *testing.T) *fixture {
-	f := &fixture{during: map[int]func(){}}
+	f := &fixture{during: map[int]func(){}, bash: map[int]string{}}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/messages") || strings.Contains(r.URL.Path, "count_tokens") {
@@ -383,7 +387,7 @@ func newFixture(t *testing.T) *fixture {
 		f.mu.Lock()
 		f.requests = append(f.requests, string(body))
 		n := len(f.requests)
-		action := f.during[n]
+		action, command := f.during[n], f.bash[n]
 		f.mu.Unlock()
 		if action != nil {
 			action()
@@ -394,18 +398,44 @@ func newFixture(t *testing.T) *fixture {
 		_ = json.Unmarshal(body, &req)
 		w.Header().Set("content-type", "text/event-stream")
 		usage := map[string]int{"input_tokens": 1, "output_tokens": 1}
-		for _, event := range []struct {
+		block := []struct {
+			name string
+			data any
+		}{
+			{"content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}}},
+			{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "OK"}}},
+		}
+		stop := "end_turn"
+		if command != "" {
+			input, _ := json.Marshal(map[string]string{"command": command})
+			block = []struct {
+				name string
+				data any
+			}{
+				{"content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{
+					"type": "tool_use", "id": fmt.Sprintf("toolu_fixture%02d", n), "name": "Bash", "input": map[string]any{}}}},
+				{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{
+					"type": "input_json_delta", "partial_json": string(input)}}},
+			}
+			stop = "tool_use"
+		}
+		events := []struct {
 			name string
 			data any
 		}{
 			{"message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": "msg_fixture", "type": "message",
 				"role": "assistant", "model": req.Model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": usage}}},
-			{"content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}}},
-			{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": "OK"}}},
+		}
+		events = append(events, block...)
+		events = append(events, []struct {
+			name string
+			data any
+		}{
 			{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
-			{"message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": map[string]int{"output_tokens": 1}}},
+			{"message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]int{"output_tokens": 1}}},
 			{"message_stop", map[string]any{"type": "message_stop"}},
-		} {
+		}...)
+		for _, event := range events {
 			data, _ := json.Marshal(event.data)
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.name, data)
 		}
@@ -479,6 +509,8 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 	if session == nil || c.model.count() != 3 || noteID == "" {
 		t.Fatalf("session %v, %d model requests, note %q", session, c.model.count(), noteID)
 	}
+	logRequestTokenSamples(t, "claude", []byte(c.model.request(1)), "hint", "roster")
+	logRequestTokenSamples(t, "claude", []byte(c.model.request(2)), "pending")
 	hint := "Joined #checkout as @claude1"
 	pending := "[crosshall] pending: " + noteID
 	enrolled := strings.Contains(c.model.request(1), hint)
@@ -513,7 +545,7 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 		{"enroll", level(enrolled && departed && restored), "auto-join hint at start; clean end departs; next start restores"},
 		{"boundary", level(offered && quiet), "pending line once at the prompt after the mail; quiet turn adds nothing"},
 		{"observe", level(observedFact == "prompt_submitted" && departed), "prompt fact visible to another member; end departs"},
-		{"reminder", "candidate", "not in this slice"},
+		reminderEvidence(readProcessCallID(t)),
 	}
 	for name, ok := range map[string]bool{"enrolled": enrolled, "offered": offered, "quiet": quiet,
 		"departed": departed, "restored": restored, "launch version": launchVersion, "launch profile": launchProfile} {
@@ -549,6 +581,137 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 	if out := c.owner("owner", "adapter", "evidence", file); !strings.Contains(out, "Recorded 4 result(s)") {
 		t.Fatalf("evidence import: %s", out)
 	}
+	// The imported rows are the exported levels for this exact profile.
+	recorded := c.evidenceLevels(version, runtime.GOOS+"-"+runtime.GOARCH, "print", "claude-1")
+	for _, r := range results {
+		if recorded[r.Cap] != r.Level {
+			t.Errorf("imported %s %q, exported %q", r.Cap, recorded[r.Cap], r.Level)
+		}
+	}
+}
+
+// reminderEvidence is the reminder result of a run, from callIDVar, the
+// read-process variable that carries the native tool-call ID ("" for none).
+// Without one the dispatcher cannot establish which tool call a read ran in,
+// so the reminder is unavailable (issue #20). With one it is a candidate: the
+// owner's trigger to reopen the parked read-origin path.
+func reminderEvidence(callIDVar string) evidenceResult {
+	if callIDVar == "" {
+		return evidenceResult{"reminder", "unavailable",
+			"no native tool-call ID reaches the read process, so a read's origin cannot be established"}
+	}
+	return evidenceResult{"reminder", "candidate",
+		"the read process carries the native tool-call ID in " + callIDVar + "; the read-origin path is parked"}
+}
+
+// readProcessCallID runs one "crosshall read" Bash call under real Claude
+// Code and returns the name of a variable of that process whose value holds
+// the call's tool_use_id, as the post-tool hook reports it, or "".
+func readProcessCallID(t *testing.T) string {
+	t.Helper()
+	c := newConformance(t)
+	c.requireClaude()
+	fakeBin := filepath.Join(c.root, "fakebin")
+	if err := os.Mkdir(fakeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	readEnv, post := filepath.Join(c.root, "read.env"), filepath.Join(c.root, "post.json")
+	if err := os.WriteFile(filepath.Join(fakeBin, "crosshall"), []byte("#!/bin/sh\nset -e\nenv -0 > "+readEnv+".part\nmv "+readEnv+".part "+readEnv+"\necho '#41 ask from @writer'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	logger := filepath.Join(c.root, "post.sh")
+	if err := os.WriteFile(logger, []byte("#!/bin/sh\ncat > "+post+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"PostToolUse": []any{
+		map[string]any{"matcher": "Bash", "hooks": []any{map[string]any{"type": "command", "command": logger, "timeout": 5}}}}}})
+	if err := os.WriteFile(filepath.Join(c.config, "settings.json"), settings, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.model.bash[1] = "crosshall read"
+	env := c.claudeEnv()
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			env[i] = "PATH=" + fakeBin + ":/usr/bin:/bin"
+		}
+	}
+	cmd := exec.Command(c.claude, "-p", "--model", "haiku", "--allowedTools", "Bash")
+	cmd.Dir, cmd.Env, cmd.Stdin = c.repo, env, strings.NewReader("probe")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("claude: %v\n%s", err, stderr.String())
+	}
+	var payload struct {
+		ToolUseID string `json:"tool_use_id"`
+	}
+	// The capture is published only after the environment command succeeded.
+	vars, err := os.ReadFile(readEnv)
+	if err != nil {
+		t.Fatalf("read-process environment capture: %v", err)
+	}
+	raw, _ := os.ReadFile(post)
+	if json.Unmarshal(raw, &payload) != nil || payload.ToolUseID == "" {
+		t.Fatalf("the probe read did not run under a post-tool hook: %q", raw)
+	}
+	name, err := callIDVariable(vars, payload.ToolUseID)
+	if err != nil {
+		t.Fatalf("read-process environment capture: %v", err)
+	}
+	return name
+}
+
+// callIDVariable returns the name of the entry of environ ("env -0" output)
+// whose value holds id, or "". A capture that is empty, not NUL-terminated,
+// has an entry without a name, or lacks the PATH the fixture set is an error,
+// never "no call ID".
+func callIDVariable(environ []byte, id string) (string, error) {
+	text, complete := strings.CutSuffix(string(environ), "\x00")
+	if !complete || text == "" {
+		return "", errors.New("empty or truncated")
+	}
+	var found string
+	var path bool
+	for _, entry := range strings.Split(text, "\x00") {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			return "", fmt.Errorf("malformed entry %q", entry)
+		}
+		path = path || name == "PATH"
+		if found == "" && strings.Contains(value, id) {
+			found = name
+		}
+	}
+	if !path {
+		return "", errors.New("no PATH entry")
+	}
+	return found, nil
+}
+
+// evidenceLevels reads the recorded capability levels of one profile from the
+// temporary store.
+func (c *conformance) evidenceLevels(version, platform, mode, rev string) map[string]string {
+	c.t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(c.state, "store.sqlite3")+"?mode=ro")
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT cap, level FROM capability_evidence WHERE vendor = 'claude'
+		AND vendor_version = ? AND platform = ? AND mode = ? AND manifest_rev = ?`, version, platform, mode, rev)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var cap, level string
+		if err := rows.Scan(&cap, &level); err != nil {
+			c.t.Fatal(err)
+		}
+		out[cap] = level
+	}
+	return out
 }
 
 // The install description's one-second timeout is honoured, so a
@@ -676,6 +839,285 @@ func TestTheEvidenceOutputGuardFollowsVendorLinksAndFileIdentity(t *testing.T) {
 	if info, err := os.Stat(upper); err == nil && info.IsDir() {
 		if err := safeOutputDirFor(upper, login); err == nil {
 			t.Error("the login home in another case was accepted")
+		}
+	}
+}
+
+// TestClaudeCodePostToolUseProbe pins, for the real binary in print mode,
+// what the post-tool hook receives, which Bash commands the parked
+// condition lets through, and how each Stop output form reaches the model.
+// A fake crosshall on PATH prints a receipt line.
+func TestClaudeCodePostToolUseProbe(t *testing.T) {
+	t.Run("context", func(t *testing.T) {
+		copies := postToolUseProbe(t, `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"[probe] stop context"}}`)
+		// One copy, in a system-role conversation message, naming nothing local.
+		if len(copies) != 1 || copies[0].role != "system" || !strings.Contains(copies[0].text, "Stop hook additional context: [probe] stop context") {
+			t.Fatalf("additionalContext reached the model as %+v", copies)
+		}
+	})
+	t.Run("block", func(t *testing.T) {
+		copies := postToolUseProbe(t, `{"decision":"block","reason":"[probe] stop context"}`)
+		// Two copies: user-role feedback, and a system-role copy that names the
+		// hook command's absolute path - why the adapter uses additionalContext.
+		if len(copies) != 2 || copies[0].role != "user" || copies[1].role != "system" ||
+			!strings.Contains(copies[1].text, "stop.sh") {
+			t.Fatalf("a block reason reached the model as %+v", copies)
+		}
+	})
+}
+
+type stopCopy struct{ role, text string }
+
+// parkedReadCondition is the post-tool "if" condition of the parked reply
+// reminder (issue #20): it is measured here and shipped in no manifest.
+const parkedReadCondition = "Bash(crosshall read *)"
+
+func postToolUseProbe(t *testing.T, stopOutput string) []stopCopy {
+	c := newConformance(t)
+	c.requireClaude()
+	fakeBin := filepath.Join(c.root, "fakebin")
+	if err := os.Mkdir(fakeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(fakeBin, "crosshall")
+	receipt := "[crosshall] receipt: rfixturefixturefixturefixtur"
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '#41 ask from @writer'\necho '"+receipt+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	logDir := filepath.Join(c.root, "hooklog")
+	if err := os.Mkdir(logDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	logger := func(name, extra string) string {
+		path := filepath.Join(c.root, name+".sh")
+		script := "#!/bin/sh\nf=$(mktemp " + filepath.Join(logDir, name+".XXXXXX") + ")\ncat > \"$f\"\n" + extra
+		if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	marker := filepath.Join(c.root, "stop-once")
+	stopExtra := "if [ ! -e " + marker + " ]; then : > " + marker + "; echo '" + stopOutput + "'; fi\n"
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{
+		"PostToolUse": []any{
+			map[string]any{"matcher": "Bash", "hooks": []any{
+				map[string]any{"type": "command", "command": logger("post-all", ""), "timeout": 5}}},
+			map[string]any{"matcher": "Bash", "hooks": []any{
+				map[string]any{"type": "command", "command": logger("post-read", ""), "timeout": 5,
+					"if": parkedReadCondition}}},
+		},
+		"Stop": []any{map[string]any{"hooks": []any{
+			map[string]any{"type": "command", "command": logger("stop", stopExtra), "timeout": 5}}}},
+	}})
+	if err := os.WriteFile(filepath.Join(c.config, "settings.json"), settings, 0600); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{"crosshall read", "echo unrelated", fake + " read --json", "crosshall read 41 > /dev/null",
+		"crosshall read --json 41", "crosshall reader", "crosshall --json read 41", "crosshall --key k read 41",
+		"crosshall read 41 | cat", "crosshall read 41; echo x", "echo x; crosshall read 41", "crosshall readx 41"}
+	for i, command := range commands {
+		c.model.bash[i+1] = command
+	}
+	env := c.claudeEnv()
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			env[i] = "PATH=" + fakeBin + ":/usr/bin:/bin"
+		}
+	}
+	cmd := exec.Command(c.claude, "-p", "--model", "haiku", "--allowedTools", "Bash")
+	cmd.Dir, cmd.Env, cmd.Stdin = c.repo, env, strings.NewReader("probe")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("claude: %v\n%s", err, stderr.String())
+	}
+
+	type payload struct {
+		ToolUseID    string            `json:"tool_use_id"`
+		PromptID     string            `json:"prompt_id"`
+		StopActive   *bool             `json:"stop_hook_active"`
+		ToolInput    map[string]string `json:"tool_input"`
+		ToolResponse struct {
+			Stdout string `json:"stdout"`
+		} `json:"tool_response"`
+	}
+	logs := map[string][]payload{}
+	entries, _ := os.ReadDir(logDir)
+	for _, e := range entries {
+		body, _ := os.ReadFile(filepath.Join(logDir, e.Name()))
+		var p payload
+		if err := json.Unmarshal(body, &p); err != nil {
+			t.Fatal(err)
+		}
+		name := strings.SplitN(e.Name(), ".", 2)[0]
+		logs[name] = append(logs[name], p)
+	}
+	// The condition starts the hook for every command line with a
+	// "crosshall read" word sequence on PATH, compound ones included, and
+	// for nothing else: not a longer word, an absolute path or a global
+	// option before "read". Only the plain form could bind a receipt, so
+	// an extractor would have to refuse the compound ones it lets through.
+	var read []string
+	for _, p := range logs["post-read"] {
+		command := p.ToolInput["command"]
+		read = append(read, command)
+		if !strings.HasPrefix(p.ToolUseID, "toolu_fixture") || p.PromptID == "" {
+			t.Errorf("post-tool payload without its tool call or turn: %+v", p)
+		}
+		quiet := command == "crosshall read 41 > /dev/null" || command == "crosshall read 41; echo x"
+		if !quiet && !strings.HasSuffix(p.ToolResponse.Stdout, receipt) {
+			t.Errorf("tool_response.stdout does not end with the receipt: %q", p.ToolResponse.Stdout)
+		}
+	}
+	sort.Strings(read)
+	if want := []string{"crosshall read", "crosshall read --json 41", "crosshall read 41 > /dev/null",
+		"crosshall read 41 | cat", "crosshall read 41; echo x", "echo x; crosshall read 41"}; !slices.Equal(read, want) ||
+		len(logs["post-all"]) != len(commands) {
+		t.Fatalf("condition passed %q of %d post-tool callbacks", read, len(logs["post-all"]))
+	}
+	// The continued Stop says so.
+	if s := logs["stop"]; len(s) != 2 || s[0].StopActive == nil || s[1].StopActive == nil || *s[0].StopActive == *s[1].StopActive {
+		t.Fatalf("stop callbacks %+v", s)
+	}
+	// The Stop output costs exactly one more model request.
+	if n := c.model.count(); n != len(commands)+2 {
+		t.Fatalf("%d model requests", n)
+	}
+	var req struct {
+		System   json.RawMessage `json:"system"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(c.model.request(c.model.count())), &req); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(req.System), "[probe] stop context") {
+		t.Fatal("the Stop output reached the system prompt")
+	}
+	var copies []stopCopy
+	for _, msg := range req.Messages {
+		text := string(msg.Content)
+		if at := strings.Index(text, "[probe] stop context"); at >= 0 {
+			copies = append(copies, stopCopy{msg.Role, text[max(0, at-160) : at+len("[probe] stop context")]})
+		}
+	}
+	t.Logf("stop output %s: %d model requests; copies %+v", stopOutput, c.model.count(), copies)
+	return copies
+}
+
+// TestClaudeCodeStopContextRole records the role of the conversation message
+// that carries a Stop hook's additional context, by how many tool calls the
+// turn made and whether input was plain or stream-json.
+func TestClaudeCodeStopContextRole(t *testing.T) {
+	for _, tools := range []int{0, 1, 5} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tools=%d stream=%v", tools, stream), func(t *testing.T) {
+				c := newConformance(t)
+				c.requireClaude()
+				marker := filepath.Join(c.root, "stop-once")
+				stop := filepath.Join(c.root, "stop.sh")
+				script := "#!/bin/sh\ncat >/dev/null\nif [ ! -e " + marker + " ]; then : > " + marker +
+					"; echo '{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"[probe] stop context\"}}'; fi\n"
+				if err := os.WriteFile(stop, []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{"hooks": []any{
+					map[string]any{"type": "command", "command": stop, "timeout": 5}}}}}})
+				if err := os.WriteFile(filepath.Join(c.config, "settings.json"), settings, 0600); err != nil {
+					t.Fatal(err)
+				}
+				for i := 1; i <= tools; i++ {
+					c.model.bash[i] = fmt.Sprintf("echo step%d", i)
+				}
+				args := []string{"-p", "--model", "haiku", "--allowedTools", "Bash"}
+				stdin := "probe"
+				if stream {
+					args = append(args, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose")
+					stdin = `{"type":"user","message":{"role":"user","content":"probe"}}` + "\n"
+				}
+				cmd := exec.Command(c.claude, args...)
+				cmd.Dir, cmd.Env, cmd.Stdin = c.repo, c.claudeEnv(), strings.NewReader(stdin)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("claude: %v\n%s", err, stderr.String())
+				}
+				var req struct {
+					Messages []struct {
+						Role    string          `json:"role"`
+						Content json.RawMessage `json:"content"`
+					} `json:"messages"`
+				}
+				last := c.model.request(c.model.count())
+				if err := json.Unmarshal([]byte(last), &req); err != nil {
+					t.Fatal(err)
+				}
+				// One extra request; one copy; its role depends on the turn: a
+				// quiet turn wraps it as a user-role system reminder, a turn
+				// with tool calls appends it to a trailing system-role message.
+				var carriers []string
+				for _, msg := range req.Messages {
+					if text := string(msg.Content); strings.Contains(text, "Stop hook additional context: [probe] stop context") {
+						role := msg.Role
+						if strings.Contains(text, "<system-reminder>") {
+							role += "+system-reminder"
+						}
+						carriers = append(carriers, role)
+					}
+				}
+				want := "system"
+				if tools == 0 {
+					want = "user+system-reminder"
+				}
+				if c.model.count() != tools+2 || len(carriers) != 1 || carriers[0] != want {
+					t.Fatalf("%d requests; carriers %v, want one %s", c.model.count(), carriers, want)
+				}
+			})
+		}
+	}
+}
+
+// The reminder row follows this run's own measurement, so a vendor build
+// that hands the read process its tool-call ID shows up as a changed row.
+func TestReminderEvidenceFollowsTheCallIDMeasurement(t *testing.T) {
+	if got := reminderEvidence(""); got.Cap != "reminder" || got.Level != "unavailable" || got.Check == "" {
+		t.Errorf("no call ID: %+v", got)
+	}
+	if got := reminderEvidence("VENDOR_TOOL_USE_ID"); got.Level != "candidate" || !strings.Contains(got.Check, "VENDOR_TOOL_USE_ID") {
+		t.Errorf("call ID present: %+v", got)
+	}
+}
+
+// The probe keeps each environment entry whole, so an ID inside a multiline
+// value is still attributed to its variable.
+func TestTheCallIDProbeKeepsEnvironmentEntriesWhole(t *testing.T) {
+	const id = "toolu_fixture01"
+	environ := func(entries ...string) []byte { return []byte(strings.Join(entries, "\x00") + "\x00") }
+	for _, tc := range []struct {
+		name, want string
+		environ    []byte
+	}{
+		{"absent", "", environ("HOME=/fixture", "PATH=/usr/bin:/bin")},
+		{"single line", "ANY_NAME", environ("PATH=/usr/bin", "ANY_NAME=prefix-"+id+"-suffix")},
+		{"multiline value", "TOOL_CONTEXT", environ("PATH=/usr/bin", "TOOL_CONTEXT={\n  \"call\": \""+id+"\"\n}")},
+		{"name only", "", environ("PATH=/usr/bin", id+"=value")},
+	} {
+		if got, err := callIDVariable(tc.environ, id); got != tc.want || err != nil {
+			t.Errorf("%s: got %q, %v, want %q", tc.name, got, err, tc.want)
+		}
+	}
+	// A failed or partial capture is no measurement: it must not read as
+	// "no call ID".
+	for name, capture := range map[string][]byte{
+		"empty":      nil,
+		"truncated":  []byte("PATH=/usr/bin\x00HOME=/fix"),
+		"no PATH":    environ("HOME=/fixture"),
+		"empty name": environ("PATH=/usr/bin", "=value"),
+	} {
+		if _, err := callIDVariable(capture, id); err == nil {
+			t.Errorf("%s capture accepted", name)
 		}
 	}
 }

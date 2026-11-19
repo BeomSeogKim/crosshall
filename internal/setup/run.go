@@ -52,6 +52,7 @@ type planFile struct {
 	Remove   []Entry                `json:"remove,omitempty"`
 	Kept     []Entry                `json:"kept,omitempty"`
 	Evidence []store.DoctorEvidence `json:"capability_evidence,omitempty"`
+	Reminder *reminderStatus        `json:"reminder,omitempty"`
 }
 
 type offer struct {
@@ -159,6 +160,14 @@ func (s Service) Run(ctx context.Context, req Request) error {
 	switch {
 	case resume:
 		op = *j.Pending
+		if op.Action == "setup" {
+			for _, e := range op.Edits {
+				targets = append(targets, installTarget{
+					Spec: hook.InstallSpec{Adapter: e.Adapter}, Path: e.Path, Build: op.Builds[e.Adapter],
+				})
+			}
+			s.attachEvidence(ctx, targets)
+		}
 	case req.Action == "uninstall":
 		op = makeUninstall(j)
 	default:
@@ -341,13 +350,18 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 		p.Kind = "setup off"
 	}
 	for _, e := range op.Edits {
-		f := planFile{Adapter: e.Adapter, Path: e.Path, Version: op.Builds[e.Adapter].Version,
+		b := op.Builds[e.Adapter]
+		f := planFile{Adapter: e.Adapter, Path: e.Path, Version: b.Version,
 			Add: e.Add, Remove: e.Remove, Kept: e.Kept}
 		for _, target := range targets {
 			if target.Path == f.Path {
 				f.Evidence = target.Evidence
 				break
 			}
+		}
+		if p.Kind == "setup" {
+			status := releaseReminderStatus(e.Adapter, b.Version, b.Platform, b.Revision, f.Evidence)
+			f.Reminder = &status
 		}
 		p.Files = append(p.Files, f)
 	}
@@ -408,6 +422,23 @@ func printPlan(out io.Writer, p plan) error {
 			for _, e := range f.Evidence {
 				fmt.Fprintf(&contents, "  %s %s/%s %s\n", e.Capability, e.Platform, e.Mode, e.Level)
 			}
+		}
+		if f.Reminder != nil {
+			fmt.Fprintf(&contents, "  Reply reminder %s (no opt-in)\n", f.Reminder.ReleaseState)
+			for _, evidence := range f.Reminder.Evidence {
+				if evidence.Mode == "" {
+					fmt.Fprintf(&contents, "  Reminder evidence %s\n", evidence.Level)
+					continue
+				}
+				fmt.Fprintf(&contents, "  Reminder evidence %s %s/%s %s — %s", evidence.Version,
+					evidence.Platform, evidence.Mode, evidence.ManifestRev, evidence.Level)
+				if evidence.Reason != "" {
+					fmt.Fprintf(&contents, " — %s", evidence.Reason)
+				}
+				fmt.Fprintln(&contents)
+			}
+			fmt.Fprintf(&contents, "  If delivered, the reminder adds %d model request. %s\n",
+				f.Reminder.ExtraModelRequests, f.Reminder.Provenance)
 		}
 		for _, group := range []struct {
 			label   string

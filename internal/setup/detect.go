@@ -154,12 +154,15 @@ func shellQuote(value string) string {
 }
 
 type InstallStatus struct {
-	Adapter      string `json:"adapter"`
-	Executable   string `json:"executable"`
-	Version      string `json:"version"`
-	InstallState string `json:"install_state"`
-	Trust        string `json:"trust"`
-	Intended     int    `json:"intended"`
-	Installed    int    `json:"installed"`
-	Drifted      int    `json:"drifted"`
+	Adapter      string         `json:"adapter"`
+	Executable   string         `json:"executable"`
+	Version      string         `json:"version"`
+	InstallState string         `json:"install_state"`
+	Trust        string         `json:"trust"`
+	Intended     int            `json:"intended"`
+	Installed    int            `json:"installed"`
+	Drifted      int            `json:"drifted"`
+	Reminder     reminderStatus `json:"reminder"`
+	platform     string
+	revision     string
 }

@@ -29,18 +29,19 @@ type ReadResult struct {
 
 // ReadMessage describes the stored message and its thread at read time.
 type ReadMessage struct {
-	ID        int64         `json:"id"`
-	Kind      string        `json:"kind"`
-	Channel   string        `json:"channel"`
-	Sender    string        `json:"sender"`
-	SenderID  int64         `json:"sender_id"`
-	Body      string        `json:"body"`
-	DueAtMS   *int64        `json:"due_at_ms,omitempty"`
-	InReplyTo *int64        `json:"in_reply_to,omitempty"`
-	Exchange  *int64        `json:"exchange_id,omitempty"`
-	Outcome   string        `json:"outcome,omitempty"`
-	ReplyIDs  []int64       `json:"reply_ids,omitempty"`
-	Replies   []ReadMessage `json:"replies,omitempty"`
+	ID              int64         `json:"id"`
+	Kind            string        `json:"kind"`
+	Channel         string        `json:"channel"`
+	Sender          string        `json:"sender"`
+	SenderID        int64         `json:"sender_id"`
+	Body            string        `json:"body"`
+	DueAtMS         *int64        `json:"due_at_ms,omitempty"`
+	InReplyTo       *int64        `json:"in_reply_to,omitempty"`
+	Exchange        *int64        `json:"exchange_id,omitempty"`
+	Outcome         string        `json:"outcome,omitempty"`
+	ObligationState string        `json:"obligation_state,omitempty"`
+	ReplyIDs        []int64       `json:"reply_ids,omitempty"`
+	Replies         []ReadMessage `json:"replies,omitempty"`
 }
 
 type readItem struct {
@@ -210,10 +211,11 @@ func loadReplies(ctx context.Context, tx store.Tx, member memberView, item readI
 func readBody(ctx context.Context, tx store.Tx, member memberView, id int64) (ReadMessage, error) {
 	msg := ReadMessage{ID: id, Channel: member.name}
 	err := tx.QueryRowContext(ctx, `SELECT m.kind, m.sender_id, COALESCE(b.alias, ''), m.body,
-		m.due_at_ms, m.in_reply_to, m.exchange_id, COALESCE(m.outcome, '')
+		m.due_at_ms, m.in_reply_to, m.exchange_id, COALESCE(m.outcome, ''), COALESCE(o.state, '')
 		FROM message m LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
-		WHERE m.channel_id = ? AND m.id = ?`, member.channel, id).
-		Scan(&msg.Kind, &msg.SenderID, &msg.Sender, &msg.Body, &msg.DueAtMS, &msg.InReplyTo, &msg.Exchange, &msg.Outcome)
+		LEFT JOIN obligation o ON o.message_id = m.id AND o.principal_id = ?
+		WHERE m.channel_id = ? AND m.id = ?`, member.principal, member.channel, id).
+		Scan(&msg.Kind, &msg.SenderID, &msg.Sender, &msg.Body, &msg.DueAtMS, &msg.InReplyTo, &msg.Exchange, &msg.Outcome, &msg.ObligationState)
 	return msg, err
 }
 

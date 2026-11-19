@@ -29,6 +29,7 @@ type WaitCursor struct {
 type WaitSnapshot struct {
 	Cursor WaitCursor `json:"cursor"`
 	InboxResult
+	*MemberInboxSummary
 }
 
 func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait) (core.Result, error) {
@@ -42,21 +43,24 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	if !ok {
 		return notEnrolled(), nil
 	}
-	if cmd.Any && cmd.WorkOnly {
-		return Fail(core.ExitUsage, "", "--any and --work-only cannot be used together", ""), nil
+	summary, err := memberInboxSummary(ctx, tx, member.principal, member.channel)
+	if err != nil {
+		return core.Result{}, err
 	}
-	if cmd.Cursor != nil {
-		if cmd.Cursor.BindingID != member.binding {
-			return Refuse(core.CodeDeparted, "membership changed while waiting", "run crosshall wait again"), nil
-		}
-		if cmd.Cursor.MessageID < 0 {
-			return Fail(core.ExitUsage, "", "invalid wait cursor", ""), nil
-		}
+	if cmd.Any && cmd.WorkOnly {
+		return waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "", &summary)
+	}
+	if cmd.Cursor != nil && cmd.Cursor.BindingID != member.binding {
+		return waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", &summary)
+	}
+	if cmd.Cursor != nil && cmd.Cursor.MessageID < 0 {
+		return waitFailure(core.ExitUsage, "", "invalid wait cursor", "", &summary)
 	}
 
 	out := WaitSnapshot{
-		Cursor:      WaitCursor{BindingID: member.binding},
-		InboxResult: InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}},
+		Cursor:             WaitCursor{BindingID: member.binding},
+		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}},
+		MemberInboxSummary: &summary,
 	}
 	// Message IDs increase across channels. Use the indexed high-water mark
 	// so empty polls do not repeatedly scan other channels' messages.
@@ -107,4 +111,18 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 		out.Owed = inbox.Owed
 	}
 	return OK(out)
+}
+
+// WaitTimeout adds the latest successful hall snapshot to a local timeout.
+func WaitTimeout(summary *MemberInboxSummary) (core.Result, error) {
+	return waitFailure(core.ExitWaitTimeout, core.CodeWaitTimeout, "no new messages before the wait timeout", "crosshall inbox", summary)
+}
+
+func waitFailure(status core.ExitCode, code core.Code, message, hint string, summary *MemberInboxSummary) (core.Result, error) {
+	result, err := OK(struct {
+		Refusal
+		*MemberInboxSummary
+	}{Refusal: Refusal{Message: message, Hint: hint}, MemberInboxSummary: summary})
+	result.Status, result.Code = status, code
+	return result, err
 }

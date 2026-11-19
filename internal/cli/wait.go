@@ -18,6 +18,7 @@ const (
 
 type waitResult struct {
 	domain.InboxResult
+	*domain.MemberInboxSummary
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -61,11 +62,16 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		waitCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	var latest *domain.MemberInboxSummary
 	end := func() core.ExitCode {
 		if ctx.Err() != nil {
 			return o.fail(core.ExitError, CodeLocalError, ctx.Err().Error(), "")
 		}
-		return o.fail(core.ExitWaitTimeout, core.CodeWaitTimeout, "no new messages before the wait timeout", "")
+		result, err := domain.WaitTimeout(latest)
+		if err != nil {
+			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+		}
+		return render(opts, cmd, result, stdout, stderr)
 	}
 
 	delay := waitFirstPoll
@@ -91,8 +97,9 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		if err := json.Unmarshal(result.Data, &snapshot); err != nil || snapshot.Cursor.BindingID <= 0 {
 			return o.fail(core.ExitError, CodeLocalError, "malformed wait snapshot", "")
 		}
+		latest = snapshot.MemberInboxSummary
 		if len(snapshot.Unread) != 0 {
-			out := waitResult{InboxResult: snapshot.InboxResult}
+			out := waitResult{InboxResult: snapshot.InboxResult, MemberInboxSummary: latest}
 			if cmd.Existing {
 				out.Reason = "arrived"
 				if cmd.Cursor == nil {

@@ -162,10 +162,10 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintln(w, "Arrived during the wait")
 		}
 		if len(r.Unread) == 0 && len(r.Owed) == 0 {
-			fmt.Fprintln(w, "Inbox is empty.")
+			fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 30s.")
 		}
-		printInboxItems(w, "Unread", r.Unread)
-		printInboxItems(w, "Open requests you have read", r.Owed)
+		printInboxItems(w, "Unread", r.Unread, false)
+		printInboxItems(w, "Open requests you have read", r.Owed, true)
 	case domain.Waiting:
 		var r domain.WaitingResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -251,6 +251,9 @@ func printReadMessage(w io.Writer, m domain.ReadMessage) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, m.Body)
+	if m.ObligationState == "open" {
+		fmt.Fprintf(w, "Reply with crosshall reply %d \"result\", or use --more-time or --decline.\n", m.ID)
+	}
 	if len(m.ReplyIDs) != 0 {
 		fmt.Fprintf(w, "Replies: %s\n", ledgerIDs(m.ReplyIDs))
 	}
@@ -259,13 +262,17 @@ func printReadMessage(w io.Writer, m domain.ReadMessage) {
 	}
 }
 
-func printInboxItems(w io.Writer, title string, items []domain.InboxItem) {
+func printInboxItems(w io.Writer, title string, items []domain.InboxItem, showDue bool) {
 	if len(items) == 0 {
 		return
 	}
 	fmt.Fprintln(w, title)
 	for _, item := range items {
-		fmt.Fprintf(w, "  #%d %s from @%s\n", item.ID, item.Kind, item.Sender)
+		fmt.Fprintf(w, "  #%d %s from @%s", item.ID, item.Kind, item.Sender)
+		if showDue && item.DueAtMS != nil {
+			fmt.Fprintf(w, ", due %s", ledgerTime(*item.DueAtMS))
+		}
+		fmt.Fprintln(w)
 	}
 }
 
@@ -327,13 +334,14 @@ func ledgerIDs(ids []int64) string {
 }
 
 type ledgerTrailer struct {
-	Pending []int64         `json:"pending"`
-	Changes []domain.Member `json:"roster_changes"`
+	Pending   []int64         `json:"pending"`
+	OwedCount *int            `json:"owed_count"`
+	Changes   []domain.Member `json:"roster_changes"`
 	// JoinHint is repeated by the first command of a member a hook enrolled.
 	JoinHint string `json:"join_hint"`
 }
 
-func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer) {
+func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, success bool) {
 	if _, isJoin := cmd.(domain.Join); !isJoin {
 		if trailer.JoinHint != "" {
 			fmt.Fprintln(w, trailer.JoinHint)
@@ -354,7 +362,19 @@ func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer) 
 			fmt.Fprintf(w, "[crosshall] @%s %s (%s, %s)\n", m.Alias, m.Change, m.Vendor, focus)
 		}
 	}
-	if len(trailer.Pending) > 0 {
-		fmt.Fprintf(w, "[crosshall] pending: %s\n", ledgerIDs(trailer.Pending))
+	_, inbox := cmd.(domain.Inbox)
+	if !inbox && trailer.OwedCount != nil {
+		_, left := cmd.(domain.Leave)
+		_ = PrintInboxPointer(w, len(trailer.Pending), *trailer.OwedCount, left && success)
 	}
+}
+
+// PrintInboxPointer is shared with whoami, which renders its own identity result.
+func PrintInboxPointer(w io.Writer, unread, owed int, left bool) error {
+	if left {
+		_, err := fmt.Fprintf(w, "[crosshall] %d unread, %d owed. After rejoining, run crosshall inbox.\n", unread, owed)
+		return err
+	}
+	_, err := fmt.Fprintf(w, "[crosshall] %d unread, %d owed. Run crosshall inbox.\n", unread, owed)
+	return err
 }

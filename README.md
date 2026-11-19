@@ -23,18 +23,18 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.6 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.7 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.6`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.7`. Include `~/.local/bin` on PATH in your agent sessions too.
 
-The per-vendor setup flow described below is available after rc.6. With the rc.6 tag above, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` for each detected CLI and run `crosshall setup` separately.
+On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time.
 
-With the new installer, a fresh install in your own terminal offers hooks for each detected vendor. It can also offer them on an upgrade if no adapter has an installation history. It skips the questions in agent sessions, CI and redirected runs, or when existing hooks, policy, an interrupted setup or uncertain ownership need attention. An explicit `no` skips future automatic offers for that vendor. Enter skips it this time. If optional setup fails, the binary is installed and the installer prints a command to retry.
+The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry.
 
 ## Try it with two sessions
 
@@ -100,7 +100,7 @@ A successful send confirms that the message was stored. Members check their inbo
 
 ## Claude Code and Codex CLI adapters
 
-In your own terminal, run `crosshall setup status` to see which CLIs are on PATH, which hooks are installed, and whether each adapter is enabled, drifted or awaiting recovery. Add `--json` before `setup` for machine-readable status. Antigravity supports session identity and has no hook adapter.
+In your own terminal, run `crosshall setup status` to check whether the Claude Code and Codex CLIs are on PATH. It shows each adapter's configuration path, hook installation state and policy, and reports any drift or pending recovery. Add `--json` before `setup` for machine-readable status. Antigravity supports session identity and has no hook adapter.
 
 `crosshall setup` shows each vendor's plan and asks separately. The question shows the absolute settings path and how it was chosen. Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. To select another directory, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute path. An empty or invalid override produces an error for that vendor. Claude offers separate read-command and send-command allow rules. In Codex, review and trust the installed hooks in the hook review screen.
 
@@ -111,7 +111,9 @@ crosshall setup --dry-run claude codex
 crosshall setup claude codex --apply
 ```
 
-`--apply` installs the named vendors' base hooks without reading input or granting Claude permissions. Migrate scripts that piped answers to rc.6 setup to this named form. An unnamed setup with redirected input or output prints the scripted form and makes no changes.
+`--apply` reads no input. For a new setup, it installs only the named vendors' base hooks. If it can resume an interrupted setup for the same vendors, it applies the edits you already approved, including any Claude allow rules.
+
+Migrate scripts that piped answers to rc.6 setup to this named form. With input or output redirected, `crosshall setup claude` previews the plan, while bare `crosshall setup` prints the scripted form and exits with code 2.
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
 

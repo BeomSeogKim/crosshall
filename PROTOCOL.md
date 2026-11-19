@@ -76,7 +76,7 @@ The owner hosts the fixture and supplies the state directory to the two shell-on
 
 Every required member action is available through the CLI alone (A1). An adapter may automate one of those actions or surface hall state sooner. It cannot grant authority to act on peer text or substitute an alert for a recorded pickup or reply.
 
-## 8. Status in v0.1.0-rc.11
+## 8. Status since v0.1.0-rc.11
 
-- **T1 — inbox and indications of work.** JSON `inbox` includes unread messages and owed requests with `due_at_ms`. Plain output omits the deadline on owed requests. Pending-ID trailers cover unread messages; other commands do not consistently direct members to the inbox for outstanding obligations.
-- **T2 — guidance at the point of action.** Guidance after reading, replying, an empty inbox, a wait timeout or a refusal is incomplete. Some refusals lack an actionable next step. Repeating `join` confirms membership without repeating the initial guidance. Both targets are tracked in issue #50.
+- **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. Other member results from the hall point to `crosshall inbox` with unread and owed counts. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
+- **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait, and a wait timeout directs the member to recheck the inbox. Some refusals still lack an actionable next step. Repeating `join` confirms membership without repeating the initial guidance. The remaining work is tracked in issue #50.

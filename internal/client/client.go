@@ -153,10 +153,12 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 	case result.Code == core.CodeNotEnrolled:
 		state = "not_enrolled"
 	}
-	var message struct{ Message, Hint string }
-	if result.Status != core.ExitOK {
-		_ = json.Unmarshal(result.Data, &message)
+	var message struct {
+		Message, Hint string
+		Pending       []int64 `json:"pending"`
+		OwedCount     *int    `json:"owed_count"`
 	}
+	_ = json.Unmarshal(result.Data, &message)
 	displayKey := id.Key
 	if displayKey != "" && !full {
 		displayKey = "sha256:" + id.Digest()[:12]
@@ -179,6 +181,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		if result.Status != core.ExitOK {
 			data["code"], data["message"], data["hint"] = result.Code, message.Message, message.Hint
 		}
+		if message.OwedCount != nil {
+			data["pending"], data["owed_count"] = message.Pending, *message.OwedCount
+		}
 		err = json.NewEncoder(stdout).Encode(data)
 	} else if id.Vendor == "" {
 		_, err = fmt.Fprintf(stdout, "%s: %s\n", result.Code, message.Message)
@@ -189,6 +194,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 	}
 	if err == nil && !asJSON && warning != "" {
 		_, err = fmt.Fprintln(stdout, warning)
+	}
+	if err == nil && !asJSON && message.OwedCount != nil {
+		err = cli.PrintInboxPointer(stdout, len(message.Pending), *message.OwedCount, false)
 	}
 	if err != nil {
 		return core.ExitError

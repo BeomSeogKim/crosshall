@@ -108,9 +108,8 @@ type LeaveResult struct {
 	Alias   string `json:"alias"`
 	Owed    int    `json:"owed"`
 	Waiting int    `json:"waiting"`
-	// Pending and Changes are the member's unread IDs and roster changes,
-	// taken before it departed.
-	Pending []int64  `json:"pending"`
+	// The inbox summary and roster changes are taken before departure.
+	MemberInboxSummary
 	Changes []Member `json:"roster_changes"`
 }
 
@@ -390,12 +389,12 @@ func (s *Service) leave(ctx context.Context, tx store.Tx, caller core.Caller, re
 	}
 	// What the member has not seen yet is read while it is still live, and
 	// kept in the recorded result so a retried leave shows it too.
-	out := LeaveResult{Channel: m.channelName, Alias: m.alias, Pending: []int64{}, Changes: []Member{}}
+	out := LeaveResult{Channel: m.channelName, Alias: m.alias, Changes: []Member{}}
 	view, _, err := lookupLedgerMember(ctx, tx, caller)
 	if err != nil {
 		return core.Result{}, err
 	}
-	if out.Pending, err = pendingIDs(ctx, tx, m.principal, m.channel); err != nil {
+	if out.MemberInboxSummary, err = memberInboxSummary(ctx, tx, m.principal, m.channel); err != nil {
 		return core.Result{}, err
 	}
 	if view.hintAcked {

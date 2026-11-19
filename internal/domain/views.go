@@ -48,6 +48,11 @@ type InboxResult struct {
 	Owed   []InboxItem `json:"owed"`
 }
 
+type MemberInboxSummary struct {
+	Pending   []int64 `json:"pending"`
+	OwedCount int     `json:"owed_count"`
+}
+
 type InboxItem struct {
 	ID      int64  `json:"id"`
 	Kind    string `json:"kind"`
@@ -432,12 +437,6 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil {
 		return core.Result{}, err
 	}
-	pending := []int64{}
-	if ok {
-		if pending, err = pendingIDs(ctx, tx, member.principal, member.channel); err != nil {
-			return core.Result{}, err
-		}
-	}
 	fields := map[string]json.RawMessage{}
 	if err := json.Unmarshal(result.Data, &fields); err != nil {
 		return core.Result{}, err
@@ -451,9 +450,19 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 			return core.Result{}, err
 		}
 	}
-	// A command that ended the membership (leave) brings its own list.
-	if ok || fields["pending"] == nil {
-		fields["pending"], _ = json.Marshal(pending)
+	// A successful leave brings the summary it saved before departure.
+	if ok {
+		summary, err := memberInboxSummary(ctx, tx, member.principal, member.channel)
+		if err != nil {
+			return core.Result{}, err
+		}
+		fields["pending"], _ = json.Marshal(summary.Pending)
+		fields["owed_count"], _ = json.Marshal(summary.OwedCount)
+	} else if fields["pending"] == nil {
+		fields["pending"] = json.RawMessage(`[]`)
+	}
+	if joined && fields["owed_count"] == nil {
+		fields["owed_count"] = json.RawMessage(`0`)
 	}
 	if fields["roster_changes"] == nil {
 		fields["roster_changes"] = json.RawMessage(`[]`)
@@ -524,4 +533,18 @@ func pendingIDs(ctx context.Context, tx store.Tx, principal, channel int64) ([]i
 		ids = []int64{}
 	}
 	return ids, err
+}
+
+func memberInboxSummary(ctx context.Context, tx store.Tx, principal, channel int64) (MemberInboxSummary, error) {
+	pending, err := pendingIDs(ctx, tx, principal, channel)
+	summary := MemberInboxSummary{Pending: pending}
+	if err != nil {
+		return summary, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM obligation o
+		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
+		JOIN message m ON m.id = o.message_id
+		WHERE o.principal_id = ? AND m.channel_id = ? AND o.state = 'open'
+			AND r.picked_up_at_ms IS NOT NULL`, principal, channel).Scan(&summary.OwedCount)
+	return summary, err
 }

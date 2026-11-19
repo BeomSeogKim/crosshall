@@ -98,7 +98,7 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 				}
 			}
 		}
-		inspectStatusInstall(&status, spec, executable, record)
+		inspectStatusInstall(&status, spec, executable, s.StateRoot, record)
 		if journalKnown && recorded != status.Path {
 			status.RecordedPath = recorded
 		}
@@ -170,7 +170,7 @@ func statusCLI(spec hook.InstallSpec) string {
 	return unknown
 }
 
-func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executable string, record ownedFile) {
+func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executable, stateRoot string, record ownedFile) {
 	target, err := resolveConfigPath(spec)
 	if err == nil {
 		status.Path, status.PathSource = target.Path, target.Source
@@ -199,7 +199,7 @@ func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executab
 		return
 	}
 	measured := InstallStatus{Intended: len(spec.Events)}
-	if err := inspectHookEntries(&measured, spec, executable, target.Path, record, current, doc); err != nil {
+	if err := inspectHookEntries(&measured, spec, executable, stateRoot, target.Path, record, current, doc); err != nil {
 		status.PathError = err.Error()
 		return
 	}

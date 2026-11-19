@@ -136,6 +136,8 @@ Departure frees the alias and leaves existing requests open. A sender checking `
 
 In your own terminal, run `crosshall setup status` to check whether the Claude Code and Codex CLIs are on PATH. It shows each adapter's configuration path, hook installation state and policy, and reports any drift or pending recovery. Add `--json` before `setup` for machine-readable status. Antigravity supports session identity and has no hook adapter.
 
+`crosshall setup codex` pins the selected Crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
+
 `crosshall setup` shows each vendor's plan and asks separately. The question shows the absolute settings path and how it was chosen. Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. To select another directory, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute path. An empty or invalid override produces an error for that vendor. Claude offers separate read-command and send-command allow rules. In Codex, review and trust the installed hooks in the hook review screen.
 
 To revisit one vendor, run `crosshall setup claude` or `crosshall setup codex`. An owner-run script can preview and apply the named vendors in two commands.

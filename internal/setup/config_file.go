@@ -81,6 +81,17 @@ func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode 
 		location.dir = created
 	}
 
+	// Separate Crosshall journals can refer to the same vendor configuration.
+	// Use the pinned directory's inode to serialize compare-and-replace.
+	lock, err := location.dir.Open(".")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("lock configuration directory: %w", err)
+	}
+
 	name := filepath.Base(path)
 	current, err := readConfigAt(location.dir, name)
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 
 type installTarget struct {
 	Spec       hook.InstallSpec
+	StateRoot  string
 	Path       string
 	PathSource string
 	Current    fileSnapshot
@@ -54,7 +55,7 @@ func (s Service) targets(ctx context.Context, j journal) ([]installTarget, error
 }
 
 func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarget, error) {
-	target := installTarget{Spec: spec}
+	target := installTarget{Spec: spec, StateRoot: s.StateRoot}
 	b, err := currentBuild(spec)
 	if err != nil {
 		return target, fmt.Errorf("%s executable: %w", spec.Adapter, err)
@@ -86,7 +87,7 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 	if current.Exists && len(current.Bytes) == 0 {
 		return target, fmt.Errorf("%s configuration is empty; expected a JSON object", spec.Adapter)
 	}
-	wanted, err := hookEntries(spec, s.Executable)
+	wanted, err := hookEntries(spec, s.Executable, s.StateRoot)
 	if err != nil {
 		return target, err
 	}
@@ -145,7 +146,23 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 		op.Adapters = append(op.Adapters, adapter)
 		op.Builds[adapter] = target.Build
 		record, known := j.Files[adapter]
-		if known {
+		base := target.Current.Bytes
+		var restore [][]span
+		var remove []Entry
+		if adapter == "codex" {
+			var migrate bool
+			var err error
+			base, migrate, err = codexInstallBase(target, record)
+			if err != nil {
+				return operation{}, err
+			}
+			if migrate {
+				restore, remove = record.Undo, record.Entries
+			}
+		}
+		if len(restore) > 0 {
+			record.Undo, record.Entries = nil, nil
+		} else if known {
 			entries, err := checkHookRelocation(target, record.Entries)
 			if err != nil {
 				return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
@@ -162,7 +179,7 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 				wanted = append(wanted, claudeRules(true)...)
 			}
 		}
-		updated, added, err := addEntries(target.Current.Bytes, wanted)
+		updated, added, err := addEntries(base, wanted)
 		if err != nil {
 			return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
 		}
@@ -175,7 +192,7 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 			// adds no hooks and only refreshes the cached vendor build.
 			record.Undo = nil
 		}
-		if len(added) == 0 {
+		if len(added) == 0 && len(restore) == 0 {
 			e := edit{Adapter: adapter, Path: target.Path, Before: before, After: before}
 			if known {
 				e.Record = &record
@@ -190,8 +207,8 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 		if !known {
 			record = ownedFile{Path: target.Path, Original: before}
 		}
-		if !known || len(record.Undo) > 0 {
-			inverse, err := insertionSpans(target.Current.Bytes, updated)
+		if !known || len(record.Undo) > 0 || len(restore) > 0 {
+			inverse, err := insertionSpans(base, updated)
 			if err != nil {
 				return operation{}, err
 			}
@@ -200,7 +217,8 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 		record.Entries = append(slices.Clone(record.Entries), remainingEntries(added, record.Entries)...)
 		record.Latest = after
 		op.Edits = append(op.Edits, edit{
-			Adapter: adapter, Path: target.Path, Before: before, After: after, Add: added, Record: &record,
+			Adapter: adapter, Path: target.Path, Before: before, After: after,
+			Add: added, Remove: remove, Restore: restore, Record: &record,
 		})
 	}
 	return op, nil
@@ -255,7 +273,12 @@ func checkHookRelocation(target installTarget, owned []Entry) ([]Entry, error) {
 			}
 			for _, handler := range handlers {
 				command, _ := handler.field("command").stringValue()
-				if command == old || (spec.Encoding == "shell" && strings.HasPrefix(strings.TrimSpace(command), old)) {
+				if spec.Adapter == "codex" {
+					_, command, _ = splitCodexStatePin(strings.TrimSpace(command))
+					if strings.HasPrefix(command, shellQuote(old)) {
+						return nil, errors.New("hooks still use a previous Crosshall executable; run crosshall uninstall and resolve any retained hooks before setup")
+					}
+				} else if command == old || (spec.Encoding == "shell" && strings.HasPrefix(strings.TrimSpace(command), old)) {
 					return nil, errors.New("hooks still use a previous Crosshall executable; run crosshall uninstall and resolve any retained hooks before setup")
 				}
 			}
@@ -265,6 +288,10 @@ func checkHookRelocation(target installTarget, owned []Entry) ([]Entry, error) {
 }
 
 func recordedHookExecutable(spec hook.InstallSpec, entry Entry) (string, error) {
+	if spec.Adapter == "codex" {
+		route, err := recordedCodexRoute(entry)
+		return route.executable, err
+	}
 	parsed, err := parseConfigEntry(entry)
 	if err != nil || parsed.handler == nil {
 		return "", errInvalidEntry

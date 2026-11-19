@@ -258,7 +258,7 @@ func writeStatusHooks(t *testing.T, f setuptest.Fixture, spec hook.InstallSpec, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := hookEntries(spec, executable)
+	entries, err := hookEntries(spec, executable, f.State)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,6 +29,7 @@ type vendorOutcome struct {
 	PathSource string `json:"path_source,omitempty"`
 	Outcome    string `json:"outcome"` // previewed|installed|removed|recovered|declined|skipped|failed
 	Error      string `json:"error,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 	Retry      string `json:"retry,omitempty"`
 	// Plan is the previewed plan, so a JSON preview carries what it shows.
 	Plan *VendorPlan `json:"plan,omitempty"`
@@ -286,6 +287,10 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome = "removed"
 	default:
 		o.Outcome = "installed"
+		if c.plan.resumedLegacyCodex() {
+			o.Detail = "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin."
+			o.Retry = "crosshall setup codex"
+		}
 	}
 	return o
 }
@@ -429,6 +434,9 @@ func (p *prompter) finish(result promptResult, note string) error {
 				line += "; next: " + o.Retry
 			}
 			fmt.Fprintln(p.req.Output, line)
+			if o.Detail != "" {
+				fmt.Fprintln(p.req.Output, o.Detail)
+			}
 		}
 		if note != "" {
 			fmt.Fprintln(p.req.Output, note)

@@ -41,6 +41,22 @@ func localDoctorAdapters(stateRoot string) []doctorAdapter {
 	return adapters
 }
 
+func codexHookRoutingWarning(routing string) string {
+	const shared = "Codex hooks can run in a shared managed daemon and inherit its starting environment. "
+	switch routing {
+	case "pinned":
+		return shared + "The hook commands on disk pin the Crosshall state root selected at setup. Use that root for member commands in this Codex home."
+	case "inherited":
+		return shared + "The hook commands on disk use that environment for state routing. Run crosshall setup codex to pin a root."
+	case "mixed":
+		return shared + "The hook commands on disk mix state roots or routing styles. Review them before running crosshall setup codex."
+	case "uncertain":
+		return shared + "A recognized hook command on disk has uncertain state routing. Review it before running crosshall setup codex."
+	default:
+		return ""
+	}
+}
+
 func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 	const maxCounterBytes = 8 << 20
 	dir, err := spool.OpenServerChild(rv, "hooks", false)

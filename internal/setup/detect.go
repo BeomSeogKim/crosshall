@@ -140,9 +140,12 @@ func validConfigHome(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/" && !strings.ContainsAny(path, "\r\n\x00")
 }
 
-func hookEntries(spec hook.InstallSpec, executable string) ([]Entry, error) {
+func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, error) {
 	if !filepath.IsAbs(executable) || strings.ContainsAny(executable, "\r\n\x00") || spec.Timeout <= 0 {
 		return nil, errors.New("invalid hook executable or timeout")
+	}
+	if spec.Adapter == "codex" && !validHookStateRoot(stateRoot) {
+		return nil, errors.New("the Codex hook state root must be an absolute path")
 	}
 	entries := make([]Entry, 0, len(spec.Events))
 	seen := make(map[string]bool)
@@ -164,6 +167,9 @@ func hookEntries(spec hook.InstallSpec, executable string) ([]Entry, error) {
 			h.Command, h.Args = executable, args
 		case "shell":
 			h.Command = shellQuote(executable) + " " + strings.Join(args, " ")
+			if spec.Adapter == "codex" {
+				h.Command = codexStateAssignment + shellQuote(stateRoot) + " " + h.Command
+			}
 		default:
 			return nil, fmt.Errorf("unsupported install encoding %q", spec.Encoding)
 		}
@@ -184,15 +190,16 @@ func shellQuote(value string) string {
 }
 
 type InstallStatus struct {
-	Adapter      string         `json:"adapter"`
-	Executable   string         `json:"executable"`
-	Version      string         `json:"version"`
-	InstallState string         `json:"install_state"`
-	Trust        string         `json:"trust"`
-	Intended     int            `json:"intended"`
-	Installed    int            `json:"installed"`
-	Drifted      int            `json:"drifted"`
-	Reminder     reminderStatus `json:"reminder"`
-	platform     string
-	revision     string
+	Adapter               string         `json:"adapter"`
+	Executable            string         `json:"executable"`
+	Version               string         `json:"version"`
+	InstallState          string         `json:"install_state"`
+	Trust                 string         `json:"trust"`
+	Intended              int            `json:"intended"`
+	Installed             int            `json:"installed"`
+	Drifted               int            `json:"drifted"`
+	CodexHookStateRouting string         `json:"codex_hook_state_routing,omitempty"`
+	Reminder              reminderStatus `json:"reminder"`
+	platform              string
+	revision              string
 }

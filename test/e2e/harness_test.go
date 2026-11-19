@@ -63,15 +63,18 @@ func newWorld(t *testing.T) *world {
 	return w
 }
 
-// baseEnv is built from scratch: nothing is inherited from the agent session
-// that runs the tests.
+// baseEnv is built from scratch. CI also passes its test-only read sentinel.
 func (w *world) baseEnv() []string {
-	return []string{
+	env := []string{
 		"HOME=" + w.home,
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"TMPDIR=" + filepath.Join(w.home, "tmp"),
 		"CROSSHALL_STATE_DIR=" + w.state,
 	}
+	if sentinel := os.Getenv("CROSSHALL_TEST_VENDOR_SENTINEL"); sentinel != "" {
+		env = append(env, "CROSSHALL_TEST_VENDOR_SENTINEL="+sentinel)
+	}
+	return env
 }
 
 type participant struct {

@@ -41,6 +41,40 @@ if [ -n "${PR_BODY:-}" ] && printf '%s' "$PR_BODY" | grep -Eiq "$ai_re"; then
   fail=1
 fi
 
+# Keep the caller's Go caches, whose defaults depend on the original home.
+go_build_cache=$(go env GOCACHE)
+go_module_cache=$(go env GOMODCACHE)
+export GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache"
+
+test_root=$(mktemp -d /tmp/crosshall-ci.XXXXXXXX)
+trap 'rm -rf -- "$test_root"' EXIT
+test_root=$(cd -- "$test_root" && pwd -P)
+export CROSSHALL_TEST_VENDOR_SENTINEL="$test_root/sentinel"
+mkdir -m 700 -- "$CROSSHALL_TEST_VENDOR_SENTINEL"
+# Record names only. The sentinel never opens the caller's configuration.
+{
+  if [[ ${HOME:-} = /* ]]; then
+    printf '%s\n' "$HOME/.claude" "$HOME/.codex"
+    if physical_home=$(cd -- "$HOME" && pwd -P); then
+      printf '%s\n' "$physical_home/.claude" "$physical_home/.codex"
+    fi
+  fi
+  for dir in "${CLAUDE_CONFIG_DIR:-}" "${CODEX_HOME:-}"; do
+    if [[ $dir = /* ]]; then
+      printf '%s\n' "$dir"
+    fi
+  done
+} > "$CROSSHALL_TEST_VENDOR_SENTINEL/protected"
+
+export HOME="$test_root/home" TMPDIR="$test_root/tmp"
+export CLAUDE_CONFIG_DIR="$test_root/claude" CODEX_HOME="$test_root/codex"
+export XDG_CONFIG_HOME="$test_root/xdg-config" XDG_CACHE_HOME="$test_root/xdg-cache"
+export XDG_DATA_HOME="$test_root/xdg-data" XDG_STATE_HOME="$test_root/xdg-state"
+mkdir -m 700 -- "$HOME" "$TMPDIR" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" \
+  "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+# Test binaries built by a Go subprocess need the same sentinel tag.
+export GOFLAGS="${GOFLAGS:+$GOFLAGS }-tags=testvendorhome"
+
 # 5. Go formatting, static analysis and tests.
 if unformatted="$(gofmt -l .)"; then
   if [ -n "$unformatted" ]; then
@@ -53,17 +87,21 @@ fi
 if ! go vet ./...; then
   fail=1
 fi
-if ! go test ./...; then
+if ! go test -count=1 ./...; then
   fail=1
 fi
 # End-to-end checks run the built binary with its dispatcher.
-if ! go vet -tags e2e ./test/e2e/ || ! go test -tags e2e -count=1 ./test/e2e/; then
+if ! go vet -tags e2e,testvendorhome ./test/e2e/ || ! go test -tags e2e,testvendorhome -count=1 ./test/e2e/; then
   fail=1
 fi
 if ! bash scripts/install_test.sh; then
   fail=1
 fi
-if ! go test -tags installer -count=1 ./test/installer/; then
+if ! go test -tags installer,testvendorhome -count=1 ./test/installer/; then
+  fail=1
+fi
+if [ -s "$CROSSHALL_TEST_VENDOR_SENTINEL/violations" ]; then
+  cat "$CROSSHALL_TEST_VENDOR_SENTINEL/violations" >&2
   fail=1
 fi
 

@@ -209,6 +209,9 @@ func openConfigLocation(path string) (location configLocation, err error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Dir(path) == "/" {
 		return location, errors.New("configuration file requires an absolute, clean path under a user directory")
 	}
+	if err := checkTestVendorPath(path); err != nil {
+		return location, err
+	}
 	guard, err := newSetupPathGuard()
 	if err != nil {
 		return location, err

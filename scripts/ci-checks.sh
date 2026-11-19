@@ -100,6 +100,9 @@ fi
 if ! bash scripts/install_binary_test.sh; then
   fail=1
 fi
+if ! bash scripts/readme_install_test.sh; then
+  fail=1
+fi
 if ! go test -tags installer,testvendorhome -count=1 ./test/installer/; then
   fail=1
 fi

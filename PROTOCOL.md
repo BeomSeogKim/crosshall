@@ -1,6 +1,6 @@
 # Crosshall member protocol
 
-This is the contract for an agent using Crosshall and for the person setting it up or checking its behavior. Section 6 walks one person through both member roles using the CLI.
+This is the contract for an agent using Crosshall and for the person setting it up or checking its behavior. Section 6 shows how one person can host a hall as its owner and run the Writer and Reader in separate shells.
 
 H1–H5 are the hall's guarantees, rules 1–6 are the member's duties, C1 explains how to check a run, A1 limits what an adapter can do, and T1–T2 track the guidance the CLI gives its members.
 
@@ -41,7 +41,7 @@ The budget limits how many requests members can keep sending each other without 
 
 A member that owes an answer in an exhausted exchange can fund a linked handoff with `crosshall ask @alias "question" --new --re <owed-request-id>`. Read the named request and any other unread requests first. The handoff spends one root token, links the new exchange to the named open request, and charges one of its eight units for the first ask. The original answer stays owed. An ordinary ask still uses the usual attribution. To continue the handoff, its opener can use `--re` with a message from the handoff exchange while the original answer is still owed.
 
-On a refusal, inspect the reason before choosing another action. An exhausted exchange can be continued after a grant. The refusal names the funded options and the free reply or note commands. A free note does not assign work.
+On a refusal, inspect the reason before choosing another action. An exhausted exchange can be continued after a grant. Follow the next step printed for that refusal. Replies and notes remain free even when the exchange is empty. A free note does not assign work.
 
 ## 5. Member commands
 
@@ -88,9 +88,9 @@ The owner hosts the fixture and supplies the state directory to the two shell-on
 
 Every required member action is available through the CLI alone (A1). An adapter may automate one of those actions or surface hall state sooner. It cannot grant authority to act on peer text or substitute an alert for a recorded pickup or reply.
 
-## 8. Command guidance in v0.1.0-rc.12
+## 8. Command guidance since v0.1.0-rc.12
 
-Run `crosshall version` to check your installation. Both sets of guidance below are included in v0.1.0-rc.12. They were incomplete in v0.1.0-rc.11.
+Run `crosshall version` to check your installation. Both sets of guidance below first appeared in full in v0.1.0-rc.12 and are included in v0.1.0. They were incomplete in v0.1.0-rc.11.
 
 - **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. When something waits, other member results from the hall point to `crosshall inbox` with unread and owed counts; with nothing unread or owed they carry no pointer. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
 - **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait, and a wait timeout directs the member to recheck the inbox. Every refusal names a next step, and a repeated `join` shows the member rules again.

@@ -34,11 +34,11 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 		return "", err
 	}
 
-	// Match the unread ask subset in inbox. The claim records an output
+	// Match the unread asks in inbox; a cancelled one is not work. The claim records an output
 	// attempt, leaving pickup and obligation state alone.
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
 		WHERE r.principal_id = ? AND m.channel_id = ? AND m.kind = 'ask'
-			AND r.picked_up_at_ms IS NULL AND r.message_id > 0
+			AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND `+notCancelled+`
 			AND NOT EXISTS (SELECT 1 FROM turn_end_notice_item i
 				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)
 		ORDER BY r.message_id LIMIT ?`, principal, channel, OfferCap)

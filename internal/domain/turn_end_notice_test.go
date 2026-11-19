@@ -43,7 +43,8 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	first := f.turnEndAsk(writer, "reader", "first")
 	pickedUp := f.turnEndAsk(writer, "reader", "picked-up")
 	wantOK(t, f.run(reader, Read{IDs: []int64{pickedUp}}, "read"))
-	// An unread ask stays on the inbox even if its obligation settled.
+	// A request the owner cancelled before it was read is listed apart and
+	// never continues a turn.
 	second := f.turnEndAsk(writer, "reader", "second")
 	wantOK(t, f.owner(Cancel{Channel: "checkout", ID: second}, "cancel"))
 	f.noteTo(writer, "reader", 1)
@@ -54,8 +55,8 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	stopAt := f.now.UnixMilli() + 1
 	cmd := stop("launch", "turn-2", stopAt)
 	got := f.hook(reader, cmd)
-	if got.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d %d", first, second) || got.Ack != nil || got.PendingLine != "" || got.ReminderText != "" {
-		t.Fatalf("turn-end result = %+v, want only sorted unread asks %d %d", got, first, second)
+	if got.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", first) || got.Ack != nil || got.PendingLine != "" || got.ReminderText != "" {
+		t.Fatalf("turn-end result = %+v, want only the unread ask %d", got, first)
 	}
 	after := decode[InboxResult](t, f.run(reader, Inbox{}, ""))
 	unreadAsks := []int64{}
@@ -64,17 +65,17 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 			unreadAsks = append(unreadAsks, item.ID)
 		}
 	}
-	if !slices.Equal(unreadAsks, []int64{first, second}) {
+	if !slices.Equal(unreadAsks, []int64{first}) || len(after.Cancelled) != 1 || after.Cancelled[0].ID != second {
 		t.Fatalf("unread inbox asks changed: %v", unreadAsks)
 	}
 	if n := f.count(`SELECT COUNT(*) FROM receipt WHERE stage = 'picked_up' AND principal_id = ?`, pid); n != 1 {
 		t.Fatalf("claim added pickup receipts: %d", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item WHERE principal_id = ? AND message_id IN (?, ?)`, pid, first, second); n != 2 {
-		t.Fatalf("claimed %d selected inbox asks, want 2", n)
+	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item WHERE principal_id = ? AND message_id IN (?, ?)`, pid, first, second); n != 1 {
+		t.Fatalf("claimed %d selected inbox asks, want 1", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 2 {
-		t.Fatalf("claimed %d items, want only the two unread asks", n)
+	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 1 {
+		t.Fatalf("claimed %d items, want only the unread ask", n)
 	}
 	if r := f.hook(reader, cmd); r.TurnEndLine != "" {
 		t.Fatalf("replayed Stop printed %q", r.TurnEndLine)
@@ -90,7 +91,7 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	if r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", third) {
 		t.Fatalf("the next turn did not claim ask %d: %+v", third, r)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 3 {
+	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 2 {
 		t.Fatalf("a later turn failed to keep per-recipient deduplication: %d rows", n)
 	}
 	f.hook(reader, prompt("launch", "turn-4", f.now.UnixMilli()+1))

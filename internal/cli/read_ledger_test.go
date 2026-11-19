@@ -69,3 +69,32 @@ func TestPendingUsesPlainTrailerOrJSONField(t *testing.T) {
 		t.Fatalf("refusal %d stdout=%q stderr=%q decoded=%+v error=%v", code, stdout, stderr, out, err)
 	}
 }
+
+// A cancelled, unread request has its own heading: it is not unread work,
+// and an inbox holding only it is not empty.
+func TestInboxShowsCancelledRequestsApart(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, domain.InboxResult{
+		Unread:    []domain.InboxItem{{ID: 3, Kind: "note", Sender: "form"}},
+		Cancelled: []domain.InboxItem{{ID: 2, Kind: "ask", Sender: "form"}},
+	})}
+	out, _, _ := run(t, Env{Transport: ft}, "inbox")
+	want := "Unread\n  #3 note from @form\nCancelled by the owner (no answer owed)\n  #2 ask from @form\n"
+	if !strings.HasPrefix(out, want) {
+		t.Fatalf("inbox:\n%s\nwant prefix:\n%s", out, want)
+	}
+	ft = &fakeTransport{result: okResult(t, domain.InboxResult{Cancelled: []domain.InboxItem{{ID: 2, Kind: "ask", Sender: "form"}}})}
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); strings.Contains(out, "Inbox is empty.") {
+		t.Fatalf("an inbox with a cancellation reads as empty:\n%s", out)
+	}
+}
+
+// Reading a request the owner cancelled says that no answer is owed.
+func TestReadOfACancelledRequestSaysNoAnswerIsOwed(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, domain.ReadResult{Messages: []domain.ReadMessage{
+		{ID: 2, Kind: "ask", Sender: "form", Channel: "checkout", Body: "check the totals", ObligationState: "cancelled"},
+	}})}
+	out, _, _ := run(t, Env{Transport: ft}, "read", "2")
+	if !strings.Contains(out, "Cancelled by the owner; no answer is owed.\n") || strings.Contains(out, "Reply with") {
+		t.Fatalf("read of a cancelled request:\n%s", out)
+	}
+}

@@ -46,6 +46,9 @@ func decodeLedgerCommand[T Command](args json.RawMessage) (Command, error) {
 type InboxResult struct {
 	Unread []InboxItem `json:"unread"`
 	Owed   []InboxItem `json:"owed"`
+	// Cancelled lists requests the owner cancelled before the member read
+	// them. They are not unread work: no answer is owed.
+	Cancelled []InboxItem `json:"cancelled,omitempty"`
 }
 
 type MemberInboxSummary struct {
@@ -166,7 +169,8 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 
 // inboxItems serves both the inbox command and read-only wait snapshots.
 func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bool) (InboxResult, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms, r.picked_up_at_ms IS NULL
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms, r.picked_up_at_ms IS NULL,
+			COALESCE(o.state = 'cancelled', 0)
 		FROM recipient r JOIN message m ON m.id = r.message_id
 		LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
 		LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
@@ -180,11 +184,13 @@ func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bo
 	out := InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}}
 	for rows.Next() {
 		var item InboxItem
-		var unread bool
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Sender, &item.DueAtMS, &unread); err != nil {
+		var unread, cancelled bool
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Sender, &item.DueAtMS, &unread, &cancelled); err != nil {
 			return InboxResult{}, err
 		}
-		if unread {
+		if unread && cancelled {
+			out.Cancelled = append(out.Cancelled, item)
+		} else if unread {
 			out.Unread = append(out.Unread, item)
 		} else {
 			out.Owed = append(out.Owed, item)
@@ -525,10 +531,16 @@ func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields
 	return err
 }
 
-// pendingIDs lists the messages addressed to a member that it has not picked up.
+// notCancelled excludes, for the recipient row r, a request the owner
+// cancelled: it is no longer work, so nothing announces it as unread.
+const notCancelled = `NOT EXISTS (SELECT 1 FROM obligation oc
+	WHERE oc.message_id = r.message_id AND oc.principal_id = r.principal_id AND oc.state = 'cancelled')`
+
+// pendingIDs lists the messages addressed to a member that it has not picked
+// up, leaving out cancelled requests.
 func pendingIDs(ctx context.Context, tx store.Tx, principal, channel int64) ([]int64, error) {
 	ids, err := selectIDs(ctx, tx, `SELECT m.id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL ORDER BY m.id`, principal, channel)
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notCancelled+` ORDER BY m.id`, principal, channel)
 	if ids == nil {
 		ids = []int64{}
 	}

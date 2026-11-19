@@ -161,10 +161,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		case "arrived":
 			fmt.Fprintln(w, "Arrived during the wait")
 		}
-		if len(r.Unread) == 0 && len(r.Owed) == 0 {
+		if len(r.Unread) == 0 && len(r.Owed) == 0 && len(r.Cancelled) == 0 {
 			fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 30s.")
 		}
 		printInboxItems(w, "Unread", r.Unread, false)
+		printInboxItems(w, "Cancelled by the owner (no answer owed)", r.Cancelled, false)
 		printInboxItems(w, "Open requests you have read", r.Owed, true)
 	case domain.Waiting:
 		var r domain.WaitingResult
@@ -251,8 +252,11 @@ func printReadMessage(w io.Writer, m domain.ReadMessage) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, m.Body)
-	if m.ObligationState == "open" {
+	switch m.ObligationState {
+	case "open":
 		fmt.Fprintf(w, "Reply with crosshall reply %d \"result\", or use --more-time or --decline.\n", m.ID)
+	case "cancelled":
+		fmt.Fprintln(w, "Cancelled by the owner; no answer is owed.")
 	}
 	if len(m.ReplyIDs) != 0 {
 		fmt.Fprintf(w, "Replies: %s\n", ledgerIDs(m.ReplyIDs))

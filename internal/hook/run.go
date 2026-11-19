@@ -93,7 +93,8 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	notice := spec.Enroll || spec.Notice
 	// The continuation needs a concrete profile. Unknown builds still
 	// publish their lifecycle observation without waiting for a reply.
-	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified"
+	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
+		turnEndListed(rv, m.Adapter, e.VendorVersion, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)

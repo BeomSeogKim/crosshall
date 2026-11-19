@@ -24,6 +24,7 @@ const (
 	adapterStampName   = "stamp"
 	adapterPolicyName  = "policy"
 	adapterRepoSetName = "repo-defaults"
+	adapterTurnEndName = "turn_end"
 )
 
 type leafAdapterStamp struct {
@@ -221,6 +222,8 @@ func (s *server) invalidateAdapterFile(verb string) error {
 		name = adapterPolicyName
 	case domain.VerbChannelDefault:
 		name = adapterRepoSetName
+	case domain.VerbAdapterEvidence:
+		name = adapterTurnEndName
 	default:
 		return nil
 	}
@@ -256,8 +259,13 @@ func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error
 		if err != nil {
 			return err
 		}
+		turnEnd, err := adapterTurnEndText(ctx, tx)
+		if err != nil {
+			return err
+		}
 		return errors.Join(publishAdapterText(root, adapterPolicyName, policy),
-			publishAdapterText(root, adapterRepoSetName, repos))
+			publishAdapterText(root, adapterRepoSetName, repos),
+			publishAdapterText(root, adapterTurnEndName, turnEnd))
 	})
 }
 
@@ -274,6 +282,29 @@ func adapterPolicyText(ctx context.Context, tx store.Tx) (string, error) {
 		fmt.Fprintf(&out, "%s %d %d %d\n", adapter, enabled, reminder, epoch)
 	}
 	return out.String(), nil
+}
+
+// adapterTurnEndText lists the profiles with tested turn_end evidence, one
+// "adapter version platform mode manifest_rev" line each. A Stop hook whose
+// profile is not listed does not wait for the dispatcher; the domain still
+// decides every continuation.
+func adapterTurnEndText(ctx context.Context, tx store.Tx) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT vendor, vendor_version, platform, mode, manifest_rev
+		FROM capability_evidence WHERE cap = 'turn_end' AND level = 'tested'
+		ORDER BY vendor, vendor_version, platform, mode, manifest_rev`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var out strings.Builder
+	for rows.Next() {
+		var f [5]string
+		if err := rows.Scan(&f[0], &f[1], &f[2], &f[3], &f[4]); err != nil {
+			return "", err
+		}
+		out.WriteString(strings.Join(f[:], " ") + "\n")
+	}
+	return out.String(), rows.Err()
 }
 
 func adapterRepoSetText(ctx context.Context, tx store.Tx) (string, error) {

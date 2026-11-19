@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Exercise the installer against two local tags without downloading any modules.
+# Exercise the installer against local tags without downloading any modules.
 set -euo pipefail
 
 scripts=$(cd -- "$(dirname -- "$0")" && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/crosshall-install-test.XXXXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
+tmp=$(cd -- "$tmp" && pwd -P)
 repo="$tmp/repo"
-dest="$tmp/bin"
+dest="$tmp/installer's bin"
 target="$dest/crosshall"
 mkdir -p "$repo/cmd/crosshall" "$repo/scripts" "$tmp/home"
 cp "$scripts/install.sh" "$repo/scripts/"
@@ -26,6 +27,10 @@ expect_refusal() {
   if install_release "$@" > "$tmp/output" 2>&1; then
     fail "expected refusal for $*"
   fi
+}
+
+check_output_line() {
+  grep -Fx -- "$1" "$tmp/output" >/dev/null || fail "missing output line '$1': $(cat "$tmp/output")"
 }
 
 # Replace the installed file by renaming a sibling over it. Writing into it
@@ -92,6 +97,10 @@ tag_release() {
   git -C "$repo" tag "$1"
 }
 
+git -C "$repo" commit --allow-empty -qm 'no release tags yet'
+expect_refusal "$dest"
+check_output_line '  git fetch --tags'
+
 tag_release v0.1.0 first
 # A just-built binary can briefly refuse to run on Linux ("text file busy",
 # exit 126). The installer retries; this release fails its first call so.
@@ -99,17 +108,48 @@ INSTALL_TEST_BUSY_ONCE="$tmp/version-calls" install_release "$dest" > "$tmp/outp
   fail "installer gave up after exit 126: $(cat "$tmp/output")"
 [[ $(cat "$tmp/version-calls") == .. ]] || fail "expected the version check to retry once after exit 126"
 check_release v0.1.0 first
+check_output_line "Installed crosshall v0.1.0 at $target"
+check_output_line 'Next (in a plain terminal): crosshall owner start'
+path_line=$(grep '^export PATH=' "$tmp/output") || fail 'missing PATH instruction'
+[[ $(bash -c "$path_line; command -v crosshall") == "$target" ]] || fail 'PATH instruction does not find the installed binary'
 cp "$target" "$tmp/first"
 
+git -C "$repo" tag v0.2.0-rc.9
+git -C "$repo" tag -am 'synthetic release candidate' v0.2.0-rc.11
+git -C "$repo" commit --allow-empty -qm 'after release candidates'
+expect_refusal "$dest"
+check_output_line '  git switch --detach refs/tags/v0.2.0-rc.11'
+
 tag_release v0.2.0 second
+git -C "$repo" tag -am 'synthetic release candidate at the same commit' v0.2.0-rc.12
+tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+unrelated=$(git -C "$repo" commit-tree "$tree" -m 'unrelated release')
+git -C "$repo" tag v9.0.0 "$unrelated"
+git -C "$repo" commit --allow-empty -qm 'after the final release'
+git -C "$repo" tag v99.0.0.not-a-release
+expect_refusal "$dest"
+check_output_line '  git switch --detach refs/tags/v0.2.0'
+cmp "$tmp/first" "$target" || fail 'off-tag refusal changed the installed binary'
+
+untagged=$(git -C "$repo" commit-tree "$tree" -m 'no release in this history')
+git -C "$repo" switch --quiet --detach "$untagged"
+expect_refusal "$dest"
+check_output_line '  git switch --detach refs/tags/v9.0.0'
+git -C "$repo" switch --quiet --detach refs/tags/v0.2.0
+
 printf 'package main\nconst release = "working tree"\n' > "$repo/cmd/crosshall/release.go"
 printf 'invalid Go source\n' > "$repo/cmd/crosshall/untracked.go"
 for bad_version in malformed error; do
   INSTALL_TEST_BAD_VERSION=$bad_version expect_refusal "$dest"
   cmp "$tmp/first" "$target" || fail "binary changed after $bad_version version response"
 done
-GOFLAGS=-overlay=missing-env-overlay.json install_release "$dest" > "$tmp/output"
+PATH="$dest:$PATH" GOFLAGS=-overlay=missing-env-overlay.json install_release "$dest" > "$tmp/output"
 check_release v0.2.0 second
+check_output_line "Installed crosshall v0.2.0 at $target"
+check_output_line 'Next (in a plain terminal): crosshall owner start'
+if grep -q '^export PATH=' "$tmp/output"; then
+  fail 'unexpected PATH instruction for the active install directory'
+fi
 
 cat > "$tmp/unrelated" <<'EOF'
 #!/bin/sh

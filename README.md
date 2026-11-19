@@ -22,7 +22,9 @@ terminal panes. That works, with three recurring problems:
 
 ## Install
 
-On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
+Building from a release tag on macOS or Linux requires Bash, Git, Go 1.27.4 or
+later, and network access to download Go modules that are missing from the
+local cache.
 
 ```sh
 git clone --branch v0.1.0-rc.12 --depth 1 https://github.com/BeomSeogKim/crosshall.git

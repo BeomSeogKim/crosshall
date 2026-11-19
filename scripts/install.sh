@@ -21,9 +21,27 @@ done
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 commit=$(git -C "$repo" rev-parse --verify HEAD)
 release='^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'
-if ! tag=$(git -C "$repo" describe --tags --exact-match --match 'v[0-9]*.[0-9]*.[0-9]*' "$commit" 2>/dev/null) ||
-    ! [[ $tag =~ $release ]]; then
-  echo 'Install from a checkout at a release tag such as v1.2.3.' >&2
+release_tag() {
+  local candidate
+  # A final release sorts ahead of the same version's prereleases.
+  while IFS= read -r candidate; do
+    if [[ $candidate =~ $release ]] &&
+        git -C "$repo" rev-parse --verify --quiet "refs/tags/$candidate^{commit}" >/dev/null; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done < <(git -C "$repo" -c versionsort.suffix=- -c versionsort.suffix=+ \
+    tag --list --sort=-version:refname "$@" 'v*')
+  return 1
+}
+if ! tag=$(release_tag --points-at "$commit"); then
+  echo 'This checkout is not at a release tag.' >&2
+  if tag=$(release_tag --merged "$commit") || tag=$(release_tag); then
+    printf 'From the checkout root, run these commands to install %s:\n' "$tag" >&2
+    printf '  git switch --detach refs/tags/%s\n  ./scripts/install.sh\n' "$tag" >&2
+  else
+    printf 'No local release tags. Fetch tags from the checkout root and rerun the installer:\n  git fetch --tags\n' >&2
+  fi
   exit 1
 fi
 
@@ -107,7 +125,11 @@ else
   # An entry created during the build must survive a first-time install.
   ln -- "$stage/crosshall" "$dest/"
 fi
-printf '%s\n' "$version"
+printf 'Installed crosshall %s at %s\n' "$version" "$target"
+if [[ ! $(command -v crosshall) -ef $target ]]; then
+  printf 'export PATH=%q:"$PATH"\n' "$dest"
+fi
+printf 'Next (in a plain terminal): crosshall owner start\n'
 
 [[ -t 0 && -t 1 && ! ${CI+x} ]] || exit 0
 # Match ident.AllowOwner's presence check. The binary rechecks the caller
@@ -117,5 +139,5 @@ for marker in CROSSHALL_ROUTE CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY
   [[ ! ${!marker+x} ]] || exit 0
 done
 if ! "$target" setup --offer; then
-  printf 'Installed crosshall %s. Optional adapter setup failed. Run %q setup to retry.\n' "$version" "$target" >&2
+  printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
 fi

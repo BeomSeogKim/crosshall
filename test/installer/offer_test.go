@@ -111,7 +111,9 @@ esac
 			t.Fatalf("binary installation failed: %v: %s", err, output)
 		}
 		lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(output), "\r\n", "\n")), "\n")
-		if lines[0] != "v0.1.0" || (!failSetup && len(lines) != 1) {
+		if len(lines) < 3 || lines[0] != "Installed crosshall v0.1.0 at "+target ||
+			!strings.HasPrefix(lines[1], "export PATH=") || lines[2] != "Next (in a plain terminal): crosshall owner start" ||
+			(!failSetup && len(lines) != 3) {
 			t.Fatalf("unexpected install output: %q", output)
 		}
 		if failSetup && (!strings.Contains(string(output), "Optional adapter setup failed") || !strings.Contains(string(output), "setup to retry")) {

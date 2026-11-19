@@ -53,7 +53,14 @@ type Command interface {
 type CreateChannel struct {
 	Name  string `json:"name"`
 	Topic string `json:"topic,omitempty"`
+	// Pool is the number of root tokens the channel hands out, one at each
+	// principal's first join; nil means DefaultJoinPool.
+	Pool *int64 `json:"pool,omitempty"`
 }
+
+// DefaultJoinPool is the pool of a channel created without --pool. With it,
+// requests nobody approved end after at most 8 exchanges of 8 units.
+const DefaultJoinPool = 8
 
 func (CreateChannel) command() {}
 

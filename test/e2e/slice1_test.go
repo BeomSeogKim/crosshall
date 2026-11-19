@@ -11,11 +11,12 @@ import (
 )
 
 // setup starts a fresh installation with channel checkout and three members.
+// The channel is grant-only (no join pool): every root token is the owner's.
 func setup(t *testing.T) (*world, *participant, []*participant) {
 	w := newWorld(t)
 	owner := w.owner()
 	owner.must("owner", "start")
-	owner.must("owner", "channel", "create", "checkout", "--topic", "payment screen")
+	owner.must("owner", "channel", "create", "checkout", "--topic", "payment screen", "--pool", "0")
 	var members []*participant
 	for _, alias := range []string{"form", "tax", "lint"} {
 		m := w.member()

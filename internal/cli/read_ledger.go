@@ -117,8 +117,16 @@ func ledgerOwnerCall(args []string) (Call, error) {
 					return call, nil
 				}
 			}
+			if ch := strings.TrimPrefix(args[2], "#"); !strings.Contains(ch, "/") && domain.ValidName(ch) {
+				value, last, found, err := flagValue(args, 3, "--pool")
+				count, countErr := parsePositive(value)
+				if found && err == nil && countErr == nil && last == len(args)-1 {
+					call.Command = domain.BudgetGrant{Channel: ch, Pool: count}
+					return call, nil
+				}
+			}
 		}
-		return Call{}, fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> <units> | <channel>/@<alias> --roots <count>")
+		return Call{}, fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> <units> | <channel>/@<alias> --roots <count> | <channel> --pool <count>")
 	}
 	return Call{}, fmt.Errorf("unknown owner command %q", args[0])
 }
@@ -188,6 +196,9 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s\n", ch.Name)
+			if ch.JoinPool != nil {
+				fmt.Fprintf(w, "  join pool: %d root token(s) for first joins\n", *ch.JoinPool)
+			}
 			for _, binding := range ch.Bindings {
 				fmt.Fprintf(w, "  @%s (%s, binding %d)\n", binding.Alias, binding.State, binding.ID)
 			}
@@ -229,6 +240,8 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		if r.ExchangeID != 0 {
 			fmt.Fprintf(w, "#%s/x%d: added %d units, %d remaining.\n", r.Channel, r.ExchangeID, r.Units, r.Remaining)
+		} else if r.Pool != 0 {
+			fmt.Fprintf(w, "#%s: added %d root token(s) to the join pool, %d in the pool.\n", r.Channel, r.Pool, r.JoinPool)
 		} else {
 			fmt.Fprintf(w, "#%s/@%s: added %d root token(s), %d available.\n", r.Channel, r.Alias, r.Roots, r.RootTokens)
 		}

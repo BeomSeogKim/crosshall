@@ -182,8 +182,9 @@ func TestHookSessionReplay(t *testing.T) {
 	if outputs[6].Enrollment != "restored" || outputs[6].Alias != "claude1" || outputs[6].Hint != "" {
 		t.Fatalf("restart %+v", outputs[6])
 	}
-	if f.count(`SELECT root_tokens FROM principal p JOIN principal_key k ON k.principal_id = p.id WHERE k.key = ?`, s.key) != 0 {
-		t.Fatal("an auto-enrolled principal holds root tokens")
+	// One root token from the join pool at the first join; a restore draws none.
+	if f.count(`SELECT root_tokens FROM principal p JOIN principal_key k ON k.principal_id = p.id WHERE k.key = ?`, s.key) != 1 {
+		t.Fatal("an auto-enrolled principal does not hold exactly its join token")
 	}
 
 	before := f.rows()

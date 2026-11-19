@@ -24,7 +24,7 @@ func TestTurnEndMigrationPreservesEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	if after := adapterLedgerSnapshot(t, upgraded.db, 4); after != before {
+	if after := adapterLedgerSnapshot(t, upgraded.db, len(migrations)); after != before {
 		t.Fatalf("migration changed the ledger\nbefore: %s\nafter: %s", before, after)
 	}
 	var count int

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -16,6 +17,9 @@ import (
 func OwnerGate() string {
 	if AllowOwner(os.LookupEnv, true) {
 		return ""
+	}
+	if _, member := os.LookupEnv(RouteVariable); member {
+		return "owner commands are unavailable in a crosshall member shell"
 	}
 	return "owner commands require a separate owner shell"
 }
@@ -39,7 +43,27 @@ func Exec(argv []string) error {
 	if err != nil {
 		return err
 	}
+	if id, err := ResolveEnvironment(os.LookupEnv); err == nil {
+		fmt.Fprintf(os.Stderr, "[crosshall] This shell already has identity %s:sha256:%s. The new command gets a new identity.\n",
+			id.Vendor, id.Digest()[:12])
+	}
+	if opensMemberShell(argv) {
+		fmt.Fprintln(os.Stderr, "[crosshall] Starting a crosshall member shell. Type exit to return.")
+	}
 	return syscall.Exec(path, argv, childEnvironment(os.Environ()))
+}
+
+// A bare shell reads its commands from standard input. An explicit -i also
+// requests an interactive shell. Skip the shell notice for scripted commands.
+func opensMemberShell(argv []string) bool {
+	if len(argv) != 1 && !(len(argv) == 2 && argv[1] == "-i") {
+		return false
+	}
+	switch filepath.Base(argv[0]) {
+	case "sh", "bash", "dash", "zsh", "ksh", "fish", "ash", "csh", "tcsh":
+		return true
+	}
+	return false
 }
 
 func childEnvironment(environ []string) []string {

@@ -120,6 +120,51 @@ func TestRunStartsChildWithOnlyFreshRouteIdentity(t *testing.T) {
 	}
 }
 
+func TestRunAnnouncesMemberShellAndNestedIdentity(t *testing.T) {
+	w := newWorld(t)
+	parent := w.member()
+	const shellNotice = "[crosshall] Starting a crosshall member shell. Type exit to return.\n"
+	const commandOutput = "command output\n"
+	nestedNotice := "[crosshall] This shell already has identity route:sha256:" +
+		parent.keyDigest()[:12] + ". The new command gets a new identity.\n"
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		env    []string
+		notice string
+		exit   int
+	}{
+		{"plain", []string{"sh"}, w.baseEnv(), shellNotice, 0},
+		{"nested", []string{"sh"}, parent.env(), nestedNotice + shellNotice, 0},
+		{"scripted", []string{"sh", "-c", "printf 'command output\\n'; exit 17"}, parent.env(), nestedNotice, 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(binary, append([]string{"run", "--"}, tc.args...)...)
+			cmd.Dir, cmd.Env = w.home, tc.env
+			cmd.Stdin = strings.NewReader("printf 'command output\\n'\nexit\n")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			stdout, err := cmd.Output()
+			exit := 0
+			if err != nil {
+				var childExit *exec.ExitError
+				if !errors.As(err, &childExit) {
+					t.Fatal(err)
+				}
+				exit = childExit.ExitCode()
+			}
+			if string(stdout) != commandOutput || stderr.String() != tc.notice || exit != tc.exit {
+				t.Fatalf("exit %d, stdout %q, stderr %q", exit, stdout, stderr.String())
+			}
+		})
+	}
+	if got := parent.run("owner", "status"); got.exit != 3 || got.obj["code"] != "owner_only" ||
+		got.obj["message"] != "owner commands are unavailable in a crosshall member shell" ||
+		got.obj["hint"] != "rerun this command from your separate owner terminal" {
+		t.Fatalf("wrong member-shell refusal: exit %d, %s", got.exit, got.stdout)
+	}
+}
+
 func TestDevBinaryRefusesDefaultStateDirectory(t *testing.T) {
 	w := newWorld(t)
 	w.state = filepath.Join(w.home, ".local", "state", "crosshall")

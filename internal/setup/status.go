@@ -229,8 +229,12 @@ func RenderStatus(w io.Writer, statuses []AdapterStatus, jsonOutput bool) error 
 			fmt.Fprintf(&text, "%s — session identity supported, hook adapter unavailable\n", status.Name)
 			continue
 		}
+		policy := status.Policy
+		if policy == "default" {
+			policy = "off"
+		}
 		fmt.Fprintf(&text, "%s — CLI %s, hooks %s, policy %s, footprint %s\n",
-			status.Name, status.CLI, status.Install, status.Policy, status.Footprint)
+			status.Name, status.CLI, status.Install, policy, status.Footprint)
 		if status.Path != "" {
 			fmt.Fprintf(&text, "  configuration %q (%s)\n", status.Path, status.PathSource)
 		}

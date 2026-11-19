@@ -92,10 +92,21 @@ func TestATakenAliasPointsAtOwnerRestore(t *testing.T) {
 	if err := json.Unmarshal(r.Data, &refusal); err != nil || r.Code != core.CodeAliasTaken {
 		t.Fatalf("%s %s", r.Code, r.Data)
 	}
-	restore := strings.Index(refusal.Hint, "crosshall owner restore")
-	another := strings.Index(refusal.Hint, "--as <another alias>")
-	if restore < 0 || another < restore || !strings.Contains(refusal.Hint, "new session") {
-		t.Fatalf("hint %q", refusal.Hint)
+	position := -1
+	for _, step := range []string{"crosshall whoami --full", "only to the owner", "crosshall owner who --all",
+		"old binding ID", "crosshall owner restore", "first argument", "--new-key", "For a new member, crosshall join checkout"} {
+		next := strings.Index(refusal.Hint, step)
+		if next <= position {
+			t.Fatalf("expected %q in order in hint %q", step, refusal.Hint)
+		}
+		position = next
+	}
+	if strings.Contains(refusal.Message+refusal.Hint, other.key) || strings.Contains(refusal.Hint, "--as <another alias>") {
+		t.Fatalf("hint exposed a key or printed an unusable command: %q", refusal.Hint)
+	}
+	newMember := decode[JoinResult](t, f.join(other, Join{Channel: "checkout"}, ""))
+	if newMember.Alias == "" || newMember.Alias == "writer" {
+		t.Fatalf("unqualified join did not choose an unused alias: %+v", newMember)
 	}
 }
 
@@ -111,7 +122,8 @@ func TestADepartedMemberKeepsTheRetryUnderAnotherAlias(t *testing.T) {
 	if err := json.Unmarshal(r.Data, &refusal); err != nil || r.Code != core.CodeAliasTaken {
 		t.Fatalf("%s %s", r.Code, r.Data)
 	}
-	if strings.Contains(refusal.Message+refusal.Hint, "restore") || refusal.Hint != "crosshall join checkout --as <another alias>" {
+	if strings.Contains(refusal.Message+refusal.Hint, "restore") ||
+		refusal.Hint != "Choose an unused alias, then rerun crosshall join checkout with --as set to that alias." {
 		t.Fatalf("departed member refusal %+v", refusal)
 	}
 }

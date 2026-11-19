@@ -314,7 +314,7 @@ func TestReturnUnderANewAliasWhenTheOldOneIsTaken(t *testing.T) {
 
 	r := f.join(b, Join{Channel: "checkout"}, "")
 	wantCode(t, r, core.ExitRefused, core.CodeAliasTaken)
-	if hint := decode[Refusal](t, r).Hint; hint != "crosshall join checkout --as <another alias>" {
+	if hint := decode[Refusal](t, r).Hint; hint != "Choose an unused alias, then rerun crosshall join checkout with --as set to that alias." {
 		t.Fatalf("hint %q", hint)
 	}
 	wantCode(t, f.join(b, Join{Channel: "checkout", Alias: "form"}, ""), core.ExitRefused, core.CodeAliasTaken)

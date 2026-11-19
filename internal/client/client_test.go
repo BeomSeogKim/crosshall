@@ -73,7 +73,8 @@ func TestTransportOutcomes(t *testing.T) {
 		t.Fatalf("missing identity: %+v, %v", result, err)
 	}
 	var out bytes.Buffer
-	if status := transport.Whoami(&out, false); status != core.ExitNotEnrolled || !strings.Contains(out.String(), "not_enrolled") {
+	if status := transport.Whoami(&out, false); status != core.ExitNotEnrolled || !strings.Contains(out.String(), "not_enrolled") ||
+		!strings.Contains(out.String(), "next: start a member shell with `crosshall run -- sh`") {
 		t.Fatalf("unbound whoami: %d %s", status, out.String())
 	}
 	env["CODEX_THREAD_ID"] = "test-thread"
@@ -162,6 +163,95 @@ func TestWhoamiKnownEnrollmentStates(t *testing.T) {
 			if !strings.Contains(out.String(), "sha256:a1e9751ef75c") || !strings.Contains(out.String(), tc.state) || strings.Contains(out.String(), id.Key) {
 				t.Fatalf("unexpected identity for %s: %q", tc.state, out.String())
 			}
+		}
+	}
+}
+
+func TestWhoamiFullExplainsHowToRestoreMembership(t *testing.T) {
+	id := ident.Identity{Vendor: "codex", Key: "fixture-session-key"}
+	result := core.Result{Status: core.ExitNotEnrolled, Code: core.CodeNotEnrolled,
+		Data: json.RawMessage(`{"message":"session has not joined a channel","hint":"crosshall join <channel>"}`)}
+	for _, asJSON := range []bool{false, true} {
+		var out bytes.Buffer
+		if code := writeWhoami(&out, id, result, asJSON, true); code != core.ExitNotEnrolled {
+			t.Fatalf("exit %d, want %d", code, core.ExitNotEnrolled)
+		}
+		body := out.String()
+		if !strings.Contains(body, "give the owner") || !strings.Contains(body, "crosshall owner restore") {
+			t.Errorf("missing restore instructions: %s", body)
+		}
+		if asJSON {
+			var got struct {
+				Vendor, Key, Enrollment, Message, Hint string
+				Code                                   core.Code
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil ||
+				got.Vendor != id.Vendor || got.Key != id.Key || got.Enrollment != "not_enrolled" ||
+				got.Code != result.Code || got.Message != "session has not joined a channel" ||
+				!strings.Contains(got.Hint, "crosshall join <channel>") {
+				t.Fatalf("unexpected JSON identity: %+v (%v)", got, err)
+			}
+		} else if !strings.HasPrefix(body, "codex:fixture-session-key not_enrolled\n") {
+			t.Errorf("unexpected first line: %s", body)
+		}
+	}
+
+	for _, tc := range []struct {
+		id     ident.Identity
+		result core.Result
+		full   bool
+	}{
+		{id, result, false},
+		{ident.Identity{}, result, true},
+		{id, core.Result{Status: core.ExitOK}, true},
+		{id, core.Result{Status: core.ExitUnavailable, Code: core.CodeUnsent}, true},
+	} {
+		for _, asJSON := range []bool{false, true} {
+			var out bytes.Buffer
+			writeWhoami(&out, tc.id, tc.result, asJSON, tc.full)
+			if strings.Contains(out.String(), "crosshall owner restore") {
+				t.Errorf("unexpected restore hint: %s", out.String())
+			}
+			if !tc.full && strings.Contains(out.String(), id.Key) {
+				t.Errorf("default output exposed the session key: %s", out.String())
+			}
+		}
+	}
+}
+
+func TestIdentityRecoveryNamesTheShellAndJoinStep(t *testing.T) {
+	for _, code := range []core.Code{core.CodeNotEnrolled, core.CodeBindingAmbiguous} {
+		result := identityFailure(&ident.EnvironmentError{Code: code, Message: "fixture"})
+		var got struct{ Hint string }
+		if err := json.Unmarshal(result.Data, &got); err != nil ||
+			!strings.Contains(got.Hint, "`crosshall run -- sh`") || strings.Contains(got.Hint, "<agent>") {
+			t.Errorf("%s: hint %q (%v)", code, got.Hint, err)
+		}
+		if code == core.CodeNotEnrolled && !strings.Contains(got.Hint, "from the new shell") {
+			t.Errorf("%s: hint %q omits where to join", code, got.Hint)
+		}
+	}
+}
+
+func TestJoinVersionWarningsExplainTheReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		vendor, version, want string
+	}{
+		{"claude", "unknown", "could not detect the Claude Code version"},
+		{"claude", "2.1.999", "has not verified how Claude Code 2.1.999 identifies sessions"},
+		{"codex", "unknown", "could not detect the Codex CLI version"},
+		{"codex", "9.9.9", "has not verified how Codex CLI 9.9.9 identifies sessions"},
+	} {
+		body, err := withWarnings(json.RawMessage(`{"hint":"joined"}`),
+			ident.Identity{Vendor: tc.vendor, Version: tc.version}, "join", false)
+		var got struct{ Warnings []string }
+		if err != nil || json.Unmarshal(body, &got) != nil || len(got.Warnings) != 1 {
+			t.Fatalf("%s %s: warnings %s (%v)", tc.vendor, tc.version, body, err)
+		}
+		msg := got.Warnings[0]
+		if !strings.HasPrefix(msg, "Join succeeded. ") || !strings.Contains(msg, tc.want) ||
+			!strings.HasSuffix(msg, "No action is needed for this warning.") || strings.Contains(msg, "crosshall whoami") {
+			t.Errorf("%s %s: unexpected warning %q", tc.vendor, tc.version, msg)
 		}
 	}
 }

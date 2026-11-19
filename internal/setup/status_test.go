@@ -149,6 +149,15 @@ func TestStatusDistinguishesPolicyAndJournalHistory(t *testing.T) {
 			t.Errorf("%s explicit policy: %+v", got.Adapter, got)
 		}
 	}
+	var output bytes.Buffer
+	if err := RenderStatus(&output, statuses, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Claude Code — CLI found, hooks none, policy on", "Codex — CLI found, hooks none, policy off"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("missing %q in %s", want, output.String())
+		}
+	}
 }
 
 func TestStatusKeepsRecordedPathAndOriginalPendingScope(t *testing.T) {
@@ -176,7 +185,7 @@ func TestStatusKeepsRecordedPathAndOriginalPendingScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Claude Code — CLI found, hooks drift, policy default, footprint present",
+		"Claude Code — CLI found, hooks drift, policy off, footprint present",
 		"configuration " + filepath.Join(f.Home, ".claude", "settings.json"),
 		"Interrupted setup for claude, codex (Claude read rules true, send rules false)",
 		"Antigravity — session identity supported, hook adapter unavailable",
@@ -197,7 +206,7 @@ func TestStatusKeepsRecordedPathAndOriginalPendingScope(t *testing.T) {
 	}
 	if err := json.Unmarshal(output.Bytes(), &encoded); err != nil || encoded.Version != 1 ||
 		!encoded.OK || encoded.Kind != "setup status" || len(encoded.Adapters) != 3 ||
-		encoded.Adapters[0].RecordedPath != recorded || encoded.Adapters[0].Pending == nil ||
+		encoded.Adapters[0].Policy != "default" || encoded.Adapters[0].RecordedPath != recorded || encoded.Adapters[0].Pending == nil ||
 		!encoded.Adapters[0].Pending.Rules.Read || encoded.Adapters[2].HookAdapter {
 		t.Fatalf("status JSON: %s (%v)", output.String(), err)
 	}

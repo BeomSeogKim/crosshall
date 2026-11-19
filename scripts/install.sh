@@ -98,7 +98,7 @@ fetch_prebuilt() {
   asset="crosshall-$os-$arch.tar.gz"
   url="https://github.com/BeomSeogKim/crosshall/releases/download/$tag/$asset"
   if ! fetch "$url.sha256" "$stage/checksum"; then
-    prebuilt_reason='checksum unavailable'
+    prebuilt_reason="no verified release archive found for $tag on $os/$arch because the checksum is unavailable"
     return 1
   fi
   checksum=$(cat "$stage/checksum") || { prebuilt_reason='checksum unreadable'; return 1; }
@@ -108,7 +108,7 @@ fetch_prebuilt() {
     return 1
   fi
   if ! fetch "$url" "$stage/$asset"; then
-    prebuilt_reason='binary archive unavailable'
+    prebuilt_reason="release archive unavailable for $tag on $os/$arch"
     return 1
   fi
   if command -v sha256sum >/dev/null; then

@@ -159,6 +159,10 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		OwedCount     *int    `json:"owed_count"`
 	}
 	_ = json.Unmarshal(result.Data, &message)
+	restoreHint := ""
+	if full && state == "not_enrolled" && id.Vendor != "" && id.Key != "" {
+		restoreHint = "To restore a previous membership, give the owner the displayed `<vendor>:<key>` privately for `crosshall owner restore` before joining."
+	}
 	displayKey := id.Key
 	if displayKey != "" && !full {
 		displayKey = "sha256:" + id.Digest()[:12]
@@ -179,7 +183,14 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 			data["vendor"], data["key"] = id.Vendor, displayKey
 		}
 		if result.Status != core.ExitOK {
-			data["code"], data["message"], data["hint"] = result.Code, message.Message, message.Hint
+			hint := message.Hint
+			if restoreHint != "" {
+				hint = restoreHint
+				if message.Hint != "" {
+					hint += " For a new membership, run `" + message.Hint + "`."
+				}
+			}
+			data["code"], data["message"], data["hint"] = result.Code, message.Message, hint
 		}
 		if message.OwedCount != nil {
 			data["pending"], data["owed_count"] = message.Pending, *message.OwedCount
@@ -187,10 +198,16 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		err = json.NewEncoder(stdout).Encode(data)
 	} else if id.Vendor == "" {
 		_, err = fmt.Fprintf(stdout, "%s: %s\n", result.Code, message.Message)
+		if err == nil && message.Hint != "" {
+			_, err = fmt.Fprintln(stdout, "next: "+message.Hint)
+		}
 	} else if state == "unknown" && result.Code != "" {
 		_, err = fmt.Fprintf(stdout, "%s:%s %s (%s)\n", id.Vendor, displayKey, state, result.Code)
 	} else {
 		_, err = fmt.Fprintf(stdout, "%s:%s %s\n", id.Vendor, displayKey, state)
+	}
+	if err == nil && !asJSON && restoreHint != "" {
+		_, err = fmt.Fprintln(stdout, restoreHint)
 	}
 	if err == nil && !asJSON && warning != "" {
 		_, err = fmt.Fprintln(stdout, warning)
@@ -217,9 +234,9 @@ func identityFailure(err error) core.Result {
 // identityHint names the next command for a session that cannot be identified.
 func identityHint(code core.Code) string {
 	if code == core.CodeBindingAmbiguous {
-		return "start the session with `crosshall run -- <agent>` so it has one identity"
+		return "start a member shell with `crosshall run -- sh` so it has one identity"
 	}
-	return "start the session with `crosshall run -- <agent>`, then `crosshall join <channel>`"
+	return "start a member shell with `crosshall run -- sh`, then join your channel from the new shell"
 }
 
 func localFailure(status core.ExitCode, code core.Code, message string) core.Result {
@@ -277,11 +294,24 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 			return
 		}
 		msg := identity.Warning()
-		if verb == "join" && msg != "" && !identity.UnknownAntigravityCLI() {
-			if identity.Version == "" || identity.Version == "unknown" {
-				msg = fmt.Sprintf("Crosshall could not detect the %s CLI version to verify how it identifies sessions", identity.Vendor)
-			} else {
-				msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions", identity.Vendor, identity.Version)
+		if verb == "join" && msg != "" {
+			switch identity.Vendor {
+			case "claude", "codex":
+				name := "Claude Code"
+				if identity.Vendor == "codex" {
+					name = "Codex CLI"
+				}
+				if identity.Version == "" || identity.Version == "unknown" {
+					msg = fmt.Sprintf("Crosshall could not detect the %s version to verify how it identifies sessions.", name)
+				} else {
+					msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions.", name, identity.Version)
+				}
+				msg = "Join succeeded. " + msg + " No action is needed for this warning."
+			case "agy":
+				if !identity.UnknownAntigravityCLI() {
+					msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions", identity.Vendor, identity.Version)
+				}
+				msg += ". Run `crosshall whoami` to check your current enrollment."
 			}
 		}
 		if msg != "" && !slices.Contains(details.Warnings, msg) {
@@ -296,9 +326,6 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 	}
 	if len(details.Warnings) == original {
 		return data, nil
-	}
-	if verb == "join" {
-		details.Warnings[len(details.Warnings)-1] += ". Run `crosshall whoami` to check your current enrollment."
 	}
 	var result map[string]json.RawMessage
 	if err := json.Unmarshal(data, &result); err != nil || result == nil {

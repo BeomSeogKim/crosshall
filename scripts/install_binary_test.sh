@@ -77,7 +77,7 @@ esac
 file=${url##*/}
 printf '%s\n' "$file" >> "$TEST_FETCHES"
 case "$TEST_CASE:$file" in
-  missing:*.sha256) exit 22 ;;
+  missing:*.sha256|missing-archive:"$TEST_ASSET") exit 22 ;;
   bad:*.sha256)
     printf '%064d  %s\n' 0 "$TEST_ASSET" > "$destination"
     exit 0 ;;
@@ -136,10 +136,11 @@ case "$1" in
 esac
 GO
 chmod +x "$tools/go"
-for test_case in bad missing wrong-commit; do
+for test_case in bad missing missing-archive wrong-commit; do
   case "$test_case" in
     bad) reason='checksum mismatch' ;;
-    missing) reason='checksum unavailable' ;;
+    missing) reason="no verified release archive found for $version on $os/$arch because the checksum is unavailable" ;;
+    missing-archive) reason="release archive unavailable for $version on $os/$arch" ;;
     wrong-commit)
       reason='binary archive does not match this checkout'
       echo different-checkout > "$payload/COMMIT"
@@ -148,7 +149,7 @@ for test_case in bad missing wrong-commit; do
   install "$test_case" "$tmp/$test_case" || fail "no fallback for $test_case: $(cat "$tmp/errors")"
   cmp -s "$tmp/$test_case/crosshall" "$repo/from-source" || fail "unverified binary installed for $test_case"
   [[ $(cat "$tmp/executions") == source ]] || fail "unverified binary ran for $test_case"
-  grep -q "$reason.*falling back to a source build" "$tmp/errors" || fail "no fallback reason for $test_case"
+  grep -Fq "$reason); falling back to a source build" "$tmp/errors" || fail "no fallback reason for $test_case"
   if [[ $test_case == missing && $(cat "$tmp/fetches") != "$asset.sha256" ]]; then
     fail 'downloaded archive without a checksum'
   fi

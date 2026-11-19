@@ -90,7 +90,7 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 				SELECT 1 FROM recipient r WHERE r.message_id = m.id AND r.principal_id = ?
 			))
 			AND NOT EXISTS (SELECT 1 FROM obligation oc
-				WHERE oc.message_id = m.id AND oc.principal_id = ? AND oc.state = 'cancelled')
+				WHERE oc.message_id = m.id AND oc.principal_id = ? AND oc.state <> 'open')
 		ORDER BY m.id`, cmd.Cursor.MessageID, member.channel, member.principal, cmd.WorkOnly, cmd.Any, member.principal, member.principal)
 	if err != nil {
 		return core.Result{}, err

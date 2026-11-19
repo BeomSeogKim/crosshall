@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,9 +24,11 @@ type bodySource struct {
 	stdin, set bool
 }
 
+var errRepeatedBody = errors.New("give the text once: as an argument, as - for standard input, or with --file")
+
 func (b *bodySource) add(kind, value string) error {
 	if b.set {
-		return fmt.Errorf("give the text once: as an argument, as - for standard input, or with --file")
+		return errRepeatedBody
 	}
 	b.set = true
 	switch kind {
@@ -91,6 +94,14 @@ func messageID(s string) (int64, error) {
 func parseAsk(args []string) (domain.Ask, bodySource, error) {
 	var cmd domain.Ask
 	var body bodySource
+	// Recipients can follow the text. Finish parsing them before explaining
+	// whether an extra body was a bare name or a second piece of text.
+	var bodyErr error
+	addBody := func(kind, value string) {
+		if err := body.add(kind, value); err != nil {
+			bodyErr = err
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -99,9 +110,7 @@ func parseAsk(args []string) (domain.Ask, bodySource, error) {
 			if len(rest) != 1 {
 				return cmd, body, fmt.Errorf("give the text as one argument after --")
 			}
-			if err := body.add("arg", rest[0]); err != nil {
-				return cmd, body, err
-			}
+			addBody("arg", rest[0])
 			break
 		}
 		if v, j, ok, err := flagValue(args, i, "--due"); ok {
@@ -125,9 +134,7 @@ func parseAsk(args []string) (domain.Ask, bodySource, error) {
 			if err != nil {
 				return cmd, body, err
 			}
-			if err := body.add("file", v); err != nil {
-				return cmd, body, err
-			}
+			addBody("file", v)
 			i = j
 			continue
 		}
@@ -139,9 +146,7 @@ func parseAsk(args []string) (domain.Ask, bodySource, error) {
 		case a == "--new":
 			cmd.New = true
 		case a == "-":
-			if err := body.add("stdin", ""); err != nil {
-				return cmd, body, err
-			}
+			addBody("stdin", "")
 		case strings.HasPrefix(a, "@") && domain.ValidName(a[1:]):
 			// Only a whole, valid @alias names a recipient; "@tax, ready?"
 			// is text.
@@ -149,10 +154,11 @@ func parseAsk(args []string) (domain.Ask, bodySource, error) {
 		case strings.HasPrefix(a, "--"):
 			return cmd, body, fmt.Errorf("unknown option %q for ask", a)
 		default:
-			if err := body.add("arg", a); err != nil {
-				return cmd, body, err
-			}
+			addBody("arg", a)
 		}
+	}
+	if bodyErr != nil {
+		return cmd, body, bodyErr
 	}
 	switch {
 	case len(cmd.To) == 0 && !cmd.All:
@@ -220,6 +226,10 @@ func parseReply(args []string) (domain.Reply, bodySource, error) {
 func runAsk(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
 	cmd, body, err := parseAsk(args)
+	if errors.Is(err, errRepeatedBody) && !cmd.All && len(cmd.To) == 0 && domain.ValidName(body.text) {
+		return o.fail(core.ExitUsage, CodeUsage,
+			fmt.Sprintf("recipient names start with @. To address %s, use @%s.", body.text, body.text), "crosshall who")
+	}
 	if err != nil {
 		return o.usage(err.Error())
 	}
@@ -263,12 +273,21 @@ func renderAsk(data []byte, w io.Writer) error {
 	ex := fmt.Sprintf("x%d", r.Exchange)
 	if r.NewExchange {
 		ex += " (new)"
+	} else if r.ExchangeOpener != "" {
+		opener := "@" + r.ExchangeOpener
+		if r.ExchangeOpenerDeparted {
+			opener += ", now departed"
+		}
+		ex += " (opened by " + opener + ")"
 	}
 	if r.Remaining == 0 {
 		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: 0 left; this request spent its last unit.\n",
 			r.ID, clock(r.DueAtMS), ex)
 	} else {
 		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: %d left.\n", r.ID, clock(r.DueAtMS), ex, r.Remaining)
+	}
+	if r.ExchangeOpener != "" {
+		fmt.Fprintln(w, "Run crosshall status to see the exchange balance.")
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, d := range r.Recipients {
@@ -299,6 +318,9 @@ func renderReply(data []byte, w io.Writer) error {
 	defer func() {
 		if r.Delivery.State != "" {
 			fmt.Fprintf(w, "  @%s  %s\n", r.Delivery.Alias, deliveryText(r.Delivery))
+		}
+		if r.OriginalUnread {
+			fmt.Fprintf(w, "To read the original request, run crosshall read %d.\n", r.Ask)
 		}
 	}()
 	switch r.Outcome {

@@ -167,6 +167,10 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	return OK(out)
 }
 
+// Notes and replies have no obligation. An unread owner cancellation stays
+// visible until read, while the recipient's own final reply clears the ask.
+const visibleInInbox = `COALESCE(o.state, 'open') IN ('open', 'cancelled')`
+
 // inboxItems serves both the inbox command and read-only wait snapshots.
 func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bool) (InboxResult, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms, r.picked_up_at_ms IS NULL,
@@ -174,7 +178,8 @@ func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bo
 		FROM recipient r JOIN message m ON m.id = r.message_id
 		LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
 		LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND (r.picked_up_at_ms IS NULL OR o.state = 'open')
+		WHERE r.principal_id = ? AND m.channel_id = ? AND `+visibleInInbox+`
+			AND (r.picked_up_at_ms IS NULL OR o.state = 'open')
 			AND (NOT ? OR m.kind <> 'note')
 		ORDER BY m.id`, member.principal, member.channel, workOnly)
 	if err != nil {
@@ -531,16 +536,14 @@ func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields
 	return err
 }
 
-// notCancelled excludes, for the recipient row r, a request the owner
-// cancelled: it is no longer work, so nothing announces it as unread.
-const notCancelled = `NOT EXISTS (SELECT 1 FROM obligation oc
-	WHERE oc.message_id = r.message_id AND oc.principal_id = r.principal_id AND oc.state = 'cancelled')`
+// An unread note, reply, or open ask is eligible for a pending notice.
+const noClosedObligation = `NOT EXISTS (SELECT 1 FROM obligation oc
+	WHERE oc.message_id = r.message_id AND oc.principal_id = r.principal_id AND oc.state <> 'open')`
 
-// pendingIDs lists the messages addressed to a member that it has not picked
-// up, leaving out cancelled requests.
+// pendingIDs lists the unread messages still awaiting the member's attention.
 func pendingIDs(ctx context.Context, tx store.Tx, principal, channel int64) ([]int64, error) {
 	ids, err := selectIDs(ctx, tx, `SELECT m.id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notCancelled+` ORDER BY m.id`, principal, channel)
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+noClosedObligation+` ORDER BY m.id`, principal, channel)
 	if ids == nil {
 		ids = []int64{}
 	}

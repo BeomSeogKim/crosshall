@@ -121,7 +121,8 @@ func (s *Service) read(ctx context.Context, tx store.Tx, caller core.Caller, req
 	}
 	if len(ids) == 0 {
 		ids, err = selectIDs(ctx, tx, `SELECT m.id FROM message m JOIN recipient r ON r.message_id = m.id
-			WHERE m.channel_id = ? AND r.principal_id = ? AND r.picked_up_at_ms IS NULL ORDER BY m.id LIMIT 10`,
+			LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
+			WHERE m.channel_id = ? AND r.principal_id = ? AND r.picked_up_at_ms IS NULL AND `+visibleInInbox+` ORDER BY m.id LIMIT 10`,
 			member.channel, member.principal)
 		if err != nil {
 			return core.Result{}, err

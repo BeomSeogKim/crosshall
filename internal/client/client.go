@@ -277,6 +277,13 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 			return
 		}
 		msg := identity.Warning()
+		if verb == "join" && msg != "" && !identity.UnknownAntigravityCLI() {
+			if identity.Version == "" || identity.Version == "unknown" {
+				msg = fmt.Sprintf("Crosshall could not detect the %s CLI version to verify how it identifies sessions", identity.Vendor)
+			} else {
+				msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions", identity.Vendor, identity.Version)
+			}
+		}
 		if msg != "" && !slices.Contains(details.Warnings, msg) {
 			details.Warnings = append(details.Warnings, msg)
 		}
@@ -289,6 +296,9 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 	}
 	if len(details.Warnings) == original {
 		return data, nil
+	}
+	if verb == "join" {
+		details.Warnings[len(details.Warnings)-1] += ". Run `crosshall whoami` to check your current enrollment."
 	}
 	var result map[string]json.RawMessage
 	if err := json.Unmarshal(data, &result); err != nil || result == nil {

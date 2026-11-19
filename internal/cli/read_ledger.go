@@ -206,7 +206,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				printLedgerRequest(w, req, true, r.GeneratedAtMS)
 			}
 			for _, ex := range ch.Exchanges {
-				fmt.Fprintf(w, "  x%d: %d remaining (%d spent of %d)\n", ex.ID, ex.Remaining, ex.Spent, ex.Granted)
+				fmt.Fprintf(w, "  x%d: %d remaining (%d spent of %d)", ex.ID, ex.Remaining, ex.Spent, ex.Granted)
+				if ex.ParentRequestID != 0 {
+					fmt.Fprintf(w, ", handoff for #%d", ex.ParentRequestID)
+				}
+				fmt.Fprintln(w)
 			}
 			for _, event := range ch.BudgetExhaustions {
 				fmt.Fprintf(w, "  x%d exhausted at %s (episode %d)\n", event.ExchangeID, ledgerTime(event.AtMS), event.Episode)

@@ -29,7 +29,9 @@ Member commands:
   waiting                                           List your outstanding requests
   status                                            Show the channel ledger
   whoami [--full]                                   Show a short identity digest (--full prints the raw key)
-  ask @a [@b ...] "..." [--due 30m] [--re <id>|--new]  Ask members for an answer (or --all --each)
+  ask @a [@b ...] "..." [--due 30m] [--re <id>] [--new]
+                                                    Ask members for an answer (or --all --each)
+                                                    Use --new --re <id> for a funded handoff
   reply <id> "..." [--decline|--more-time]          Answer a request addressed to you
   note @a [@b ...] "..."                            Tell members something; no answer expected (or --all)
   log [--since <id>] [--limit <n>]                  Show the channel's history

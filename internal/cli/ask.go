@@ -271,7 +271,9 @@ func renderAsk(data []byte, w io.Writer) error {
 		return err
 	}
 	ex := fmt.Sprintf("x%d", r.Exchange)
-	if r.NewExchange {
+	if r.ParentRequestID != 0 {
+		ex += fmt.Sprintf(" (new handoff for #%d)", r.ParentRequestID)
+	} else if r.NewExchange {
 		ex += " (new)"
 	} else if r.ExchangeOpener != "" {
 		opener := "@" + r.ExchangeOpener

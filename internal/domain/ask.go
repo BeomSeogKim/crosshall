@@ -68,6 +68,7 @@ type AskResult struct {
 	Channel                string     `json:"channel"`
 	Exchange               int64      `json:"exchange"`
 	NewExchange            bool       `json:"new_exchange"`
+	ParentRequestID        int64      `json:"parent_request_id,omitempty"`
 	ExchangeOpener         string     `json:"exchange_opener,omitempty"`
 	ExchangeOpenerDeparted bool       `json:"exchange_opener_departed,omitempty"`
 	DueAtMS                int64      `json:"due_at_ms"`
@@ -117,8 +118,6 @@ func checkAsk(cmd Ask) *core.Result {
 		return usage("address members by alias or with --all, not both")
 	case !cmd.All && len(cmd.To) == 0:
 		return usage("name at least one @alias, or --all --each")
-	case cmd.Re != 0 && cmd.New:
-		return usage("--re and --new cannot be combined")
 	case cmd.Re < 0:
 		return usage("--re takes a message number")
 	case strings.TrimSpace(cmd.Body) == "":
@@ -276,7 +275,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 
 	exchange := a.exchange.id
 	if a.isNew {
-		if exchange, err = open(ctx, tx, m, now); err != nil {
+		if exchange, err = open(ctx, tx, m, a.parentRequestID, now); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -321,7 +320,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	}
 
 	out := AskResult{
-		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: a.isNew,
+		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: a.isNew, ParentRequestID: a.parentRequestID,
 		DueAtMS: ms(now.Add(due)), Debit: n, Remaining: a.exchange.balance() - n,
 	}
 	r, err := askReceipt(ctx, tx, m.principal, out)

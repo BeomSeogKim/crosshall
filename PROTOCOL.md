@@ -39,7 +39,9 @@ An ask starts each recipient's obligation in `open`. Listing it in `inbox` or ob
 
 The budget limits how many requests members can keep sending each other without the owner granting more credit. A member's first join to a channel gives it one root token from the channel's join pool while the pool lasts; the owner sizes the pool at channel creation (default 8, `--pool 0` for none) and is the only one who adds to it. Opening an exchange costs the asker one root token and gives the exchange eight units. Each accepted request spends one unit, including the first request and a request to several recipients. Notes and replies are free. A follow-up can name a message in the exchange with `--re <id>`. Use `--new` for a separate exchange when authorized and funded. The owner can grant more units to an existing exchange.
 
-On a refusal, inspect the reason before choosing another action. An exhausted exchange can be continued after a grant; the refusal also names the options of a funded new exchange or a free reply or note. A free note does not assign work.
+A member that owes an answer in an exhausted exchange can fund a linked handoff with `crosshall ask @alias "question" --new --re <owed-request-id>`. Read the named request and any other unread requests first. The handoff spends one root token, links the new exchange to the named open request, and charges one of its eight units for the first ask. The original answer stays owed. An ordinary ask still uses the usual attribution. To continue the handoff, its opener can use `--re` with a message from the handoff exchange while the original answer is still owed.
+
+On a refusal, inspect the reason before choosing another action. An exhausted exchange can be continued after a grant. The refusal names the funded options and the free reply or note commands. A free note does not assign work.
 
 ## 5. Member commands
 

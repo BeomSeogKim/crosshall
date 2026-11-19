@@ -373,7 +373,7 @@ func TestAskArgumentChecks(t *testing.T) {
 		{To: []string{"tax"}, Body: "x", Due: "30s"},
 		{To: []string{"tax"}, Body: "x", Due: "25h"},
 		{To: []string{"tax"}, Body: "x", Due: "soon"},
-		{To: []string{"tax"}, Body: "x", Re: 1, New: true},
+		{To: []string{"tax"}, Body: "x", Re: -1, New: true},
 		{To: []string{"Bad_Alias"}, Body: "x"},
 	} {
 		if r := f.ask(a, bad, ""); r.Status != core.ExitUsage {

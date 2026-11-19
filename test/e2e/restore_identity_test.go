@@ -17,7 +17,8 @@ import (
 func TestRestoreDepartedBindingAfterAliasReuse(t *testing.T) {
 	w := newWorld(t)
 	owner, original, successor, fresh, editor := w.owner(), w.member(), w.member(), w.member(), w.member()
-	owner.must("owner", "channel", "create", "checkout")
+	// Grant-only, so the credits the test follows are the owner's grants.
+	owner.must("owner", "channel", "create", "checkout", "--pool", "0")
 	editor.must("join", "checkout", "--as", "editor")
 	originalJoin := []string{"join", "checkout", "--as", "reviewer", "--key", "original-join"}
 	original.must(originalJoin...)

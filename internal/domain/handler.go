@@ -229,6 +229,13 @@ func (s *Service) createChannel(ctx context.Context, tx store.Tx, caller core.Ca
 	if msg := ValidText("topic", cmd.Topic); msg != "" {
 		return Fail(core.ExitUsage, "", msg, "crosshall help"), nil
 	}
+	pool := int64(DefaultJoinPool)
+	if cmd.Pool != nil {
+		pool = *cmd.Pool
+	}
+	if pool < 0 {
+		return Fail(core.ExitUsage, "", "a join pool cannot be negative", "crosshall owner channel create <name> --pool <n>, with n of 0 or more"), nil
+	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
 		return core.Result{}, err
@@ -245,14 +252,14 @@ func (s *Service) createChannel(ctx context.Context, tx store.Tx, caller core.Ca
 		return Refuse(core.CodeChannelExists, fmt.Sprintf("#%s already exists", cmd.Name), "crosshall owner who --all"), nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO channel (name, topic, state, created_at_ms) VALUES (?, ?, 'active', ?)`,
-		cmd.Name, cmd.Topic, ms(now)); err != nil {
+		`INSERT INTO channel (name, topic, state, created_at_ms, join_pool) VALUES (?, ?, 'active', ?, ?)`,
+		cmd.Name, cmd.Topic, ms(now), pool); err != nil {
 		return core.Result{}, err
 	}
 	if err := audit(ctx, tx, "channel_created", "channel:"+cmd.Name, owner, cmd, now); err != nil {
 		return core.Result{}, err
 	}
-	r, err := OK(ChannelResult{Channel: cmd.Name, Topic: cmd.Topic})
+	r, err := OK(ChannelResult{Channel: cmd.Name, Topic: cmd.Topic, JoinPool: pool})
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -438,6 +445,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO binding (principal_id, channel_id, alias, state, joined_at_ms, focus, focus_at_ms) VALUES (?, ?, ?, 'live', ?, ?, ?)`,
 			principal, ch.id, alias, ms(now), focus, ms(now)); err != nil {
+			return core.Result{}, err
+		}
+		if err := drawJoinToken(ctx, tx, ch.id, principal, now); err != nil {
 			return core.Result{}, err
 		}
 		if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {

@@ -33,6 +33,7 @@ type BudgetGrant struct {
 	Alias      string `json:"alias,omitempty"`
 	Units      int64  `json:"units,omitempty"`
 	Roots      int64  `json:"roots,omitempty"`
+	Pool       int64  `json:"pool,omitempty"`
 }
 
 func (BudgetGrant) command()     {}
@@ -52,6 +53,8 @@ type BudgetGrantResult struct {
 	Roots      int64  `json:"roots,omitempty"`
 	Remaining  int64  `json:"remaining,omitempty"`
 	RootTokens int64  `json:"root_tokens,omitempty"`
+	Pool       int64  `json:"pool,omitempty"`
+	JoinPool   int64  `json:"join_pool,omitempty"`
 }
 
 func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Cancel, now time.Time) (core.Result, error) {
@@ -117,10 +120,12 @@ func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Call
 	if caller.Role != core.RoleOwner {
 		return Refuse(core.CodeOwnerOnly, "only the owner can grant credit", "run it from the owner's own shell, not an agent session"), nil
 	}
-	exchange := cmd.ExchangeID > 0 && cmd.Units > 0 && cmd.Alias == "" && cmd.Roots == 0
-	member := cmd.ExchangeID == 0 && cmd.Units == 0 && ValidName(cmd.Alias) && cmd.Roots > 0
-	if !ValidName(cmd.Channel) || (!exchange && !member) {
-		return Fail(core.ExitUsage, "", "grant positive units to one exchange or positive roots to one member", "crosshall owner budget grant <channel>/x<id> <units>, or <channel>/@<alias> --roots <n>"), nil
+	exchange := cmd.ExchangeID > 0 && cmd.Units > 0 && cmd.Alias == "" && cmd.Roots == 0 && cmd.Pool == 0
+	member := cmd.ExchangeID == 0 && cmd.Units == 0 && ValidName(cmd.Alias) && cmd.Roots > 0 && cmd.Pool == 0
+	joinPool := cmd.ExchangeID == 0 && cmd.Units == 0 && cmd.Alias == "" && cmd.Roots == 0 && cmd.Pool > 0
+	if !ValidName(cmd.Channel) || (!exchange && !member && !joinPool) {
+		return Fail(core.ExitUsage, "", "grant positive units to one exchange, positive roots to one member, or positive tokens to a channel's join pool",
+			"crosshall owner budget grant <channel>/x<id> <units>, <channel>/@<alias> --roots <n>, or <channel> --pool <n>"), nil
 	}
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
@@ -138,9 +143,12 @@ func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Call
 		return r, err
 	}
 	var r core.Result
-	if exchange {
+	switch {
+	case exchange:
 		r, err = grantUnits(ctx, tx, ch, cmd, owner, now)
-	} else {
+	case joinPool:
+		r, err = grantJoinPool(ctx, tx, ch, cmd, owner, now)
+	default:
 		r, err = grantRoots(ctx, tx, ch, cmd, owner, now)
 	}
 	if err != nil || r.Status != core.ExitOK {
@@ -198,4 +206,47 @@ func grantRoots(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant
 		return core.Result{}, err
 	}
 	return OK(BudgetGrantResult{Channel: ch.name, Alias: cmd.Alias, Roots: cmd.Roots, RootTokens: roots})
+}
+
+// grantJoinPool adds root tokens for the channel's future first joins.
+func grantJoinPool(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant, owner int64, now time.Time) (core.Result, error) {
+	var pool int64
+	if err := tx.QueryRowContext(ctx, `SELECT join_pool FROM channel WHERE id = ?`, ch.id).Scan(&pool); err != nil {
+		return core.Result{}, err
+	}
+	if pool > math.MaxInt64-cmd.Pool {
+		return Fail(core.ExitUsage, "", "grant exceeds the join pool limit", "grant fewer tokens"), nil
+	}
+	pool += cmd.Pool
+	if _, err := tx.ExecContext(ctx, `UPDATE channel SET join_pool = ? WHERE id = ?`, pool, ch.id); err != nil {
+		return core.Result{}, err
+	}
+	result := BudgetGrantResult{Channel: ch.name, Pool: cmd.Pool, JoinPool: pool}
+	if err := audit(ctx, tx, "join_pool_granted", "channel:"+ch.name, owner, result, now); err != nil {
+		return core.Result{}, err
+	}
+	return OK(result)
+}
+
+// drawJoinToken gives a principal's first binding in a channel one root token
+// from the channel's join pool, while the pool lasts. The pool is the owner's
+// grant made in advance, so the event records the owner as the grantor.
+func drawJoinToken(ctx context.Context, tx store.Tx, channel, principal int64, now time.Time) error {
+	res, err := tx.ExecContext(ctx, `UPDATE channel SET join_pool = join_pool - 1 WHERE id = ? AND join_pool > 0`, channel)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return err
+	}
+	owner, err := ownerPrincipal(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE principal SET root_tokens = root_tokens + 1 WHERE id = ?`, principal); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO budget_event (principal_id, delta, reason, by_id, at_ms)
+		VALUES (?, 1, 'roots', ?, ?)`, principal, owner, ms(now))
+	return err
 }

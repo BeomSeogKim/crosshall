@@ -12,10 +12,12 @@ import (
 )
 
 // channel3 sets up #checkout with members form (a), tax (b) and a11y (c).
+// Both channels are grant-only (no join pool): every root token in these
+// tests is the owner's grant.
 func channel3(t *testing.T) (*fixture, session, session, session) {
 	f := newFixture(t)
-	f.owner(CreateChannel{Name: "checkout"}, "")
-	f.owner(CreateChannel{Name: "inventory"}, "")
+	f.owner(CreateChannel{Name: "checkout", Pool: pool(0)}, "")
+	f.owner(CreateChannel{Name: "inventory", Pool: pool(0)}, "")
 	a, b, c := f.newSession("claude"), f.newSession("codex"), f.newSession("agy")
 	wantOK(t, f.join(a, Join{Channel: "checkout", Alias: "form"}, ""))
 	wantOK(t, f.join(b, Join{Channel: "checkout", Alias: "tax"}, ""))

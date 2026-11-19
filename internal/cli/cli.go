@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +43,9 @@ Owner commands (from your own shell, not from an agent session):
   uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
-  owner channel create <name> [--topic "..."]       Create a channel
+  owner channel create <name> [--topic "..."] [--pool <n>]
+                                                    Create a channel; each first join takes
+                                                    one root token from its pool (default 8)
   owner who --all                                   List all channel bindings
   owner depart <binding-id> --seen <token>           Mark a binding departed
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
@@ -52,6 +55,7 @@ Owner commands (from your own shell, not from an agent session):
   owner cancel <channel>/<id>                       Cancel an open request
   owner budget grant <channel>/x<id> <units>         Add exchange credit
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
+  owner budget grant <channel> --pool <n>            Add root tokens to a channel's join pool
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off]  Change adapter policy
   owner adapter evidence <file>                     Record a conformance run's results
@@ -409,6 +413,14 @@ func parseCreateChannel(args []string) (domain.CreateChannel, error) {
 			cmd.Topic, i = v, j
 			continue
 		}
+		if v, j, ok, err := flagValue(args, i, "--pool"); ok {
+			n, convErr := strconv.ParseInt(v, 10, 64)
+			if err != nil || convErr != nil || n < 0 {
+				return cmd, fmt.Errorf("--pool needs a count of 0 or more")
+			}
+			cmd.Pool, i = &n, j
+			continue
+		}
 		if strings.HasPrefix(args[i], "-") {
 			return cmd, fmt.Errorf("unknown option %q for channel create", args[i])
 		}
@@ -418,7 +430,7 @@ func parseCreateChannel(args []string) (domain.CreateChannel, error) {
 		cmd.Name = strings.TrimPrefix(args[i], "#")
 	}
 	if !domain.ValidName(cmd.Name) {
-		return cmd, fmt.Errorf("usage: crosshall owner channel create <name> [--topic \"...\"]; a name is 1-32 of a-z, 0-9 and -")
+		return cmd, fmt.Errorf("usage: crosshall owner channel create <name> [--topic \"...\"] [--pool <n>]; a name is 1-32 of a-z, 0-9 and -")
 	}
 	return cmd, nil
 }

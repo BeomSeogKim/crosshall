@@ -161,6 +161,26 @@ func TestInboxAndWaitingFollowAddressedReplies(t *testing.T) {
 	}
 }
 
+func TestOpenRequestIsOnTimeAtItsDeadline(t *testing.T) {
+	f, sender, recipient, _ := channel3(t)
+	f.roots(sender, 1)
+	request := decode[AskResult](t, f.ask(sender, Ask{To: []string{"tax"}, Body: "time check"}, ""))
+	f.now = time.UnixMilli(request.DueAtMS)
+
+	status := func() LedgerRecipient {
+		result := decode[StatusResult](t, f.owner(OwnerStatus{Channel: "checkout"}, ""))
+		return result.Channels[0].Requests[0].Recipients[0]
+	}
+	if open := status(); open.OverdueSinceMS != nil {
+		t.Fatalf("open request at its deadline is already marked overdue: %+v", open)
+	}
+	wantOK(t, f.reply(recipient, Reply{To: request.ID, Body: "finished"}, ""))
+	settled := status()
+	if settled.SettledAtMS == nil || *settled.SettledAtMS != request.DueAtMS || settled.LateByMS != nil {
+		t.Fatalf("reply at the deadline is late: %+v", settled)
+	}
+}
+
 func TestOwnerStatusProjectsDurableLedgerAndEpisodeOrder(t *testing.T) {
 	f := newFixture(t)
 	wantOK(t, f.owner(CreateChannel{Name: "checkout"}, ""))

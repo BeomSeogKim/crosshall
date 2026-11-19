@@ -430,7 +430,7 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 }
 
 func (r *LedgerRecipient) setDeadlineState(due, now int64) {
-	if r.State == "open" && now >= due {
+	if r.State == "open" && now > due {
 		r.OverdueSinceMS = &due
 	}
 	if r.SettledAtMS != nil && *r.SettledAtMS > due {

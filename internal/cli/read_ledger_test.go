@@ -38,19 +38,25 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 func TestPendingUsesPlainTrailerOrJSONField(t *testing.T) {
 	const id = int64(9007199254740993)
 	ft := &fakeTransport{result: okResult(t, struct {
-		Pending []int64 `json:"pending"`
-	}{[]int64{id}})}
+		Pending   []int64 `json:"pending"`
+		OwedCount int     `json:"owed_count"`
+	}{[]int64{id}, 2})}
 	stdout, stderr, code := run(t, Env{Transport: ft}, "inbox")
-	if code != core.ExitOK || stderr != "" || !strings.HasSuffix(stdout, "[crosshall] pending: 9007199254740993\n") {
+	if code != core.ExitOK || stderr != "" || strings.Contains(stdout, "Run crosshall inbox") {
+		t.Fatalf("plain %d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = run(t, Env{Transport: ft}, "read")
+	if code != core.ExitOK || stderr != "" || !strings.HasSuffix(stdout, "[crosshall] 1 unread, 2 owed. Run crosshall inbox.\n") {
 		t.Fatalf("plain %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
 	stdout, stderr, code = run(t, Env{Transport: ft}, "inbox", "--json")
 	var out struct {
-		Pending []int64 `json:"pending"`
+		Pending   []int64 `json:"pending"`
+		OwedCount int     `json:"owed_count"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &out); code != core.ExitOK || stderr != "" || err != nil ||
-		!reflect.DeepEqual(out.Pending, []int64{id}) || strings.Contains(stdout, "[crosshall] pending") {
+		!reflect.DeepEqual(out.Pending, []int64{id}) || out.OwedCount != 2 || strings.Contains(stdout, "Run crosshall inbox") {
 		t.Fatalf("JSON %d stdout=%q stderr=%q decoded=%+v error=%v", code, stdout, stderr, out, err)
 	}
 

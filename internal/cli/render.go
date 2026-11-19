@@ -32,15 +32,19 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 			delete(fields, "roster_changes")
 			if trailer.Pending != nil {
 				fields["pending"] = trailer.Pending
+			}
+			if trailer.Changes != nil {
 				fields["roster_changes"] = trailer.Changes
 			}
 			writeJSON(stdout, fields)
 		} else {
 			fmt.Fprintf(stderr, "crosshall: %s\n", refusal.Message)
-			if refusal.Hint != "" {
+			_, inbox := cmd.(domain.Inbox)
+			inboxInTrailer := !inbox && trailer.OwedCount != nil && refusal.Hint == "crosshall inbox"
+			if refusal.Hint != "" && !inboxInTrailer {
 				fmt.Fprintf(stderr, "next: %s\n", refusal.Hint)
 			}
-			printLedgerTrailer(stderr, cmd, trailer)
+			printLedgerTrailer(stderr, cmd, trailer, false)
 		}
 		return result.Status
 	}
@@ -62,7 +66,7 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 		fmt.Fprintf(stderr, "crosshall: malformed result: %v\n", err)
 		return core.ExitError
 	}
-	printLedgerTrailer(stdout, cmd, trailer)
+	printLedgerTrailer(stdout, cmd, trailer, true)
 	return core.ExitOK
 }
 

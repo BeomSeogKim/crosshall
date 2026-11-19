@@ -21,7 +21,7 @@ func TestAskPickupEvidenceAndThreadAnswer(t *testing.T) {
 	const question, answer = "Which column has the invoice date?", "Use the posting date."
 	id := num(t, sender.must("ask", "@tax", question), "id")
 	arg := strconv.FormatInt(id, 10)
-	if out := recipient.mustPlain("who"); !slices.Contains(strings.Split(out, "\n"), "[crosshall] pending: "+arg) {
+	if out := recipient.mustPlain("who"); !slices.Contains(strings.Split(out, "\n"), "[crosshall] 1 unread, 0 owed. Run crosshall inbox.") {
 		t.Fatalf("missing pending request in plain output: %q", out)
 	}
 
@@ -113,7 +113,7 @@ func TestFanoutAtomicityAndWaitingUntilRepliesAreRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(want) == 0 {
-			if len(waiting.Requests) != 0 || strings.TrimSpace(plain) != "No outstanding requests." {
+			if len(waiting.Requests) != 0 || !strings.HasPrefix(plain, "No outstanding requests.\n") {
 				t.Fatalf("completed request still waiting: %+v / %s", waiting, plain)
 			}
 			return

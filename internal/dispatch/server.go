@@ -483,8 +483,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		return commandError(core.ExitUsage, "", "only hook observations may omit a reply"), nil
 	}
 	isHook := req.IsHook()
-	if isHook {
-		req.Ack = 0 // Hook output does not acknowledge an ordinary roster.
+	isWait := req.Verb == domain.VerbWait
+	if isHook || isWait {
+		req.Ack = 0 // Neither output acknowledges an ordinary roster.
 	}
 	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault
 	var result core.Result
@@ -546,8 +547,10 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				return err
 			}
 		}
-		if err := s.applyAdapterStamps(ctx, tx); err != nil {
-			return err
+		if !isWait {
+			if err := s.applyAdapterStamps(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if isHook && !oneWayHook {
 			return s.addHookAck(ctx, tx, arrival, req, &result)

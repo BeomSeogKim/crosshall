@@ -76,11 +76,12 @@ func (p statePaths) launch(owner bool) dispatch.LaunchConfig {
 func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	args := os.Args[1:]
 	env := cli.Env{
-		Version:       version,
-		OwnerGate:     ident.OwnerGate,
-		RunChild:      ident.RunChild,
-		Stdin:         os.Stdin,
-		SetupTerminal: func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		Version:         version,
+		CommandDeadline: spool.Deadline(entry, true),
+		OwnerGate:       ident.OwnerGate,
+		RunChild:        ident.RunChild,
+		Stdin:           os.Stdin,
+		SetupTerminal:   func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
 	}
 	for _, spec := range hook.InstallSpecs() {
 		env.SetupAdapters = append(env.SetupAdapters, spec.Adapter)
@@ -130,11 +131,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	} else {
 		env.Unavailable = pathErr.Error()
 	}
-	// The owner startup path and cold member calls may use this outer limit.
-	// The transport keeps identified member calls within their own allowance.
-	ctx, cancel := context.WithDeadline(context.Background(), spool.Deadline(entry, true))
-	defer cancel()
-	return cli.RunEnv(ctx, env, args, os.Stdout, os.Stderr)
+	return cli.RunEnv(context.Background(), env, args, os.Stdout, os.Stderr)
 }
 
 func serve(paths statePaths, pathErr error) int {

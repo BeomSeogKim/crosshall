@@ -35,6 +35,7 @@ const (
 	ExitRefused     ExitCode = 3
 	ExitNotEnrolled ExitCode = 4
 	ExitUnavailable ExitCode = 5
+	ExitWaitTimeout ExitCode = 6
 )
 
 // Code identifies a refusal or transport outcome.
@@ -69,6 +70,7 @@ const (
 
 	CodeUnsent         Code = "unsent"
 	CodeOutcomeUnknown Code = "outcome_unknown"
+	CodeWaitTimeout    Code = "wait_timeout"
 )
 
 // Result is the command outcome shared by the handler, dispatcher and CLI.

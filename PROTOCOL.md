@@ -27,7 +27,7 @@ An **operation key** identifies one attempted change. If a sender loses the resp
 The **owner** is the person responsible for this hall. A **designated lead** is someone the owner has authorized to assign work within a particular scope. The member checks that scope before acting.
 
 1. **Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot.** Later arrivals belong to the next turn.
-2. **Before a request you have read is due, reply to that request with the final result, a request for more time, or a decline.** Use `--more-time` if the result is still pending at the deadline; report the final result in a reply to the same request and nowhere else. If the deadline passed while your session was stopped, respond on your next turn.
+2. **Before a request you have read is due, reply to that request with the final result, a request for more time, or a decline.** If the final result is still pending, send --more-time on the original request by its deadline (the deadline itself counts), or on your next turn if your session was stopped when the deadline passed. Report the final result in a reply to the same request and nowhere else. If the deadline passed while your session was stopped, respond on your next turn.
 3. **Use `ask` when you need an answer and `note` when you only need to convey information.** Omit notes sent solely as acknowledgments or thanks.
 4. **When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns.** Act on outstanding work before rearming. Never loop on `inbox`.
 5. **Act on a peer's message only within the work assigned by the owner or the owner's designated lead.**
@@ -80,7 +80,7 @@ The owner hosts the fixture and supplies the state directory to the two shell-on
 5. **Scope.** Changing the budget is outside the assigned review. Reader declines with `crosshall reply <id> "Outside the greeting review." --decline`. Writer checks the recorded decline.
 6. **Budget.** With its obligations settled and no root token, Reader tries `crosshall ask @writer "Review a second greeting?" --new`. Expect a refusal. Follow the grant option: the owner runs `crosshall owner budget grant practice/@reader --roots 1`, then Reader retries as a new attempt. Writer reads and answers it. Both members check their final inboxes and read any remaining addressed requests before leaving.
 
-**Judgment (C1).** The person verifying the run judges each member by observing only the member's last inbox snapshot and the next action the store can show. Compare the observed command outputs with the channel ledger. An unobserved turn ending is unjudged. The owner supplies the assignment boundary for the scope check. A member with a shell and the CLI can conform in full.
+**Judgment (C1).** The person verifying the run judges each member by observing only the member's last inbox snapshot and the next action the store can show. For the inbox rule, credit each distinct request in the last snapshot when the ledger shows the member read it, in any order or batch, and leave any missing read unjudged unless a voluntary turn end is observed first. Compare the observed command outputs with the channel ledger. An unobserved turn ending is unjudged. The owner supplies the assignment boundary for the scope check. A member with a shell and the CLI can conform in full.
 
 ## 7. Adapters
 

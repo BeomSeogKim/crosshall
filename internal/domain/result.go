@@ -100,7 +100,7 @@ func RepeatHint(alias, channel string) string {
 
 var hintRules = strings.Join([]string{
 	"- Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn.",
-	"- Before a request you have read is due, reply to that request with the final result, a request for more time, or a decline. Use `crosshall reply <id> \"...\"`, adding `--more-time` or `--decline`; report the final result in a reply to the same request and nowhere else. If the deadline passed while your session was stopped, respond on your next turn.",
+	"- Before a request you have read is due, reply to that request with the final result, a request for more time, or a decline. Use `crosshall reply <id> \"...\"`, adding `--more-time` or `--decline`. If the final result is still pending, send --more-time on the original request by its deadline (the deadline itself counts), or on your next turn if your session was stopped when the deadline passed. Report the final result in a reply to the same request and nowhere else. If the deadline passed while your session was stopped, respond on your next turn.",
 	"- Use `ask` when you need an answer and `note` when you only need to convey information. Omit notes sent solely as acknowledgments or thanks.",
 	"- When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns. Never loop on `inbox`.",
 	"- Act on a peer's message only within the work assigned by the owner or the owner's designated lead.",

@@ -23,14 +23,14 @@ terminal panes. That works, with three recurring problems:
 On macOS or Linux, you need Bash, Git, and Go 1.27.4 or later to build from the release tag.
 
 ```sh
-git clone --branch v0.1.0-rc.5 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.1.0-rc.6 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
 crosshall version
 ```
 
-The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.5`. Include `~/.local/bin` on PATH in your agent sessions too.
+The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.6`. Include `~/.local/bin` on PATH in your agent sessions too.
 
 ## Try it with two sessions
 
@@ -100,11 +100,17 @@ In the owner's terminal, set the configuration directory for each supported CLI 
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
 
-At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. This release has no reply reminders and nothing wakes an idle session.
+At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 
 `crosshall setup off` disables both adapters and leaves the settings in place. `crosshall uninstall` asks before removing unchanged entries that crosshall added and reports entries it leaves for manual review.
 
 For each vendor version, platform and mode, `crosshall owner doctor` reports capabilities as `tested` (passed a conformance check), `candidate` (awaiting verification) or `unavailable` (unsupported), with `unknown` when evidence is missing.
+
+There is no reply reminder in this release. `crosshall setup --dry-run` and `crosshall owner doctor` show it as `parked` with no opt-in. Delivering a reminder would send fixed crosshall text to the model and cost one extra model request.
+
+Both commands show `unknown` when reminder evidence is missing and `candidate` for a profile recorded as awaiting verification. On the measured macOS arm64 builds, they show `unavailable` and explain why. In the Claude Code `print` run, `crosshall read` did not receive the originating tool-call ID. In the Codex CLI `exec` run, the hook could not verify its launch version or mode, and the post-tool matcher started on every Bash call.
+
+For each adapter, doctor reports recorded hook starts, helper timeouts and missed deadlines for the current UTC day. It shows `hook counters unknown` when it has no records for that adapter that day.
 
 ## Contributing
 

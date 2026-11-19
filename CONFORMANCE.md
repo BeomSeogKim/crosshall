@@ -5,11 +5,13 @@ Each row exercised the six member rules in a new hall. The Reader and Writer use
 <!-- generated member runs -->
 | Reader | Reader version | Run | Crosshall build | Host | R1 | R2 | R3 | R4 | R5 | R6 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bash | 3.2.57(1)-release | scripted shell | git-f54cf46 | macOS | pass | pass | pass | pass | pass | pass |
-| Codex | 0.170.0 | assisted session | git-f54cf46 | macOS | pass | pass | pass | pass | pass | pass |
-| Claude Code | 2.1.328 | assisted session | git-f54cf46 | macOS | pass | pass | pass | pass | pass | pass |
-| Antigravity | 1.5.11 | assisted session | git-f54cf46 | macOS | pass | pass | pass | pass | pass | pass |
+| Bash | 3.2.57(1)-release | scripted shell | git-730db4f | macOS | pass | pass | pass | pass | pass | pass |
+| Codex | 0.170.0 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | pass |
+| Claude Code | 2.1.328 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | pass |
+| Antigravity | 1.5.11 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | pass |
 <!-- end member runs -->
+
+These runs used `730db4f`, tagged `v0.1.0-rc.13` during testing for v0.1.0.
 
 R1 through R6 follow the order of the member rules. Each pass requires the listed observations in one run. An incomplete column means the run stopped before that check passed. The receipts contain the date, observed identity type and completed checks. They omit session identifiers and machine paths. [Run receipts](test/conformance/member-runs.jsonl)
 
@@ -31,8 +33,8 @@ Use Python 3.8 or later and Bash on macOS or Linux. For the rows above, build th
 ```sh
 fixture=$(mktemp -d)
 mkdir "$fixture/source"
-git archive f54cf46 | tar -x -C "$fixture/source"
-go -C "$fixture/source" build -trimpath -ldflags '-X main.version=git-f54cf46' \
+git archive 730db4f | tar -x -C "$fixture/source"
+go -C "$fixture/source" build -trimpath -ldflags '-X main.version=git-730db4f' \
   -o "$fixture/crosshall" ./cmd/crosshall
 python3 scripts/protocol-conformance.py run --crosshall "$fixture/crosshall" --reader shell
 ```

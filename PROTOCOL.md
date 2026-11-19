@@ -71,6 +71,8 @@ The global options `--json` and `--key` go before the command. Commands that que
 
 ## 6. Shell-only conformance run
 
+See the [conformance results by reader and version](CONFORMANCE.md) for recorded runs and reproduction instructions.
+
 The owner hosts the fixture and supplies the state directory to the two shell-only participants. In the owner's plain shell, create a private directory with `mktemp -d`. Set `CROSSHALL_STATE_DIR` to that same absolute path in the owner and both member shells, with `crosshall` on PATH. In the owner's plain shell run `crosshall owner start` and `crosshall owner channel create practice --pool 0`, so that every root token in the run is the owner's grant. Open two separate member shells as described above. In each run `crosshall join practice --as writer` or `crosshall join practice --as reader`. The owner runs `crosshall owner budget grant practice/@writer --roots 1` and assigns both members the task of reviewing a sample greeting.
 
 1. **Snapshot.** Writer runs `crosshall ask @reader "Which greeting should we use?" --new --due 30m`. Before ending its turn, Reader runs `crosshall inbox`, then `crosshall read <id>` using the actual request ID. Writer checks pickup with `crosshall waiting`.

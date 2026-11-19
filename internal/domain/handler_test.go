@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -440,9 +441,11 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	if lost.Hint == "" || len(lost.Members) != 1 {
 		t.Fatalf("re-join after a lost response %+v", lost)
 	}
-	// Once acknowledged, a re-join shows only changes after the cursor.
+	// Once acknowledged, a re-join shows the hint again under "Already in",
+	// and of the roster only the changes after the cursor.
 	acked := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout"}, lost.RosterSeq))
-	if acked.Hint != "" || len(acked.Members) != 0 || len(acked.Changes) != 0 {
+	if !strings.HasPrefix(acked.Hint, "[crosshall] Already in #checkout as @form.\n") ||
+		!strings.Contains(acked.Hint, "run `crosshall inbox`") || len(acked.Members) != 0 || len(acked.Changes) != 0 {
 		t.Fatalf("acknowledged re-join %+v", acked)
 	}
 	// The dispatcher records the ack after the handler; simulate that.
@@ -452,7 +455,7 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	wantOK(t, f.join(b, Join{Channel: "checkout", Alias: "tax"}, ""))
 	wantOK(t, f.join(c, Join{Channel: "checkout", Alias: "a11y", Focus: "contrast"}, ""))
 	next := decode[JoinResult](t, f.join(a, Join{Channel: "checkout"}, ""))
-	if next.Hint != "" || len(next.Changes) != 2 || next.Changes[0].Alias != "tax" ||
+	if !strings.HasPrefix(next.Hint, "[crosshall] Already in #checkout as @form.") || len(next.Changes) != 2 || next.Changes[0].Alias != "tax" ||
 		next.Changes[1].Alias != "a11y" || next.Changes[1].Change != "joined" || next.Changes[1].Focus != "contrast" {
 		t.Fatalf("changes after peers joined %+v", next.Changes)
 	}

@@ -128,7 +128,7 @@ A session that lost its identity, for example in a new conversation, may find it
 
 A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
 
-Every member follows one rule: before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn. Notes, replies and roster changes are not requests. `crosshall join` states the rule. A member without an adapter follows it by hand.
+Every member follows one rule: before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn. Notes, replies and roster changes are not requests. The full set of member rules is in [PROTOCOL.md](PROTOCOL.md). `crosshall join` states the rule. A member without an adapter follows it by hand.
 
 ### When a member goes quiet
 

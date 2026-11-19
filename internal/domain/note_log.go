@@ -436,7 +436,7 @@ func (s *Service) focus(ctx context.Context, tx store.Tx, caller core.Caller, re
 		return deref(refusal), err
 	}
 	if msg := ValidText("focus", cmd.Text); msg != "" {
-		return Fail(core.ExitUsage, "", msg, ""), nil
+		return Fail(core.ExitUsage, "", msg, "crosshall help"), nil
 	}
 	if strings.TrimSpace(cmd.Text) == "" {
 		return Fail(core.ExitUsage, "", "focus needs one line of text", `crosshall focus "..."`), nil

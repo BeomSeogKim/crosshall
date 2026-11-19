@@ -79,4 +79,4 @@ Every required member action is available through the CLI alone (A1). An adapter
 ## 8. Status since v0.1.0-rc.11
 
 - **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. Other member results from the hall point to `crosshall inbox` with unread and owed counts. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
-- **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait, and a wait timeout directs the member to recheck the inbox. Some refusals still lack an actionable next step. Repeating `join` confirms membership without repeating the initial guidance. The remaining work is tracked in issue #50.
+- **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait, and a wait timeout directs the member to recheck the inbox. Every refusal names a next step, and a repeated `join` shows the member rules again.

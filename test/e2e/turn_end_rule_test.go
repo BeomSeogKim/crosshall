@@ -102,7 +102,7 @@ func TestTurnEndRuleShellOnlyMember(t *testing.T) {
 	form, tax := w.member(), w.member()
 	form.must("join", "checkout", "--as", "form")
 	joined := tax.mustPlain("join", "checkout", "--as", "tax")
-	const rule = "Before you end a turn by your own choice, run `crosshall inbox` and read each request addressed to you that it lists. What arrives after that check belongs to your next turn."
+	const rule = "Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn."
 	if !strings.Contains(joined, rule) {
 		t.Fatalf("join does not state the turn-end rule:\n%s", joined)
 	}

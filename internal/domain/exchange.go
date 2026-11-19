@@ -60,7 +60,7 @@ func liveMember(ctx context.Context, tx store.Tx, caller core.Caller) (member, *
 	}
 	m.principal = *caller.PrincipalID
 	if state != "active" {
-		r := Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", m.channelName), "")
+		r := Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", m.channelName), "this session cannot move to another channel; a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>")
 		return m, &r, nil
 	}
 	return m, nil, nil
@@ -116,7 +116,7 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 			`SELECT exchange_id, sender_id FROM message WHERE id = ? AND channel_id = ?`, cmd.Re, m.channel).
 			Scan(&exchange, &sender)
 		if errors.Is(err, sql.ErrNoRows) {
-			r := Refuse(core.CodeNotFound, fmt.Sprintf("no message #%d in #%s", cmd.Re, m.channelName), "")
+			r := Refuse(core.CodeNotFound, fmt.Sprintf("no message #%d in #%s", cmd.Re, m.channelName), "crosshall log shows the channel's message IDs")
 			return attribution{}, &r, nil
 		}
 		if err != nil {
@@ -133,7 +133,7 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 		}
 		if !exchange.Valid || !party {
 			r := Refuse(core.CodeBadRoot,
-				fmt.Sprintf("#%d is not a request you sent or received", cmd.Re), "")
+				fmt.Sprintf("#%d is not a request you sent or received", cmd.Re), "crosshall waiting and crosshall inbox list your requests")
 			return attribution{}, &r, nil
 		}
 		if _, ok := owed[exchange.Int64]; len(owed) > 0 && !ok {

@@ -30,7 +30,7 @@ type RestoreResult struct {
 
 func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Restore, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can restore a binding", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can restore a binding", "run it from the owner's own shell, not an agent session"), nil
 	}
 	id, err := ident.ParseRestoreKey(cmd.Vendor, cmd.Key)
 	if err != nil || cmd.BindingID <= 0 {
@@ -48,7 +48,7 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 	var principal int64
 	err = tx.QueryRowContext(ctx, "SELECT principal_id FROM binding WHERE id=?", cmd.BindingID).Scan(&principal)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no binding with ID %d", cmd.BindingID), ""), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no binding with ID %d", cmd.BindingID), "crosshall owner who --all"), nil
 	}
 	if err != nil {
 		return core.Result{}, err

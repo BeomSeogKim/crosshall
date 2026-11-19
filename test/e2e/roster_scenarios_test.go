@@ -67,7 +67,8 @@ func TestRosterCapAndAcknowledgment(t *testing.T) {
 		}
 	}
 	resumed := roster([]byte(observer.must("join", "checkout").stdout))
-	if !resumed.Restored || resumed.Hint != "" || len(resumed.Members) != 0 || len(resumed.Changes) != 0 {
+	if !resumed.Restored || !strings.HasPrefix(resumed.Hint, "[crosshall] Already in #checkout as @observer.") ||
+		len(resumed.Members) != 0 || len(resumed.Changes) != 0 {
 		t.Fatalf("resumed member repeated acknowledged roster: %+v", resumed)
 	}
 

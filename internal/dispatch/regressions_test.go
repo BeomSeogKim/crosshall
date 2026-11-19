@@ -279,3 +279,12 @@ func TestPruneLeavesPreservesRegisteredAndNonLeaves(t *testing.T) {
 		t.Fatalf("orphan survived: %v", err)
 	}
 }
+
+// An unconfirmed outcome without an operation key cannot be retried by key,
+// so its next step is to check whether the message was stored.
+func TestUnknownOutcomeWithoutKeyNamesANextStep(t *testing.T) {
+	var refusal domain.Refusal
+	if err := json.Unmarshal(unknownOutcome("unconfirmed", "").Data, &refusal); err != nil || refusal.Hint == "" {
+		t.Fatalf("hint %q (%v)", refusal.Hint, err)
+	}
+}

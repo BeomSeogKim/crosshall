@@ -85,13 +85,13 @@ func (e AdapterEvidence) valid() bool {
 
 func (s *Service) adapterEvidence(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd AdapterEvidence, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can record conformance evidence", ""), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can record conformance evidence", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if req.OpKey == "" {
-		return Fail(core.ExitUsage, "", "an operation key is required for this command", ""), nil
+		return Fail(core.ExitUsage, "", "an operation key is required for this command", "run it through the crosshall command, which supplies the key"), nil
 	}
 	if !cmd.valid() {
-		return Fail(core.ExitUsage, "", "the evidence file names an unknown vendor, capability or level, or misses a field", ""), nil
+		return Fail(core.ExitUsage, "", "the evidence file names an unknown vendor, capability or level, or misses a field", "crosshall owner adapter evidence <file>, with the file a conformance run wrote"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {

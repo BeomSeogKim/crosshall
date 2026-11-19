@@ -145,12 +145,16 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 		Checks   []doctorCheck   `json:"checks"`
 		Hint     string          `json:"hint"`
 		Adapters json.RawMessage `json:"adapters"`
+		Warnings []string        `json:"warnings"`
 	}
 	if err := json.Unmarshal(r.Data, &result); err != nil || len(result.Checks) == 0 {
 		return o.fail(core.ExitError, CodeLocalError, "no diagnostic checks were returned", "")
 	}
 	if o.json {
 		fields := map[string]any{"v": 1, "ok": r.Status == core.ExitOK, "kind": "owner doctor", "checks": result.Checks}
+		if len(result.Warnings) != 0 {
+			fields["warnings"] = result.Warnings
+		}
 		if len(result.Adapters) != 0 {
 			fields["adapters"] = result.Adapters
 		}
@@ -173,6 +177,11 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 	}
 	if len(result.Adapters) != 0 {
 		if err := renderDoctorAdapters(o.stdout, result.Adapters); err != nil {
+			return core.ExitError
+		}
+	}
+	for _, warning := range result.Warnings {
+		if _, err := fmt.Fprintln(o.stdout, warning); err != nil {
 			return core.ExitError
 		}
 	}

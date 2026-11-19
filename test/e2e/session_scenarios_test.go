@@ -193,3 +193,89 @@ func TestDevDoctorStillRefusesLinkedFinalDirectory(t *testing.T) {
 		t.Fatalf("doctor did not reject a link at the state root: exit %d, %s", out.exit, out.stdout)
 	}
 }
+
+func TestAntigravityVersionWarningAtJoinAndInDiagnostics(t *testing.T) {
+	w := newWorld(t)
+	owner := w.owner()
+	owner.must("owner", "channel", "create", "drafts")
+	const warning = "identity variable unverified on agy: CLI version unknown (language server cli-1.5.10)"
+	for _, format := range []string{"plain", "json"} {
+		p := &participant{w: w, extra: []string{"ANTIGRAVITY_CONVERSATION_ID=agy-test-" + format, "ANTIGRAVITY_LS_VERSION=cli-1.5.10"}}
+		check := func(caller *participant, count int, args ...string) {
+			t.Helper()
+			var printed string
+			if format == "plain" {
+				printed = caller.mustPlain(args...)
+			} else {
+				got := caller.must(args...)
+				var data struct{ Warnings []string }
+				if err := json.Unmarshal([]byte(got.stdout), &data); err != nil {
+					t.Fatal(err)
+				}
+				printed = strings.Join(data.Warnings, "\n")
+			}
+			if got := strings.Count(printed, warning); got != count {
+				t.Errorf("%s %v: got warning %d times, want %d: %s", format, args, got, count, printed)
+			}
+		}
+		check(p, 1, "join", "drafts", "--as", format, "--key", "first")
+		check(p, 0, "who")
+		check(p, 0, "join", "drafts")
+		check(p, 0, "join", "drafts", "--as", format, "--key", "first")
+		check(p, 1, "whoami")
+		check(owner, 1, "owner", "doctor")
+		p.must("leave")
+		check(p, 0, "join", "drafts")
+	}
+}
+
+func TestAntigravityJoinReplayAfterLeafRecreation(t *testing.T) {
+	w := newWorld(t)
+	w.owner().must("owner", "channel", "create", "drafts")
+	id := ident.Identity{Vendor: "agy", Key: "agy-replay"}
+	member := &participant{w: w, extra: []string{"ANTIGRAVITY_CONVERSATION_ID=" + id.Key}}
+	join := []string{"join", "drafts", "--as", "editor", "--key", "first"}
+	leaf := filepath.Join(w.rendezvous(), "m", id.Digest()[:16])
+	recreateOnNextJoin := func(name string) {
+		t.Helper()
+		if err := os.Rename(leaf, filepath.Join(w.rendezvous(), name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The join commits, but its first response cannot be displayed.
+	readOnly, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	cmd := exec.Command(binary, join...)
+	cmd.Dir, cmd.Env, cmd.Stdout = w.home, member.env(), readOnly
+	var exit *exec.ExitError
+	if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != int(core.ExitError) {
+		t.Fatalf("join with unwritable stdout: %v", err)
+	}
+	recreateOnNextJoin("before-display")
+	first := member.must(join...)
+	const warning = "identity variable unverified on agy: CLI version unknown"
+	hint, _ := first.obj["hint"].(string)
+	if hint == "" || strings.Count(first.stdout, warning) != 1 {
+		t.Fatalf("first displayed replay lost its warning: %s", first.stdout)
+	}
+
+	member.must("who") // Deliver the acknowledgement from that display.
+	var acked bool
+	if err := w.db().QueryRow("SELECT hint_acked FROM binding WHERE alias='editor'").Scan(&acked); err != nil || !acked {
+		t.Fatalf("expected durable join acknowledgement, got %t: %v", acked, err)
+	}
+	for _, state := range []string{"live", "departed"} {
+		if state == "departed" {
+			member.must("leave")
+		}
+		recreateOnNextJoin(state)
+		replay := member.must(join...)
+		if replay.obj["hint"] != hint || replay.obj["restored"] != false || strings.Contains(replay.stdout, warning) {
+			t.Errorf("%s binding: acknowledged replay should keep the original join and omit the warning: %s", state, replay.stdout)
+		}
+	}
+}

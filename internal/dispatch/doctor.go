@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -34,6 +36,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	notRunning := false
 	stateErr := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot)
 	var adapters []doctorAdapter
+	var warnings []string
 	if stateErr == nil {
 		adapters = localDoctorAdapters(cfg.StateRoot)
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
@@ -62,8 +65,17 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		} else {
 			readiness.record("", errors.New("no live dispatcher readiness marker"))
 		}
-		current, err := doctorStoreInfo(ctx, state, adapters)
-		version.record(fmt.Sprintf("schema version %d", current), err)
+		snapshot, err := doctorStoreInfo(ctx, state, adapters)
+		version.record(fmt.Sprintf("schema version %d", snapshot.SchemaVersion), err)
+		for _, v := range snapshot.IdentityVersions {
+			id := ident.Identity{Vendor: "agy", Version: v}
+			if id.UnknownAntigravityCLI() {
+				msg := id.Warning()
+				if !slices.Contains(warnings, msg) {
+					warnings = append(warnings, msg)
+				}
+			}
+		}
 		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
 	} else {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
@@ -79,7 +91,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if !allowsTestClock(cfg.Version) {
 		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
 	}
-	return doctorResult(hint, checks, adapters)
+	return doctorResult(hint, checks, adapters, warnings)
 }
 
 func (check *doctorCheck) record(detail string, err error) {
@@ -90,7 +102,7 @@ func (check *doctorCheck) record(detail string, err error) {
 	check.Detail = detail
 }
 
-func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter) core.Result {
+func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {
 	status := core.ExitOK
 	for _, check := range checks {
 		if !check.OK {
@@ -102,26 +114,27 @@ func doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter) c
 		Checks   []doctorCheck   `json:"checks"`
 		Hint     string          `json:"hint,omitempty"`
 		Adapters []doctorAdapter `json:"adapters,omitempty"`
-	}{checks, hint, adapters})
+		Warnings []string        `json:"warnings,omitempty"`
+	}{checks, hint, adapters, warnings})
 	return core.Result{Status: status, Data: data}
 }
 
-func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapter) (int, error) {
+func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapter) (store.DoctorSnapshot, error) {
 	names := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
 		names = append(names, adapter.Adapter)
 	}
-	version, states, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names)
+	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names, "agy")
 	for i := range adapters {
 		adapter := &adapters[i]
-		if state, ok := states[adapter.Adapter]; ok {
+		if state, ok := snapshot.Adapters[adapter.Adapter]; ok {
 			adapter.Policy = &state.Policy
 			adapter.Evidence = state.Evidence
 			adapter.SetReminderEvidence(state.Evidence)
 			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
 		}
 	}
-	return version, err
+	return snapshot, err
 }
 
 func probeOwnerSpool(state *os.Root) error {

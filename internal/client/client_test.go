@@ -36,7 +36,7 @@ func TestTypedRequests(t *testing.T) {
 
 func TestUnknownVersionWarnings(t *testing.T) {
 	raw := json.RawMessage(`{"id":9007199254740993,"warnings":["existing warning"],"members":[{"vendor":"codex","vendor_version":"9"},{"vendor":"claude","vendor_version":"2.1.327"}],"vendors":[{"vendor":"agy","vendor_version":""}]}`)
-	body, err := withWarnings(raw, ident.Identity{Vendor: "codex", Version: "9"})
+	body, err := withWarnings(raw, ident.Identity{Vendor: "codex", Version: "9"}, "owner doctor", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestUnknownVersionWarnings(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"existing warning", "identity variable unverified on codex 9", "identity variable unverified on agy unknown"}
+	want := []string{"existing warning", "identity variable unverified on codex 9", "identity variable unverified on agy: CLI version unknown"}
 	if got.ID != 9007199254740993 || !reflect.DeepEqual(got.Warnings, want) {
 		t.Fatalf("unexpected details: %+v", got)
 	}
@@ -128,6 +128,19 @@ func TestWhoamiKeyDisclosure(t *testing.T) {
 				t.Fatalf("unexpected plain identity %q", out.String())
 			}
 		})
+	}
+}
+
+func TestWhoamiUnknownAntigravityWithoutDispatcher(t *testing.T) {
+	id := ident.Identity{Vendor: "agy", Key: "private-session", Version: "unknown"}
+	result := core.Result{Status: core.ExitUnavailable, Code: core.CodeUnsent}
+	for _, asJSON := range []bool{false, true} {
+		var out bytes.Buffer
+		if code := writeWhoami(&out, id, result, asJSON, false); code != core.ExitUnavailable ||
+			!strings.Contains(out.String(), "identity variable unverified on agy: CLI version unknown") ||
+			strings.Contains(out.String(), id.Key) {
+			t.Errorf("whoami (JSON %t): %d %s", asJSON, code, &out)
+		}
 	}
 }
 

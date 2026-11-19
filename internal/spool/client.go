@@ -37,6 +37,8 @@ type Client struct {
 type Reply struct {
 	wire.Response
 	OpKey string
+	// PriorRosterAck is the last successfully displayed cursor sent with this request.
+	PriorRosterAck uint64
 
 	rendezvous string
 	digest     string
@@ -105,7 +107,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	if err != nil {
 		return c.failure(req, code, err)
 	}
-	reply := Reply{Response: resp, OpKey: req.OpKey}
+	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
 	var trailer struct {
 		Cursor uint64 `json:"roster_seq"`
 	}

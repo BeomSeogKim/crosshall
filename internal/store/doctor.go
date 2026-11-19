@@ -27,9 +27,18 @@ type DoctorEvidence struct {
 	Level       string `json:"level"`
 }
 
+// DoctorSnapshot contains the diagnostics read in one store transaction.
+type DoctorSnapshot struct {
+	SchemaVersion    int
+	Adapters         map[string]DoctorAdapterState
+	IdentityVersions []string
+}
+
 // InspectDoctorStore reads an existing store without creating or modifying
-// any database file. Missing diagnostics leave that adapter out of the map.
-func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string) (int, map[string]DoctorAdapterState, error) {
+// any database file. A nonempty identityVendor also requests the distinct
+// session versions recorded for that vendor.
+func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, identityVendor string) (DoctorSnapshot, error) {
+	var snapshot DoctorSnapshot
 	// SQLite can interpret a failed sidecar lookup as absence. Check the
 	// database and sidecars before opening the diagnostic view.
 	for _, name := range []string{"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-journal"} {
@@ -38,13 +47,13 @@ func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string) (in
 			if name != "store.sqlite3" && errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return 0, nil, err
+			return snapshot, err
 		}
 		file.Close()
 	}
 	vfsName, readOnly, err := vfs.New(files)
 	if err != nil {
-		return 0, nil, err
+		return snapshot, err
 	}
 	defer readOnly.Close()
 	// Exclusive mode keeps the WAL index in memory. The read-only VFS has no
@@ -60,29 +69,44 @@ func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string) (in
 	}
 	db, err := sql.Open("sqlite", "file:store.sqlite3?"+query.Encode())
 	if err != nil {
-		return 0, nil, err
+		return snapshot, err
 	}
 	defer db.Close()
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return 0, nil, err
+		return snapshot, err
 	}
 	defer tx.Rollback()
-	var version int
-	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return 0, nil, err
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&snapshot.SchemaVersion); err != nil {
+		return snapshot, err
 	}
-	if version != len(migrations) {
-		return version, nil, fmt.Errorf("schema version %d, expected %d", version, len(migrations))
+	if snapshot.SchemaVersion != len(migrations) {
+		return snapshot, fmt.Errorf("schema version %d, expected %d", snapshot.SchemaVersion, len(migrations))
 	}
-	states := make(map[string]DoctorAdapterState, len(adapters))
+	snapshot.Adapters = make(map[string]DoctorAdapterState, len(adapters))
 	for _, name := range adapters {
 		state, err := readDoctorAdapter(ctx, tx, name)
 		if err == nil {
-			states[name] = state
+			snapshot.Adapters[name] = state
 		}
 	}
-	return version, states, nil
+	if identityVendor != "" {
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(vendor_version, ''), 'unknown') AS version
+			FROM principal WHERE kind = 'session' AND vendor = ? ORDER BY version`, identityVendor)
+		if err != nil {
+			return snapshot, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var version string
+			if err := rows.Scan(&version); err != nil {
+				return snapshot, err
+			}
+			snapshot.IdentityVersions = append(snapshot.IdentityVersions, version)
+		}
+		return snapshot, rows.Err()
+	}
+	return snapshot, nil
 }
 
 func readDoctorAdapter(ctx context.Context, tx Tx, adapter string) (DoctorAdapterState, error) {

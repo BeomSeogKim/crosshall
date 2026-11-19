@@ -103,7 +103,8 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 	if result.Status == core.ExitOK {
 		switch req.Verb {
 		case "join", "who", "owner doctor":
-			result.Data, err = withWarnings(result.Data, id)
+			hintAcked := result.JoinHintAcked || reply.PriorRosterAck > 0
+			result.Data, err = withWarnings(result.Data, id, req.Verb, hintAcked)
 			if err != nil {
 				return core.Result{}, err
 			}
@@ -162,9 +163,16 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		message.Message = strings.ReplaceAll(message.Message, id.Key, displayKey)
 		message.Hint = strings.ReplaceAll(message.Hint, id.Key, displayKey)
 	}
+	warning := ""
+	if id.UnknownAntigravityCLI() {
+		warning = id.Warning()
+	}
 	var err error
 	if asJSON {
 		data := map[string]any{"v": 1, "ok": result.Status == core.ExitOK, "kind": "whoami", "enrollment": state}
+		if warning != "" {
+			data["warnings"] = []string{warning}
+		}
 		if id.Vendor != "" {
 			data["vendor"], data["key"] = id.Vendor, displayKey
 		}
@@ -178,6 +186,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		_, err = fmt.Fprintf(stdout, "%s:%s %s (%s)\n", id.Vendor, displayKey, state, result.Code)
 	} else {
 		_, err = fmt.Fprintf(stdout, "%s:%s %s\n", id.Vendor, displayKey, state)
+	}
+	if err == nil && !asJSON && warning != "" {
+		_, err = fmt.Fprintln(stdout, warning)
 	}
 	if err != nil {
 		return core.ExitError
@@ -238,12 +249,13 @@ func request(cmd domain.Command) (wire.Request, error) {
 	return wire.Request{Verb: verb, Args: args}, err
 }
 
-func withWarnings(data json.RawMessage, id ident.Identity) (json.RawMessage, error) {
+func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcked bool) (json.RawMessage, error) {
 	type vendor struct {
 		Name    string  `json:"vendor"`
 		Version *string `json:"vendor_version"`
 	}
 	var details struct {
+		Hint     string   `json:"hint"`
 		Members  []vendor `json:"members"`
 		Vendors  []vendor `json:"vendors"`
 		Warnings []string `json:"warnings"`
@@ -252,16 +264,19 @@ func withWarnings(data json.RawMessage, id ident.Identity) (json.RawMessage, err
 		return nil, err
 	}
 	original := len(details.Warnings)
-	add := func(identity ident.Identity) {
+	add := func(identity ident.Identity, showUnknownAntigravity bool) {
+		if identity.UnknownAntigravityCLI() && !showUnknownAntigravity {
+			return
+		}
 		msg := identity.Warning()
 		if msg != "" && !slices.Contains(details.Warnings, msg) {
 			details.Warnings = append(details.Warnings, msg)
 		}
 	}
-	add(id)
+	add(id, verb == "owner doctor" || (verb == "join" && !hintAcked && details.Hint != ""))
 	for _, row := range append(details.Members, details.Vendors...) {
 		if row.Version != nil {
-			add(ident.Identity{Vendor: row.Name, Version: *row.Version})
+			add(ident.Identity{Vendor: row.Name, Version: *row.Version}, verb == "owner doctor")
 		}
 	}
 	if len(details.Warnings) == original {

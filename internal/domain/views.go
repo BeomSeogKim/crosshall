@@ -431,6 +431,15 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err := json.Unmarshal(result.Data, &fields); err != nil {
 		return core.Result{}, err
 	}
+	if joined && req.Vendor == "agy" && fields["hint"] != nil && caller.PrincipalID != nil {
+		// A keyed replay keeps its original hint even after the member leaves.
+		// Check the binding that survives both departure and leaf recreation.
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM binding WHERE principal_id = ? AND hint_acked = 1)`,
+			*caller.PrincipalID).Scan(&result.JoinHintAcked); err != nil {
+			return core.Result{}, err
+		}
+	}
 	// A command that ended the membership (leave) brings its own list.
 	if ok || fields["pending"] == nil {
 		fields["pending"], _ = json.Marshal(pending)

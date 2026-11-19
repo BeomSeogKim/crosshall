@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // The issue #13 checks end to end: the real hook binary, the real dispatcher
@@ -49,24 +50,66 @@ func (c claudeSession) fire(event string, fields map[string]any) string {
 	return stdout.String()
 }
 
-// settle waits until the dispatcher has claimed every one-way observation the
-// session's hooks published, so table counts are stable.
-func (c claudeSession) settle() {
+// waitForConsumption waits for terminal disposition of every publication from
+// the hooks that have returned. A packet moves from in to work before handling
+// and leaves work after handling. An expired, unclaimed packet can disappear
+// from in without committing an observation.
+func (c claudeSession) waitForConsumption() {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
-	in := filepath.Join(c.w.rendezvous(), "m", digest[:16], "in")
-	work := filepath.Join(c.w.rendezvous(), "m", digest[:16], "work")
+	leaf := filepath.Join(c.w.rendezvous(), "m", digest[:16])
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		a, _ := os.ReadDir(in)
-		b, _ := os.ReadDir(work)
-		if len(a) == 0 && len(b) == 0 {
+		in, err := os.ReadDir(filepath.Join(leaf, "in"))
+		if err != nil {
+			c.w.t.Fatal(err)
+		}
+		work, err := os.ReadDir(filepath.Join(leaf, "work"))
+		if err != nil {
+			c.w.t.Fatal(err)
+		}
+		if len(in) == 0 && len(work) == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			c.w.t.Fatalf("one-way observations still queued: %d in, %d work", len(a), len(b))
+			c.w.t.Fatalf("one-way observations still queued: %d in, %d work", len(in), len(work))
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// fireAndRecord establishes the original observation before it can be used
+// as a replay baseline. A clean hook means publication, not admission.
+func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) {
+	c.w.t.Helper()
+	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
+	var ref string
+	if prompt, _ := fields["prompt_id"].(string); prompt != "" {
+		ref = prompt + ":" + event
+	}
+	db := c.w.db()
+	deadline := time.Now().Add(3 * time.Second)
+	published := false
+	for {
+		if out := c.fire(event, fields); out != "" {
+			c.w.t.Fatalf("quiet %s printed %q", event, out)
+		}
+		published = published || c.lastCounter() == event+" clean"
+		c.waitForConsumption()
+		var recorded bool
+		err := db.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM observation o JOIN leaf l ON l.principal_id = o.principal_id
+			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.event_ref = ?)
+		)`, digest, fact, ref, ref).Scan(&recorded)
+		if err != nil {
+			c.w.t.Fatal(err)
+		}
+		if published && recorded {
+			return
+		}
+		if time.Now().After(deadline) {
+			c.w.t.Fatalf("quiet %s (%q): published=%t recorded=%t, last counter %q", event, ref, published, recorded, c.lastCounter())
+		}
 	}
 }
 
@@ -171,9 +214,7 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	}
 	// Mail during a turn is offered at the next prompt even though a stop came first.
 	late := notes(t, writer, "claude1", 1)
-	if got := c.fire("Stop", map[string]any{"prompt_id": "p1", "stop_hook_active": false}); got != "" {
-		t.Fatalf("stop printed %q", got)
-	}
+	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p1", "stop_hook_active": false})
 	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p2"})); got != pendingContext(late) {
 		t.Fatalf("prompt after stop %q", got)
 	}
@@ -185,41 +226,30 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p4"})); got != pendingContext(eleven[10:]) {
 		t.Fatalf("the eleventh %q", got)
 	}
-	// A quiet turn: nothing printed.
-	if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p5"}); got != "" {
-		t.Fatalf("quiet prompt printed %q", got)
-	}
-	// ... and made no dispatcher round trip: the stamp matched the last notice ack.
-	if last := c.lastCounter(); last != "UserPromptSubmit clean" {
-		t.Fatalf("quiet prompt counted as %q, want a clean stamp check", last)
-	}
-	// The turn's stop, with the reminder off, publishes without waiting either.
-	if got := c.fire("Stop", map[string]any{"prompt_id": "p5", "stop_hook_active": false}); got != "" {
-		t.Fatalf("quiet stop printed %q", got)
-	}
-	if last := c.lastCounter(); last != "Stop clean" {
-		t.Fatalf("quiet stop counted as %q, want no round trip", last)
-	}
+	// The clean stamp and the quiet Stop both publish without a round trip.
+	c.fireAndRecord("UserPromptSubmit", wire.HookPromptSubmitted, map[string]any{"prompt_id": "p5"})
+	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p5", "stop_hook_active": false})
 	// A second replay of every callback that carries a native reference
 	// prints nothing and changes nothing. (Starts and ends carry none: the
 	// hook's own time tells them apart, so a replay of one is a new event.)
-	c.settle()
 	before := tableCounts(t, w)
 	for _, p := range []string{"p1", "p2", "p3", "p4", "p5"} {
 		if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": p}); got != "" {
 			t.Fatalf("replayed prompt %s printed %q", p, got)
 		}
 	}
-	if got := c.fire("Stop", map[string]any{"prompt_id": "p1", "stop_hook_active": false}); got != "" {
-		t.Fatalf("replayed stop printed %q", got)
+	for _, p := range []string{"p1", "p5"} {
+		if got := c.fire("Stop", map[string]any{"prompt_id": p, "stop_hook_active": false}); got != "" {
+			t.Fatalf("replayed stop %s printed %q", p, got)
+		}
 	}
-	c.settle()
+	c.waitForConsumption()
 	if after := tableCounts(t, w); !reflect.DeepEqual(before, after) {
 		t.Fatalf("replay changed rows: %v -> %v", before, after)
 	}
 
 	// A clean end of the bound launch departs; the next start restores.
-	c.fire("SessionEnd", map[string]any{"reason": "other"})
+	c.fireAndRecord("SessionEnd", wire.HookSessionEnded, map[string]any{"reason": "other"})
 	if rosterHas(t, writer, "claude1") {
 		t.Fatal("a clean end did not depart the member")
 	}

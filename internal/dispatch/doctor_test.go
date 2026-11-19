@@ -18,6 +18,7 @@ import (
 )
 
 func TestDoctorInspectsLiveStoreWithoutSideEffects(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg, _ := doctorFixture(t)
 	database := filepath.Join(cfg.StateRoot, "store.sqlite3")
 	mainBefore := readDoctorFile(t, database)
@@ -42,6 +43,7 @@ func TestDoctorInspectsLiveStoreWithoutSideEffects(t *testing.T) {
 }
 
 func TestDoctorReportsAbsentAndStaleDispatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Run("absent", func(t *testing.T) {
 		dir := t.TempDir()
 		cfg := LaunchConfig{Version: "test", StateRoot: filepath.Join(dir, "state"), Rendezvous: filepath.Join(dir, "rendezvous")}
@@ -61,6 +63,7 @@ func TestDoctorReportsAbsentAndStaleDispatcher(t *testing.T) {
 }
 
 func TestDoctorInspectsCheckpointedStoreWithoutCreatingSidecars(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	state := t.TempDir()
 	if err := os.Chmod(state, 0700); err != nil {
 		t.Fatal(err)
@@ -81,6 +84,7 @@ func TestDoctorInspectsCheckpointedStoreWithoutCreatingSidecars(t *testing.T) {
 }
 
 func TestDoctorRejectsUnsafePaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Run("unwritable spool", func(t *testing.T) {
 		cfg, _ := doctorFixture(t)
 		if err := os.Chmod(filepath.Join(cfg.StateRoot, "owner", "in"), 0500); err != nil {
@@ -183,6 +187,7 @@ func readDoctorFile(t *testing.T, path string) []byte {
 }
 
 func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	hint := func(r core.Result) string {
 		var data struct {
 			Hint string `json:"hint"`
@@ -218,6 +223,7 @@ func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
 }
 
 func TestDoctorDoesNotRecommendStartWhenTheLockCannotBeInspected(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg, _ := doctorFixture(t)
 	if err := os.Chmod(filepath.Join(cfg.StateRoot, "dispatcher.lock"), 0400); err != nil {
 		t.Fatal(err)
@@ -239,6 +245,7 @@ func TestDoctorDoesNotRecommendStartWhenTheLockCannotBeInspected(t *testing.T) {
 }
 
 func TestDoctorRecommendsStartWhenTheLockFileIsMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg, lock := doctorFixture(t)
 	lock.Close()
 	if err := os.Remove(filepath.Join(cfg.StateRoot, "dispatcher.lock")); err != nil {

@@ -63,15 +63,18 @@ func newWorld(t *testing.T) *world {
 	return w
 }
 
-// baseEnv is built from scratch: nothing is inherited from the agent session
-// that runs the tests.
+// baseEnv is built from scratch. CI also passes its test-only read sentinel.
 func (w *world) baseEnv() []string {
-	return []string{
+	env := []string{
 		"HOME=" + w.home,
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"TMPDIR=" + filepath.Join(w.home, "tmp"),
 		"CROSSHALL_STATE_DIR=" + w.state,
 	}
+	if sentinel := os.Getenv("CROSSHALL_TEST_VENDOR_SENTINEL"); sentinel != "" {
+		env = append(env, "CROSSHALL_TEST_VENDOR_SENTINEL="+sentinel)
+	}
+	return env
 }
 
 type participant struct {
@@ -129,6 +132,22 @@ func (p *participant) must(args ...string) outcome {
 		p.w.t.Fatalf("crosshall %v: exit %d\nstdout %s\nstderr %s", args, o.exit, o.stdout, o.stderr)
 	}
 	return o
+}
+
+// mustFixtureWrite permits a single same-key retry when a fixture write may
+// have committed before its reply deadline. The commands under test still use
+// must or run directly.
+func (p *participant) mustFixtureWrite(args ...string) {
+	p.w.t.Helper()
+	key := randomHex(16)
+	keyed := append([]string{"--key", key}, args...)
+	o := p.run(keyed...)
+	if o.obj["code"] == "outcome_unknown" && o.obj["op_key"] == key {
+		o = p.run(keyed...)
+	}
+	if o.exit != 0 {
+		p.w.t.Fatalf("crosshall fixture %v: exit %d\nstdout %s\nstderr %s", args, o.exit, o.stdout, o.stderr)
+	}
 }
 
 func (p *participant) mustPlain(args ...string) string {

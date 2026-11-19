@@ -22,40 +22,45 @@ type Service struct {
 }
 
 type Request struct {
-	Action string
-	DryRun bool
-	JSON   bool
-	Input  io.Reader
-	Output io.Writer
-	Prompt io.Writer
+	Action   string
+	DryRun   bool
+	JSON     bool
+	Input    io.Reader
+	Output   io.Writer
+	Prompt   io.Writer
+	Adapters []string
+	Apply    bool
+	Offer    bool
+	Terminal bool
 }
 
 type plan struct {
-	Version   int            `json:"v"`
-	OK        bool           `json:"ok"`
-	Kind      string         `json:"kind"`
-	DryRun    bool           `json:"dry_run"`
-	Applied   bool           `json:"applied"`
-	Resume    bool           `json:"resume,omitempty"`
-	Recovery  bool           `json:"recovery,omitempty"`
-	Adapters  []string       `json:"adapters"`
-	Files     []planFile     `json:"files"`
-	Approvals []offer        `json:"approvals,omitempty"`
-	Retained  []retainedFile `json:"retained,omitempty"`
+	Version   int             `json:"v"`
+	OK        bool            `json:"ok"`
+	Kind      string          `json:"kind"`
+	DryRun    bool            `json:"dry_run"`
+	Applied   bool            `json:"applied"`
+	Resume    bool            `json:"resume,omitempty"`
+	Recovery  bool            `json:"recovery,omitempty"`
+	Adapters  []string        `json:"adapters"`
+	Files     []PlanFile      `json:"files"`
+	Approvals []ApprovalOffer `json:"approvals,omitempty"`
+	Retained  []retainedFile  `json:"retained,omitempty"`
 }
 
-type planFile struct {
-	Adapter  string                 `json:"adapter"`
-	Path     string                 `json:"path"`
-	Version  string                 `json:"version,omitempty"`
-	Add      []Entry                `json:"add,omitempty"`
-	Remove   []Entry                `json:"remove,omitempty"`
-	Kept     []Entry                `json:"kept,omitempty"`
-	Evidence []store.DoctorEvidence `json:"capability_evidence,omitempty"`
-	Reminder *reminderStatus        `json:"reminder,omitempty"`
+type PlanFile struct {
+	Adapter    string                 `json:"adapter"`
+	Path       string                 `json:"path"`
+	PathSource string                 `json:"path_source,omitempty"`
+	Version    string                 `json:"version,omitempty"`
+	Add        []Entry                `json:"add,omitempty"`
+	Remove     []Entry                `json:"remove,omitempty"`
+	Kept       []Entry                `json:"kept,omitempty"`
+	Evidence   []store.DoctorEvidence `json:"capability_evidence,omitempty"`
+	Reminder   *reminderStatus        `json:"reminder,omitempty"`
 }
 
-type offer struct {
+type ApprovalOffer struct {
 	Adapter string   `json:"adapter"`
 	Kind    string   `json:"kind"`
 	Rules   []string `json:"rules,omitempty"`
@@ -63,6 +68,12 @@ type offer struct {
 }
 
 func (s Service) Run(ctx context.Context, req Request) error {
+	// The per-vendor forms of issue #25. An unnamed --dry-run keeps its rc.6
+	// output, as do a bare uninstall and setup off; the command line stops an
+	// unnamed setup without a terminal before it reaches here.
+	if req.Action == "status" || req.Offer || len(req.Adapters) > 0 || req.Action == "setup" && req.Terminal && !req.DryRun {
+		return s.prompts(ctx, req, s)
+	}
 	if req.Action == "off" {
 		op := operation{Action: req.Action, Adapters: adapterNames()}
 		state, lock, err := s.lockState()
@@ -241,7 +252,7 @@ func confirm(scanner *bufio.Scanner, out io.Writer, label string) (bool, error) 
 	return answer == "y" || answer == "yes", nil
 }
 
-func confirmClaudeRules(scanner *bufio.Scanner, out io.Writer, approvals []offer) (bool, bool, error) {
+func confirmClaudeRules(scanner *bufio.Scanner, out io.Writer, approvals []ApprovalOffer) (bool, bool, error) {
 	if len(approvals) == 0 || approvals[0].Adapter != "claude" {
 		return false, false, nil
 	}
@@ -345,17 +356,18 @@ func buildsUnchanged(before, after map[string]build) bool {
 
 func displayPlan(req Request, op operation, targets []installTarget, resume bool) plan {
 	p := plan{Version: 1, OK: true, Kind: req.Action, DryRun: req.DryRun, Resume: resume,
-		Adapters: append([]string{}, op.Adapters...), Files: []planFile{}, Retained: op.Retained}
+		Adapters: append([]string{}, op.Adapters...), Files: []PlanFile{}, Retained: op.Retained}
 	if req.Action == "off" {
 		p.Kind = "setup off"
 	}
 	for _, e := range op.Edits {
 		b := op.Builds[e.Adapter]
-		f := planFile{Adapter: e.Adapter, Path: e.Path, Version: b.Version,
+		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Version: b.Version,
 			Add: e.Add, Remove: e.Remove, Kept: e.Kept}
 		for _, target := range targets {
 			if target.Path == f.Path {
 				f.Evidence = target.Evidence
+				f.PathSource = target.PathSource
 				break
 			}
 		}
@@ -371,11 +383,11 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 	return p
 }
 
-func approvalOffers(adapter string) []offer {
-	var offers []offer
+func approvalOffers(adapter string) []ApprovalOffer {
+	var offers []ApprovalOffer
 	for _, kind := range []string{"read", "send"} {
 		onSend := kind == "send"
-		o := offer{Adapter: adapter, Kind: kind}
+		o := ApprovalOffer{Adapter: adapter, Kind: kind}
 		if adapter == "claude" {
 			for _, entry := range claudeRules(onSend) {
 				var rule string

@@ -32,6 +32,10 @@ crosshall version
 
 The installer writes `~/.local/bin/crosshall`. The version command should print `v0.1.0-rc.6`. Include `~/.local/bin` on PATH in your agent sessions too.
 
+The per-vendor setup flow described below is available after rc.6. With the rc.6 tag above, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` for each detected CLI and run `crosshall setup` separately.
+
+With the new installer, a fresh install in your own terminal offers hooks for each detected vendor. It can also offer them on an upgrade if no adapter has an installation history. It skips the questions in agent sessions, CI and redirected runs, or when existing hooks, policy, an interrupted setup or uncertain ownership need attention. An explicit `no` skips future automatic offers for that vendor. Enter skips it this time. If optional setup fails, the binary is installed and the installer prints a command to retry.
+
 ## Try it with two sessions
 
 **1. From a plain terminal outside any agent session**, start the dispatcher and create a channel. Channel creation and budget grants belong to the owner. crosshall refuses owner commands when it detects an agent identity, a launch route, or an agent environment marker.
@@ -96,13 +100,24 @@ A successful send confirms that the message was stored. Members check their inbo
 
 ## Claude Code and Codex CLI adapters
 
-In the owner's terminal, set the configuration directory for each supported CLI on your PATH (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex). Use absolute paths. `crosshall setup --dry-run` previews the detected versions, settings files, hook entries and optional approval rules. `crosshall setup` asks before editing user-level vendor settings. In Codex, review and trust the installed hooks in the hook review screen.
+In your own terminal, run `crosshall setup status` to see which CLIs are on PATH, which hooks are installed, and whether each adapter is enabled, drifted or awaiting recovery. Add `--json` before `setup` for machine-readable status. Antigravity supports session identity and has no hook adapter.
+
+`crosshall setup` shows each vendor's plan and asks separately. The question shows the absolute settings path and how it was chosen. Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. To select another directory, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute path. An empty or invalid override produces an error for that vendor. Claude offers separate read-command and send-command allow rules. In Codex, review and trust the installed hooks in the hook review screen.
+
+To revisit one vendor, run `crosshall setup claude` or `crosshall setup codex`. An owner-run script can preview and apply the named vendors in two commands.
+
+```sh
+crosshall setup --dry-run claude codex
+crosshall setup claude codex --apply
+```
+
+`--apply` installs the named vendors' base hooks without reading input or granting Claude permissions. Migrate scripts that piped answers to rc.6 setup to this named form. An unnamed setup with redirected input or output prints the scripted form and makes no changes.
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default manual` in a repository to have new sessions there join `#manual` at startup. In a repository without a default, a new session stays quiet. A session that already joined keeps its channel.
 
 At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 
-`crosshall setup off` disables both adapters and leaves the settings in place. `crosshall uninstall` asks before removing unchanged entries that crosshall added and reports entries it leaves for manual review.
+`crosshall setup off` disables both adapters and leaves the settings in place. Use `crosshall uninstall codex` or `crosshall uninstall claude` to remove one adapter. Bare `crosshall uninstall` covers both. Uninstall asks before removing unchanged entries that crosshall added and reports entries it leaves for manual review.
 
 For each vendor version, platform and mode, `crosshall owner doctor` reports capabilities as `tested` (passed a conformance check), `candidate` (awaiting verification) or `unavailable` (unsupported), with `unknown` when evidence is missing.
 
@@ -113,6 +128,8 @@ Both commands show `unknown` when reminder evidence is missing and `candidate` f
 For each adapter, doctor reports recorded hook starts, helper timeouts and missed deadlines for the current UTC day. It shows `hook counters unknown` when it has no records for that adapter that day.
 
 ## Contributing
+
+`bash scripts/ci-checks.sh` requires Python 3 to run the installer and terminal tests.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues through [SECURITY.md](SECURITY.md).
 

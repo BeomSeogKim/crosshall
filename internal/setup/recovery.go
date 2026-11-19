@@ -132,7 +132,7 @@ func pendingShutdownPlan(op operation, reason error) operation {
 	return shutdown
 }
 
-func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bool) (journal, string, error) {
+func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bool, selected ...string) (journal, string, error) {
 	state, lock, err := s.lockState()
 	if err != nil {
 		return journal{}, "", err
@@ -162,6 +162,9 @@ func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bo
 		// Shutdown is safe even when filesystem recovery is blocked. The
 		// journal remains intact so the owner can restore the original path.
 		shutdown := pendingShutdownPlan(*j.Pending, blocked)
+		if len(selected) != 0 {
+			shutdown.Adapters = selected
+		}
 		if err := s.setPolicies(ctx, shutdown.Adapters, false); err != nil {
 			return journal{}, "", err
 		}

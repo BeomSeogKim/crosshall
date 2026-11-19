@@ -17,7 +17,9 @@ unset GOFLAGS
 fail() { echo "install_test: $*" >&2; exit 1; }
 
 install_release() {
-  env HOME="$tmp/home" INSTALL_TEST_MARKER="$tmp/executed" "$repo/scripts/install.sh" "$@"
+  env HOME="$tmp/home" XDG_STATE_HOME="$tmp/xdg" CROSSHALL_STATE_DIR="$tmp/state" \
+    CLAUDE_CONFIG_DIR="$tmp/home/.claude" CODEX_HOME="$tmp/home/.codex" \
+    INSTALL_TEST_MARKER="$tmp/executed" "$repo/scripts/install.sh" "$@"
 }
 
 expect_refusal() {

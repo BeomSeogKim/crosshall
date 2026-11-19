@@ -209,13 +209,19 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	if refused.exit == 0 || refused.obj["code"] != "owner_only" {
 		t.Fatalf("agent dry run was not refused: %d %s", refused.exit, refused.stdout)
 	}
-	if denied := f.apply("n\n", "setup"); denied.obj["applied"] != false {
-		t.Fatalf("declined setup was applied: %s", denied.stdout)
+	// rc.6 piped answers are no longer read: an unnamed setup without a
+	// terminal prints the scripted form, and a named one only previews.
+	if scripted := f.command(f.env, "yes\nyes\nno\n", "setup"); scripted.exit != 2 || scripted.obj["code"] != "usage" ||
+		!strings.Contains(scripted.stdout, "crosshall setup claude codex --apply") {
+		t.Fatalf("piped setup: exit %d, %s", scripted.exit, scripted.stdout)
+	}
+	if named := f.apply("yes\n", "setup", "claude", "codex"); !strings.Contains(named.stdout, `"outcome":"previewed"`) {
+		t.Fatalf("named setup without a terminal: %s", named.stdout)
 	}
 	noWrites()
 
-	applied := f.apply("yes\nyes\nno\n", "setup")
-	if applied.obj["applied"] != true {
+	applied := f.apply("", "setup", "claude", "codex", "--apply")
+	if strings.Count(applied.stdout, `"outcome":"installed"`) != 2 {
 		t.Fatalf("setup did not apply: %s", applied.stdout)
 	}
 	installed := make(map[string]setupFile)
@@ -237,16 +243,17 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 			t.Errorf("setup removed the existing %s hook", adapter)
 		}
 	}
+	// --apply adds no allow rules and keeps the owner's own.
 	if claude := installed["claude"].bytes; !bytes.Contains(claude, []byte("Bash(existing)")) ||
-		!bytes.Contains(claude, []byte("Bash(crosshall read")) || bytes.Contains(claude, []byte("Bash(crosshall note")) {
-		t.Fatalf("Claude permission choices were not independent: %s", claude)
+		bytes.Contains(claude, []byte("Bash(crosshall read")) || bytes.Contains(claude, []byte("Bash(crosshall note")) {
+		t.Fatalf("Claude permissions after --apply: %s", claude)
 	}
 	journalPath := filepath.Join(f.state, "install-journal.json")
 	journal := readSetupFile(t, journalPath)
 	if journal.info.Mode().Perm() != 0600 {
 		t.Errorf("install journal mode = %v", journal.info.Mode())
 	}
-	f.apply("yes\nyes\nno\n", "setup")
+	f.apply("", "setup", "claude", "codex", "--apply")
 	for adapter, path := range f.paths {
 		assertSetupFile(t, path, installed[adapter], true)
 	}
@@ -306,16 +313,17 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	}
 }
 
-func TestAdapterSetupRequiresAnExplicitVendorHome(t *testing.T) {
+func TestAdapterSetupRejectsAnExplicitlyEmptyVendorHome(t *testing.T) {
 	f := newSetupWorld(t)
 	path := f.paths["claude"]
 	original := readSetupFile(t, path)
-	missingEnv := slices.DeleteFunc(slices.Clone(f.env), func(kv string) bool {
+	env := slices.DeleteFunc(slices.Clone(f.env), func(kv string) bool {
 		return strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=")
 	})
-	result := f.command(missingEnv, "yes\nyes\nyes\n", "setup")
+	env = append(env, "CLAUDE_CONFIG_DIR=")
+	result := f.command(env, "", "setup", "claude", "--apply")
 	if result.exit == 0 || !strings.Contains(result.stdout, "CLAUDE_CONFIG_DIR") {
-		t.Fatalf("setup with missing vendor home: exit %d, %s", result.exit, result.stdout)
+		t.Fatalf("setup with empty vendor home: exit %d, %s", result.exit, result.stdout)
 	}
 	assertSetupFile(t, path, original, true)
 	if _, err := os.Stat(filepath.Join(f.home, ".claude")); !os.IsNotExist(err) {
@@ -325,7 +333,7 @@ func TestAdapterSetupRequiresAnExplicitVendorHome(t *testing.T) {
 
 func TestAdapterUninstallLeavesEditedEntry(t *testing.T) {
 	f := newSetupWorld(t)
-	f.apply("yes\nno\nno\n", "setup")
+	f.apply("", "setup", "claude", "codex", "--apply")
 	path := f.paths["claude"]
 	file := readSetupFile(t, path)
 	unchanged := []byte(`"args":["hook","claude","SessionStart"],"timeout":1`)

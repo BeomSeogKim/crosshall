@@ -24,6 +24,7 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 		{[]string{"owner", "cancel", "checkout/#7"}, Call{Owner: true, Command: domain.Cancel{Channel: "checkout", ID: 7}, OpKey: "test-key"}},
 		{[]string{"owner", "budget", "grant", "checkout/x3", "2"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", ExchangeID: 3, Units: 2}, OpKey: "test-key"}},
 		{[]string{"owner", "budget", "grant", "checkout/@tax", "--roots", "1"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", Alias: "tax", Roots: 1}, OpKey: "test-key"}},
+		{[]string{"owner", "budget", "grant", "checkout", "--pool", "3"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", Pool: 3}, OpKey: "test-key"}},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			ft := &fakeTransport{result: okResult(t, struct{}{})}

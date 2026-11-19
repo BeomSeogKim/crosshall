@@ -33,8 +33,9 @@ type Member struct {
 
 // ChannelResult is the data of a successful channel creation.
 type ChannelResult struct {
-	Channel string `json:"channel"`
-	Topic   string `json:"topic,omitempty"`
+	Channel  string `json:"channel"`
+	Topic    string `json:"topic,omitempty"`
+	JoinPool int64  `json:"join_pool"`
 }
 
 // JoinResult is the data of a successful join.

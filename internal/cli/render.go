@@ -102,7 +102,11 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "#%s created.\n", r.Channel)
+		if r.JoinPool > 0 {
+			fmt.Fprintf(w, "#%s created. Its join pool holds %d root token(s): each member's first join takes one.\n", r.Channel, r.JoinPool)
+		} else {
+			fmt.Fprintf(w, "#%s created, with no join pool: members get root tokens only from crosshall owner budget grant.\n", r.Channel)
+		}
 	case domain.Join:
 		var r domain.JoinResult
 		if err := json.Unmarshal(data, &r); err != nil {

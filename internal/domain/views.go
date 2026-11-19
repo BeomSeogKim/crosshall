@@ -91,6 +91,8 @@ type ChannelStatus struct {
 	Requests          []LedgerRequest    `json:"requests"`
 	Exchanges         []ExchangeBalance  `json:"exchanges"`
 	BudgetExhaustions []BudgetExhaustion `json:"budget_exhaustions"`
+	// JoinPool is the root tokens left for first joins; the owner ledger only.
+	JoinPool *int64 `json:"join_pool,omitempty"`
 }
 
 type StatusBinding struct {
@@ -312,6 +314,13 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 	out.Requests, err = ledgerRequests(ctx, tx, ch.id, 0, owner, now)
 	if err != nil {
 		return out, err
+	}
+	if owner {
+		var pool int64
+		if err := tx.QueryRowContext(ctx, `SELECT join_pool FROM channel WHERE id = ?`, ch.id).Scan(&pool); err != nil {
+			return out, err
+		}
+		out.JoinPool = &pool
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT id, granted, spent FROM exchange WHERE channel_id = ? ORDER BY id", ch.id)
 	if err != nil {

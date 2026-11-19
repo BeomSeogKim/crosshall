@@ -14,8 +14,9 @@ type ownerAskFixture struct {
 
 func seedOwnerAsk(t *testing.T, f *fixture) ownerAskFixture {
 	t.Helper()
-	wantOK(t, f.owner(CreateChannel{Name: "checkout"}, "channel"))
-	wantOK(t, f.owner(CreateChannel{Name: "inventory"}, "other-channel"))
+	// Grant-only channels: every root token here is the owner's grant.
+	wantOK(t, f.owner(CreateChannel{Name: "checkout", Pool: pool(0)}, "channel"))
+	wantOK(t, f.owner(CreateChannel{Name: "inventory", Pool: pool(0)}, "other-channel"))
 	thread := ownerAskFixture{
 		sender: f.newSession("route"),
 		first:  f.newSession("route"),

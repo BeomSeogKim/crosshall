@@ -268,6 +268,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err != nil {
 		return core.Result{}, err
 	}
+	if err := drawJoinToken(ctx, tx, ch.id, principal, now); err != nil {
+		return core.Result{}, err
+	}
 	if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {
 		return core.Result{}, err
 	}

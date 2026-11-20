@@ -46,10 +46,23 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, rend
 		}
 		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
-	runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
 		return dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
 	})
+	if !wrote && args[0] == "agy" && time.Now().Before(end) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = io.WriteString(stdout, "{}\n")
+		}()
+		timer := time.NewTimer(time.Until(end))
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		}
+	}
 }
 
 func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hookTransport, args []string, stdin io.Reader, stdout io.Writer, lookup func(string) (string, bool)) string {
@@ -297,7 +310,7 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 	if spec.Stop {
 		return presentTurnEnd(spec, result.TurnEndLine)
 	}
-	if spec.Output != "context" || !(spec.Enroll || spec.Notice) {
+	if (spec.Output != "context" && spec.Output != "inject_steps") || !(spec.Enroll || spec.Notice) {
 		return nil, nil
 	}
 	var parts []string
@@ -328,7 +341,7 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 			if result.Hint == "" {
 				return nil, nil
 			}
-			return presentContext(spec.Name, result.Hint)
+			return presentBoundary(spec, result.Hint)
 		default:
 			return nil, nil
 		}
@@ -339,7 +352,24 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
-	return presentContext(spec.Name, strings.Join(parts, "\n"))
+	return presentBoundary(spec, strings.Join(parts, "\n"))
+}
+
+func presentBoundary(spec eventSpec, text string) ([]byte, error) {
+	if spec.Output == "inject_steps" {
+		type systemMessage struct {
+			Text string `json:"systemMessage"`
+		}
+		type step struct {
+			SystemMessage systemMessage `json:"systemMessage"`
+		}
+		payload := struct {
+			Steps []step `json:"injectSteps"`
+		}{Steps: []step{{SystemMessage: systemMessage{Text: text}}}}
+		b, err := json.Marshal(payload)
+		return append(b, '\n'), err
+	}
+	return presentContext(spec.Name, text)
 }
 
 func presentContext(event, text string) ([]byte, error) {

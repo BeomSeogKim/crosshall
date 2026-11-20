@@ -43,7 +43,7 @@ func TestEvidenceIsRefusedFromMembersAndWhenMalformed(t *testing.T) {
 	f, writer := adapterChannel(t)
 	wantCode(t, f.run(writer, evidenceFixture(), "member"), core.ExitRefused, core.CodeOwnerOnly)
 	for name, mutate := range map[string]func(*AdapterEvidence){
-		"vendor":  func(e *AdapterEvidence) { e.Vendor = "agy" },
+		"vendor":  func(e *AdapterEvidence) { e.Vendor = "unknown" },
 		"cap":     func(e *AdapterEvidence) { e.Results[0].Cap = "wake" },
 		"level":   func(e *AdapterEvidence) { e.Results[0].Level = "maybe" },
 		"version": func(e *AdapterEvidence) { e.VendorVersion = "" },

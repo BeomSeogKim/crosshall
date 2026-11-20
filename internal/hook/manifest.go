@@ -98,6 +98,10 @@ type event struct {
 }
 
 const stopActiveField = "stop_hook_active"
+const agyWorkspacePathsField = "workspacePaths"
+const agyTranscriptField = "transcriptPath"
+
+var agyConversationID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
 // Turn callbacks keep their native identity across re-delivery. Lifecycle
 // callbacks have no native event ID, so also carry the publication time.
@@ -122,13 +126,18 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	if err != nil {
 		return event{}, err
 	}
-	if fields[m.EventField] != spec.Name || (spec.MatchField != "" && fields[spec.MatchField] != spec.MatchValue) {
+	callback, named := fields[m.EventField]
+	if (callback != spec.Name && (m.Adapter != "agy" || named)) ||
+		(spec.MatchField != "" && fields[spec.MatchField] != spec.MatchValue) {
 		return event{}, errHookInput
 	}
 
 	// A native payload can supply its own vendor variable. Retain the normal
 	// resolver's disagreement checks for every other recognized vendor.
 	key := fields[m.SessionField]
+	if key == "" {
+		return event{}, errHookIdentity
+	}
 	if value, present := lookup(m.SessionEnv); present && value != key {
 		return event{}, errHookIdentity
 	}
@@ -152,6 +161,19 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		receipt:    receipt,
 		stopActive: fields[stopActiveField],
 	}
+	if m.Adapter == "agy" {
+		home, _ := lookup("HOME")
+		logDir := filepath.Join(home, ".gemini", "antigravity-cli", "brain", id.Key, ".system_generated", "logs")
+		transcript := fields[agyTranscriptField]
+		if !agyConversationID.MatchString(id.Key) || !filepath.IsAbs(home) ||
+			(transcript != filepath.Join(logDir, "transcript.jsonl") && transcript != filepath.Join(logDir, "transcript_full.jsonl")) {
+			return event{}, errHookIdentity
+		}
+		if fields[agyWorkspacePathsField] == "" {
+			return event{}, errHookInput
+		}
+		e.Source = "startup"
+	}
 	if (spec.TurnRequired && e.TurnRef == "") || (spec.Enroll && e.Source == "") {
 		return event{}, errHookInput
 	}
@@ -162,6 +184,9 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	}
 	if spec.Enroll {
 		e.CWD = fields["cwd"]
+		if m.Adapter == "agy" {
+			e.CWD = fields[agyWorkspacePathsField]
+		}
 		if e.CWD != "" && (!filepath.IsAbs(e.CWD) || strings.IndexByte(e.CWD, 0) >= 0) {
 			return event{}, errHookInput
 		}
@@ -207,7 +232,11 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		selected = append(selected, m.ModeField)
 	}
 	if spec.Enroll {
-		selected = append(selected, "cwd")
+		if m.Adapter == "agy" {
+			selected = append(selected, agyWorkspacePathsField, agyTranscriptField)
+		} else {
+			selected = append(selected, "cwd")
+		}
 	}
 	if spec.Stop {
 		selected = append(selected, stopActiveField)
@@ -255,6 +284,14 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		}
 		if duplicated {
 			return nil, "", errHookInput
+		}
+		if key == agyWorkspacePathsField && m.Adapter == "agy" {
+			var paths []string
+			if err := json.Unmarshal(raw, &paths); err != nil || len(paths) != 1 || !filepath.IsAbs(paths[0]) {
+				return nil, "", errHookInput
+			}
+			fields[key] = paths[0]
+			continue
 		}
 		var value string
 		if err := json.Unmarshal(raw, &value); err != nil {

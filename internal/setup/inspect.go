@@ -10,7 +10,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-// Inspect reports user-level configuration without launching either vendor.
+// Inspect reports user-level configuration without launching a vendor.
 func Inspect(stateRoot string) []InstallStatus {
 	j, _, journalErr := readJournal(stateRoot)
 	executable, err := os.Executable()
@@ -72,6 +72,9 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 		recognized = len(routes)
 		status.CodexHookStateRouting = codexHookStateRouting(routes)
 	}
+	if spec.Adapter == "agy" {
+		recognized = recognizableAgyHooks(doc, spec)
+	}
 	expected, err := hookEntries(spec, executable, stateRoot)
 	if err != nil {
 		return err
@@ -120,6 +123,9 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 // recognizableHooks checks for older or edited Crosshall commands as well as
 // exact installed entries. Its result gates the installer offer, not ownership.
 func recognizableHooks(doc *configNode, spec hook.InstallSpec) (int, error) {
+	if spec.Adapter == "agy" {
+		return recognizableAgyHooks(doc, spec), nil
+	}
 	count := 0
 	err := visitConfigHooks(doc, func(event string, handler *configNode) {
 		if recognizableHook(handler, spec, event) {
@@ -127,6 +133,29 @@ func recognizableHooks(doc *configNode, spec hook.InstallSpec) (int, error) {
 		}
 	})
 	return count, err
+}
+
+func recognizableAgyHooks(doc *configNode, spec hook.InstallSpec) int {
+	if doc == nil {
+		return 0
+	}
+	count := 0
+	for _, group := range doc.fields {
+		if group.key == agyHookGroup {
+			count++
+			continue
+		}
+		list := group.value.field("SessionStart")
+		if list == nil || list.kind != '[' {
+			continue
+		}
+		for _, handler := range list.items {
+			if recognizableHook(handler, spec, "SessionStart") {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func visitConfigHooks(doc *configNode, visit func(string, *configNode)) error {
@@ -163,7 +192,8 @@ func visitConfigHooks(doc *configNode, visit func(string, *configNode)) error {
 func recognizableHook(handler *configNode, spec hook.InstallSpec, event string) bool {
 	kind, _ := handler.field("type").stringValue()
 	command, _ := handler.field("command").stringValue()
-	if kind != "command" || command == "" || !eventName.MatchString(event) {
+	if (kind != "command" && !(spec.Adapter == "agy" && handler.field("type") == nil)) ||
+		command == "" || !eventName.MatchString(event) {
 		return false
 	}
 	if args := handler.field("args"); args != nil {
@@ -184,6 +214,11 @@ func recognizableHook(handler *configNode, spec hook.InstallSpec, event string) 
 		command, ok = strings.CutSuffix(strings.TrimSpace(command), " hook "+spec.Adapter+" "+event)
 		if !ok {
 			return false
+		}
+		if spec.Adapter == "agy" {
+			state, executable, ok := splitHookStatePin(command)
+			command, literal := literalShellExecutable(executable)
+			return ok && literal && (state != "" || isCrosshallExecutable(command))
 		}
 		command, ok = literalShellExecutable(command)
 		if !ok {

@@ -29,6 +29,7 @@ func TestStatusFreshDefaultsAreReadOnly(t *testing.T) {
 	for i, want := range []struct{ adapter, cli, path string }{
 		{"claude", "found", ".claude/settings.json"},
 		{"codex", "missing", ".codex/hooks.json"},
+		{"agy", "missing", ".gemini/config/hooks.json"},
 	} {
 		got := statuses[i]
 		if got.Adapter != want.adapter || got.CLI != want.cli || !got.HookAdapter ||
@@ -37,10 +38,7 @@ func TestStatusFreshDefaultsAreReadOnly(t *testing.T) {
 			t.Errorf("%s status: %+v", want.adapter, got)
 		}
 	}
-	if ag := statuses[2]; ag.Adapter != "antigravity" || ag.HookAdapter || ag.CLI != "unsupported" || ag.Path != "" {
-		t.Errorf("Antigravity status: %+v", ag)
-	}
-	for _, path := range []string{f.State, filepath.Join(f.Home, ".claude"), filepath.Join(f.Home, ".codex"), probe} {
+	for _, path := range []string{f.State, filepath.Join(f.Home, ".claude"), filepath.Join(f.Home, ".codex"), filepath.Join(f.Home, ".gemini"), probe} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("status created %s or could not verify its absence: %v", path, err)
 		}
@@ -188,7 +186,7 @@ func TestStatusKeepsRecordedPathAndOriginalPendingScope(t *testing.T) {
 		"Claude Code — CLI found, hooks drift, policy off, footprint present",
 		"configuration " + filepath.Join(f.Home, ".claude", "settings.json"),
 		"Interrupted setup for claude, codex (Claude read rules true, send rules false)",
-		"Antigravity — session identity supported, hook adapter unavailable",
+		"Antigravity — CLI missing, hooks none, policy off, footprint present",
 	} {
 		if !strings.Contains(strings.ReplaceAll(output.String(), "\"", ""), want) {
 			t.Errorf("missing %q in %s", want, output.String())
@@ -207,7 +205,7 @@ func TestStatusKeepsRecordedPathAndOriginalPendingScope(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &encoded); err != nil || encoded.Version != 1 ||
 		!encoded.OK || encoded.Kind != "setup status" || len(encoded.Adapters) != 3 ||
 		encoded.Adapters[0].Policy != "default" || encoded.Adapters[0].RecordedPath != recorded || encoded.Adapters[0].Pending == nil ||
-		!encoded.Adapters[0].Pending.Rules.Read || encoded.Adapters[2].HookAdapter {
+		!encoded.Adapters[0].Pending.Rules.Read || !encoded.Adapters[2].HookAdapter {
 		t.Fatalf("status JSON: %s (%v)", output.String(), err)
 	}
 }

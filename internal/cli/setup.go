@@ -24,13 +24,14 @@ type SetupRequest struct {
 	// Offer is the installer's private form: ask only when eligible.
 	Offer bool
 	// Terminal reports that standard input and output are a terminal.
-	Terminal bool
+	Terminal    bool
+	PathConsent func(bool) error
 }
 
-const setupUsage = "usage: setup [--dry-run] [claude|codex ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run] [names]"
+const setupUsage = "usage: setup [--dry-run] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run] [names]"
 
 // scriptedForm is printed when an unnamed setup cannot ask questions.
-const scriptedForm = `setup asks about each agent in a terminal; nothing was changed.
+const scriptedForm = `setup asks for confirmation in a terminal. Nothing was changed.
 To install from a script, name the agents and add --apply:
   crosshall setup claude codex --apply
 To preview first:
@@ -91,6 +92,9 @@ func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
 		}
 	}
 	for _, arg := range args {
+		if arg == "antigravity" {
+			arg = "agy"
+		}
 		switch {
 		case arg == "--dry-run" && !req.DryRun:
 			req.DryRun = true

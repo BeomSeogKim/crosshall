@@ -19,15 +19,17 @@ func TestVendorSentinelRecordsIgnoredConfigReads(t *testing.T) {
 	}
 	claude := filepath.Join(root, ".claude")
 	codex := filepath.Join(root, "custom codex")
-	for _, dir := range []string{claude, codex, codex + "-fixture"} {
-		if err := os.Mkdir(dir, 0700); err != nil {
+	agy := filepath.Join(root, ".gemini", "config")
+	for _, dir := range []string{claude, codex, agy, codex + "-fixture"} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	settings := filepath.Join(claude, "settings.json")
 	hooks := filepath.Join(codex, "hooks.json")
+	agyHooks := filepath.Join(agy, "hooks.json")
 	allowed := filepath.Join(codex+"-fixture", "hooks.json")
-	for _, path := range []string{settings, hooks, allowed} {
+	for _, path := range []string{settings, hooks, agyHooks, allowed} {
 		if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +40,8 @@ func TestVendorSentinelRecordsIgnoredConfigReads(t *testing.T) {
 		// The Darwin system aliases are also allowed by the configuration guard.
 		watchedClaude = strings.TrimPrefix(claude, "/private")
 	}
-	if err := os.WriteFile(filepath.Join(sentinel, "protected"), []byte(watchedClaude+"\n"+codex+"\n"), 0600); err != nil {
+	protected := strings.Join([]string{watchedClaude, codex, agy}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(sentinel, "protected"), []byte(protected), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,9 +60,12 @@ func TestVendorSentinelRecordsIgnoredConfigReads(t *testing.T) {
 		}
 	}
 	log, err := os.ReadFile(filepath.Join(sentinel, "violations"))
-	want := fmt.Sprintf("protected vendor path accessed: %q\nprotected vendor path accessed: %q\n", settings, hooks)
-	if err != nil || string(log) != want {
-		t.Fatalf("guard log = %q, %v; want %q", log, err, want)
+	var want strings.Builder
+	for _, path := range []string{settings, hooks, agyHooks} {
+		fmt.Fprintf(&want, "protected vendor path accessed: %q\n", path)
+	}
+	if err != nil || string(log) != want.String() {
+		t.Fatalf("guard log = %q, %v; want %q", log, err, want.String())
 	}
 	if contents, err := readConfig(allowed); err != nil || string(contents.Bytes) != "{}" {
 		t.Fatalf("read from sibling fixture = %q, %v", contents.Bytes, err)

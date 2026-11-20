@@ -253,7 +253,7 @@ func (e edit) stageCleanup() error {
 		return err
 	}
 	dir := configIdentity(info)
-	if dir != e.After.Dir && e.After.Dir != missingConfigDir+location.parentID {
+	if dir != e.After.Dir && !location.matchesMissingDir(e.After.Dir) {
 		return nil
 	}
 	files, err := fs.ReadDir(location.dir.FS(), ".")

@@ -25,14 +25,14 @@ func TestOwnerPublishesAdapterPolicyAndDefaults(t *testing.T) {
 			t.Fatalf("snapshot %s: %q, want %q (%v)", filepath.Base(path), b, want, err)
 		}
 	}
-	assertSnapshot(policy, "claude 0 0 0\ncodex 0 0 0\n")
+	assertSnapshot(policy, "agy 0 0 0\nclaude 0 0 0\ncodex 0 0 0\n")
 	assertSnapshot(defaults, "")
 	owner.must("--key", "enable", "owner", "adapter", "set", "codex", "--enabled", "on")
-	assertSnapshot(policy, "claude 0 0 0\ncodex 1 0 1\n")
+	assertSnapshot(policy, "agy 0 0 0\nclaude 0 0 0\ncodex 1 0 1\n")
 	owner.must("owner", "adapter", "set", "codex", "--enabled", "off")
 	owner.must("--key", "enable", "owner", "adapter", "set", "codex", "--enabled", "on")
 	// The reply can be an old immutable result. The mirror must stay current.
-	assertSnapshot(policy, "claude 0 0 0\ncodex 0 0 2\n")
+	assertSnapshot(policy, "agy 0 0 0\nclaude 0 0 0\ncodex 0 0 2\n")
 
 	repo := filepath.Join(w.home, "checkout")
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
@@ -60,6 +60,6 @@ func TestOwnerPublishesAdapterPolicyAndDefaults(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	assertSnapshot(policy, "claude 0 0 0\ncodex 0 0 2\n")
+	assertSnapshot(policy, "agy 0 0 0\nclaude 0 0 0\ncodex 0 0 2\n")
 	assertSnapshot(defaults, wantHash)
 }

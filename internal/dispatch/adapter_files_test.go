@@ -220,7 +220,7 @@ func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {
 			t.Fatalf("obsolete %s still visible: %v", name, err)
 		}
 	}
-	if got := read(adapterPolicyName); got != "claude 1 1 2\ncodex 0 0 0\n" {
+	if got := read(adapterPolicyName); got != "agy 0 0 0\nclaude 1 1 2\ncodex 0 0 0\n" {
 		t.Fatalf("initial policy: %q", got)
 	}
 	wantRepos := []string{
@@ -264,7 +264,7 @@ func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {
 	if err := s.publishAdapterFiles(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(adapterPolicyName); got != "claude 0 1 3\ncodex 0 0 0\n" {
+	if got := read(adapterPolicyName); got != "agy 0 0 0\nclaude 0 1 3\ncodex 0 0 0\n" {
 		t.Fatalf("republished policy: %q", got)
 	}
 }

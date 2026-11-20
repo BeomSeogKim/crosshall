@@ -11,6 +11,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -141,8 +142,11 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 			adapter.SetReminderEvidence(state.Evidence)
 			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
 			adapter.TurnEndNotice = &state.TurnEndNotice
-			publish := state.Publish
-			adapter.Publish = &publish
+			status := state.Publish
+			if _, supported := publish.Lookup(adapter.Adapter); !supported {
+				status.State, status.Reason = "off", "no publish adapter"
+			}
+			adapter.Publish = &status
 		}
 	}
 	return snapshot, err

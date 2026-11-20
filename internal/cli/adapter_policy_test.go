@@ -30,7 +30,7 @@ func TestOwnerAdapterSetUsageRejectsInvalidOptions(t *testing.T) {
 	ft := &fakeTransport{}
 	for _, args := range [][]string{
 		{"adapter"}, {"adapter", "other", "codex", "--enabled", "on"},
-		{"adapter", "set", "codex"}, {"adapter", "set", "agy", "--enabled", "on"},
+		{"adapter", "set", "codex"}, {"adapter", "set", "unknown", "--enabled", "on"},
 		{"adapter", "set", "codex", "--enabled"}, {"adapter", "set", "codex", "--reminder=yes"},
 		{"adapter", "set", "codex", "--enabled=off", "--enabled=on"},
 		{"adapter", "set", "codex", "--unknown", "on"},

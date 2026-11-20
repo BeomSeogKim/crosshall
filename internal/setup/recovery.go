@@ -40,8 +40,8 @@ func canResumeNewHome(e edit) bool {
 		return false
 	}
 	defer location.dir.Close()
-	return location.missing == "" && e.Before.Dir == missingConfigDir+location.parentID &&
-		checkNewConfigDir(location.dir) == nil
+	return location.matchesMissingDir(e.Before.Dir) &&
+		(location.missing != "" || checkNewConfigDir(location.dir) == nil)
 }
 
 // reconcilePublished records only changes we can link to a completed

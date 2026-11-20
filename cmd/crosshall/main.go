@@ -128,12 +128,28 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 					}
 					return nil
 				}}
+			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
+				req.PathConsent = writeInstallerPathConsent
+			}
 			return service.Run(context.Background(), setup.Request(req))
 		}
 	} else {
 		env.Unavailable = pathErr.Error()
 	}
 	return cli.RunEnv(context.Background(), env, args, os.Stdout, os.Stderr)
+}
+
+func writeInstallerPathConsent(accepted bool) error {
+	receipt := os.NewFile(3, "installer PATH consent")
+	if receipt == nil {
+		return errors.New("installer PATH consent descriptor is missing")
+	}
+	answer := "no"
+	if accepted {
+		answer = "yes"
+	}
+	_, err := fmt.Fprintln(receipt, answer)
+	return errors.Join(err, receipt.Close())
 }
 
 func serve(paths statePaths, pathErr error) int {

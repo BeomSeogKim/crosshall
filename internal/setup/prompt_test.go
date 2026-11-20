@@ -39,11 +39,12 @@ func newFakeOps() *fakeOps {
 		statuses: []AdapterStatus{
 			{Adapter: "claude", Name: "Claude Code", HookAdapter: true, CLI: "found", Footprint: "none"},
 			{Adapter: "codex", Name: "Codex", HookAdapter: true, CLI: "found", Footprint: "none"},
-			{Adapter: "agy", Name: "Antigravity", CLI: "found", Footprint: "unknown"},
+			{Adapter: "agy", Name: "Antigravity", HookAdapter: true, CLI: "missing", Footprint: "none"},
 		},
 		plans: map[string]VendorPlan{
 			"claude": plan("claude", "Claude Code", "/fixture/home/.claude/settings.json"),
 			"codex":  plan("codex", "Codex", "/fixture/home/.codex/hooks.json"),
+			"agy":    plan("agy", "Antigravity", "/fixture/home/.gemini/config/hooks.json"),
 		},
 		failing: map[string]error{},
 		rules:   map[string]ClaudeRules{},
@@ -131,39 +132,39 @@ func declined(t *testing.T, s Service) map[string]bool {
 	return d
 }
 
-func TestEachVendorIsAskedAfterItsPlanWithItsPathAndSource(t *testing.T) {
+func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 	ops := newFakeOps()
-	r := runPrompts(t, ops, Request{Terminal: true}, "yes\nyes\nno\nno\n")
+	ops.statuses[2].CLI = "found"
+	r := runPrompts(t, ops, Request{Terminal: true}, "yes\n")
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	claudeQ := strings.Index(r.out, "Install Claude Code hooks in /fixture/home/.claude/settings.json (default under HOME)? [y/N]")
-	claudePlan := strings.Index(r.out, "claude /fixture/home/.claude/settings.json")
-	codexQ := strings.Index(r.out, "Install Codex hooks in /fixture/home/.codex/hooks.json (default under HOME)? [y/N]")
-	codexPlan := strings.Index(r.out, "codex /fixture/home/.codex/hooks.json")
-	if claudePlan < 0 || claudeQ < claudePlan || codexPlan < claudeQ || codexQ < codexPlan {
-		t.Fatalf("plans and questions out of order:\n%s", r.out)
+	question := strings.Index(r.out, "Install the listed hooks? [y/N]")
+	if question < 0 || strings.Count(r.out, "[y/N]") != 1 {
+		t.Fatalf("expected one consent:\n%s", r.out)
 	}
-	// Claude yes with read rules and no send rules; Codex no.
-	if !slices.Equal(ops.installed, []string{"claude"}) || ops.rules["claude"] != (ClaudeRules{Read: true}) {
+	for _, label := range []string{
+		"Claude Code hooks in /fixture/home/.claude/settings.json (default under HOME)",
+		"Codex hooks in /fixture/home/.codex/hooks.json (default under HOME)",
+		"Antigravity hooks in /fixture/home/.gemini/config/hooks.json (default under HOME)",
+		"Review and trust these hooks with Codex /hooks.",
+	} {
+		if i := strings.Index(r.out, label); i < 0 || i >= question {
+			t.Errorf("%q missing before consent:\n%s", label, r.out)
+		}
+	}
+	if !slices.Equal(ops.installed, []string{"claude", "codex", "agy"}) || ops.rules["claude"] != (ClaudeRules{}) {
 		t.Fatalf("installed %v rules %+v", ops.installed, ops.rules)
-	}
-	if d := declined(t, r.s); !d["codex"] || d["claude"] {
-		t.Fatalf("declined %v", d)
-	}
-	if !strings.Contains(r.out, "claude: installed") || !strings.Contains(r.out, "codex: declined") {
-		t.Fatalf("outcomes:\n%s", r.out)
 	}
 }
 
-func TestBothVendorsInSequence(t *testing.T) {
+func TestOneDeclineAppliesToEveryListedVendor(t *testing.T) {
 	ops := newFakeOps()
-	r := runPrompts(t, ops, Request{Terminal: true}, "y\nn\nn\ny\n")
-	if r.err != nil || !slices.Equal(ops.installed, []string{"claude", "codex"}) || ops.rules["claude"] != (ClaudeRules{}) {
-		t.Fatalf("installed %v rules %+v: %v", ops.installed, ops.rules, r.err)
-	}
-	if strings.Contains(r.out, "Add Codex") || !strings.Contains(r.out, "Review and trust these hooks with Codex /hooks.") {
-		t.Fatalf("codex questions or trust notice:\n%s", r.out)
+	r := runPrompts(t, ops, Request{Terminal: true}, "n\n")
+	d := declined(t, r.s)
+	if r.err != nil || len(ops.installed) != 0 || !d["claude"] || !d["codex"] || d["agy"] ||
+		!strings.Contains(r.out, "claude: declined") || !strings.Contains(r.out, "codex: declined") {
+		t.Fatalf("installed %v declined %v: %v\n%s", ops.installed, d, r.err, r.out)
 	}
 }
 
@@ -197,8 +198,8 @@ func TestOverriddenAndChangedPathsAreShownWithTheirSource(t *testing.T) {
 	ops.plans["codex"] = x
 	r := runPrompts(t, ops, Request{Terminal: true}, "\n\n")
 	for _, want := range []string{
-		"Install Claude Code hooks in /fixture/claude-dir/settings.json (from CLAUDE_CONFIG_DIR)?",
-		"Install Codex hooks in /fixture/home/.codex/hooks.json (default under HOME; recorded earlier at /fixture/old-codex/hooks.json)?",
+		"Claude Code hooks in /fixture/claude-dir/settings.json (from CLAUDE_CONFIG_DIR)",
+		"Codex hooks in /fixture/home/.codex/hooks.json (default under HOME; recorded earlier at /fixture/old-codex/hooks.json)",
 	} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("missing %q in:\n%s", want, r.out)
@@ -244,7 +245,7 @@ func TestOneVendorsFailureLeavesTheOthers(t *testing.T) {
 	ops := newFakeOps()
 	ops.failing["claude"] = errors.New("config changed since the plan")
 	x := ops.plans["codex"]
-	r := runPrompts(t, ops, Request{Terminal: true}, "y\nn\nn\ny\n")
+	r := runPrompts(t, ops, Request{Terminal: true}, "y\n")
 	if r.err == nil || !strings.Contains(r.err.Error(), "crosshall setup claude") || !slices.Equal(ops.installed, []string{"codex"}) {
 		t.Fatalf("installed %v: %v", ops.installed, r.err)
 	}
@@ -254,8 +255,8 @@ func TestOneVendorsFailureLeavesTheOthers(t *testing.T) {
 	ops = newFakeOps()
 	x.Err = errors.New("CODEX_HOME is not an absolute path")
 	ops.plans["codex"] = x
-	r = runPrompts(t, ops, Request{Terminal: true}, "y\nn\nn\n")
-	if r.err == nil || !slices.Equal(ops.installed, []string{"claude"}) || strings.Contains(r.out, "Install Codex hooks") {
+	r = runPrompts(t, ops, Request{Terminal: true}, "y\n")
+	if r.err == nil || !slices.Equal(ops.installed, []string{"claude"}) || strings.Contains(r.out, "Codex hooks in") {
 		t.Fatalf("an invalid override for codex: installed %v: %v\n%s", ops.installed, r.err, r.out)
 	}
 }
@@ -306,7 +307,7 @@ func TestJSONKeepsQuestionsOffStandardOutput(t *testing.T) {
 	r := runPrompts(t, ops, Request{Terminal: true, JSON: true, Adapters: []string{"codex"}}, "y\n")
 	var result promptResult
 	if r.err != nil || json.Unmarshal([]byte(r.out), &result) != nil || len(result.Vendors) != 1 || result.Vendors[0].Outcome != "installed" ||
-		!strings.Contains(r.prompt, "Install Codex hooks") {
+		!strings.Contains(r.prompt, "Install the listed hooks? [y/N]") {
 		t.Fatalf("stdout %q prompts %q: %v", r.out, r.prompt, r.err)
 	}
 }
@@ -337,19 +338,21 @@ func TestTheInstallerOfferAsksOnlyWhenEligible(t *testing.T) {
 		}
 	}
 
-	// Eligible: the Antigravity row is information only. Claude is declined.
 	ops := newFakeOps()
-	r := runPromptsIn(t, s, ops, offer, "\nn\n")
-	if r.err != nil || !slices.Equal(ops.planned[0], []string{"claude", "codex"}) || !declined(t, s)["codex"] || declined(t, s)["claude"] {
-		t.Fatalf("planned %v declined %v: %v", ops.planned, declined(t, s), r.err)
+	r := runPromptsIn(t, s, ops, offer, "\n")
+	if r.err != nil || strings.Count(r.out, "[y/N]") != 1 || !slices.Equal(ops.planned[0], []string{"claude", "codex"}) ||
+		len(ops.installed) != 0 || len(declined(t, s)) != 0 {
+		t.Fatalf("planned %v installed %v declined %v: %v\n%s", ops.planned, ops.installed, declined(t, s), r.err, r.out)
 	}
-	// The next offer skips the declined vendor; Enter left Claude available.
+	req := Request{Terminal: true, Adapters: []string{"codex"}}
+	if r := runPromptsIn(t, s, newFakeOps(), req, "n\n"); r.err != nil {
+		t.Fatal(r.err)
+	}
 	ops = newFakeOps()
 	r = runPromptsIn(t, s, ops, offer, "n\n")
 	if r.err != nil || len(ops.planned) != 1 || !slices.Equal(ops.planned[0], []string{"claude"}) || !declined(t, s)["claude"] {
 		t.Fatalf("second offer planned %v: %v", ops.planned, r.err)
 	}
-	// Both declined: nothing is asked again.
 	ops = newFakeOps()
 	if r = runPromptsIn(t, s, ops, offer, "y\n"); r.out != "" || len(ops.planned) != 0 {
 		t.Fatalf("a declined vendor was offered again: %v", ops.planned)
@@ -366,9 +369,67 @@ func TestTheInstallerOfferAsksOnlyWhenEligible(t *testing.T) {
 func TestAFailedOfferNamesTheRetry(t *testing.T) {
 	ops := newFakeOps()
 	ops.failing["codex"] = errors.New("cannot lock adapter installation")
-	r := runPrompts(t, ops, Request{Offer: true, Terminal: true}, "\ny\n")
+	r := runPrompts(t, ops, Request{Offer: true, Terminal: true}, "y\n")
 	if r.err == nil || !strings.Contains(r.err.Error(), "crosshall setup codex") {
 		t.Fatalf("%v", r.err)
+	}
+}
+
+func TestInstallerPathConsentPrecedesHookApplication(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		decisions   []bool
+		installed   []string
+		receiptErr  error
+	}{
+		{name: "accept", input: "y\n", decisions: []bool{true}, installed: []string{"claude", "codex"}},
+		{name: "decline", input: "n\n", decisions: []bool{false}},
+		{name: "skip", input: "\n", decisions: []bool{false}},
+		{name: "failed receipt", input: "y\n", decisions: []bool{true}, receiptErr: errors.New("cannot write receipt")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOps()
+			var decisions []bool
+			req := Request{Offer: true, Terminal: true, PathConsent: func(accepted bool) error {
+				if len(ops.installed) != 0 {
+					t.Fatalf("already installed %v", ops.installed)
+				}
+				decisions = append(decisions, accepted)
+				return tc.receiptErr
+			}}
+			r := runPrompts(t, ops, req, tc.input)
+			if !errors.Is(r.err, tc.receiptErr) || !slices.Equal(decisions, tc.decisions) || !slices.Equal(ops.installed, tc.installed) ||
+				strings.Count(r.out, "[y/N]") != 1 || !strings.Contains(r.out, "Apply the shown PATH change and install the listed hooks?") {
+				t.Fatalf("err %v, decisions %v, installed %v\n%s", r.err, decisions, ops.installed, r.out)
+			}
+		})
+	}
+}
+
+func TestInstallerPathConsentNeedsAnEligibleOffer(t *testing.T) {
+	for name, change := range map[string]func(*fakeOps, *Request){
+		"ordinary setup": func(_ *fakeOps, r *Request) { r.Offer = false },
+		"no terminal":    func(_ *fakeOps, r *Request) { r.Terminal = false },
+		"footprint":      func(o *fakeOps, _ *Request) { o.statuses[0].Footprint = "present" },
+		"failed plans": func(o *fakeOps, _ *Request) {
+			for name, plan := range o.plans {
+				plan.Err = errors.New("plan failed")
+				o.plans[name] = plan
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ops := newFakeOps()
+			req := Request{Offer: true, Terminal: true, PathConsent: func(bool) error {
+				t.Fatal("unexpected PATH consent")
+				return nil
+			}}
+			change(ops, &req)
+			r := runPrompts(t, ops, req, "n\n")
+			if strings.Contains(r.out, "PATH change") || len(ops.installed) != 0 {
+				t.Fatalf("unexpected PATH consent or installation: %v\n%s", ops.installed, r.out)
+			}
+		})
 	}
 }
 
@@ -517,7 +578,7 @@ func TestTheOfferRechecksEligibilityAfterPlanning(t *testing.T) {
 	out.Reset()
 	err = s.prompts(context.Background(), Request{Action: "setup", Offer: true, Terminal: true, Output: &out,
 		Input: strings.NewReader("y\n")}, declineMeanwhile)
-	if err != nil || strings.Contains(out.String(), "Install Claude Code hooks") || !slices.Equal(declineMeanwhile.installed, []string{"codex"}) {
+	if err != nil || strings.Contains(out.String(), "Claude Code hooks in") || !slices.Equal(declineMeanwhile.installed, []string{"codex"}) {
 		t.Fatalf("decline meanwhile: %v %v\n%s", err, declineMeanwhile.installed, out.String())
 	}
 	if d, _ := s.declinedOffers(); !d["claude"] {

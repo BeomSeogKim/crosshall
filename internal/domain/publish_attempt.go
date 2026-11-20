@@ -9,8 +9,6 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const publishHourlyCap = 30
-
 type PublishBinding struct {
 	ID         int64
 	Generation int64
@@ -44,9 +42,8 @@ const activePublishRoutes = `FROM publish_route r
 		ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 	WHERE r.adapter = 'claude' AND r.state = 'active' AND r.socket_path IS NOT NULL
 		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
-		AND b.state = 'live' AND b.publish_quiet = 0 AND b.dnd = 0
-		AND NOT EXISTS (SELECT 1 FROM publish_attempt a
-			WHERE a.binding_id = r.binding_id AND a.launch_ref = r.launch_ref AND a.observation IN ('absorbed', 'unknown'))`
+		AND b.state = 'live' AND b.dnd = 0
+		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended + ` AND ` + store.PublishProfileTested
 
 const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id
@@ -118,7 +115,7 @@ func ReservePublish(ctx context.Context, tx store.Tx, binding PublishBinding, no
 		AND EXISTS (`+publishMessages+`)
 		AND (SELECT COUNT(*) FROM publish_attempt a WHERE a.principal_id = r.principal_id AND
 			(a.state = 'reserved' OR (a.submitting_at_ms > ?4 AND a.state IN ('submitting', 'submitted', 'uncertain')))) < ?5
-		ON CONFLICT DO NOTHING`, ms(now), binding.ID, binding.Generation, ms(now.Add(-time.Hour)), publishHourlyCap)
+		ON CONFLICT DO NOTHING`, ms(now), binding.ID, binding.Generation, ms(now.Add(-time.Hour)), store.PublishHourlyCap)
 	if err != nil {
 		return false, err
 	}

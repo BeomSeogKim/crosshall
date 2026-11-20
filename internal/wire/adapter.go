@@ -93,6 +93,8 @@ type AdapterPolicyArgs struct {
 	Adapter  string `json:"adapter"`
 	Enabled  *bool  `json:"enabled,omitempty"`
 	Reminder *bool  `json:"reminder,omitempty"`
+	// Publish is on, off, or default (the hall switch decides).
+	Publish *string `json:"publish,omitempty"`
 }
 
 func (r Request) IsHook() bool {

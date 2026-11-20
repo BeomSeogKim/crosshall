@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -130,6 +131,8 @@ type LedgerRecipient struct {
 	// only: what it was last seen doing, with no judgement attached. It is
 	// in absolute time, so the ledger does not change with the clock.
 	Observed *ObservedFact `json:"observed,omitempty"`
+	// Notice is the publish notice that offered this request, if any.
+	Notice *LedgerNotice `json:"notice,omitempty"`
 }
 
 type Receipt struct {
@@ -417,6 +420,9 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 			r.ReplyUnread = false
 		}
 		r.setDeadlineState(m.DueAtMS, ms(now))
+		if r.Notice, err = ledgerNotice(ctx, tx, r.PrincipalID, m.ID); err != nil {
+			return nil, err
+		}
 		if r.State == "open" {
 			if bindingState == "departed" {
 				r.BindingState = bindingState
@@ -432,6 +438,30 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		last.Recipients = append(last.Recipients, r)
 	}
 	return out, rows.Err()
+}
+
+// LedgerNotice is a publish notice as waiting shows it: its submission,
+// and whether the member's next prompt was observed to carry it.
+type LedgerNotice struct {
+	ID            int64  `json:"id"`
+	State         string `json:"state"`
+	SubmittedAtMS *int64 `json:"submitted_at_ms"`
+	Observation   string `json:"observation,omitempty"`
+	ObservedAtMS  *int64 `json:"observed_at_ms"`
+}
+
+func ledgerNotice(ctx context.Context, tx store.Tx, principal, message int64) (*LedgerNotice, error) {
+	var n LedgerNotice
+	var observation sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.state, a.submitting_at_ms, a.observation, a.observed_at_ms
+		FROM announcement x JOIN publish_attempt a ON a.id = x.ref
+		WHERE x.via = 'publish' AND x.principal_id = ? AND x.message_id = ?`, principal, message).
+		Scan(&n.ID, &n.State, &n.SubmittedAtMS, &observation, &n.ObservedAtMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	n.Observation = observation.String
+	return &n, err
 }
 
 func (r *LedgerRecipient) setDeadlineState(due, now int64) {

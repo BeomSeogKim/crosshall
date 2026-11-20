@@ -26,13 +26,8 @@ type HookRoute struct{ wire.HookRouteArgs }
 func (HookRoute) command()     {}
 func (HookRoute) Verb() string { return VerbHookRoute }
 
-// PublishStatus describes a member's publish route state in who output.
-// In slice 1, routes are never available for sending.
-type PublishStatus struct {
-	State      string `json:"state"`
-	Reason     string `json:"reason,omitempty"`
-	Generation int64  `json:"generation,omitempty"`
-}
+// PublishStatus is a member's publish state in who output.
+type PublishStatus = store.PublishState
 
 func allowedClaudeSocketDirs() []string {
 	uid := os.Getuid()
@@ -404,23 +399,7 @@ func invalidatePublishRouteForLeave(ctx context.Context, tx store.Tx, bindingID 
 	return retirePublishRoute(ctx, tx, bindingID, "left channel", now)
 }
 
-func withPublishStatus(ctx context.Context, tx store.Tx, bindingID int64, vendor string, m *Member) error {
-	var (
-		state, reason string
-		generation    int64
-	)
-	err := tx.QueryRowContext(ctx, `SELECT state, reason, generation FROM publish_route WHERE binding_id = ?`, bindingID).
-		Scan(&state, &reason, &generation)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if state == "active" {
-		m.Publish = &PublishStatus{State: "candidate", Reason: reason, Generation: generation}
-	} else {
-		m.Publish = &PublishStatus{State: "off", Reason: reason, Generation: generation}
-	}
-	return nil
+func withPublishStatus(ctx context.Context, tx store.Tx, bindingID int64, m *Member, now time.Time) (err error) {
+	m.Publish, err = publishStatusOf(ctx, tx, bindingID, now)
+	return err
 }

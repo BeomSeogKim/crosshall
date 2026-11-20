@@ -49,7 +49,9 @@ func newPublishTestFixture(t *testing.T) *publishTestFixture {
 		INSERT INTO binding(id, principal_id, channel_id, alias, joined_at_ms) VALUES (2, 2, 1, 'worker', 1);
 		INSERT INTO adapter_policy(adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('claude', 1, 1, 1, 1);
 		INSERT INTO adapter_launch(principal_id, launch_ref, profile, verified, started_hook_at_ms)
-			VALUES (2, 'launch', '{}', 1, 1);
+			VALUES (2, 'launch', '{"vendor_version":"2.1.0","platform":"darwin-arm64","mode":"default","manifest_rev":"r1"}', 1, 1);
+		INSERT INTO capability_evidence(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
+			VALUES ('claude', '2.1.0', 'darwin-arm64', 'default', 'r1', 'publish', 'tested', 'publish-test', 1);
 		INSERT INTO publish_route(binding_id, principal_id, generation, adapter, session_ref, launch_ref,
 			launch_verified, policy_epoch, mode, socket_path, watermark_message_id, state, registered_at_ms, updated_at_ms)
 			VALUES (2, 2, 3, 'claude', 'session', 'launch', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1);

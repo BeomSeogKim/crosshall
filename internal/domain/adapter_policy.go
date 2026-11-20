@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -29,7 +30,8 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 	if req.OpKey == "" {
 		return Fail(core.ExitUsage, "", "an operation key is required for this command", "run it through the crosshall command, which supplies the key"), nil
 	}
-	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil {
+	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil && cmd.Publish == nil ||
+		cmd.Publish != nil && *cmd.Publish != "on" && *cmd.Publish != "off" && *cmd.Publish != "default" {
 		return Fail(core.ExitUsage, "", "choose claude or codex and at least one policy switch", "crosshall owner adapter set claude --enabled on"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
@@ -51,13 +53,20 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 	if cmd.Reminder != nil {
 		after.Reminder = *cmd.Reminder
 	}
+	if cmd.Publish != nil {
+		after.Publish = strings.TrimSuffix(*cmd.Publish, "default")
+	}
 	if after != before {
 		after.Epoch++
 		after.ChangedAtMS = ms(now)
-		_, err := tx.ExecContext(ctx, `INSERT INTO adapter_policy(adapter, enabled, reminder, epoch, changed_at_ms)
-			VALUES (?, ?, ?, ?, ?) ON CONFLICT(adapter) DO UPDATE SET
-			enabled = excluded.enabled, reminder = excluded.reminder, epoch = excluded.epoch,
-			changed_at_ms = excluded.changed_at_ms`, after.Adapter, after.Enabled, after.Reminder, after.Epoch, after.ChangedAtMS)
+		var publish any
+		if after.Publish != "" {
+			publish = after.Publish == "on"
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO adapter_policy(adapter, enabled, reminder, publish, epoch, changed_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(adapter) DO UPDATE SET
+			enabled = excluded.enabled, reminder = excluded.reminder, publish = excluded.publish, epoch = excluded.epoch,
+			changed_at_ms = excluded.changed_at_ms`, after.Adapter, after.Enabled, after.Reminder, publish, after.Epoch, after.ChangedAtMS)
 		if err != nil {
 			return core.Result{}, err
 		}

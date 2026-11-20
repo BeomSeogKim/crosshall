@@ -120,6 +120,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	for i := range out.Channels {
 		for j := range out.Channels[i].Members {
 			m := &out.Channels[i].Members[j]
+			if err := withPublishStatus(ctx, tx, m.BindingID, &m.Member, now); err != nil {
+				return core.Result{}, err
+			}
 			fact, err := latestFact(ctx, tx, m.principal)
 			if err != nil {
 				return core.Result{}, err

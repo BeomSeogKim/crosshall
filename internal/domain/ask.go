@@ -60,6 +60,9 @@ type Delivery struct {
 	SettledAtMS  int64  `json:"settled_at_ms,omitempty"`
 	MoreTimeAtMS int64  `json:"more_time_at_ms,omitempty"`
 	Next         string `json:"next,omitempty"`
+	// Publish is why a stored request or final reply is not published, for a
+	// recipient with a publish route that is not available.
+	Publish *PublishStatus `json:"publish,omitempty"`
 }
 
 // AskResult is the data of a committed request.
@@ -256,7 +259,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		if err := json.Unmarshal(r.Data, &out); err != nil {
 			return core.Result{}, err
 		}
-		return askReceipt(ctx, tx, m.principal, out)
+		return askReceipt(ctx, tx, m.principal, out, now)
 	}
 
 	to, refusal, err := audience(ctx, tx, m, cmd)
@@ -323,7 +326,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: a.isNew, ParentRequestID: a.parentRequestID,
 		DueAtMS: ms(now.Add(due)), Debit: n, Remaining: a.exchange.balance() - n,
 	}
-	r, err := askReceipt(ctx, tx, m.principal, out)
+	r, err := askReceipt(ctx, tx, m.principal, out, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -348,11 +351,12 @@ func receipt(ctx context.Context, tx store.Tx, msg, principal int64, stage, evid
 	return err
 }
 
-// deliveries reads the current state of every recipient of a request.
-func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error) {
+// deliveries reads the current state of every recipient of a message.
+func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]Delivery, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT r.alias_at_commit, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms,
-		        COALESCE(b.state, 'departed')
+		        COALESCE(b.state, 'departed'), COALESCE(b.id, 0),
+		        m.kind = 'ask' OR m.kind = 'reply' AND m.outcome IN ('answer', 'decline')
 		 FROM recipient r JOIN message m ON m.id = r.message_id
 		 LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
 		 LEFT JOIN binding b ON b.principal_id = r.principal_id AND b.channel_id = m.channel_id
@@ -368,8 +372,10 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 			picked, settled, moreTime sql.NullInt64
 			state                     sql.NullString
 			binding                   string
+			bindingID                 int64
+			publishable               bool
 		)
-		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding); err != nil {
+		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding, &bindingID, &publishable); err != nil {
 			return nil, err
 		}
 		d.PickedUpAtMS, d.SettledAtMS, d.MoreTimeAtMS = picked.Int64, settled.Int64, moreTime.Int64
@@ -385,6 +391,17 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 			d.State, d.Next = "stored", "held until it rejoins"
 		default:
 			d.State, d.Next = "stored", "waits for its next crosshall command"
+			if publishable {
+				status, found, err := store.ReadPublishState(ctx, tx, bindingID, now)
+				if err != nil {
+					return nil, err
+				}
+				if status.State == "available" {
+					d.Next = "publish pending"
+				} else if found {
+					d.Publish = &status
+				}
+			}
 		}
 		out = append(out, d)
 	}
@@ -393,7 +410,7 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64) ([]Delivery, error)
 
 // Resolve the opener by principal, since a departed member's alias can be reused.
 // A replay keeps its original debit and refreshes delivery and display names.
-func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult) (core.Result, error) {
+func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult, now time.Time) (core.Result, error) {
 	if !out.NewExchange {
 		err := tx.QueryRowContext(ctx, `SELECT COALESCE(b.alias, ''), COALESCE(b.state = 'departed', 0)
 			FROM exchange e LEFT JOIN binding b ON b.principal_id = e.opened_by_id
@@ -403,7 +420,7 @@ func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult) (
 			return core.Result{}, err
 		}
 	}
-	d, err := deliveries(ctx, tx, out.ID)
+	d, err := deliveries(ctx, tx, out.ID, now)
 	if err != nil {
 		return core.Result{}, err
 	}

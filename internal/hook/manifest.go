@@ -36,6 +36,7 @@ type manifest struct {
 	SessionField string               `json:"session_field"`
 	SessionEnv   string               `json:"session_env"`
 	LaunchEnv    string               `json:"launch_env"`
+	SocketEnv    string               `json:"socket_env"`
 	TurnField    string               `json:"turn_field"`
 	Events       map[string]eventSpec `json:"events"`
 	// The launch's own vendor build and mode, when the running agent names
@@ -45,6 +46,7 @@ type manifest struct {
 	VersionEnv     string            `json:"version_env"`
 	VersionPattern string            `json:"version_pattern"`
 	ModeEnv        string            `json:"mode_env"`
+	ModeField      string            `json:"mode_field"`
 	Modes          map[string]string `json:"modes"`
 }
 
@@ -82,6 +84,8 @@ type event struct {
 	CWD            string
 	Source         string
 	Reason         string
+	SocketPath     string
+	PermissionMode string
 	LaunchRef      string
 	LaunchVerified bool
 	TurnRef        string
@@ -162,6 +166,11 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		if e.CWD != "" && (!filepath.IsAbs(e.CWD) || strings.IndexByte(e.CWD, 0) >= 0) {
 			return event{}, errHookInput
 		}
+		if m.SocketEnv != "" {
+			if sock, present := lookup(m.SocketEnv); present {
+				e.SocketPath = sock
+			}
+		}
 	}
 	if m.LaunchEnv != "" {
 		value, present := lookup(m.LaunchEnv)
@@ -174,6 +183,14 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		}
 	}
 	e.VendorVersion, e.Mode = launchBuild(m, lookup)
+	if m.ModeField != "" {
+		if pm := fields[m.ModeField]; pm != "" {
+			if len(pm) > 256 || strings.IndexFunc(pm, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+				return event{}, errHookInput
+			}
+			e.PermissionMode = pm
+		}
+	}
 	if !spec.Enroll && spec.ReasonField == "" && e.TurnRef != "" {
 		e.EventRef = e.TurnRef + ":" + spec.Name
 	}
@@ -187,6 +204,9 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		return nil, "", errHookInput
 	}
 	selected := []string{m.EventField, m.SessionField, m.TurnField, spec.SourceField, spec.ReasonField, spec.MatchField}
+	if m.ModeField != "" {
+		selected = append(selected, m.ModeField)
+	}
 	if spec.Enroll {
 		selected = append(selected, "cwd")
 	}

@@ -108,6 +108,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 		return transportOutcome(ctx, err)
 	}
 	if clean || !want {
+		if !hookExpired(ctx) {
+			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+			}
+		}
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
@@ -135,6 +140,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	}
 	if notice && result.Ack != nil && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
+	}
+	if !hookExpired(ctx) {
+		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+		}
 	}
 	return "rpc"
 }
@@ -244,6 +254,28 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		})
 	}
 	return req
+}
+
+func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.Request, bool) {
+	if e.SocketPath == "" && e.PermissionMode == "" {
+		return wire.Request{}, false
+	}
+	ref := e.reference(entry)
+	args, _ := json.Marshal(wire.HookRouteArgs{
+		Adapter:        m.Adapter,
+		LaunchRef:      e.LaunchRef,
+		LaunchVerified: e.LaunchVerified,
+		EventRef:       ref,
+		HookAtMS:       entry.UnixMilli(),
+		Epoch:          epoch,
+		PermissionMode: e.PermissionMode,
+		SocketPath:     e.SocketPath,
+	})
+	return wire.Request{
+		OpKey: "hook:route:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		Verb:  wire.VerbHookRoute,
+		Args:  args,
+	}, true
 }
 
 // present renders only the fields appropriate for this boundary.

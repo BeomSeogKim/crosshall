@@ -63,6 +63,9 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if !attached {
 		return Refuse(core.CodeKeyInUse, "that replacement identity was already enrolled", "choose a session that has never joined"), nil
 	}
+	if err := retirePublishRoute(ctx, tx, cmd.BindingID, "binding restored", now); err != nil {
+		return core.Result{}, err
+	}
 	out := RestoreResult{BindingID: cmd.BindingID}
 	if err := audit(ctx, tx, "binding_restored", fmt.Sprintf("binding:%d", cmd.BindingID), owner, out, now); err != nil {
 		return core.Result{}, err

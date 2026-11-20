@@ -36,10 +36,11 @@ type Arrival struct {
 
 // Resolution is the dispatcher-facing caller and first-join handoff.
 type Resolution struct {
-	Caller  core.Caller
-	Vendor  string
-	Enroll  func(context.Context, store.Tx, int64) error
-	Refusal *core.Result
+	Caller     core.Caller
+	Vendor     string
+	SessionKey string
+	Enroll     func(context.Context, store.Tx, int64) error
+	Refusal    *core.Result
 }
 
 // Services connects the dispatcher to identity and domain handlers.

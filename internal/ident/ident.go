@@ -28,6 +28,7 @@ type Proof struct {
 type Resolution struct {
 	Caller core.Caller
 	Vendor string
+	Key    string
 	Enroll func(context.Context, store.Tx, int64) error
 }
 

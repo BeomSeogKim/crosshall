@@ -5,10 +5,12 @@
   "session_field": "session_id",
   "session_env": "CLAUDE_CODE_SESSION_ID",
   "launch_env": "CLAUDE_PID",
+  "socket_env": "CLAUDE_CODE_MESSAGING_SOCKET",
   "turn_field": "prompt_id",
   "version_env": "AI_AGENT",
   "version_pattern": "^claude-code_([0-9]+-[0-9]+-[0-9]+)_harness$",
   "mode_env": "CLAUDE_CODE_ENTRYPOINT",
+  "mode_field": "permission_mode",
   "modes": {"sdk-cli": "print"},
   "caps_ms": {"prompt_submitted": 1800000, "turn_finishing": 7200000, "approval_requested": 1800000},
   "install": {

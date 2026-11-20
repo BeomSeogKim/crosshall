@@ -64,6 +64,11 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		if err := refreshAdapterCapabilities(ctx, tx, after.Adapter, nil); err != nil {
 			return core.Result{}, err
 		}
+		if after.Epoch != before.Epoch {
+			if err := invalidatePublishRoutesForEpoch(ctx, tx, after.Adapter, now); err != nil {
+				return core.Result{}, err
+			}
+		}
 		if err := audit(ctx, tx, "adapter_policy_set", scope, owner, after, now); err != nil {
 			return core.Result{}, err
 		}

@@ -27,6 +27,8 @@ type Member struct {
 	Change string `json:"change,omitempty"`
 	// Observed is the latest adapter fact; absent without an adapter.
 	Observed *Observed `json:"observed,omitempty"`
+	// Publish is the member's publish route status (candidate only in slice 1).
+	Publish *PublishStatus `json:"publish,omitempty"`
 
 	principal int64
 }

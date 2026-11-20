@@ -276,6 +276,12 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			CommittedClaims                   int `json:"committed_claims"`
 			ExtraModelRequestsPerContinuation int `json:"extra_model_requests_per_continuation"`
 		} `json:"turn_end_notice"`
+		Publish *struct {
+			State        string
+			Reason       string
+			ActiveRoutes int `json:"active_routes"`
+			TotalRoutes  int `json:"total_routes"`
+		} `json:"publish"`
 		Hooks *struct {
 			Date            string
 			Counts          map[string]int
@@ -337,6 +343,10 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			}
 			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
 				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)
+		}
+		if a.Publish != nil {
+			fmt.Fprintf(&output, "  publish: %s (%s, %d active / %d total routes)\n",
+				a.Publish.State, a.Publish.Reason, a.Publish.ActiveRoutes, a.Publish.TotalRoutes)
 		}
 		if a.UnverifiedLaunches != nil {
 			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)

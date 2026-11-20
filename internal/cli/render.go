@@ -186,7 +186,15 @@ func RenderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 		} else if m.State == "unknown" {
 			unreported = true
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", alias, m.Vendor, focus, activity, m.Route)
+		route := m.Route
+		if m.Publish != nil {
+			if m.Publish.Reason != "" {
+				route = fmt.Sprintf("%s; publish: %s (%s)", route, m.Publish.State, m.Publish.Reason)
+			} else {
+				route = fmt.Sprintf("%s; publish: %s", route, m.Publish.State)
+			}
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", alias, m.Vendor, focus, activity, route)
 	}
 	_ = tw.Flush()
 	if unreported {

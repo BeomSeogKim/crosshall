@@ -21,6 +21,7 @@ type doctorAdapter struct {
 	UnverifiedLaunches *int                       `json:"unverified_launches,omitempty"`
 	Hooks              *doctorHookActivity        `json:"hooks,omitempty"`
 	TurnEndNotice      *store.DoctorTurnEndNotice `json:"turn_end_notice,omitempty"`
+	Publish            *store.DoctorPublishState  `json:"publish,omitempty"`
 }
 
 type doctorHookActivity struct {

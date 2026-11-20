@@ -5,6 +5,7 @@ import "encoding/json"
 const (
 	VerbHookEnroll = "hook.enroll"
 	VerbHookEvent  = "hook.event"
+	VerbHookRoute  = "hook.route"
 	VerbAdapterSet = "owner adapter set"
 )
 
@@ -52,6 +53,17 @@ type HookEventArgs struct {
 	ContinuationActive bool `json:"continuation_active,omitempty"`
 }
 
+type HookRouteArgs struct {
+	Adapter        string `json:"adapter"`
+	LaunchRef      string `json:"launch_ref"`
+	LaunchVerified bool   `json:"launch_verified"`
+	EventRef       string `json:"event_ref"`
+	HookAtMS       int64  `json:"hook_at_ms"`
+	Epoch          uint64 `json:"epoch"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	SocketPath     string `json:"socket_path,omitempty"`
+}
+
 // HookResult contains only presentation owned by the core. An acknowledgement
 // is scoped to one output path and is independent of the roster cursor.
 type HookResult struct {
@@ -84,12 +96,18 @@ type AdapterPolicyArgs struct {
 }
 
 func (r Request) IsHook() bool {
-	return r.Verb == VerbHookEnroll || r.Verb == VerbHookEvent
+	return r.Verb == VerbHookEnroll || r.Verb == VerbHookEvent || r.Verb == VerbHookRoute
 }
 
 // OneWayHook limits the no-reply envelope to an observation without output.
 func (r Request) OneWayHook() bool {
-	if r.Reply == nil || *r.Reply || r.Verb != VerbHookEvent {
+	if r.Reply == nil || *r.Reply {
+		return false
+	}
+	if r.Verb == VerbHookRoute {
+		return true
+	}
+	if r.Verb != VerbHookEvent {
 		return false
 	}
 	var event HookEventArgs

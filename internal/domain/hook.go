@@ -198,6 +198,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
+	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
+		return core.Result{}, err
+	}
 	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, cmd, now); err != nil {
 		return core.Result{}, err
 	}
@@ -283,6 +286,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		return core.Result{}, err
 	}
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+		return core.Result{}, err
+	}
+	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
@@ -440,16 +446,42 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	if cmd.HookAtMS > ms(now)+futureSlackMS {
 		return OK(out)
 	}
-	// Only the latest started launch counts. An event of a launch whose start
-	// was never seen is stored only: it cannot establish which launch is newest.
+	live := found && b.state == "live"
+	// Launches that can no longer be current are ended first, so a killed
+	// newer launch cannot hide a running older one (#100).
+	otherAlive, settled, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if settled && live {
+		if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
+			return core.Result{}, err
+		}
+	}
+	// Only the latest started launch that has not ended counts (the latest one
+	// when all have ended). An event of a launch whose start was never seen is
+	// stored only: it cannot establish which launch is newest.
 	latest, err := latestLaunch(ctx, tx, principal)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return core.Result{}, err
 	}
 	if err != nil || latest != cmd.LaunchRef {
+		// The clean end of a launch that is not current ends that launch
+		// only: it departs nobody, and it can no longer become current.
+		if err == nil && cmd.Fact == FactSessionEnded && cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
+			if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = MAX(COALESCE(ended_hook_at_ms, 0), ?)
+				WHERE principal_id = ? AND launch_ref = ? AND started_hook_at_ms <= ?`,
+				cmd.HookAtMS, principal, cmd.LaunchRef, cmd.HookAtMS); err != nil {
+				return core.Result{}, err
+			}
+		}
+		// The event itself changes nothing, but settling may have made
+		// another launch current, and with it the member's presence.
+		if settled && live {
+			return okOrErr(out, presenceChanged(ctx, tx, b.channel, principal, before, now))
+		}
 		return OK(out)
 	}
-	live := found && b.state == "live"
 	switch cmd.Fact {
 	case FactPromptSubmitted:
 		if cmd.TurnRef != "" {
@@ -507,6 +539,14 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		// reference (launch_verified, independent of version and mode); any
 		// other end is an observation.
 		if live && cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
+			// Another process of the same session (a resumed copy) keeps it,
+			// and its launch is current now.
+			if otherAlive {
+				if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
+					return core.Result{}, err
+				}
+				break
+			}
 			if err := endSession(ctx, tx, b, principal, now); err != nil {
 				return core.Result{}, err
 			}
@@ -538,8 +578,78 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 func latestLaunch(ctx context.Context, tx store.Tx, principal int64) (string, error) {
 	var ref string
 	err := tx.QueryRowContext(ctx, `SELECT launch_ref FROM adapter_launch WHERE principal_id = ?
-		ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1`, principal).Scan(&ref)
+		ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1`, principal).Scan(&ref)
 	return ref, err
+}
+
+// settleLaunches ends, at the time at, each open bound launch that can no
+// longer be current beside launch: an earlier launch of the same process (a
+// process runs one launch at a time, so its later start or end supersedes
+// it) and a launch of another process that no longer runs (killed without
+// an end). It reports whether a launch of another process still runs and
+// whether it ended any launch. A launch whose start was never seen settles
+// nothing.
+func (s *Service) settleLaunches(ctx context.Context, tx store.Tx, principal int64, launch string, at int64, now time.Time) (alive, changed bool, err error) {
+	if s.LaunchProcess == nil {
+		return false, false, nil
+	}
+	own, ok := s.LaunchProcess(launch)
+	if !ok {
+		return false, false, nil
+	}
+	var started int64
+	err = tx.QueryRowContext(ctx, `SELECT started_hook_at_ms FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?`,
+		principal, launch).Scan(&started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT launch_ref, started_hook_at_ms FROM adapter_launch
+		WHERE principal_id = ? AND launch_ref <> ? AND ended_hook_at_ms IS NULL AND started_hook_at_ms <= ?`,
+		principal, launch, at)
+	if err != nil {
+		return false, false, err
+	}
+	var gone []string
+	for rows.Next() {
+		var ref string
+		var began int64
+		if err := rows.Scan(&ref, &began); err != nil {
+			rows.Close()
+			return false, false, err
+		}
+		process, ok := s.LaunchProcess(ref)
+		switch {
+		case !ok:
+		case process == own:
+			if began < started {
+				gone = append(gone, ref)
+			}
+		case s.LaunchAlive == nil:
+		case s.LaunchAlive(ref, began):
+			alive = true
+		default:
+			gone = append(gone, ref)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return false, false, err
+	}
+	for _, ref := range gone {
+		if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = ?
+			WHERE principal_id = ? AND launch_ref = ? AND ended_hook_at_ms IS NULL`, at, principal, ref); err != nil {
+			return false, false, err
+		}
+		// A publish route to an ended launch ends with it, as on its own end.
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route
+			SET state = 'ended', reason = 'launch ended', generation = generation + 1, updated_at_ms = ?
+			WHERE principal_id = ? AND launch_ref = ? AND state <> 'ended'`, ms(now), principal, ref); err != nil {
+			return false, false, err
+		}
+	}
+	return alive, len(gone) > 0, nil
 }
 
 // endSession departs a live binding on the clean end of its latest launch,

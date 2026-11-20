@@ -401,6 +401,99 @@ func TestCleanEndOfOnlyTheLatestLaunchDeparts(t *testing.T) {
 	}
 }
 
+// testProcess groups test launch references "pid-<n>[-<start>]" by process.
+func testProcess(ref string) (string, bool) {
+	rest, ok := strings.CutPrefix(ref, "pid-")
+	digits, _, _ := strings.Cut(rest, "-")
+	return "pid-" + digits, ok && digits != ""
+}
+
+func TestCleanEndKeepsTheMemberWhileAnotherLaunchRuns(t *testing.T) {
+	f, writer := adapterChannel(t)
+	running := map[string]bool{"pid-1": true, "pid-2": true}
+	var asked []string
+	f.svc.LaunchAlive = func(ref string, started int64) bool {
+		asked = append(asked, fmt.Sprintf("%s@%d", ref, started))
+		return running[ref]
+	}
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000)) // the same session resumed in a second terminal
+	running["pid-2"] = false
+	f.hook(s, ended("pid-2", t0+2_000))
+	if f.memberRow(writer, "claude1").Alias == "" {
+		t.Fatal("the resumed copy's end departed the member while the first launch still runs")
+	}
+	for _, q := range asked {
+		if q != fmt.Sprintf("pid-1@%d", t0) {
+			t.Fatalf("liveness asked for %v, want only the other open launch", asked)
+		}
+	}
+	if len(asked) == 0 {
+		t.Fatal("liveness never asked")
+	}
+	// The first launch ends too: nothing else runs, so the member departs.
+	running["pid-1"] = false
+	f.hook(s, ended("pid-1", t0+3_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("the last running launch's clean end did not depart")
+	}
+}
+
+func TestCleanEndDepartsWhenTheOtherLaunchIsGone(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(string, int64) bool { return false } // killed without an end
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000))
+	f.hook(s, ended("pid-2", t0+2_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("a launch that no longer runs kept the member")
+	}
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'pid-1' AND ended_hook_at_ms IS NULL`); n != 0 {
+		t.Fatal("the killed launch is still open")
+	}
+}
+
+func TestAKilledLaunchDoesNotHideTheRunningOne(t *testing.T) {
+	f, writer := adapterChannel(t)
+	running := map[string]bool{"pid-1": true}
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000)) // killed later without an end
+	f.hook(s, start("pid-3", "resume", t0+2_000))
+	f.hook(s, ended("pid-3", t0+3_000))
+	if f.memberRow(writer, "claude1").Alias == "" {
+		t.Fatal("departed while pid-1 runs")
+	}
+	// pid-2 was marked ended, so pid-1 is current and its end departs.
+	f.hook(s, ended("pid-1", t0+4_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("the end of the last running launch did not depart")
+	}
+}
+
+func TestAnOpenEarlierLaunchOfTheEndingProcessDoesNotKeepTheMember(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(string, int64) bool { return true } // the ending process still runs its hook
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1-a", "startup", t0))
+	f.hook(s, start("pid-1-b", "clear", t0+1_000)) // the end before /clear was never seen
+	f.hook(s, ended("pid-1-b", t0+2_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("an earlier launch of the same process kept the member")
+	}
+}
+
 func TestManualLeaveIsNotRestoredByAHook(t *testing.T) {
 	f, _ := adapterChannel(t)
 	s := f.newSession("claude")
@@ -836,5 +929,129 @@ func TestASameTurnStopDatedBeforeTheStartStillWins(t *testing.T) {
 	f.hook(s, stop("pid-1", "t1", t0-1_000)) // the clock stepped back before the start
 	if o := f.memberRow(writer, "claude1").Observed; o == nil || o.Fact != FactTurnFinishing {
 		t.Fatalf("the stop of the current turn was dropped: %+v", o)
+	}
+}
+
+func TestCapabilitiesFollowTheSurvivingLaunch(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return ref == "pid-1" }
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	first := start("pid-1", "startup", t0)
+	second := start("pid-2", "resume", t0+1000)
+	first.Profile.VendorVersion = "2.1.327"
+	second.Profile.VendorVersion = "2.1.329"
+	f.hook(s, first)
+	f.hook(s, second)
+
+	var version string
+	projection := func() string {
+		t.Helper()
+		if err := f.db.QueryRow(`SELECT vendor_version FROM capability WHERE principal_id = ? AND cap = 'enroll'`, f.principalOf(s)).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	if got := projection(); got != second.Profile.VendorVersion {
+		t.Fatalf("initial version %q, want %q", got, second.Profile.VendorVersion)
+	}
+	f.hook(s, ended("pid-2", t0+2000))
+	if got := projection(); got != first.Profile.VendorVersion {
+		t.Errorf("version after survivor became current %q, want %q", got, first.Profile.VendorVersion)
+	}
+}
+
+func TestEndsOfOverlappingLaunchesDepartAfterTheLast(t *testing.T) {
+	departed := func(f *fixture) bool {
+		return f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`) == 1
+	}
+	t.Run("newer launch killed, older ends", func(t *testing.T) {
+		f, _ := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true}
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2", "resume", t0+1_000))
+		running["pid-2"] = false // SIGKILL, no end
+		f.hook(s, ended("pid-1", t0+2_000))
+		if !departed(f) {
+			t.Fatal("a killed newer launch hid the end of the last running one")
+		}
+	})
+	t.Run("older ends first while the newer runs", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true} // pid-1 still winding down
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2", "resume", t0+1_000))
+		f.hook(s, ended("pid-1", t0+2_000))
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("the older launch's end departed while the newer runs")
+		}
+		f.hook(s, ended("pid-2", t0+3_000))
+		if !departed(f) {
+			t.Fatal("an ended launch whose process is still present kept the member")
+		}
+	})
+	t.Run("clear without an end, then the cleared launch ends", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true}
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { p, _ := testProcess(ref); return running[p] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2-a", "resume", t0+1_000))
+		f.hook(s, start("pid-2-b", "clear", t0+2_000)) // the end of pid-2-a was never seen
+		f.hook(s, ended("pid-2-b", t0+3_000))
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("departed while pid-1 runs")
+		}
+		running["pid-2"] = false
+		f.hook(s, ended("pid-1", t0+4_000))
+		if !departed(f) {
+			t.Fatal("the open launch before the clear hid the end of the last running process")
+		}
+	})
+}
+
+// A killed current launch, found while handling an event of a launch that is
+// not current, makes another launch current: its presence is reported.
+func TestPresenceFollowsTheLaunchThatBecomesCurrent(t *testing.T) {
+	f, writer := adapterChannel(t)
+	alive := map[string]bool{"pid-1": true, "pid-2": true, "pid-3": true}
+	f.svc.LaunchProcess = testProcess
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return alive[ref] }
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1000))
+	f.hook(s, prompt("pid-2", "b-turn", t0+1500))
+	f.hook(s, start("pid-3", "resume", t0+2000))
+	f.hook(s, prompt("pid-3", "c-turn", t0+2500))
+	f.hook(s, stop("pid-3", "c-turn", t0+3000))
+	wantFact := func(expected string) {
+		t.Helper()
+		if observed := f.memberRow(writer, "claude1").Observed; observed == nil || observed.Fact != expected {
+			t.Fatalf("observed %+v, want %s", observed, expected)
+		}
+	}
+	wantFact(FactTurnFinishing)
+	rosterPresence := func() int { return f.count(`SELECT COUNT(*) FROM roster_change WHERE field = 'presence'`) }
+	before := rosterPresence()
+	alive["pid-3"] = false
+	f.hook(s, prompt("pid-1", "a-turn", t0+4000)) // pid-1 is not current: pid-2 is
+	wantFact(FactPromptSubmitted)
+	if got := rosterPresence(); got != before+1 {
+		t.Errorf("roster presence events after C → B: %d, want %d", got, before+1)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = 'a-turn'`); n != 0 {
+		t.Fatal("the prompt of a launch that is not current opened a turn")
 	}
 }

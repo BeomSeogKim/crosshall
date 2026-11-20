@@ -22,6 +22,11 @@ type Service struct {
 	// RestoreKey rotates a member's keys in the current transaction. False means
 	// the replacement was already used by a principal.
 	RestoreKey func(context.Context, store.Tx, int64, string, string, time.Time) (bool, error)
+	// LaunchAlive reports whether a bound adapter launch still runs, and
+	// LaunchProcess names the process a launch reference belongs to; nil
+	// LaunchAlive means no launch is known to run.
+	LaunchAlive   func(ref string, startedHookAtMS int64) bool
+	LaunchProcess func(ref string) (string, bool)
 }
 
 var _ Handler = (*Service)(nil)

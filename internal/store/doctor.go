@@ -154,7 +154,7 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time
 			WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
 			  AND l.rowid = (SELECT rowid FROM adapter_launch
 			                  WHERE principal_id = l.principal_id
-			                  ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1)
+			                  ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1)
 			  AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
 		)
 		SELECT (SELECT COUNT(*) FROM live_profile WHERE version = 'unverified' OR mode = 'unverified'),

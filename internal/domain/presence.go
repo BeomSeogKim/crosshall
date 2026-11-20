@@ -71,7 +71,7 @@ func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFac
 	// clocks say, and within a turn the later stage wins.
 	err := tx.QueryRowContext(ctx, `
 		WITH latest AS (SELECT launch_ref, started_hook_at_ms FROM adapter_launch WHERE principal_id = ?1
-		                ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1),
+		                ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1),
 		candidate AS (
 			SELECT o.seq, o.kind, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
 			       CASE o.kind WHEN 'session_ended' THEN 4 WHEN 'turn_finishing' THEN 3

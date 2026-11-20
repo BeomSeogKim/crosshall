@@ -101,7 +101,7 @@ func refreshAdapterCapabilities(ctx context.Context, tx store.Tx, adapter string
 			l.started_hook_at_ms AS started_at_ms
 		FROM target_session s JOIN adapter_launch l ON l.rowid = (
 			SELECT latest.rowid FROM adapter_launch latest WHERE latest.principal_id = s.id
-			ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1
+			ORDER BY latest.ended_hook_at_ms IS NOT NULL, latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1
 		)
 		WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?1
 			AND EXISTS (SELECT 1 FROM binding b WHERE b.principal_id = l.principal_id AND b.state = 'live')

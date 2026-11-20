@@ -160,8 +160,18 @@ func WaitCursorInvalidated(summary *MemberInboxSummary) (core.Result, error) {
 }
 
 // WaitTimeout adds the latest successful hall snapshot to a local timeout.
-func WaitTimeout(summary *MemberInboxSummary) (core.Result, error) {
-	return waitFailure(core.ExitWaitTimeout, core.CodeWaitTimeout, "no new messages before the wait timeout", "crosshall inbox", summary)
+// The snapshot is an inbox check, so the next step is the pickup when
+// something is unread, another wait for a member that has to poll, and
+// nothing for one the hall delivers to.
+func WaitTimeout(summary *MemberInboxSummary, delivers bool) (core.Result, error) {
+	next := "crosshall wait --existing --work-only --timeout 9m"
+	switch {
+	case summary != nil && len(summary.Pending) > 0:
+		next = "crosshall read"
+	case delivers:
+		next = ""
+	}
+	return waitFailure(core.ExitWaitTimeout, core.CodeWaitTimeout, "no new messages before the wait timeout", next, summary)
 }
 
 func waitFailure(status core.ExitCode, code core.Code, message, hint string, summary *MemberInboxSummary) (core.Result, error) {

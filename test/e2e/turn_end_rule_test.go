@@ -50,12 +50,17 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	if !errors.As(err, &failed) || failed.ExitCode() != 6 {
 		t.Fatalf("expected wait timeout, got %v: %s", err, out)
 	}
-	require(string(out), "crosshall inbox")
+	// The timeout is itself a check: it ends with the counts and names the
+	// wait again, not the inbox.
+	require(string(out), "next: crosshall wait --existing --work-only --timeout 9m\n[crosshall] 0 unread, 0 owed.\n")
+	if strings.Contains(string(out), "crosshall inbox") {
+		t.Errorf("a clear wait timeout still points to the inbox:\n%s", out)
+	}
 
 	request := form.must("ask", "@tax", "Check the totals.")
 	id := strconv.FormatInt(num(t, request, "id"), 10)
 	form.must("note", "@tax", "Totals are in column A.")
-	const unread = "[crosshall] 2 unread, 0 owed. Run crosshall inbox."
+	const unread = "[crosshall] 2 unread, 0 owed. Run crosshall read."
 	require(tax.mustPlain("whoami"), unread)
 	require(tax.mustPlain("wait", "--existing", "--work-only", "--timeout", "30s"), unread)
 	require(tax.mustPlain("inbox"), "#"+id+" ask from @form")
@@ -64,7 +69,7 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	require(read, "crosshall reply "+id)
 	require(read, "--more-time")
 	require(read, "--decline")
-	const owed = "[crosshall] 1 unread, 1 owed. Run crosshall inbox."
+	const owed = "[crosshall] 1 unread, 1 owed. Run crosshall read."
 	require(read, owed)
 	require(tax.mustPlain("inbox"), "#"+id+" ask from @form, due ")
 	report := tax.must("status")
@@ -78,12 +83,13 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	cmd = exec.Command(binary, "read", "99999")
 	cmd.Dir, cmd.Env = w.home, tax.env()
 	out, err = cmd.CombinedOutput()
-	if !errors.As(err, &failed) || failed.ExitCode() != 3 || strings.Count(string(out), "crosshall inbox") != 1 {
-		t.Errorf("refusal should direct the member to the inbox once: %v, %s", err, out)
+	if !errors.As(err, &failed) || failed.ExitCode() != 3 || strings.Count(string(out), "crosshall inbox") != 1 ||
+		!strings.HasSuffix(string(out), "[crosshall] 1 unread, 1 owed. Run crosshall read.\n") {
+		t.Errorf("refusal should name the inbox once and end with the status line: %v, %s", err, out)
 	}
 	tax.must("reply", id, "--more-time")
 	require(tax.mustPlain("status"), owed)
-	require(tax.mustPlain("reply", id, "The totals match."), "[crosshall] 1 unread, 0 owed. Run crosshall inbox.")
+	require(tax.mustPlain("reply", id, "The totals match."), "[crosshall] 1 unread, 0 owed. Run crosshall read.")
 	if out := tax.mustPlain("read", id); strings.Contains(out, "crosshall reply "+id) {
 		t.Fatalf("settled request still asks for a reply: %s", out)
 	}
@@ -102,7 +108,7 @@ func TestTurnEndRuleShellOnlyMember(t *testing.T) {
 	form, tax := w.member(), w.member()
 	form.must("join", "checkout", "--as", "form")
 	joined := tax.mustPlain("join", "checkout", "--as", "tax")
-	const rule = "Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn."
+	const rule = "Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once. Later arrivals belong to the next turn."
 	if !strings.Contains(joined, rule) {
 		t.Fatalf("join does not state the turn-end rule:\n%s", joined)
 	}

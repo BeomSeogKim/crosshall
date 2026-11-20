@@ -21,7 +21,7 @@ Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
                                                     --rules prints the member rules again
   who                                               List the members of your channel
-  read [<id>...]                                    Read messages
+  read [<id>...]                                    Read the oldest unread messages, or the given ones
   inbox                                             List unread messages and open obligations
   wait [--any | --work-only] [--existing] [--timeout <duration>]
                                                     Wait for messages (timeout exits 6)

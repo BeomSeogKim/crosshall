@@ -153,7 +153,7 @@ func TestPendingUsesPlainTrailerOrJSONField(t *testing.T) {
 		t.Fatalf("plain %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	stdout, stderr, code = run(t, Env{Transport: ft}, "read")
-	if code != core.ExitOK || stderr != "" || !strings.HasSuffix(stdout, "[crosshall] 1 unread, 2 owed. Run crosshall inbox.\n") {
+	if code != core.ExitOK || stderr != "" || !strings.HasSuffix(stdout, "[crosshall] 1 unread, 2 owed. Run crosshall read.\n") {
 		t.Fatalf("plain %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
@@ -206,26 +206,45 @@ func TestReadOfACancelledRequestSaysNoAnswerIsOwed(t *testing.T) {
 	}
 }
 
-// The inbox pointer prints only when something waits. With nothing unread or
-// owed a result carries no pointer, and a refusal whose next step is the
-// inbox keeps that step.
-func TestInboxPointerOnlyWhenSomethingWaits(t *testing.T) {
+// Every member result ends with the status line, so it can stand for an
+// inbox check. It names a command only when something is unread: an owed
+// request needs no fetch, and nothing waiting is said in so many words.
+func TestStatusLineEndsEveryMemberResult(t *testing.T) {
 	trailer := func(pending []int64, owed int) *fakeTransport {
 		return &fakeTransport{result: okResult(t, struct {
 			Pending   []int64 `json:"pending"`
 			OwedCount int     `json:"owed_count"`
 		}{pending, owed})}
 	}
-	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 0)}, "read"); strings.Contains(out, "Run crosshall inbox") || strings.Contains(out, "0 unread") {
-		t.Fatalf("pointer with nothing waiting:\n%s", out)
+	for _, verb := range []string{"read", "inbox", "who", "waiting"} {
+		if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 0)}, verb); !strings.HasSuffix(out, "\n[crosshall] 0 unread, 0 owed.\n") {
+			t.Errorf("%s with nothing waiting:\n%s", verb, out)
+		}
 	}
-	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 1)}, "read"); !strings.HasSuffix(out, "[crosshall] 0 unread, 1 owed. Run crosshall inbox.\n") {
-		t.Fatalf("no pointer with an owed request:\n%s", out)
+	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 1)}, "read"); !strings.HasSuffix(out, "\n[crosshall] 0 unread, 1 owed.\n") {
+		t.Fatalf("an owed request alone names a command:\n%s", out)
+	}
+	if out, _, _ := run(t, Env{Transport: trailer([]int64{4, 9}, 1)}, "read"); !strings.HasSuffix(out, "\n[crosshall] 2 unread, 1 owed. Run crosshall read.\n") {
+		t.Fatalf("unread work does not name the pickup:\n%s", out)
+	}
+	left := trailer([]int64{4}, 0)
+	if out, _, _ := run(t, Env{Transport: left}, "leave"); !strings.HasSuffix(out, "[crosshall] 1 unread, 0 owed. After rejoining, run crosshall inbox.\n") {
+		t.Fatalf("a member that left with work waiting:\n%s", out)
+	}
+	if out, _, _ := run(t, Env{Transport: trailer([]int64{}, 0)}, "leave"); strings.Contains(out, "unread") {
+		t.Fatalf("a member that left with nothing waiting:\n%s", out)
 	}
 	refusal := &fakeTransport{result: core.Result{Status: core.ExitRefused, Code: core.CodeCancelled,
 		Data: json.RawMessage(`{"message":"the owner cancelled #2","hint":"crosshall inbox","pending":[],"owed_count":0}`)}}
-	if _, stderr, _ := run(t, Env{Transport: refusal}, "reply", "2", "x"); !strings.Contains(stderr, "next: crosshall inbox\n") {
-		t.Fatalf("a refusal lost its inbox step with nothing waiting:\n%s", stderr)
+	if _, stderr, _ := run(t, Env{Transport: refusal}, "reply", "2", "x"); !strings.HasSuffix(stderr, "next: crosshall inbox\n[crosshall] 0 unread, 0 owed.\n") {
+		t.Fatalf("a refusal lost its inbox step or its status line:\n%s", stderr)
+	}
+	// A step the status line already names is not printed twice.
+	timeout := &fakeTransport{result: core.Result{Status: core.ExitRefused, Code: core.CodeNotFound,
+		Data: json.RawMessage(`{"message":"x","hint":"crosshall read","pending":[7],"owed_count":0}`)}}
+	if _, stderr, _ := run(t, Env{Transport: timeout}, "reply", "2", "x"); strings.Contains(stderr, "next:") ||
+		!strings.HasSuffix(stderr, "[crosshall] 1 unread, 0 owed. Run crosshall read.\n") {
+		t.Fatalf("the pickup is named twice or not at all:\n%s", stderr)
 	}
 }
 

@@ -21,7 +21,7 @@ func TestAskPickupEvidenceAndThreadAnswer(t *testing.T) {
 	const question, answer = "Which column has the invoice date?", "Use the posting date."
 	id := num(t, sender.must("ask", "@tax", question), "id")
 	arg := strconv.FormatInt(id, 10)
-	if out := recipient.mustPlain("who"); !slices.Contains(strings.Split(out, "\n"), "[crosshall] 1 unread, 0 owed. Run crosshall inbox.") {
+	if out := recipient.mustPlain("who"); !slices.Contains(strings.Split(out, "\n"), "[crosshall] 1 unread, 0 owed. Run crosshall read.") {
 		t.Fatalf("missing pending request in plain output: %q", out)
 	}
 

@@ -71,6 +71,7 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		defer cancel()
 	}
 	var latest *domain.MemberInboxSummary
+	var delivers bool
 	var cursorFingerprint string
 	end := func() core.ExitCode {
 		if ctx.Err() != nil {
@@ -79,7 +80,7 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		if status := checkDispatcher(); status != core.ExitOK {
 			return status
 		}
-		result, err := domain.WaitTimeout(latest)
+		result, err := domain.WaitTimeout(latest, delivers)
 		if err != nil {
 			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 		}
@@ -132,7 +133,7 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		if err := json.Unmarshal(result.Data, &snapshot); err != nil || snapshot.Cursor.BindingID <= 0 {
 			return o.fail(core.ExitError, CodeLocalError, "malformed wait snapshot", "")
 		}
-		latest = snapshot.MemberInboxSummary
+		latest, delivers = snapshot.MemberInboxSummary, snapshot.Delivers
 		if snapshot.CursorFingerprint != "" && cursorFingerprint != "" && cursorFingerprint != snapshot.PriorCursorFingerprint {
 			result, err := domain.WaitCursorInvalidated(latest)
 			if err != nil {

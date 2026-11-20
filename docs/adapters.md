@@ -45,7 +45,52 @@ Interactive Claude Code sessions report a verified build and the mode `interacti
 
 ## The prompt line
 
-At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall read.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
+At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall read.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Only a publish notice, where a route is available, wakes an idle session.
+
+## Publish notices
+
+With an adapter's hooks installed, the hall can tell a session about new work without the session polling. It writes one line to the agent's own message route (for Claude Code, the session's messaging socket, which its `SessionStart` hook reports):
+
+```text
+[crosshall] pending: 12 15. This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read.
+```
+
+An idle session starts a turn for it; a busy one takes it as its own turn after the current one. The session runs `crosshall read`, which picks the work up. The notice carries message IDs only, never a body or a peer's words. Claude Code (seen on 2.1.329) shows it to the person as a message from another session, inside its own wrapper paragraph.
+
+**In this release no profile is listed as tested, so no route publishes.** Every session with a route shows `publish: candidate` and stays on pull and the prompt line. The sender is built only for Claude Code; Codex and Antigravity have none.
+
+A route publishes when all of these hold:
+
+1. The session's launch is verified and current, and its exact profile (agent version, platform, mode, hook manifest revision) is listed as tested for publish. [CONFORMANCE.md](../CONFORMANCE.md#publish-profiles) says what that takes.
+2. The dispatcher proved the route: it connected to the reported socket without writing and read, from the operating system, that the listener is the session's own process.
+3. The route was activated. Only messages stored after that moment are offered, so a backlog never arrives as a burst.
+4. No switch is off, the session is not in bypass permission mode, and the route is not suspended, capped or held.
+
+What a member sees:
+
+- `crosshall who` shows `publish: <state>` after the route: `off`, `candidate`, `available`, `held`, `suspended` or `capped`. A member sees the word only.
+- A send says `stored -> notice queued` only when a notice will offer that message. In every other case it says `stored -> waits for its next crosshall command`.
+- `crosshall waiting` shows each notice behind a request: submitted or not, and whether the session's hook observed it.
+- `crosshall publish off` stops notices to your own session, and `crosshall publish on` allows them again; `on` never overrides an owner's off.
+
+What the owner controls:
+
+| Command | Effect |
+| --- | --- |
+| `crosshall owner publish hall on\|off` | Notices for the whole hall |
+| `crosshall owner adapter set <adapter> --publish on\|off\|default` | Notices for one agent kind |
+| `crosshall owner publish member <binding-id> on\|off\|default` | Notices for one member; this switch beats the adapter's, which beats the hall's |
+| `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension |
+
+`crosshall owner who --all` and `crosshall owner doctor` show each member's state with its reason, for example `publish: candidate (profile not tested)`, `publish: held: notice 4 unobserved since 14:02` or `publish: off (turned off by the owner for the hall)`. Doctor also counts the day's notices per adapter: submitted, uncertain, not submitted, and how they were observed.
+
+The hall stops by itself, toward pull, in these cases:
+
+- **Held.** A notice was written but the session's hook has not reported it. Nothing more is sent to that session until the notice is observed or the session's process ends. A timeout frees nothing.
+- **Suspended.** A notice landed inside a turn the person had started, or the hall could not tell that it did not; a third notice in a row could not be submitted; or the session runs an agent version that is not in the tested list. A suspension lasts 30 minutes; the third one in a launch lasts until the launch ends. The state line says when it lifts, and `crosshall owner publish resume` lifts it at once, except for an untested version.
+- **Capped.** A member gets at most 30 notices an hour.
+
+A notice is an offer, not a delivery: the message is already stored, and a notice that is lost or ignored leaves it unread for `crosshall read`, the prompt line or a wait.
 
 ## Turning adapters off and removing them
 

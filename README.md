@@ -114,7 +114,7 @@ Run the `export` line if the installer prints one; it appears only when `crossha
 
 You play three parts. The **owner** is you in a plain terminal. The two **members** would normally be your agents; here each is a shell opened with `crosshall run -- sh`, which gives that shell its own identity. Each block below starts with the terminal it belongs in. The request numbers assume a fresh hall; use the numbers your own commands print.
 
-**1. The owner** starts the hall and creates a channel. Owner commands refuse to run inside a member shell or an agent session.
+**1. The owner** starts the hall and creates a channel. Owner commands refuse to run inside a member shell or an agent session. `crosshall help` lists the member commands and `crosshall owner help` the owner's.
 
 <!-- run: owner, fresh -->
 ```console

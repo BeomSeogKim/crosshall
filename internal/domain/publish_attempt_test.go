@@ -371,3 +371,32 @@ func TestPublishCapsAndProvenNonSubmission(t *testing.T) {
 		t.Fatal("cap did not reset or a newer generation could not recover known non-submission")
 	}
 }
+
+// An inbox tells the member whether the hall delivers to it: only with a
+// proven route, and not while an earlier notice still holds its lane.
+func TestInboxReportsWhetherTheHallDelivers(t *testing.T) {
+	p := newPublishFixture(t)
+	delivers := func() bool { return decode[InboxResult](t, p.run(p.reader, Inbox{}, "")).Delivers }
+	if delivers() {
+		t.Fatal("a candidate route reads as delivering")
+	}
+	p.proveRoute()
+	if !delivers() {
+		t.Fatal("a proven route does not read as delivering")
+	}
+	p.turnEndAsk(p.writer, "reader", "holds the lane")
+	id := p.reserve()
+	if id == 0 || delivers() {
+		t.Fatalf("attempt %d: a member with a notice outstanding reads as delivering", id)
+	}
+	if len(p.begin(id)) == 0 {
+		t.Fatal("the reservation did not start")
+	}
+	p.resolve(id, PublishNotSubmitted)
+	if !delivers() {
+		t.Fatal("a released lane does not read as delivering")
+	}
+	if decode[InboxResult](t, p.run(p.writer, Inbox{}, "")).Delivers {
+		t.Fatal("a member without a route reads as delivering")
+	}
+}

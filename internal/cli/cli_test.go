@@ -89,6 +89,34 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
+// A member's help lists what a member can run. The owner's commands are one
+// step away, and reading them needs no owner terminal.
+func TestHelpKeepsOwnerCommandsApart(t *testing.T) {
+	for _, args := range [][]string{{"help"}, {}} {
+		out, _, code := run(t, Env{}, args...)
+		if code != core.ExitOK || !strings.Contains(out, "\n  reply <id>") || !strings.Contains(out, "\n  owner help ") {
+			t.Fatalf("%v: member help (%d):\n%s", args, code, out)
+		}
+		for _, owner := range []string{"owner start", "owner budget", "setup", "uninstall"} {
+			if strings.Contains(out, owner) {
+				t.Fatalf("%v: member help names %q:\n%s", args, owner, out)
+			}
+		}
+	}
+	out, _, code := run(t, Env{OwnerGate: func() string { return "CLAUDE_CODE_SESSION_ID is set" }}, "owner", "help")
+	if code != core.ExitOK || strings.Contains(out, "\n  reply <id>") {
+		t.Fatalf("owner help (%d):\n%s", code, out)
+	}
+	for _, owner := range []string{"owner start", "owner budget grant", "owner adapter evidence", "\n  setup [--dry-run]", "\n  uninstall "} {
+		if !strings.Contains(out, owner) {
+			t.Fatalf("owner help lacks %q:\n%s", owner, out)
+		}
+	}
+	if _, stderr, code := run(t, Env{}, "owner"); code != core.ExitUsage || !strings.Contains(stderr, "crosshall owner help") {
+		t.Fatalf("bare owner (%d): %s", code, stderr)
+	}
+}
+
 func TestOwnerGateRefusesWithoutPublishing(t *testing.T) {
 	ft := &fakeTransport{}
 	env := Env{Transport: ft, OwnerGate: func() string { return "CLAUDE_CODE_SESSION_ID is set" }}

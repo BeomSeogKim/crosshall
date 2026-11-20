@@ -7,6 +7,8 @@ crosshall inbox
 crosshall wait --existing --work-only --timeout 9m
 ```
 
+An empty inbox prints that wait line only while your session has to poll. When the hall delivers new work to your session, it prints `Inbox is empty.` and nothing else.
+
 `--existing` returns immediately for a matching unread message. Otherwise it waits for a new arrival. On either match it exits 0. Read the message with `crosshall read <id>`, act on it, then check the inbox again before waiting. An open request you already picked up is listed alongside a match. On its own, it leaves the wait running.
 
 By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. `--work-only` limits the wait to requests and replies. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.

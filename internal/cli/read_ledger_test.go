@@ -142,10 +142,15 @@ func TestInboxPointerOnlyWhenSomethingWaits(t *testing.T) {
 	}
 }
 
-// One suggested wait length everywhere a wait is suggested.
+// One suggested wait length everywhere a wait is suggested, and no wait at
+// all for a member the hall delivers to.
 func TestEmptyInboxSuggestsTheStandardWait(t *testing.T) {
 	ft := &fakeTransport{result: okResult(t, domain.InboxResult{})}
 	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); !strings.Contains(out, "crosshall wait --existing --work-only --timeout 9m") {
 		t.Fatalf("empty inbox:\n%s", out)
+	}
+	ft = &fakeTransport{result: okResult(t, domain.InboxResult{Delivers: true})}
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); out != "Inbox is empty.\n" {
+		t.Fatalf("empty inbox of a member the hall delivers to:\n%s", out)
 	}
 }

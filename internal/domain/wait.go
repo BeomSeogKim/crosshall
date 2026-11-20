@@ -2,12 +2,19 @@ package domain
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const VerbWait = "wait"
+const (
+	VerbWait                            = "wait"
+	CodeWaitCursorInvalidated core.Code = "wait_cursor_invalidated"
+)
 
 // Wait requests one read-only snapshot. The first request establishes the
 // starting cursor and optionally returns inbox work already present.
@@ -28,6 +35,9 @@ type WaitCursor struct {
 
 type WaitSnapshot struct {
 	Cursor WaitCursor `json:"cursor"`
+	// Older dispatchers strictly decode wait requests, so fingerprints stay in replies.
+	CursorFingerprint      string `json:"cursor_fingerprint,omitempty"`
+	PriorCursorFingerprint string `json:"prior_cursor_fingerprint,omitempty"`
 	InboxResult
 	*MemberInboxSummary
 }
@@ -67,6 +77,13 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&out.Cursor.MessageID); err != nil {
 		return core.Result{}, err
 	}
+	if cmd.Cursor != nil && cmd.Cursor.MessageID > out.Cursor.MessageID {
+		return WaitCursorInvalidated(&summary)
+	}
+	out.CursorFingerprint, err = waitMessageFingerprint(ctx, tx, out.Cursor.MessageID)
+	if err != nil {
+		return core.Result{}, err
+	}
 	if cmd.Cursor == nil {
 		if cmd.Existing {
 			out.InboxResult, err = inboxItems(ctx, tx, member, cmd.WorkOnly)
@@ -77,8 +94,13 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 		}
 		return OK(out)
 	}
-	if cmd.Cursor.MessageID >= out.Cursor.MessageID {
+	if cmd.Cursor.MessageID == out.Cursor.MessageID {
+		out.PriorCursorFingerprint = out.CursorFingerprint
 		return OK(out)
+	}
+	out.PriorCursorFingerprint, err = waitMessageFingerprint(ctx, tx, cmd.Cursor.MessageID)
+	if err != nil {
+		return core.Result{}, err
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms
@@ -114,6 +136,27 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 		out.Owed = inbox.Owed
 	}
 	return OK(out)
+}
+
+func waitMessageFingerprint(ctx context.Context, tx store.Tx, id int64) (string, error) {
+	if id == 0 {
+		return "", nil
+	}
+	var message string
+	err := tx.QueryRowContext(ctx, `SELECT json_array(id, channel_id, sender_id, kind, created_at_ms)
+		FROM message WHERE id = ?`, id).Scan(&message)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(message))
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func WaitCursorInvalidated(summary *MemberInboxSummary) (core.Result, error) {
+	return waitFailure(core.ExitRefused, CodeWaitCursorInvalidated, "message history changed while waiting", "crosshall inbox", summary)
 }
 
 // WaitTimeout adds the latest successful hall snapshot to a local timeout.

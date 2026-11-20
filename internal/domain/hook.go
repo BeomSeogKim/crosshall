@@ -680,7 +680,8 @@ func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBindi
 		filter = ""
 	}
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+noClosedObligation+` `+filter+`
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
+			AND `+noClosedObligation+` `+filter+`
 		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
 	if err != nil {
 		return err

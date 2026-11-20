@@ -135,11 +135,13 @@ def exercise(writer, reader, owner, shell, spool, checks):
     delayed = writer.call("ask", "@reader", "Check the longer greeting.", "--re", msg, "--due", "30m")
     open_mail(reader, delayed["id"], "ask", "writer")
     choose(shell, "The review is pending at the reporting point. Enter answer, more-time, or decline.", "more-time")
-    update = reader.call("reply", delayed["id"], "--more-time", "Checking the line length.")
-    open_mail(writer, update["id"], "reply", "reader")
-    req, recipient = receipt(writer, delayed["id"], "open")
-    require(req["due_at_ms"] == delayed["due_at_ms"] and recipient["more_time_at_ms"] is not None,
-            "more-time changed the deadline or failed to record progress")
+    reader.call("reply", delayed["id"], "--more-time", "Checking the line length.")
+    empty(writer)
+    req, = writer.call("waiting")["requests"]
+    recipient, = req["recipients"]
+    require(req["id"] == delayed["id"] and req["due_at_ms"] == delayed["due_at_ms"]
+            and recipient["state"] == "open" and recipient["more_time_at_ms"] is not None
+            and not recipient.get("reply_unread"), "waiting did not preserve the open deadline and passive progress")
     final = reader.call("reply", delayed["id"], "The longer greeting fits.")
     require(open_mail(writer, final["id"], "reply", "reader")["in_reply_to"] == delayed["id"],
             "final answer attached to a different request")

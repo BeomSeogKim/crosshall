@@ -587,3 +587,50 @@ func TestPublisherBlockedTransportLeavesScanAndTickResponsive(t *testing.T) {
 	f.requireAttempt(t, 1, domain.PublishSubmitted)
 	requireNoPublish(t, calls)
 }
+
+func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T) {
+	for _, retire := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retire=%t", retire), func(t *testing.T) {
+			f := newPublishTestFixture(t)
+			f.ask(t, 11)
+			stuck := make(chan struct{})
+			defer close(stuck)
+			started := make(chan struct{}, 1)
+			p := &publisher{db: f.db, timeout: 50 * time.Millisecond, abandon: 50 * time.Millisecond}
+			if retire {
+				f.reserve(t, true)
+				if err := p.recover(t.Context(), f.now); err != nil {
+					t.Fatal(err)
+				}
+				p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+					started <- struct{}{}
+					<-stuck // ignores its context
+					return true
+				}
+			} else {
+				p.transport.Send = func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+					started <- struct{}{}
+					<-stuck // ignores its context
+					return domain.PublishSubmitted
+				}
+			}
+			begun := time.Now()
+			tickPublisher(t, p, f.now, true)
+			awaitPublishTest(t, started)
+			awaitPublishTest(t, publishWorkersDone(p))
+			if elapsed := time.Since(begun); elapsed > 2*time.Second {
+				t.Fatalf("worker took %v past a 100ms bound", elapsed)
+			}
+			f.requireAttempt(t, 1, domain.PublishUncertain)
+			var queues []domain.PublishQueue
+			f.update(t, func(tx store.Tx) error {
+				var err error
+				queues, err = domain.HeldPublishQueues(t.Context(), tx)
+				return err
+			})
+			if len(queues) != 1 {
+				t.Fatalf("held queues %v: an unproven retirement released the lane", queues)
+			}
+		})
+	}
+}

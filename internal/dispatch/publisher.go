@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log"
@@ -16,8 +17,12 @@ const publishCoalesce = time.Second
 const publishTimeout = time.Second
 const publishRecordRetry = 250 * time.Millisecond
 
-// PublishTransport is injected by publisher tests. Both callbacks must stop
-// vendor work and return when canceled. Retired requires proof the queue is gone.
+// PublishTransport is injected by publisher tests. Both callbacks get a
+// context canceled at the deadline; a transport that runs a child process
+// should kill it then. The publisher does not rely on that: past the
+// deadline a send is recorded uncertain and a probe as not retired, and the
+// worker waits a bounded time for the callback to return. Retired requires
+// proof the queue is gone.
 type PublishTransport struct {
 	Send    func(context.Context, domain.PublishTarget, string) domain.PublishOutcome
 	Retired func(context.Context, domain.PublishQueue) bool
@@ -26,10 +31,13 @@ type PublishTransport struct {
 type publisher struct {
 	db        *store.Store
 	transport PublishTransport
-	due       map[domain.PublishBinding]time.Time
-	working   sync.Map
-	retiring  sync.Map
-	workers   sync.WaitGroup
+	// timeout bounds each transport call and abandon the wait for a
+	// canceled callback to return; zero means publishTimeout.
+	timeout, abandon time.Duration
+	due              map[domain.PublishBinding]time.Time
+	working          sync.Map
+	retiring         sync.Map
+	workers          sync.WaitGroup
 }
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
@@ -144,26 +152,51 @@ func (p *publisher) record(ctx context.Context, id int64, outcome domain.Publish
 }
 
 func (p *publisher) send(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
-	ctx, cancel := context.WithTimeout(ctx, publishTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
 	if ctx.Err() != nil {
 		return domain.PublishNotSubmitted
 	}
-	outcome := p.transport.Send(ctx, target, line)
-	if ctx.Err() != nil {
+	outcome, ok := bounded(ctx, cmp.Or(p.abandon, publishTimeout), func() domain.PublishOutcome {
+		return p.transport.Send(ctx, target, line)
+	})
+	if !ok || ctx.Err() != nil {
 		return domain.PublishUncertain
 	}
 	return outcome
 }
 
 func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue) {
-	probe, cancel := context.WithTimeout(ctx, publishTimeout)
+	probe, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
-	if probe.Err() == nil && p.transport.Retired(probe, queue) && probe.Err() == nil {
+	if probe.Err() != nil {
+		return
+	}
+	retired, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return p.transport.Retired(probe, queue) })
+	if ok && retired && probe.Err() == nil {
 		logPublishFailure(p.db.Update(probe, func(tx store.Tx) error {
 			return domain.RetirePublishQueue(probe, tx, queue, time.Now())
 		}))
 	}
+}
+
+// bounded runs call until ctx ends, then waits at most abandon for it to
+// return. ok is false when ctx ended first; a call that outlives abandon is
+// left running and logged.
+func bounded[T any](ctx context.Context, abandon time.Duration, call func() T) (result T, ok bool) {
+	done := make(chan T, 1)
+	go func() { done <- call() }()
+	select {
+	case result = <-done:
+		return result, true
+	case <-ctx.Done():
+	}
+	select {
+	case <-done:
+	case <-time.After(abandon):
+		log.Printf("dispatcher: publish: transport call did not return %v after its deadline", abandon)
+	}
+	return result, false
 }
 
 func logPublishFailure(err error) {

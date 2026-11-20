@@ -151,6 +151,7 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(w, "#%s is the default for %s.\n", r.Channel, r.RepoRoot)
+		fmt.Fprintln(w, "Unjoined Claude Code and Codex CLI sessions that started here can join automatically on their next prompt in this repository.")
 	default:
 		return fmt.Errorf("no owner display for %T", cmd)
 	}

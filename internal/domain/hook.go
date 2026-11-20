@@ -141,7 +141,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return OK(out)
 	}
 	if caller.PrincipalID == nil {
-		return s.hookAutoJoin(ctx, tx, req, cmd, 0, now)
+		return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
 	}
 	principal := *caller.PrincipalID
 	b, found, err := bindingOf(ctx, tx, principal)
@@ -164,7 +164,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return okOrErr(out, err) // a replay of a claimed callback prints nothing
 	}
 	if !found {
-		return s.hookAutoJoin(ctx, tx, req, cmd, principal, now)
+		return s.hookAutoJoin(ctx, tx, req, cmd, principal, nil, now)
 	}
 	// A repeated start of the same launch at the same time is a replay: no text.
 	var started int64
@@ -256,7 +256,7 @@ func UnmappedStart(source string, epoch uint64) wire.HookResult {
 }
 
 // hookAutoJoin joins the repository's default channel: generated alias, zero tokens.
-func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, now time.Time) (core.Result, error) {
+func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, prompt *HookEvent, now time.Time) (core.Result, error) {
 	if cmd.RepoRoot == "" {
 		return OK(UnmappedStart(cmd.Source, cmd.Epoch))
 	}
@@ -284,8 +284,10 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		if err := req.Enroll(ctx, tx, principal); err != nil {
 			return core.Result{}, err
 		}
-		if _, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil {
-			return core.Result{}, err
+		if prompt == nil {
+			if _, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil {
+				return core.Result{}, err
+			}
 		}
 	}
 	alias, err := generateAlias(ctx, tx, ch.id, req.Vendor)
@@ -311,17 +313,29 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := audit(ctx, tx, "joined", "channel:"+ch.name, principal, map[string]string{"alias": alias, "by": "hook"}, now); err != nil {
 		return core.Result{}, err
 	}
-	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+	started := cmd.HookAtMS
+	if prompt != nil {
+		started = 0 // No SessionStart committed for the recovered session.
+	}
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, started); err != nil {
 		return core.Result{}, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 		return core.Result{}, err
 	}
-	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
-		return core.Result{}, err
+	if prompt == nil {
+		if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
 		return core.Result{}, err
+	}
+	if prompt != nil {
+		member := core.Caller{Role: core.RoleMember, PrincipalID: &principal, BindingID: &bindingID}
+		if _, err := s.hookMemberEvent(ctx, tx, member, req, *prompt, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	seq, err := rosterSeq(ctx, tx, ch.id)
 	if err != nil {
@@ -420,16 +434,44 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		return hookUsage("unknown hook fact"), nil
 	}
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || cmd.EventRef == "" ||
-		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 {
+		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 ||
+		(cmd.EnrollRepoRoot != "" && (!cmd.CanRecoverEnrollment() || !validRepoRoot(cmd.EnrollRepoRoot))) {
 		return hookUsage("invalid hook.event arguments"), nil
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
-	if caller.Role != core.RoleMember || caller.PrincipalID == nil {
+	recoverEnrollment := caller.Role == core.RoleUnenrolled && caller.PrincipalID == nil &&
+		cmd.CanRecoverEnrollment() && cmd.HookAtMS <= ms(now)+futureSlackMS
+	if !recoverEnrollment && (caller.Role != core.RoleMember || caller.PrincipalID == nil) {
 		return OK(out)
 	}
-	principal := *caller.PrincipalID
 	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
 		return okOrErr(out, err)
+	}
+	if recoverEnrollment {
+		profile := cmd.Profile
+		profile.Mode = "unverified"
+		enroll := HookEnroll{wire.HookEnrollArgs{
+			Profile: profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
+			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
+		}}
+		cmd.LaunchRef, cmd.LaunchVerified, cmd.WantOutput = SessionLaunch, false, false
+		return s.hookAutoJoin(ctx, tx, req, enroll, 0, &cmd, now)
+	}
+	return s.hookMemberEvent(ctx, tx, caller, req, cmd, now)
+}
+
+func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEvent, now time.Time) (core.Result, error) {
+	out := wire.HookResult{Epoch: cmd.Epoch}
+	principal := *caller.PrincipalID
+	if cmd.LaunchRef != SessionLaunch {
+		var recovered bool
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(started_hook_at_ms), -1) = 0
+			FROM adapter_launch WHERE principal_id = ?`, principal).Scan(&recovered); err != nil {
+			return core.Result{}, err
+		}
+		if recovered {
+			cmd.LaunchRef, cmd.LaunchVerified = SessionLaunch, false
+		}
 	}
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {

@@ -33,7 +33,7 @@ func TestManifestEvents(t *testing.T) {
 		prompt, _ := m.event("UserPromptSubmit")
 		stop, _ := m.event("Stop")
 		end, _ := m.event("SessionEnd")
-		if !start.Enroll || !prompt.Notice || !stop.Stop || end.Fact != "session_ended" {
+		if !start.Enroll || !prompt.Notice || !prompt.RecoverEnroll || !stop.Stop || stop.RecoverEnroll || end.Fact != "session_ended" {
 			t.Errorf("incorrect effects for %s", adapter)
 		}
 		for _, unsupported := range []string{"PostToolUse", "SubagentStop", "owner"} {
@@ -125,12 +125,32 @@ func TestHookDiscardsPrivateFields(t *testing.T) {
 	const secret = "private-fixture-marker"
 	const body = `{"hook_event_name":"UserPromptSubmit","session_id":"room","turn_id":"turn","prompt":"private-fixture-marker","cwd":"/private-fixture-marker","transcript_path":"/private-fixture-marker","tool_input":{"nested":["private-fixture-marker"]}}`
 	got, err := parseFixture("codex", "UserPromptSubmit", body, nil)
+	if got.CWD != "/"+secret {
+		t.Fatal("prompt did not retain the local enrollment path")
+	}
+	m, _ := loadManifest("codex")
+	spec, _ := m.event("UserPromptSubmit")
+	req := makeRequest(time.Now(), m, spec, got, "", true, 1)
+	if strings.Contains(string(req.Args), secret) {
+		t.Fatal("unmapped prompt data survived in the request")
+	}
+	got.CWD = ""
 	if err != nil || strings.Contains(fmt.Sprintf("%+v", got), secret) {
 		t.Fatal("private input changed the result or survived in normalized event")
 	}
 	for _, bad := range []string{body + secret, strings.Replace(body, `"room"`, `"private-fixture-marker invalid"`, 1)} {
 		if _, err := parseFixture("codex", "UserPromptSubmit", bad, nil); err == nil || strings.Contains(err.Error(), secret) {
 			t.Fatal("diagnostic retained private input or invalid input passed")
+		}
+	}
+}
+
+func TestInvalidPromptCWDLeavesObservationIntact(t *testing.T) {
+	for _, fields := range []string{`"cwd":[]`, `"cwd":"relative"`, `"cwd":"/first","cwd":"/second"`} {
+		body := `{"hook_event_name":"UserPromptSubmit","session_id":"thread","turn_id":"turn",` + fields + `}`
+		event, err := parseFixture("codex", "UserPromptSubmit", body, nil)
+		if err != nil || event.CWD != "" || event.EventRef != "turn:UserPromptSubmit" {
+			t.Fatalf("invalid optional cwd altered the prompt observation: %+v (%v)", event, err)
 		}
 	}
 }

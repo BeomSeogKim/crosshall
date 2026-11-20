@@ -23,7 +23,7 @@
   },
   "events": {
     "SessionStart": {"enroll": true, "source_field": "source", "output": "context"},
-    "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context"},
+    "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context", "recover_enroll": true},
     "Stop": {"fact": "turn_finishing", "turn_required": true, "stop": true, "output": "context"},
     "StopFailure": {"fact": "turn_finishing", "turn_required": true},
     "Notification": {"fact": "approval_requested", "match_field": "notification_type", "match_value": "permission_prompt"},

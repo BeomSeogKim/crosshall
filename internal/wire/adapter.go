@@ -46,11 +46,18 @@ type HookEventArgs struct {
 	HookAtMS       int64       `json:"hook_at_ms"`
 	WantOutput     bool        `json:"want_output"`
 	Epoch          uint64      `json:"epoch"`
+	EnrollRepoRoot string      `json:"enroll_repo_root,omitempty"`
 	// Receipt records an observed publish notice as "publish:" followed by its IDs.
 	Receipt    string `json:"receipt,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ContinuationActive reports that a vendor Stop hook is already continuing the turn.
 	ContinuationActive bool `json:"continuation_active,omitempty"`
+}
+
+func (a HookEventArgs) CanRecoverEnrollment() bool {
+	return a.EnrollRepoRoot != "" && a.WantOutput && a.Fact == HookPromptSubmitted &&
+		a.TurnRef != "" && a.EventRef == a.TurnRef+":UserPromptSubmit" &&
+		(a.Profile.Adapter == "claude" || a.Profile.Adapter == "codex")
 }
 
 type HookRouteArgs struct {

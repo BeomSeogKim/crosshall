@@ -50,17 +50,18 @@ type manifest struct {
 }
 
 type eventSpec struct {
-	Name         string `json:"-"`
-	Fact         string `json:"fact"`
-	Output       string `json:"output"`
-	Enroll       bool   `json:"enroll"`
-	Notice       bool   `json:"notice"`
-	Stop         bool   `json:"stop"`
-	TurnRequired bool   `json:"turn_required"`
-	SourceField  string `json:"source_field"`
-	ReasonField  string `json:"reason_field"`
-	MatchField   string `json:"match_field"`
-	MatchValue   string `json:"match_value"`
+	Name          string `json:"-"`
+	Fact          string `json:"fact"`
+	Output        string `json:"output"`
+	Enroll        bool   `json:"enroll"`
+	RecoverEnroll bool   `json:"recover_enroll"`
+	Notice        bool   `json:"notice"`
+	Stop          bool   `json:"stop"`
+	TurnRequired  bool   `json:"turn_required"`
+	SourceField   string `json:"source_field"`
+	ReasonField   string `json:"reason_field"`
+	MatchField    string `json:"match_field"`
+	MatchValue    string `json:"match_value"`
 }
 
 func loadManifest(adapter string) (manifest, bool) {
@@ -95,6 +96,7 @@ type event struct {
 	receipt        string
 	stopActive     string
 	name           string
+	startupRepo    *string
 }
 
 const stopActiveField = "stop_hook_active"
@@ -196,6 +198,9 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 			}
 		}
 	}
+	if spec.RecoverEnroll && filepath.IsAbs(fields["cwd"]) && strings.IndexByte(fields["cwd"], 0) < 0 {
+		e.CWD = fields["cwd"]
+	}
 	if m.LaunchEnv != "" {
 		value, present := lookup(m.LaunchEnv)
 		if present {
@@ -238,6 +243,9 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 			selected = append(selected, "cwd")
 		}
 	}
+	if spec.RecoverEnroll {
+		selected = append(selected, "cwd")
+	}
 	if spec.Stop {
 		selected = append(selected, stopActiveField)
 	}
@@ -273,6 +281,14 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 			continue
 		}
 		_, duplicated := fields[key]
+		if key == "cwd" && spec.RecoverEnroll {
+			var path string
+			if duplicated || json.Unmarshal(raw, &path) != nil {
+				path = ""
+			}
+			fields[key] = path
+			continue
+		}
 		if key == stopActiveField {
 			flag := string(bytes.TrimSpace(raw))
 			if duplicated || (flag != "true" && flag != "false") {

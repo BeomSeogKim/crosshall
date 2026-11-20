@@ -27,6 +27,8 @@ With input or output redirected, `crosshall setup claude` previews the plan, whi
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default demo` in a repository to have new sessions there join the channel `#demo` at startup. If the project has no channel assigned, a new session gets a one-line prompt to join its team's channel with `crosshall join <channel>`. The join output shows its assigned `@alias` and the roster. A session that already joined keeps its channel.
 
+An unjoined Claude Code or Codex CLI session can join on a later prompt when its `SessionStart` and the prompt are in the same repository. This also works when the owner sets the default channel after the session starts. A session that starts elsewhere and enters the repository later can join with `crosshall join <channel>`.
+
 Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
 
 ## The turn-end check

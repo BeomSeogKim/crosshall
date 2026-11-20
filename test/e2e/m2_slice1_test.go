@@ -314,3 +314,38 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 		t.Fatal("a counter record carries an identity or content")
 	}
 }
+
+// Issue #100: the same session resumed in a second process. The end of one
+// process keeps the member while the other still runs; the end of the last
+// one departs it.
+func TestM2EndOfOneOfTwoProcessesKeepsTheMember(t *testing.T) {
+	_, writer, c := m2World(t)
+	process := func() *exec.Cmd {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		return cmd
+	}
+	first, second := process(), process()
+	a, b := c, c
+	a.pid, b.pid = strconv.Itoa(first.Process.Pid), strconv.Itoa(second.Process.Pid)
+	a.fire("SessionStart", map[string]any{"source": "startup"})
+	b.fire("SessionStart", map[string]any{"source": "resume"})
+	if !rosterHas(t, writer, "claude1") {
+		t.Fatal("the session did not join")
+	}
+
+	b.fireAndRecord("SessionEnd", wire.HookSessionEnded, map[string]any{"reason": "other"})
+	if !rosterHas(t, writer, "claude1") {
+		t.Fatal("the end of the resumed copy departed the member while the first process runs")
+	}
+
+	_ = first.Process.Kill()
+	_ = first.Wait()
+	a.fireAndRecord("SessionEnd", wire.HookSessionEnded, map[string]any{"reason": "other"})
+	if rosterHas(t, writer, "claude1") {
+		t.Fatal("the end of the last process did not depart the member")
+	}
+}

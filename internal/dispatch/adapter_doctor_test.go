@@ -125,8 +125,8 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 	}{
 		{"policy off", "UPDATE adapter_policy SET enabled = 0 WHERE adapter = 'claude'",
 			"UPDATE adapter_policy SET enabled = 1 WHERE adapter = 'claude'"},
-		{"latest launch ended", "UPDATE adapter_launch SET ended_hook_at_ms = 3 WHERE launch_ref = 'current-claude'",
-			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE launch_ref = 'current-claude'"},
+		{"every launch ended", "UPDATE adapter_launch SET ended_hook_at_ms = 3 WHERE principal_id = 1",
+			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE principal_id = 1"},
 		{"binding departed", "UPDATE binding SET state = 'departed' WHERE principal_id = 1",
 			"UPDATE binding SET state = 'live' WHERE principal_id = 1"},
 		{"wrong version", "UPDATE capability_evidence SET vendor_version = '2.1.328' WHERE vendor = 'claude' AND cap = 'turn_end'",

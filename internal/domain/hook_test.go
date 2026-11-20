@@ -401,6 +401,94 @@ func TestCleanEndOfOnlyTheLatestLaunchDeparts(t *testing.T) {
 	}
 }
 
+// testProcess groups test launch references "pid-<n>[-<start>]" by process.
+func testProcess(ref string) (string, bool) {
+	rest, ok := strings.CutPrefix(ref, "pid-")
+	digits, _, _ := strings.Cut(rest, "-")
+	return "pid-" + digits, ok && digits != ""
+}
+
+func TestCleanEndKeepsTheMemberWhileAnotherLaunchRuns(t *testing.T) {
+	f, writer := adapterChannel(t)
+	running := map[string]bool{"pid-1": true, "pid-2": true}
+	var asked []string
+	f.svc.LaunchAlive = func(ref string, started int64) bool {
+		asked = append(asked, fmt.Sprintf("%s@%d", ref, started))
+		return running[ref]
+	}
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000)) // the same session resumed in a second terminal
+	running["pid-2"] = false
+	f.hook(s, ended("pid-2", t0+2_000))
+	if f.memberRow(writer, "claude1").Alias == "" {
+		t.Fatal("the resumed copy's end departed the member while the first launch still runs")
+	}
+	if len(asked) != 1 || asked[0] != fmt.Sprintf("pid-1@%d", t0) {
+		t.Fatalf("liveness asked for %v, want only the other open launch", asked)
+	}
+	// The first launch ends too: nothing else runs, so the member departs.
+	running["pid-1"] = false
+	f.hook(s, ended("pid-1", t0+3_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("the last running launch's clean end did not depart")
+	}
+}
+
+func TestCleanEndDepartsWhenTheOtherLaunchIsGone(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(string, int64) bool { return false } // killed without an end
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000))
+	f.hook(s, ended("pid-2", t0+2_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("a launch that no longer runs kept the member")
+	}
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'pid-1' AND ended_hook_at_ms IS NULL`); n != 0 {
+		t.Fatal("the killed launch is still open")
+	}
+}
+
+func TestAKilledLaunchDoesNotHideTheRunningOne(t *testing.T) {
+	f, writer := adapterChannel(t)
+	running := map[string]bool{"pid-1": true}
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1_000)) // killed later without an end
+	f.hook(s, start("pid-3", "resume", t0+2_000))
+	f.hook(s, ended("pid-3", t0+3_000))
+	if f.memberRow(writer, "claude1").Alias == "" {
+		t.Fatal("departed while pid-1 runs")
+	}
+	// pid-2 was marked ended, so pid-1 is current and its end departs.
+	f.hook(s, ended("pid-1", t0+4_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("the end of the last running launch did not depart")
+	}
+}
+
+func TestAnOpenEarlierLaunchOfTheEndingProcessDoesNotKeepTheMember(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(string, int64) bool { return true } // the ending process still runs its hook
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1-a", "startup", t0))
+	f.hook(s, start("pid-1-b", "clear", t0+1_000)) // the end before /clear was never seen
+	f.hook(s, ended("pid-1-b", t0+2_000))
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`); n != 1 {
+		t.Fatal("an earlier launch of the same process kept the member")
+	}
+}
+
 func TestManualLeaveIsNotRestoredByAHook(t *testing.T) {
 	f, _ := adapterChannel(t)
 	s := f.newSession("claude")

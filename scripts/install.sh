@@ -48,7 +48,11 @@ if ! tag=$(release_tag --points-at "$commit"); then
   exit 1
 fi
 
-dest=${dest:-"$HOME/.local/bin"}
+default_destination=false
+if [[ -z $dest ]]; then
+  default_destination=true
+  dest="$HOME/.local/bin"
+fi
 mkdir -p -- "$dest"
 dest=$(cd -- "$dest" && pwd -P)
 target=$dest/crosshall
@@ -241,19 +245,95 @@ else
   # An entry created during the build must survive a first-time install.
   ln -- "$stage/crosshall" "$dest/"
 fi
-printf 'Installed crosshall %s at %s\n' "$version" "$target"
-if [[ ! $(command -v crosshall) -ef $target ]]; then
-  printf 'export PATH=%q:"$PATH"\n' "$dest"
-fi
-printf 'Next (in a plain terminal): crosshall owner start\n'
+owner_terminal() {
+  [[ -t 0 && -t 1 && ! ${CI+x} ]] || return 1
+  local marker
+  # Match ident.AllowOwner's presence check. The binary rechecks its caller.
+  for marker in CROSSHALL_ROUTE CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID \
+                CLAUDECODE AI_AGENT CODEX_SESSION_ID ANTIGRAVITY_AGENT; do
+    [[ ! ${!marker+x} ]] || return 1
+  done
+}
 
-[[ -t 0 && -t 1 && ! ${CI+x} ]] || exit 0
-# Match ident.AllowOwner's presence check. The binary rechecks the caller
-# before reading adapter status or saved choices.
-for marker in CROSSHALL_ROUTE CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID \
-              CLAUDECODE AI_AGENT CODEX_SESSION_ID ANTIGRAVITY_AGENT; do
-  [[ ! ${!marker+x} ]] || exit 0
-done
-if ! "$target" setup --offer; then
+path_marker='# crosshall: user PATH'
+path_profiles=()
+profile_writable() {
+  [[ ! -L $1 && -w ${1%/*} && ( ! -e $1 || ( -f $1 && -r $1 && -w $1 ) ) ]]
+}
+
+plan_path() {
+  local profile zhome=${ZDOTDIR:-$HOME}
+  local startup_profiles=("$HOME/.profile" "$HOME/.bashrc")
+  # Bash reads only the first readable login file. POSIX login shells use .profile.
+  for profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+    if [[ -f $profile && -r $profile ]]; then
+      startup_profiles+=("$profile")
+      break
+    fi
+  done
+  if [[ $zhome == /* && -d $zhome ]] &&
+     { [[ ${SHELL:-} == */zsh ]] || command -v zsh >/dev/null; }; then
+    startup_profiles+=("$zhome/.zshenv")
+  fi
+  for profile in "${startup_profiles[@]}"; do
+    if ! profile_writable "$profile"; then
+      printf 'Skipping shell startup file that cannot be updated safely: %q\n' "$profile" >&2
+    elif [[ ! -f $profile ]] || ! grep -Fqx -- "$path_marker" "$profile"; then
+      path_profiles+=("$profile")
+    fi
+  done
+}
+
+apply_path() {
+  local profile
+  for profile in "${path_profiles[@]}"; do
+    if ! profile_writable "$profile"; then
+      printf 'Shell startup file changed before it could be updated: %q\n' "$profile" >&2
+    elif [[ -f $profile ]] && grep -Fqx -- "$path_marker" "$profile"; then
+      continue
+    elif (umask 077; cat >> "$profile" <<'PATH_BLOCK'
+
+# crosshall: user PATH
+case ":${PATH-}:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
+esac
+# crosshall: end user PATH
+PATH_BLOCK
+    ); then
+      printf 'Updated PATH in %q\n' "$profile"
+    else
+      printf 'Could not update shell startup file: %q\n' "$profile" >&2
+    fi
+  done
+}
+
+printf 'Installed crosshall %s at %s\n' "$version" "$target"
+on_path=false
+if [[ $(command -v crosshall) -ef $target ]]; then
+  on_path=true
+  printf 'Next (in a plain terminal): crosshall owner start\n'
+else
+  printf 'Next (in a plain terminal): %q owner start\n' "$target"
+fi
+
+owner_terminal || exit 0
+if [[ $default_destination == true && $on_path == false && $HOME == /* && $HOME != *:* ]]; then
+  plan_path
+fi
+if [[ ${path_profiles[0]+planned} ]]; then
+  printf 'Add ~/.local/bin to PATH in these shell startup files:\n'
+  printf '  %q\n' "${path_profiles[@]}"
+  # FD 3 carries only the decision. Both streams stay attached to the terminal.
+  if ! CROSSHALL_INSTALL_PATH_CONSENT=1 "$target" setup --offer 3> "$stage/path-choice"; then
+    printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
+  fi
+  answer=$(cat "$stage/path-choice")
+  if [[ -z $answer ]]; then
+    printf 'Apply the PATH changes shown? [y/N] '
+    read -r answer || answer=
+  fi
+  case $answer in [yY]|[yY][eE][sS]) apply_path ;; esac
+elif ! CROSSHALL_INSTALL_PATH_CONSENT=0 "$target" setup --offer; then
   printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
 fi

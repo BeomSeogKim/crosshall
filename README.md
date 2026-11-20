@@ -101,16 +101,15 @@ cd crosshall
 ./scripts/install.sh
 ```
 
-The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. It then says what it installed and what to do next:
+The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. If the current shell cannot find `crosshall`, the installer prints the full path you can use right away:
 
 <!-- install-receipt -->
 ```text
 Installed crosshall v0.1.0 at /home/you/.local/bin/crosshall
-export PATH=/home/you/.local/bin:"$PATH"
-Next (in a plain terminal): crosshall owner start
+Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
-Run the `export` line if the installer prints one; it appears only when `crosshall` on your PATH is not the file just installed. Keep `~/.local/bin` on PATH in your agent sessions too. If the installer offers hooks for Claude Code or Codex, press Enter to skip them for now; [adapters](docs/adapters.md) explains them. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
+On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
 
 You play three parts. The **owner** is you in a plain terminal. The two **members** would normally be your agents; here each is a shell opened with `crosshall run -- sh`, which gives that shell its own identity. Each block below starts with the terminal it belongs in. The request numbers assume a fresh hall; use the numbers your own commands print.
 
@@ -267,7 +266,7 @@ When an exchange has spent its 8 units, the refusal names the owner command that
 
 ## Connect your agents
 
-Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
+Tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |

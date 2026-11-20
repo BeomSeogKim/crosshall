@@ -219,3 +219,22 @@ func TestTurnEndNoticeAllowsAttestedSessionScopedLaunch(t *testing.T) {
 		t.Fatalf("attested session-scoped launch returned %+v", r)
 	}
 }
+
+// An ask the turn-end notice announced is not offered again by the next
+// prompt; what the session was never told about still is.
+func TestPromptDoesNotRepeatATurnEndNotice(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	announced := f.turnEndAsk(writer, "reader", "during the turn")
+	at := f.now.UnixMilli()
+	if got := f.hook(reader, stop("launch", "turn-1", at+2)); got.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", announced) {
+		t.Fatalf("turn-end result = %+v", got)
+	}
+	if got := f.hook(reader, prompt("launch", "turn-2", at+3)); got.PendingLine != "" {
+		t.Fatalf("the next prompt repeated the notice: %+v", got)
+	}
+	later := f.noteTo(writer, "reader", 1)
+	if got := f.hook(reader, prompt("launch", "turn-3", at+4)); got.PendingLine != pendingLine(later...) {
+		t.Fatalf("a new note was not offered: %+v", got)
+	}
+}

@@ -269,6 +269,16 @@ func TestJoinPlainShowsRosterChanges(t *testing.T) {
 	}
 }
 
+func TestJoinCanAskForTheRulesAgain(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, domain.JoinResult{Channel: "checkout", Alias: "form", Restored: true})}
+	if _, _, code := run(t, Env{Transport: ft}, "join", "checkout", "--rules"); code != core.ExitOK || len(ft.calls) != 1 {
+		t.Fatalf("exit %d, calls %d", code, len(ft.calls))
+	}
+	if cmd, ok := ft.calls[0].Command.(domain.Join); !ok || !cmd.Rules || cmd.Channel != "checkout" {
+		t.Fatalf("command %+v", ft.calls[0].Command)
+	}
+}
+
 func TestWhoamiRejectsUnrecognizedDisclosureFlags(t *testing.T) {
 	for _, args := range [][]string{{"whoami", "full"}, {"whoami", "--full", "--full"}, {"whoami", "--full", "extra"}} {
 		if _, _, code := run(t, Env{}, args...); code != core.ExitUsage {

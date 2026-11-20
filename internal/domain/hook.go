@@ -213,18 +213,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return core.Result{}, err
 	}
 	out.Enrollment, out.Alias, out.Channel = "restored", b.alias, b.channelName
-	reason := "start"
-	if cmd.Source == "compact" {
-		var done int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM offer WHERE principal_id = ? AND launch_ref = ? AND reason = 'compact'`,
-			principal, cmd.LaunchRef).Scan(&done); err != nil {
-			return core.Result{}, err
-		}
-		if done == 0 {
-			reason = "compact"
-		}
-	}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, reason, &out, now); err != nil {
+	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(out)
@@ -679,21 +668,21 @@ func endSession(ctx context.Context, tx store.Tx, b hookBinding, principal int64
 
 // --- offers -----------------------------------------------------------------
 
-// offerPending commits an offer of the oldest unread items not offered yet
-// (all unread ones for a compact re-offer) before any output. It asks for a
-// notice acknowledgement only when nothing eligible remains.
+// offerPending commits an offer of the oldest unread items the session was
+// not told about yet, by an earlier offer or by a turn-end notice, before any
+// output. It asks for a notice acknowledgement only when nothing eligible
+// remains.
 func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch string, epoch uint64,
 	reason string, out *wire.HookResult, now time.Time) error {
 	if b.dnd {
 		return nil // held: no offer, nothing spent, no acknowledgement
 	}
-	filter := `AND NOT EXISTS (SELECT 1 FROM offer_item oi WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id)`
-	if reason == "compact" {
-		filter = ""
-	}
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
 		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
-			AND `+noClosedObligation+` `+filter+`
+			AND `+noClosedObligation+`
+			AND NOT EXISTS (SELECT 1 FROM offer_item oi WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id)
+			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
+				AND a.via = 'turn_end')
 		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
 	if err != nil {
 		return err

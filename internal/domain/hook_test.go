@@ -524,19 +524,22 @@ func TestRestoreComesBeforeTheRepositoryDefault(t *testing.T) {
 	}
 }
 
-func TestCompactReoffersUnreadOncePerLaunch(t *testing.T) {
+// A compaction keeps the session, so it offers only what the session was not
+// offered before.
+func TestCompactOffersOnlyWhatTheSessionWasNotOffered(t *testing.T) {
 	f, writer := adapterChannel(t)
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
 	f.hook(s, start("pid-1", "startup", t0))
-	ids := f.noteTo(writer, "claude1", 2)
+	f.noteTo(writer, "claude1", 2)
 	f.hook(s, prompt("pid-1", "t1", t0+1_000))
 	compact := func(at int64) wire.HookResult { return f.hook(s, start("pid-1", "compact", at)) }
-	if got := compact(t0 + 2_000); got.PendingLine != pendingLine(ids...) || got.Hint != "" {
-		t.Fatalf("compact %+v", got)
+	if got := compact(t0 + 2_000); got.PendingLine != "" || got.Hint != "" {
+		t.Fatalf("compact repeated an offer: %+v", got)
 	}
-	if got := compact(t0 + 3_000); got.PendingLine != "" {
-		t.Fatalf("second compact re-offered: %+v", got)
+	later := f.noteTo(writer, "claude1", 1)
+	if got := compact(t0 + 3_000); got.PendingLine != pendingLine(later...) {
+		t.Fatalf("compact with a new note: %+v", got)
 	}
 }
 
@@ -547,9 +550,12 @@ func TestAutoEnrolledMemberBootstrapsTheRosterOnItsFirstCommand(t *testing.T) {
 	f.hook(s, start("pid-1", "startup", t0))
 	wantOK(t, f.run(writer, Focus{Text: "release notes"}, "focus"))
 
+	// The hook's context gave the rules: the first command names the member
+	// and where the rules can be read again, and does not repeat them.
 	first := trailerOf(t, f.run(s, Inbox{}, ""))
-	if !strings.Contains(first.JoinHint, "@claude1") {
-		t.Fatalf("first command carries no hint: %+v", first)
+	if !strings.Contains(first.JoinHint, "@claude1") || !strings.Contains(first.JoinHint, "`crosshall join checkout --rules`") ||
+		strings.Contains(first.JoinHint, "run `crosshall inbox`") || len(first.JoinHint) > 170 {
+		t.Fatalf("first command hint: %+v", first)
 	}
 	if len(first.Changes) != 1 || first.Changes[0].Alias != "writer" || first.Changes[0].Change != "focus" || first.Seq == 0 {
 		t.Fatalf("first command changes %+v", first)

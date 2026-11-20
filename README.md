@@ -256,7 +256,7 @@ When an exchange has spent its 8 units, the refusal names the owner command that
 
 ## Connect your agents
 
-Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules.
+Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |

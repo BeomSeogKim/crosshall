@@ -506,8 +506,8 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	}
 	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq}
 	// The hint and the full roster repeat until a later command acknowledges
-	// them; after that a re-join shows the hint again under "Already in" and,
-	// of the roster, only what changed since the cursor.
+	// them; after that a re-join says "Already in", prints the rules only on
+	// request and, of the roster, only what changed since the cursor.
 	if !restored || !(existing.hintAcked || req.Ack > 0) {
 		out.Hint = Hint(alias, ch.name)
 		members, err := roster(ctx, tx, ch.id, principal, now)
@@ -521,6 +521,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		out.Members = members
 	} else {
 		out.Hint = RepeatHint(alias, ch.name)
+		if cmd.Rules {
+			out.Hint = RulesHint(alias, ch.name)
+		}
 		changes, err := rosterChanges(ctx, tx, ch.id, effectiveAck(existing.rosterAck, req.Ack, seq), principal, now)
 		if err != nil {
 			return core.Result{}, err
@@ -749,6 +752,7 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 	}
 	defer rows.Close()
 	var out []Member
+	departed := map[string]bool{}
 	for rows.Next() {
 		var (
 			m             Member
@@ -767,6 +771,12 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 		m.State, m.Route, m.Change = "unknown", "pull", change
 		if state != "live" {
 			m.Change = "departed"
+			// A reused alias departs once for the reader: the line names
+			// only the alias, so a second one would read as a repeat.
+			if departed[m.Alias] {
+				continue
+			}
+			departed[m.Alias] = true
 		}
 		out = append(out, m)
 	}

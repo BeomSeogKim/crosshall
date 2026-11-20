@@ -12,6 +12,9 @@ import (
 // publishWords is a member's publish state as who, doctor and the send
 // result show it.
 func publishWords(p domain.PublishStatus) string {
+	if p.Reason == "" && p.Notice == 0 && p.AtMS == 0 && p.UntilMS == 0 {
+		return p.State // an agent's view: the state word only
+	}
 	switch p.State {
 	case "held":
 		return fmt.Sprintf("held: notice %d unobserved since %s", p.Notice, clock(p.AtMS))
@@ -22,6 +25,9 @@ func publishWords(p domain.PublishStatus) string {
 		if p.AtMS != 0 {
 			words += " at " + clock(p.AtMS)
 		}
+		if p.UntilMS != 0 {
+			words += " until " + clock(p.UntilMS)
+		}
 		if p.Lift != "" {
 			words += "; " + p.Lift
 		}
@@ -31,16 +37,6 @@ func publishWords(p domain.PublishStatus) string {
 		return fmt.Sprintf("%s (%s)", p.State, p.Reason)
 	}
 	return p.State
-}
-
-// publishReason says briefly why a stored message is not published.
-func publishReason(p domain.PublishStatus) string {
-	switch p.State {
-	case "off", "candidate":
-		return "publish " + p.State + ": " + p.Reason
-	}
-	p.Lift = ""
-	return "publish " + publishWords(p)
 }
 
 func renderPublishSwitch(data []byte, w io.Writer) error {

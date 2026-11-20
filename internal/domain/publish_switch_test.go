@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,19 @@ func (p *publishFixture) publishState() store.PublishState {
 		state, _, err = store.ReadPublishState(ctx, tx, p.binding.ID, p.now)
 		return err
 	})
-	if who := p.memberRow(p.writer, "reader").Publish; who == nil || *who != state {
-		p.t.Fatalf("who shows %+v, the store %+v", who, state)
+	if who := p.memberRow(p.writer, "reader").Publish; who == nil || *who != (store.PublishState{State: state.State}) {
+		p.t.Fatalf("an agent's who shows %+v, want only the word %q", who, state.State)
+	}
+	var owner *store.PublishState
+	for _, ch := range decode[OwnerWhoResult](p.t, p.owner(OwnerWho{}, "")).Channels {
+		for _, m := range ch.Members {
+			if m.BindingID == p.binding.ID {
+				owner = m.Publish
+			}
+		}
+	}
+	if owner == nil || *owner != state {
+		p.t.Fatalf("owner who shows %+v, the store %+v", owner, state)
 	}
 	return state
 }
@@ -29,7 +41,7 @@ func (p *publishFixture) hasWork() bool {
 	var pending bool
 	p.update(func(ctx context.Context, tx store.Tx) error {
 		var err error
-		pending, err = HasPublishWork(ctx, tx, p.binding)
+		pending, err = HasPublishWork(ctx, tx, p.binding, p.now)
 		return err
 	})
 	return pending
@@ -115,19 +127,22 @@ func TestPublishSwitchCommandsReplayAndRefuseAgents(t *testing.T) {
 	wantCode(t, p.owner(OwnerPublish{Hall: true, Switch: "default"}, "hall-default"), 2, "")
 }
 
-func TestPublishAdapterSwitchAdvancesTheEpoch(t *testing.T) {
+func TestPublishAdapterSwitchKeepsTheEpochAndTheRoute(t *testing.T) {
 	p := newPublishFixture(t)
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "work")
 	off := "off"
 	policy := decode[store.AdapterPolicy](t, p.owner(AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: "claude", Publish: &off}}, "vendor-off"))
-	if policy.Publish != "off" || policy.Epoch != 2 {
+	if policy.Publish != "off" || policy.Epoch != 1 {
 		t.Fatalf("policy after --publish off: %+v", policy)
 	}
-	p.requirePublish("route of the old epoch", "off", "epoch changed")
+	p.requirePublish("adapter publish off", "off", "for claude")
 	def := "default"
 	policy = decode[store.AdapterPolicy](t, p.owner(AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: "claude", Publish: &def}}, "vendor-default"))
-	if policy.Publish != "" || policy.Epoch != 3 {
+	if policy.Publish != "" || policy.Epoch != 1 {
 		t.Fatalf("policy after --publish default: %+v", policy)
 	}
+	p.requirePublish("the same route publishes again without a new session", "available", "")
 }
 
 func TestPublishOffStopsAReservedAttemptBeforeTheFence(t *testing.T) {
@@ -164,27 +179,36 @@ func TestPublishOffStopsAReservedAttemptBeforeTheFence(t *testing.T) {
 	}
 }
 
-func TestPublishSuspensionReasonsAndHowTheyLift(t *testing.T) {
-	attempt := func(p *publishFixture, state, observation string, submitted bool) int64 {
-		p.t.Helper()
-		var submitting any
-		if submitted {
-			submitting = p.now.UnixMilli()
-		}
-		var seen any
-		if observation != "" {
-			seen = p.now.UnixMilli()
-		} else {
-			observation = ""
-		}
-		p.mutate(`INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
-				launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms,
-				resolved_at_ms, observed_at_ms, observation)
-			SELECT binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref, policy_epoch,
-				42, ?, ?, ?, ?, ?, ?, NULLIF(?, '') FROM publish_route WHERE binding_id = ?`,
-			p.queue.StartMS, state, p.now.UnixMilli(), submitting, p.now.UnixMilli(), seen, observation, p.binding.ID)
-		return int64(p.count(`SELECT MAX(id) FROM publish_attempt`))
+// observed submits one notice and records how its prompt was observed.
+func (p *publishFixture) observed(observation string) int64 {
+	p.t.Helper()
+	p.turnEndAsk(p.writer, "reader", fmt.Sprintf("work-%d", p.now.UnixNano()))
+	id := p.reserve()
+	if id == 0 || len(p.begin(id)) == 0 {
+		p.t.Fatal("no notice to observe")
 	}
+	p.resolve(id, PublishSubmitted)
+	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = ? WHERE id = ?`, p.now.UnixMilli(), observation, id)
+	p.update(func(ctx context.Context, tx store.Tx) error { return suspendPublish(ctx, tx, id, observation, p.now) })
+	return id
+}
+
+// notSubmitted has the transport fail to submit n notices in a row.
+func (p *publishFixture) notSubmitted(n int) int64 {
+	p.t.Helper()
+	var id int64
+	for range n {
+		p.now = p.now.Add(time.Millisecond)
+		p.turnEndAsk(p.writer, "reader", fmt.Sprintf("fail-%d", p.now.UnixNano()))
+		if id = p.reserve(); id == 0 || len(p.begin(id)) == 0 {
+			p.t.Fatal("no notice to submit")
+		}
+		p.resolve(id, PublishNotSubmitted)
+	}
+	return id
+}
+
+func TestPublishSuspensionReasonsAndHowTheyLift(t *testing.T) {
 	newLaunch := func(p *publishFixture) {
 		p.t.Helper()
 		p.now = p.now.Add(time.Minute)
@@ -192,59 +216,121 @@ func TestPublishSuspensionReasonsAndHowTheyLift(t *testing.T) {
 		p.proveRoute()
 		p.turnEndAsk(p.writer, "reader", "after-activation") // older work stays below the new watermark
 	}
-	resume := func(p *publishFixture) {
-		p.t.Helper()
-		p.now = p.now.Add(time.Second)
-		wantOK(p.t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
-	}
 	for _, test := range []struct {
 		name, reason string
-		suspend      func(p *publishFixture)
-		lift         func(p *publishFixture)
-		resumeLifts  bool
+		suspend      func(p *publishFixture) int64
 	}{
-		{"absorbed", "absorbed", func(p *publishFixture) { attempt(p, "submitted", "absorbed", true) }, newLaunch, true},
-		{"unknown", "unknown", func(p *publishFixture) { attempt(p, "uncertain", "unknown", true) }, newLaunch, true},
-		{"three not submitted", "3 notices not submitted", func(p *publishFixture) {
-			attempt(p, "not_submitted", "", false) // stopped at the fence: not counted
-			for range 3 {
-				attempt(p, "not_submitted", "", true)
-			}
-		}, newLaunch, true},
-		{"version", `version "`, func(p *publishFixture) {
-			p.mutate(`UPDATE capability_evidence SET vendor_version = 'other' WHERE cap = 'publish'`)
-		}, func(p *publishFixture) {
-			p.mutate(`INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
-				SELECT 'claude', json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
-					json_extract(profile, '$.mode'), json_extract(profile, '$.manifest_rev'), 'publish', 'tested', 'publish-test', 1
-				FROM adapter_launch WHERE launch_ref = ?`, publishTestLaunch)
-		}, false},
+		{"absorbed", "absorbed", func(p *publishFixture) int64 { return p.observed("absorbed") }},
+		{"unknown", "unknown", func(p *publishFixture) int64 { return p.observed("unknown") }},
+		{"three not submitted", "not submitted, the third in a row", func(p *publishFixture) int64 {
+			p.notSubmitted(2)
+			p.turnEndAsk(p.writer, "reader", "fenced")
+			id := p.reserve()
+			wantOK(t, p.run(p.reader, Publish{}, "fence-off"))
+			p.begin(id) // stopped at the fence: does not count
+			wantOK(t, p.run(p.reader, Publish{On: true}, "fence-on"))
+			p.turnEndAsk(p.writer, "reader", "after-fence")
+			p.requirePublish("two failures and a fence stop", "available", "")
+			return p.notSubmitted(1)
+		}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, by := range []string{"lift", "resume"} {
-				t.Run(by, func(t *testing.T) {
-					p := newPublishFixture(t)
-					p.proveRoute()
-					p.turnEndAsk(p.writer, "reader", "work")
-					test.suspend(p)
-					p.requirePublish("suspended", "suspended", test.reason)
-					if s := p.publishState(); s.Lift == "" {
-						t.Fatalf("suspension without a way to lift it: %+v", s)
-					}
-					if by == "lift" {
-						test.lift(p)
-						p.requirePublish("after the lift", "available", "")
-						return
-					}
-					resume(p)
-					if test.resumeLifts {
-						p.requirePublish("after resume", "available", "")
-					} else {
-						p.requirePublish("resume does not add a version to the profile list", "suspended", test.reason)
-					}
-				})
+		for _, by := range []string{"time", "launch end", "resume"} {
+			t.Run(test.name+" lifted by "+by, func(t *testing.T) {
+				p := newPublishFixture(t)
+				p.proveRoute()
+				notice := test.suspend(p)
+				p.turnEndAsk(p.writer, "reader", "while-suspended")
+				p.requirePublish("suspended", "suspended", test.reason)
+				s := p.publishState()
+				if s.Notice != notice || s.AtMS != p.now.UnixMilli() || s.UntilMS != p.now.Add(30*time.Minute).UnixMilli() || s.Lift == "" {
+					t.Fatalf("suspension %+v, want notice %d until 30 minutes on", s, notice)
+				}
+				switch by {
+				case "time":
+					p.now = p.now.Add(29 * time.Minute)
+					p.requirePublish("before the lift time", "suspended", test.reason)
+					p.now = p.now.Add(time.Minute)
+				case "launch end":
+					newLaunch(p)
+				case "resume":
+					p.now = p.now.Add(time.Second)
+					wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+				}
+				p.requirePublish("lifted by "+by, "available", "")
+			})
+		}
+	}
+}
+
+func TestPublishThirdSuspensionLastsForTheLaunch(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	for i := 1; i <= 3; i++ {
+		p.observed("absorbed")
+		s := p.publishState()
+		if lasting := s.UntilMS == 0; s.State != "suspended" || lasting != (i == 3) {
+			t.Fatalf("suspension %d: %+v", i, s)
+		}
+		p.now = p.now.Add(31 * time.Minute)
+	}
+	p.turnEndAsk(p.writer, "reader", "later")
+	p.requirePublish("the third suspension does not lift by time", "suspended", "absorbed")
+	p.now = p.now.Add(time.Second)
+	wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+	p.requirePublish("resume lifts it", "available", "")
+	p.now = p.now.Add(time.Millisecond)
+	p.observed("absorbed")
+	if s := p.publishState(); s.UntilMS == 0 {
+		t.Fatalf("resume did not restart the count: %+v", s)
+	}
+}
+
+func TestPublishVersionSuspension(t *testing.T) {
+	for _, by := range []string{"profile list", "resume"} {
+		t.Run(by, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			p.turnEndAsk(p.writer, "reader", "work")
+			p.mutate(`UPDATE capability_evidence SET vendor_version = 'other' WHERE cap = 'publish'`)
+			p.requirePublish("version not listed", "suspended", `version "`)
+			if by == "resume" {
+				wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+				p.requirePublish("resume does not add the version", "suspended", `version "`)
+				return
 			}
+			p.update(func(ctx context.Context, tx store.Tx) error {
+				var profile PublishProfile
+				err := tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
+					json_extract(profile, '$.mode'), json_extract(profile, '$.manifest_rev') FROM adapter_launch WHERE launch_ref = ?`,
+					publishTestLaunch).Scan(&profile.Version, &profile.Platform, &profile.Mode, &profile.ManifestRev)
+				if err != nil {
+					return err
+				}
+				profile.Vendor = "claude"
+				return SeedPublishProfiles(ctx, tx, []PublishProfile{profile}, p.now)
+			})
+			p.requirePublish("the shipped list holds the version", "available", "")
 		})
+	}
+}
+
+func TestPublishShippedProfilesAreSeededAndOwnerRowsKept(t *testing.T) {
+	p := newPublishFixture(t)
+	shipped := []PublishProfile{{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r"}}
+	seed := func(profiles []PublishProfile) {
+		p.update(func(ctx context.Context, tx store.Tx) error { return SeedPublishProfiles(ctx, tx, profiles, p.now) })
+	}
+	seed(shipped)
+	seed(shipped)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE result_ref = 'builtin' AND level = 'tested'`); n != 1 {
+		t.Fatalf("shipped rows %d, want 1", n)
+	}
+	seed(nil)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE result_ref = 'builtin'`); n != 0 {
+		t.Fatalf("a profile the binary no longer ships stayed: %d", n)
+	}
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE cap = 'publish' AND result_ref = 'publish-test'`); n != 1 {
+		t.Fatalf("seeding removed an imported row: %d", n)
 	}
 }
 
@@ -284,7 +370,7 @@ func TestPublishSendResultSaysWhetherAPublishIsPending(t *testing.T) {
 		return r.Recipients[0]
 	}
 	if d := next("candidate"); d.Next != "waits for its next crosshall command" || d.Publish == nil ||
-		d.Publish.State != "candidate" || d.Publish.Reason != "route not proven" {
+		*d.Publish != (PublishStatus{State: "candidate"}) {
 		t.Fatalf("candidate route: %+v", d)
 	}
 	p.proveRoute()

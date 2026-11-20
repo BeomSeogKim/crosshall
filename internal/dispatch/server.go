@@ -136,7 +136,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	publish := &publisher{db: db, transport: cfg.Publish}
+	publish := &publisher{db: db, transport: cfg.Publish, profiles: domain.TestedPublishProfiles}
 	if err := publish.recover(ctx, time.Now()); err != nil {
 		return err
 	}

@@ -11,10 +11,6 @@ import (
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
 const PublishHourlyCap = 30
 
-// publishNotSubmittedLimit is the number of transport non-submissions on one
-// launch that suspends publish for that launch.
-const publishNotSubmittedLimit = "3"
-
 // Publish eligibility shared by the publisher and the status views. Each
 // fragment reads the route r, its binding b, the adapter policy policy and
 // the member's current launch l.
@@ -24,15 +20,6 @@ const (
 	// member has not turned publish off for itself.
 	PublishSwitchesOn = `policy.enabled = 1 AND b.publish_quiet = 0
 		AND COALESCE(b.publish_owner, policy.publish, (SELECT h.enabled FROM hall_publish h WHERE h.id = 1), 1) = 1`
-	// PublishNotSuspended: on this launch, since the owner's last resume,
-	// no notice was absorbed or left unknown and the transport did not fail
-	// to submit three times.
-	PublishNotSuspended = `NOT EXISTS (SELECT 1 FROM publish_attempt s WHERE s.binding_id = r.binding_id
-			AND s.launch_ref = r.launch_ref AND s.observation IN ('absorbed', 'unknown')
-			AND s.observed_at_ms > b.publish_resumed_at_ms)
-		AND (SELECT COUNT(*) FROM publish_attempt s WHERE s.binding_id = r.binding_id AND s.launch_ref = r.launch_ref
-			AND s.state = 'not_submitted' AND s.submitting_at_ms IS NOT NULL
-			AND s.resolved_at_ms > b.publish_resumed_at_ms) < ` + publishNotSubmittedLimit
 	// PublishProfileTested: the profile list holds the launch's exact
 	// profile as tested for publish.
 	PublishProfileTested = `EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter
@@ -42,11 +29,19 @@ const (
 		AND e.manifest_rev = json_extract(l.profile, '$.manifest_rev'))`
 )
 
+// PublishNotSuspended holds when no suspension of the route's launch,
+// recorded since the owner's last resume, is still in force at nowMS.
+func PublishNotSuspended(nowMS int64) string {
+	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s WHERE s.binding_id = r.binding_id
+		AND s.launch_ref = r.launch_ref AND s.at_ms > b.publish_resumed_at_ms
+		AND (s.until_ms IS NULL OR s.until_ms > %d))`, nowMS)
+}
+
 // PublishState is one member's publish state as who and doctor show it.
 // State is off, candidate, available, held, suspended or capped. Notice is
 // the attempt a held or suspended state refers to; AtMS is when it was
-// held or suspended, UntilMS when a cap ends. Lift says how a suspension
-// ends.
+// held or suspended, UntilMS when a cap or a timed suspension ends. Lift
+// says how a suspension ends. Agents see State only.
 type PublishState struct {
 	State      string `json:"state"`
 	Reason     string `json:"reason,omitempty"`
@@ -114,31 +109,28 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	case dnd:
 		return off("do not disturb")
 	}
-	lift := fmt.Sprintf("lifts when the launch ends, or with crosshall owner publish resume %d", bindingID)
+	var reason string
 	var notice, at int64
-	var observation string
-	err = tx.QueryRowContext(ctx, `SELECT id, observation, observed_at_ms FROM publish_attempt
-		WHERE binding_id = ? AND launch_ref = ? AND observation IN ('absorbed', 'unknown') AND observed_at_ms > ?
-		ORDER BY observed_at_ms DESC, id DESC LIMIT 1`, bindingID, launchRef, resumedAt).Scan(&notice, &observation, &at)
+	var until sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT reason, notice, at_ms, until_ms FROM publish_suspension
+		WHERE binding_id = ? AND launch_ref = ? AND at_ms > ? AND (until_ms IS NULL OR until_ms > ?)
+		ORDER BY until_ms IS NULL DESC, until_ms DESC LIMIT 1`, bindingID, launchRef, resumedAt, now.UnixMilli()).
+		Scan(&reason, &notice, &at, &until)
 	if err == nil {
-		state.State, state.Reason, state.Notice, state.AtMS, state.Lift = "suspended",
-			fmt.Sprintf("notice %d %s", notice, observation), notice, at, lift
+		state.State, state.Notice, state.AtMS, state.UntilMS = "suspended", notice, at, until.Int64
+		state.Reason = fmt.Sprintf("notice %d %s", notice, reason)
+		if reason == "not_submitted" {
+			state.Reason = fmt.Sprintf("notice %d not submitted, the third in a row", notice)
+		}
+		resume := fmt.Sprintf("crosshall owner publish resume %d", bindingID)
+		state.Lift = "lifts then, when the launch ends, or with " + resume
+		if !until.Valid {
+			state.Lift = "the third suspension of this launch: lasts until the launch ends, or " + resume
+		}
 		return state, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, err
-	}
-	var failing bool
-	var last sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) >= `+publishNotSubmittedLimit+`, MAX(resolved_at_ms) FROM publish_attempt
-		WHERE binding_id = ? AND launch_ref = ? AND state = 'not_submitted' AND submitting_at_ms IS NOT NULL
-			AND resolved_at_ms > ?`, bindingID, launchRef, resumedAt).Scan(&failing, &last); err != nil {
-		return PublishState{}, false, err
-	}
-	if failing {
-		state.State, state.Reason, state.AtMS, state.Lift = "suspended",
-			publishNotSubmittedLimit+" notices not submitted, the last", last.Int64, lift
-		return state, true, nil
 	}
 	if current && listed && !versionListed {
 		state.State, state.Reason, state.Lift = "suspended", fmt.Sprintf("version %q not in the profile list", version),

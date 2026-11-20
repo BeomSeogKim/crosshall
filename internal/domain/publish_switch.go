@@ -75,9 +75,11 @@ func (s *Service) publish(ctx context.Context, tx store.Tx, caller core.Caller, 
 			return core.Result{}, err
 		}
 	}
-	if out.Publish, err = publishStatusOf(ctx, tx, m.binding, now); err != nil {
+	status, err := publishStatusOf(ctx, tx, m.binding, now)
+	if err != nil {
 		return core.Result{}, err
 	}
+	out.Publish = publishWord(status)
 	if err := observe(ctx, tx, m.principal, now); err != nil {
 		return core.Result{}, err
 	}

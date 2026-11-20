@@ -60,8 +60,8 @@ type Delivery struct {
 	SettledAtMS  int64  `json:"settled_at_ms,omitempty"`
 	MoreTimeAtMS int64  `json:"more_time_at_ms,omitempty"`
 	Next         string `json:"next,omitempty"`
-	// Publish is why a stored request or final reply is not published, for a
-	// recipient with a publish route that is not available.
+	// Publish is the state word of a recipient's publish route when the
+	// route exists but cannot publish this message now.
 	Publish *PublishStatus `json:"publish,omitempty"`
 }
 
@@ -399,7 +399,7 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]D
 				if status.State == "available" {
 					d.Next = "publish pending"
 				} else if found {
-					d.Publish = &status
+					d.Publish = &PublishStatus{State: status.State}
 				}
 			}
 		}

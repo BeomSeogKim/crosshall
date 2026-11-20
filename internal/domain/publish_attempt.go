@@ -33,7 +33,9 @@ const (
 	PublishUncertain    PublishOutcome = "uncertain"
 )
 
-const activePublishRoutes = `FROM publish_route r
+// activePublishRoutes selects the routes a notice may use at now.
+func activePublishRoutes(now time.Time) string {
+	return `FROM publish_route r
 	JOIN binding b ON b.id = r.binding_id AND b.principal_id = r.principal_id AND b.route_epoch = r.binding_epoch
 	JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation
 	JOIN adapter_policy policy ON policy.adapter = r.adapter AND policy.epoch = r.policy_epoch AND policy.enabled = 1
@@ -43,7 +45,8 @@ const activePublishRoutes = `FROM publish_route r
 	WHERE r.adapter = 'claude' AND r.state = 'active' AND r.socket_path IS NOT NULL
 		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
 		AND b.state = 'live' AND b.dnd = 0
-		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended + ` AND ` + store.PublishProfileTested
+		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileTested
+}
 
 const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id
@@ -78,8 +81,8 @@ func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBindin
 	return err
 }
 
-func PublishCandidates(ctx context.Context, tx store.Tx) ([]PublishBinding, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.binding_id, r.generation `+activePublishRoutes+
+func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]PublishBinding, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.binding_id, r.generation `+activePublishRoutes(now)+
 		` AND EXISTS (`+publishMessages+`) ORDER BY r.binding_id`)
 	if err != nil {
 		return nil, err
@@ -96,9 +99,9 @@ func PublishCandidates(ctx context.Context, tx store.Tx) ([]PublishBinding, erro
 	return bindings, rows.Err()
 }
 
-func HasPublishWork(ctx context.Context, tx store.Tx, binding PublishBinding) (bool, error) {
+func HasPublishWork(ctx context.Context, tx store.Tx, binding PublishBinding, now time.Time) (bool, error) {
 	var pending bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes+
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
 		` AND r.binding_id = ? AND r.generation = ? AND EXISTS (`+publishMessages+`))`,
 		binding.ID, binding.Generation).Scan(&pending)
 	return pending, err
@@ -110,7 +113,7 @@ func ReservePublish(ctx context.Context, tx store.Tx, binding PublishBinding, no
 		binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
 		policy_epoch, process_pid, process_start_ms, state, reserved_at_ms)
 		SELECT r.binding_id, r.principal_id, r.binding_epoch, r.generation, r.adapter, r.session_ref, r.launch_ref,
-			r.policy_epoch, p.process_pid, p.process_start_ms, 'reserved', ?1 `+activePublishRoutes+`
+			r.policy_epoch, p.process_pid, p.process_start_ms, 'reserved', ?1 `+activePublishRoutes(now)+`
 		AND r.binding_id = ?2 AND r.generation = ?3
 		AND EXISTS (`+publishMessages+`)
 		AND (SELECT COUNT(*) FROM publish_attempt a WHERE a.principal_id = r.principal_id AND
@@ -151,7 +154,7 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
 	var target PublishTarget
 	err := tx.QueryRowContext(ctx, `SELECT r.adapter, r.socket_path, p.process_pid, p.process_start_ms `+
-		activePublishRoutes+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ? AND a.state = 'reserved'
+		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ? AND a.state = 'reserved'
 			AND a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
 			AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
 			AND a.policy_epoch = r.policy_epoch AND a.process_pid = p.process_pid AND a.process_start_ms = p.process_start_ms)`, id).
@@ -194,7 +197,45 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 	if err != nil || n == 0 || outcome != PublishNotSubmitted {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM announcement WHERE via = 'publish' AND ref = ?`, id)
+	if _, err = tx.ExecContext(ctx, `DELETE FROM announcement WHERE via = 'publish' AND ref = ?`, id); err != nil || from != "submitting" {
+		return err
+	}
+	// Only a transport's non-submission counts: one stopped at the fence did
+	// not reach the vendor. Count since the owner's resume and since this
+	// launch's last suspension for the same reason.
+	var failures int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt this ON this.id = ?1
+		JOIN binding b ON b.id = this.binding_id
+		WHERE a.binding_id = this.binding_id AND a.launch_ref = this.launch_ref AND a.state = 'not_submitted'
+			AND a.submitting_at_ms IS NOT NULL AND a.resolved_at_ms > b.publish_resumed_at_ms
+			AND a.resolved_at_ms > COALESCE((SELECT MAX(s.at_ms) FROM publish_suspension s WHERE s.binding_id = this.binding_id
+				AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)`, id).Scan(&failures); err != nil {
+		return err
+	}
+	if failures < publishFailuresToSuspend {
+		return nil
+	}
+	return suspendPublish(ctx, tx, id, "not_submitted", now)
+}
+
+const (
+	publishFailuresToSuspend = 3
+	publishSuspension        = 30 * time.Minute
+	// publishLastingSuspension is the suspension of a launch that does not
+	// lift by itself.
+	publishLastingSuspension = 3
+)
+
+// suspendPublish stops publish to the attempt's launch for publishSuspension,
+// or until the launch ends once it is the launch's third suspension since
+// the owner's last resume.
+func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
+		SELECT a.binding_id, a.launch_ref, ?2, a.id, ?3,
+			CASE WHEN (SELECT COUNT(*) FROM publish_suspension s WHERE s.binding_id = a.binding_id
+				AND s.launch_ref = a.launch_ref AND s.at_ms > b.publish_resumed_at_ms) + 1 >= ?5 THEN NULL ELSE ?4 END
+		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id WHERE a.id = ?1`,
+		attempt, reason, ms(now), ms(now.Add(publishSuspension)), publishLastingSuspension)
 	return err
 }
 

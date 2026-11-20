@@ -302,7 +302,7 @@ func deliveryText(d domain.Delivery) string {
 	switch d.State {
 	case "stored":
 		if d.Publish != nil {
-			return "stored -> " + d.Next + " (" + publishReason(*d.Publish) + ")"
+			return "stored -> " + d.Next + " (publish " + d.Publish.State + ")"
 		}
 		return "stored -> " + d.Next
 	case "picked_up":

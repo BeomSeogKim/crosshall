@@ -31,6 +31,8 @@ type PublishTransport struct {
 type publisher struct {
 	db        *store.Store
 	transport PublishTransport
+	// profiles are the tested publish profiles this binary ships.
+	profiles []domain.PublishProfile
 	// timeout bounds each transport call and abandon the wait for a
 	// canceled callback to return; zero means publishTimeout.
 	timeout, abandon time.Duration
@@ -41,7 +43,12 @@ type publisher struct {
 }
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
-	return p.db.Update(ctx, func(tx store.Tx) error { return domain.RecoverPublish(ctx, tx, now) })
+	return p.db.Update(ctx, func(tx store.Tx) error {
+		if err := domain.SeedPublishProfiles(ctx, tx, p.profiles, now); err != nil {
+			return err
+		}
+		return domain.RecoverPublish(ctx, tx, now)
+	})
 }
 
 func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error {
@@ -49,7 +56,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	var attempts []int64
 	var queues []domain.PublishQueue
 	err := p.db.Update(ctx, func(tx store.Tx) error {
-		bindings, err := domain.PublishCandidates(ctx, tx)
+		bindings, err := domain.PublishCandidates(ctx, tx, now)
 		if err != nil {
 			return err
 		}
@@ -68,7 +75,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 					return err
 				}
 				if reserved {
-					pending, err := domain.HasPublishWork(ctx, tx, binding)
+					pending, err := domain.HasPublishWork(ctx, tx, binding, now)
 					if err != nil {
 						return err
 					}

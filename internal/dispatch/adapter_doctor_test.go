@@ -467,8 +467,10 @@ func TestDoctorReportsPublishStatePerMemberAndCounters(t *testing.T) {
 		VALUES (1, 1, 1, 1, 'claude', 's1', 'one', 1, 11, 1, 'submitted', ?1, ?1, ?1, ?1, 'own_turn'),
 		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 12, 1, 'submitted', ?1, ?1, ?1, ?1, 'absorbed'),
 		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 13, 1, 'not_submitted', ?1, ?1, ?1, NULL, NULL),
-		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 14, 1, 'submitted', ?2, ?2, ?2, ?2, 'own_turn')`,
-			at, day.UnixMilli()-1)
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 14, 1, 'submitted', ?2, ?2, ?2, ?2, 'own_turn');
+		INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
+		VALUES (1, 'one', 'absorbed', 2, ?1, ?3)`,
+			at, day.UnixMilli()-1, at+30*60*1000)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -494,7 +496,7 @@ func TestDoctorReportsPublishStatePerMemberAndCounters(t *testing.T) {
 		t.Fatalf("members %+v", p.Members)
 	}
 	if m := p.Members[0]; m.Alias != "absorbed" || m.State.State != "suspended" || m.State.Reason != "notice 2 absorbed" ||
-		m.State.AtMS != at || m.State.Lift == "" {
+		m.State.AtMS != at || m.State.UntilMS != at+30*60*1000 || m.State.Lift == "" {
 		t.Errorf("absorbed member %+v", m)
 	}
 	if m := p.Members[1]; m.Alias != "quiet" || m.State.State != "off" || m.State.Reason != "turned off by the member" {

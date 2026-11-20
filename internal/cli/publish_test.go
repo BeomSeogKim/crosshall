@@ -78,8 +78,9 @@ func TestPublishStatesRenderInWho(t *testing.T) {
 		{domain.PublishStatus{State: "available"}, "publish: available"},
 		{domain.PublishStatus{State: "off", Reason: "turned off by the member"}, "publish: off (turned off by the member)"},
 		{domain.PublishStatus{State: "held", Notice: 4, AtMS: at}, "publish: held: notice 4 unobserved since " + clock(at)},
-		{domain.PublishStatus{State: "suspended", Reason: "notice 4 absorbed", AtMS: at, Lift: "lifts when the launch ends"},
-			"publish: suspended: notice 4 absorbed at " + clock(at) + "; lifts when the launch ends"},
+		{domain.PublishStatus{State: "suspended", Reason: "notice 4 absorbed", AtMS: at, UntilMS: at + 1800000, Lift: "lifts then"},
+			"publish: suspended: notice 4 absorbed at " + clock(at) + " until " + clock(at+1800000) + "; lifts then"},
+		{domain.PublishStatus{State: "suspended"}, "publish: suspended"},
 		{domain.PublishStatus{State: "capped", UntilMS: at}, "publish: capped until " + clock(at)},
 	} {
 		ft := &fakeTransport{result: okResult(t, domain.WhoResult{Channel: "dev", Members: []domain.Member{{
@@ -104,8 +105,8 @@ func TestSendResultWordsForPublish(t *testing.T) {
 	stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "ask", "@pending", "work")
 	for _, want := range []string{
 		"@pending    stored -> publish pending\n",
-		"@candidate  stored -> waits for its next crosshall command (publish candidate: profile not tested)\n",
-		"@suspended  stored -> waits for its next crosshall command (publish suspended: version \"9\" not in the profile list)\n",
+		"@candidate  stored -> waits for its next crosshall command (publish candidate)\n",
+		"@suspended  stored -> waits for its next crosshall command (publish suspended)\n",
 		"@pull       stored -> waits for its next crosshall command\n",
 	} {
 		if !strings.Contains(stdout, want) {

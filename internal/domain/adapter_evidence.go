@@ -67,7 +67,7 @@ func (e AdapterEvidence) valid() bool {
 			return false
 		}
 		switch r.Cap {
-		case "enroll", "observe", "boundary", "reminder", "turn_end":
+		case "enroll", "observe", "boundary", "reminder", "turn_end", "publish":
 		default:
 			return false
 		}

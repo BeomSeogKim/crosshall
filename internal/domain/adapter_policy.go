@@ -57,7 +57,11 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		after.Publish = strings.TrimSuffix(*cmd.Publish, "default")
 	}
 	if after != before {
-		after.Epoch++
+		// The publish switch is read live at reservation and at the final
+		// fence, so changing it needs no new epoch and keeps routes.
+		if after.Enabled != before.Enabled || after.Reminder != before.Reminder {
+			after.Epoch++
+		}
 		after.ChangedAtMS = ms(now)
 		var publish any
 		if after.Publish != "" {

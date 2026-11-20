@@ -88,6 +88,7 @@ file=${url##*/}
 printf '%s\n' "$file" >> "$TEST_FETCHES"
 case "$TEST_CASE:$file" in
   missing:*.sha256|missing-archive:"$TEST_ASSET") respond 404 22 ;;
+  missing-http2:*.sha256) respond 404 56 ;;
   checksum-blocked:*.sha256) respond 403 22 ;;
   checksum-network:*.sha256) respond 000 7 ;;
   checksum-timeout:*.sha256) respond 000 28 ;;
@@ -153,11 +154,11 @@ esac
 GO
 chmod +x "$tools/go"
 checksum_reason="no verified release archive found for $version on $os/$arch because the checksum is unavailable"
-for test_case in bad missing checksum-blocked checksum-network checksum-timeout missing-archive wrong-commit; do
+for test_case in bad missing missing-http2 checksum-blocked checksum-network checksum-timeout missing-archive wrong-commit; do
   expected_requests=$asset_requests
   case "$test_case" in
     bad) reason='checksum mismatch' ;;
-    missing) reason="no release archive is published for $version on $os/$arch"; expected_requests=$asset.sha256 ;;
+    missing|missing-http2) reason="no release archive is published for $version on $os/$arch"; expected_requests=$asset.sha256 ;;
     checksum-blocked) reason=$checksum_reason; expected_requests=$asset.sha256 ;;
     checksum-network|checksum-timeout) reason="could not reach the release for $version on $os/$arch"; expected_requests=$asset.sha256 ;;
     missing-archive) reason="release archive unavailable for $version on $os/$arch" ;;

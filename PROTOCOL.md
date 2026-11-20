@@ -2,7 +2,7 @@
 
 This is the contract for an agent using Crosshall and for the person setting it up or checking its behavior. Section 6 shows how one person can host a hall as its owner and run the Writer and Reader in separate shells.
 
-H1–H5 are the hall's guarantees, rules 1–6 are the member's duties, C1 explains how to check a run, A1 limits what an adapter can do, and T1–T2 track the guidance the CLI gives its members.
+H1–H6 are the hall's guarantees, rules 1–6 are the member's duties, C1 explains how to check a run, A1 limits what an adapter can do, and T1–T2 track the guidance the CLI gives its members.
 
 ## 1. Scope and terms
 
@@ -10,7 +10,7 @@ The **hall** is the Crosshall service on your machine. Its dispatcher handles co
 
 A **note** conveys information. A **request** asks for an answer and creates one **obligation** per recipient. A **reply** refers to the request it answers. Each request has a **deadline**, the time by which a recipient owes a response. An **exchange** groups related requests under a shared budget.
 
-A member that is not waiting is **away** for delivery purposes. Sending to a joined member stores the message. The sender may see “waits for its next crosshall command” even if the recipient is already running `wait`. To see whether the recipient opened a request, the sender checks for pickup with `crosshall waiting`. Sending a message cannot wake a session that has ended its turn.
+A member that is not waiting is **away** for delivery purposes. Sending to a joined member stores the message. The sender may see “waits for its next crosshall command” even if the recipient is already running `wait`. To see whether the recipient opened a request, the sender checks for pickup with `crosshall waiting`. Sending a message wakes a session that has ended its turn only when that member has an available publish route (section 7); the send result then says “notice queued”.
 
 ## 2. Hall guarantees
 
@@ -19,8 +19,9 @@ An **operation key** identifies one attempted change. If a sender loses the resp
 - **H1. Attribution.** The store supplies the sender's identity. Names in message text do not change it.
 - **H2. Tracking.** Each recipient's obligation is tracked separately, with its deadline, until a final answer, decline or owner cancellation.
 - **H3. Atomic send.** A send commits in full or not at all. Retrying the same send under the same identity and operation key creates no second message. Delivery information returned on retry can reflect later activity.
-- **H4. Delivery.** The hall records messages for retrieval. It never types into another session's input or executes message content.
+- **H4. Delivery.** The hall records messages for retrieval. It never types into another session's input or executes message content. A publish notice travels over the agent's own message route, not its input line.
 - **H5. Failure.** A Crosshall hook that fails never blocks or fails a turn. A failed CLI command reports failure.
+- **H6. Publish.** The hall stores every message durably. For each eligible message and member it makes at most one best-effort offer through that member's publish route while the dispatcher runs, and no further offer on a route whose last notice is unaccounted for. Holds and unknown outcomes are shown. An offer is never a pickup, and a missed offer never loses a message: `crosshall read` recovers it.
 
 ## 3. Member rules
 
@@ -58,6 +59,7 @@ Use the same state directory and session identity throughout. In a plain shell w
 | Answer or report a delay | `crosshall reply <id> "result"`, adding `--decline` or `--more-time` for those outcomes |
 | Inspect outgoing requests, budget or history | `crosshall waiting`, `crosshall status`, `crosshall log` |
 | Wait for addressed work, including unread work already stored | `crosshall wait --existing --work-only --timeout 9m` |
+| Turn notices to your own session off or on | `crosshall publish off`, `crosshall publish on` |
 | End membership in the current channel | `crosshall leave` |
 
 The global options `--json` and `--key` go before the command. Commands that query or update the hall’s records, such as `inbox`, `ask` and `reply`, are **ledger commands** and support structured JSON results. Version 1 responses carry `v: 1` and `ok`. Success identifies the result with `kind`; failures give a machine-readable `code` and a `message`, with a `hint` when available. For a retryable send, supply `--key <operation-key>` on the first attempt and reuse that key and the same arguments on retry.
@@ -91,9 +93,16 @@ The owner hosts the fixture and supplies the state directory to the two shell-on
 
 Every required member action is available through the CLI alone (A1). An adapter may automate one of those actions or surface hall state sooner. It cannot grant authority to act on peer text or substitute an alert for a recorded pickup or reply.
 
+**Publish.** Where an adapter has a sender, the hall can offer new work to a session without the member polling. It writes one **notice**, a fixed line built from message IDs the store issued and nothing a peer wrote, for example `[crosshall] pending: 12 15. This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read.` A notice permits one action, `crosshall read`. It is not a pickup, and it is not evidence that the member saw the request.
+
+- **What is offered.** A request addressed to the member that is unread and still open, or an answer or decline to the member's own request. Notes and more-time replies never cause a notice. Messages stored within a second share one notice, up to ten IDs; a member gets at most 30 notices an hour.
+- **When a route publishes.** All of these hold: the session runs a verified launch whose exact profile (agent version, platform, mode, hook manifest revision) is listed as tested for publish; the dispatcher proved, from the operating system, that the registered address belongs to that session's process; the route was activated, and only messages stored after that moment are offered; no switch is off; and the route is not suspended, capped or held. Anything else is pull: the message waits for the member's next command, as before.
+- **State.** `crosshall who` shows one word per member with a route: `off`, `candidate` (not yet able to publish), `available`, `held` (an earlier notice is unaccounted for; nothing more is sent to that session until it is observed or its process ends), `suspended` or `capped`. Members see the word; the owner also sees the reason and how it lifts. The send result says `stored -> notice queued` only when a notice will offer that message, and otherwise what pull says.
+- **Rules unchanged.** Rule 1 and rule 4 hold with or without a route. A member with a shell and the CLI still conforms in full.
+
 ## 8. Command guidance since v0.1.0-rc.12
 
 Run `crosshall version` to check your installation. Both sets of guidance below first appeared in full in v0.1.0-rc.12 and are included in v0.1.0. They were incomplete in v0.1.0-rc.11.
 
 - **T1 — inbox and indications of work.** Plain `inbox` gives the due time on each owed request. Every member result from the hall ends with the unread and owed counts, `[crosshall] N unread, M owed.`, read in the same step as the command; it names `crosshall read` when something is unread. `crosshall read` without an ID takes the oldest unread messages, up to ten. Structured results provide unread `pending` IDs and an `owed_count` for already-read open requests.
-- **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait to a member that has to poll, and a wait result says whether to read or to wait again. Every refusal names a next step, and a repeated `join` names the command that shows the member rules again.
+- **T2 — guidance at the point of action.** Reading an open request gives its deadline and the three reply paths. An empty inbox suggests a bounded wait to a member that has to poll, and a wait result says whether to read or to wait again. Every refusal names a next step, and a repeated `join` names the command that shows the member rules again. A send result names a queued notice only when one will offer the message.

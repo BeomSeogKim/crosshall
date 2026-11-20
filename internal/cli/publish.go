@@ -53,10 +53,7 @@ func renderPublishSwitch(data []byte, w io.Writer) error {
 		action += ", unchanged"
 	}
 	if r.Switch == "resume" {
-		action = "Publish suspensions lifted"
-		if r.Publish != nil && r.Publish.State == "suspended" {
-			action = "Resume recorded, but publish stays suspended"
-		}
+		action = "Resume recorded" // the state line below says what follows
 	}
 	fmt.Fprintf(w, "%s for %s.\n", action, subject)
 	if r.Publish != nil {

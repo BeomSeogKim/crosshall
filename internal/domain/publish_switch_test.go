@@ -545,3 +545,58 @@ func TestPublishSuspendsOnlyOnThreeNonSubmissionsInARow(t *testing.T) {
 	p.turnEndAsk(p.writer, "reader", "after-three-in-a-row")
 	p.requirePublish("three in a row", "suspended", "the third in a row")
 }
+
+func TestPublishSendResultIsPullOnAHeldOrCappedRoute(t *testing.T) {
+	const pull = "waits for its next crosshall command"
+	send := func(p *publishFixture, key string) Delivery {
+		t.Helper()
+		return decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, key)).Recipients[0]
+	}
+	t.Run("held", func(t *testing.T) {
+		p := newPublishFixture(t)
+		p.proveRoute()
+		p.turnEndAsk(p.writer, "reader", "first")
+		id := p.reserve()
+		p.begin(id)
+		p.resolve(id, PublishSubmitted)
+		if s := p.publishState(); s.State != "held" {
+			t.Fatalf("state %+v, want held", s)
+		}
+		if d := send(p, "while-held"); d.Next != pull {
+			t.Fatalf("a held route said %q", d.Next)
+		}
+	})
+	t.Run("capped", func(t *testing.T) {
+		p := newPublishFixture(t)
+		p.proveRoute()
+		p.mutate(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+			INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
+				policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, resolved_at_ms, observed_at_ms, observation)
+			SELECT binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
+				policy_epoch, 42, ?, 'submitted', ?, ?, ?, ?, 'own_turn'
+			FROM publish_route CROSS JOIN seq WHERE binding_id = ?`,
+			store.PublishHourlyCap, p.queue.StartMS, p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.binding.ID)
+		if s := p.publishState(); s.State != "capped" {
+			t.Fatalf("state %+v, want capped", s)
+		}
+		if d := send(p, "while-capped"); d.Next != pull {
+			t.Fatalf("a capped route said %q", d.Next)
+		}
+	})
+}
+
+func TestPublishResumeCountsAnOutstandingReservationByItsOutcome(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "a")
+	a := p.reserve()
+	if a == 0 || len(p.begin(a)) == 0 {
+		t.Fatal("no notice A")
+	}
+	wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+	p.now = p.now.Add(time.Millisecond)
+	p.resolve(a, PublishNotSubmitted) // reserved before the resume, failed after it
+	p.notSubmitted(2)
+	p.turnEndAsk(p.writer, "reader", "after")
+	p.requirePublish("A, B and C failed after the resume", "suspended", "the third in a row")
+}

@@ -131,7 +131,7 @@ func (s *Service) ownerPublish(ctx context.Context, tx store.Tx, caller core.Cal
 		case "resume":
 			res, err = tx.ExecContext(ctx, `UPDATE binding SET
 				publish_resume_suspension = (SELECT COALESCE(MAX(id), 0) FROM publish_suspension),
-				publish_resume_attempt = (SELECT COALESCE(MAX(id), 0) FROM publish_attempt) WHERE id = ?`, cmd.BindingID)
+				publish_resume_outcome = (SELECT COALESCE(MAX(outcome_seq), 0) FROM publish_attempt) WHERE id = ?`, cmd.BindingID)
 		case "default":
 			res, err = tx.ExecContext(ctx, `UPDATE binding SET publish_owner = NULL WHERE id = ? AND publish_owner IS NOT NULL`, cmd.BindingID)
 		default:

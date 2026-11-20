@@ -1,10 +1,18 @@
 ALTER TABLE binding ADD COLUMN publish_owner INTEGER CHECK (publish_owner IN (0, 1));
 
--- The owner's last resume, in commit order: suspensions and attempts with
--- a higher ID came after it.
+-- The order in which transport outcomes were recorded. An attempt
+-- reserved before a resume and resolved after it is counted after it.
+ALTER TABLE publish_attempt ADD COLUMN outcome_seq INTEGER;
+
+UPDATE publish_attempt SET outcome_seq = id WHERE resolved_at_ms IS NOT NULL;
+
+CREATE INDEX publish_attempt_outcome ON publish_attempt(binding_id, launch_ref, outcome_seq);
+
+-- The owner's last resume, in commit order: suspensions with a higher ID
+-- and outcomes with a higher sequence came after it.
 ALTER TABLE binding ADD COLUMN publish_resume_suspension INTEGER NOT NULL DEFAULT 0;
 
-ALTER TABLE binding ADD COLUMN publish_resume_attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE binding ADD COLUMN publish_resume_outcome INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE adapter_policy ADD COLUMN publish INTEGER CHECK (publish IN (0, 1));
 

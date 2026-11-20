@@ -141,15 +141,16 @@ func TestResumeWordsAreHonest(t *testing.T) {
 		state domain.PublishStatus
 		want  string
 	}{
-		{domain.PublishStatus{State: "available"}, "Publish suspensions lifted for @opus in #dev (binding 7).\n"},
+		{domain.PublishStatus{State: "available"},
+			"Resume recorded for @opus in #dev (binding 7).\n  publish: available\n"},
 		{domain.PublishStatus{State: "suspended", Reason: `version "9" not in the profile list`},
-			"Resume recorded, but publish stays suspended for @opus in #dev (binding 7).\n"},
+			"Resume recorded for @opus in #dev (binding 7).\n  publish: suspended: version \"9\" not in the profile list\n"},
 	} {
 		ft := &fakeTransport{result: okResult(t, domain.PublishSwitchResult{BindingID: 7, Channel: "dev", Alias: "opus",
 			Switch: "resume", Changed: true, Publish: &test.state})}
 		stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "owner", "publish", "resume", "7")
-		if !strings.HasPrefix(stdout, test.want) {
-			t.Errorf("stdout %q, want prefix %q", stdout, test.want)
+		if stdout != test.want {
+			t.Errorf("stdout %q, want %q", stdout, test.want)
 		}
 	}
 }

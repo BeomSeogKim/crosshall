@@ -100,8 +100,12 @@ func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]Publi
 }
 
 // publishQueued reports whether a notice will offer this message to the
-// binding: its route can publish now and the message is eligible on it.
+// binding: its route is available now and the message is eligible on it.
 func publishQueued(ctx context.Context, tx store.Tx, binding, message int64, now time.Time) (bool, error) {
+	// A held or capped route cannot reserve now, so its message is pull.
+	if status, _, err := store.ReadPublishState(ctx, tx, binding, now); err != nil || status.State != "available" {
+		return false, err
+	}
 	var queued bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
 		` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, message).Scan(&queued)
@@ -197,7 +201,8 @@ func ResolvePublish(ctx context.Context, tx store.Tx, id int64, outcome PublishO
 }
 
 func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outcome PublishOutcome, now time.Time) error {
-	res, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET state = ?, resolved_at_ms = ?
+	res, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET state = ?, resolved_at_ms = ?,
+		outcome_seq = (SELECT COALESCE(MAX(outcome_seq), 0) + 1 FROM publish_attempt)
 		WHERE id = ? AND state = ?`, outcome, ms(now), id, from)
 	if err != nil {
 		return err
@@ -210,19 +215,18 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 		return err
 	}
 	// Only a transport's non-submission counts: one stopped at the fence did
-	// not reach the vendor. Count, in commit order, since the owner's resume
-	// and since this launch's last suspension for the same reason.
-	// The last publishFailuresToSuspend outcomes the transport gave on this
-	// launch must all be non-submissions: a submission in between breaks
-	// the run.
+	// not reach the vendor. The last publishFailuresToSuspend outcomes the
+	// transport gave on this launch, in the order they were recorded since
+	// the owner's resume and since the launch's last suspension for this
+	// reason, must all be non-submissions: a submission breaks the run.
 	var failures int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT a.state FROM publish_attempt a
 		JOIN publish_attempt this ON this.id = ?1 JOIN binding b ON b.id = this.binding_id
 		WHERE a.binding_id = this.binding_id AND a.launch_ref = this.launch_ref AND a.submitting_at_ms IS NOT NULL
-			AND a.state IN ('submitted', 'uncertain', 'not_submitted') AND a.id > b.publish_resume_attempt
-			AND a.id > COALESCE((SELECT MAX(s.notice) FROM publish_suspension s WHERE s.binding_id = this.binding_id
-				AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)
-		ORDER BY a.id DESC LIMIT ?2) WHERE state = 'not_submitted'`, id, publishFailuresToSuspend).Scan(&failures); err != nil {
+			AND a.state IN ('submitted', 'uncertain', 'not_submitted') AND a.outcome_seq > b.publish_resume_outcome
+			AND a.outcome_seq > COALESCE((SELECT MAX(n.outcome_seq) FROM publish_suspension s JOIN publish_attempt n ON n.id = s.notice
+				WHERE s.binding_id = this.binding_id AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)
+		ORDER BY a.outcome_seq DESC LIMIT ?2) WHERE state = 'not_submitted'`, id, publishFailuresToSuspend).Scan(&failures); err != nil {
 		return err
 	}
 	if failures < publishFailuresToSuspend {
@@ -253,7 +257,8 @@ func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason stri
 }
 
 func RecoverPublish(ctx context.Context, tx store.Tx, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET state = 'uncertain', resolved_at_ms = ?
+	_, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET state = 'uncertain', resolved_at_ms = ?,
+		outcome_seq = (SELECT COALESCE(MAX(outcome_seq), 0) FROM publish_attempt) + id
 		WHERE state = 'submitting'`, ms(now))
 	return err
 }

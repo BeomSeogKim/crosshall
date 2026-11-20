@@ -63,6 +63,14 @@ case "$*" in
 esac
 printf '%s\n' "$0" "$GOENV" "$GOFLAGS" "$GOWORK" "$GOTOOLCHAIN" "$TEST_TELEMETRY_DIR" \
   "$HOME" "$CROSSHALL_STATE_DIR" "$CLAUDE_CONFIG_DIR" "${CODEX_HOME-unset}" >> "$OFFER_LOG"
+if [ "${CROSSHALL_INSTALL_PATH_CONSENT:-}" = 1 ] && [ "${OFFER_CONFIRM_PATH:-}" = 1 ]; then
+  printf 'Apply the PATH and hook changes shown? [y/N] '
+  read -r answer || answer=
+  case $answer in
+    y) printf 'yes\n' >&3 ;;
+    *) printf 'no\n' >&3 ;;
+  esac
+fi
 exit "$OFFER_EXIT"
 `)
 	write(filepath.Join(f.Bin, "crosshall"), "#!/bin/sh\necho PATH-decoy >> \"$OFFER_LOG\"\nexit 1\n")
@@ -111,9 +119,9 @@ esac
 			t.Fatalf("binary installation failed: %v: %s", err, output)
 		}
 		lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(output), "\r\n", "\n")), "\n")
-		if len(lines) < 3 || lines[0] != "Installed crosshall v0.1.0 at "+target ||
-			!strings.HasPrefix(lines[1], "export PATH=") || lines[2] != "Next (in a plain terminal): crosshall owner start" ||
-			(!failSetup && len(lines) != 3) {
+		start := "Next (in a plain terminal): " + strings.ReplaceAll(target, " ", `\ `) + " owner start"
+		if len(lines) < 2 || lines[0] != "Installed crosshall v0.1.0 at "+target || lines[1] != start ||
+			(!failSetup && len(lines) != 2) {
 			t.Fatalf("unexpected install output: %q", output)
 		}
 		if failSetup && (!strings.Contains(string(output), "Optional adapter setup failed") || !strings.Contains(string(output), "setup to retry")) {
@@ -146,6 +154,181 @@ esac
 		t.Run(marker, func(t *testing.T) {
 			t.Setenv(marker, "") // Presence alone disqualifies the terminal.
 			check(t, false, false)
+		})
+	}
+
+	for _, tc := range []struct {
+		name, answer, prompt     string
+		combined, piped, changed bool
+		suffix, forge            bool
+	}{
+		{name: "path only", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true},
+		{name: "shared yes", answer: "y\n", prompt: "Apply the PATH and hook changes shown?", combined: true, changed: true},
+		{name: "shared no", answer: "n\n", prompt: "Apply the PATH and hook changes shown?", combined: true},
+		{name: "piped", answer: "y\n", piped: true},
+		{name: "suffix undo", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true, suffix: true},
+		{name: "forged ownership", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true, forge: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setuptest.New(t).Home
+			installedDir := filepath.Join(home, ".local", "bin")
+			t.Setenv("PATH", f.Bin+":"+installedDir+":/usr/bin:/bin")
+			t.Setenv("BASH_ENV", "")
+			zhome := filepath.Join(home, "zsh config")
+			if err := os.Mkdir(zhome, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("ZDOTDIR", zhome)
+			t.Setenv("CROSSHALL_TEST_SHADOW_DIR", f.Bin)
+			const reorder = "export PATH=\"$CROSSHALL_TEST_SHADOW_DIR:$HOME/.local/bin:$PATH\"\n"
+			write(filepath.Join(zhome, ".zprofile"), reorder)
+			write(filepath.Join(zhome, ".zshrc"), reorder)
+			t.Setenv("OFFER_LOG", filepath.Join(home, "offer"))
+			t.Setenv("OFFER_EXIT", "0")
+			t.Setenv("OFFER_CONFIRM_PATH", "")
+			if tc.combined {
+				t.Setenv("OFFER_CONFIRM_PATH", "1")
+			}
+			login := filepath.Join(home, ".bash_profile")
+			posix := filepath.Join(home, ".profile")
+			bashrc := filepath.Join(home, ".bashrc")
+			const existing = "export CROSSHALL_TEST_PROFILE=preserved\n"
+			noFinalNewline := "export CROSSHALL_TEST_OTHER_PROFILE=preserved"
+			if tc.suffix {
+				noFinalNewline = "# An unterminated user comment"
+			}
+			write(login, existing)
+			write(posix, noFinalNewline)
+			if tc.forge {
+				if err := os.WriteFile(bashrc, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run := func() string {
+				args := []string{"-B", terminal, "--answers", tc.answer}
+				if tc.piped {
+					args = append(args, "--pipe-in")
+				}
+				cmd := exec.Command(python, append(args, "--", script, "--source")...)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("install: %v\n%s", err, out)
+				} else {
+					return string(out)
+				}
+				return ""
+			}
+			out := run()
+			prompts := strings.Count(out, "changes shown?")
+			if tc.prompt == "" && prompts != 0 || tc.prompt != "" && (prompts != 1 || !strings.Contains(out, tc.prompt)) {
+				t.Fatalf("unexpected confirmation: %s", out)
+			}
+			profile, err := os.ReadFile(login)
+			if err != nil || !strings.HasPrefix(string(profile), existing) || (string(profile) != existing) != tc.changed {
+				t.Fatalf("login profile: %q, %v", profile, err)
+			}
+			if !tc.changed {
+				if got, err := os.ReadFile(posix); err != nil || string(got) != noFinalNewline {
+					t.Fatalf("profile changed without consent: %q, %v", got, err)
+				}
+				for _, path := range []string{bashrc, filepath.Join(zhome, ".zshenv"), filepath.Join(zhome, ".zlogin")} {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("profile appeared without consent: %s (%v)", path, err)
+					}
+				}
+				return
+			}
+			shown := strings.ReplaceAll(out, "\r\n", "\n")
+			block := strings.TrimPrefix(string(profile), existing)
+			if got := strings.Index(shown, block); got < 0 || got >= strings.Index(shown, tc.prompt) {
+				t.Fatalf("written PATH block was not shown before confirmation:\n%s", shown)
+			}
+			shells := [][]string{{"bash", "-lc"}, {"bash", "-ic"}, {"sh", "-lc"}}
+			if _, err := exec.LookPath("zsh"); err == nil {
+				shells = append(shells, []string{"zsh", "-c"}, []string{"zsh", "-lc"}, []string{"zsh", "-ic"}, []string{"zsh", "-lic"})
+			}
+			for _, shell := range shells {
+				cmd := exec.Command(shell[0], shell[1], "command -v crosshall && crosshall version")
+				if version, err := cmd.Output(); err != nil || string(version) != filepath.Join(installedDir, "crosshall")+"\nv0.1.0\n" {
+					t.Fatalf("new %v: %q, %v", shell, version, err)
+				}
+			}
+			if out := run(); strings.Contains(out, "changes shown?") {
+				t.Fatalf("reinstall asked about managed profiles: %s", out)
+			}
+			if again, err := os.ReadFile(login); err != nil || string(again) != string(profile) {
+				t.Fatalf("reinstall changed the managed profile: %q, %v", again, err)
+			}
+			updatedBlock := strings.Replace(string(profile), "case ", "# owner edited the block\ncase ", 1)
+			write(login, updatedBlock)
+			if output, err := exec.Command(script, "--remove-path", login).CombinedOutput(); err == nil ||
+				!strings.Contains(string(output), "Managed PATH block changed") {
+				t.Fatalf("the edited block was not refused: %v\n%s", err, output)
+			}
+			if got, err := os.ReadFile(login); err != nil || string(got) != updatedBlock {
+				t.Fatalf("removal changed the edited block: %q, %v", got, err)
+			}
+			write(login, string(profile))
+			laterPath := login
+			if tc.combined {
+				laterPath = bashrc
+			}
+			if tc.suffix {
+				laterPath = posix
+			}
+			const later = "export CROSSHALL_TEST_LATER=preserved"
+			data, err := os.ReadFile(laterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(laterPath, append(data, later...), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.forge {
+				profile, err := os.ReadFile(bashrc)
+				if err != nil || !strings.Contains(string(profile), "# crosshall: user PATH existing\n") {
+					t.Fatalf("existing empty profile: %q, %v", profile, err)
+				}
+				changedMarker := strings.Replace(string(profile), "# crosshall: user PATH existing\n", "# crosshall: user PATH created\n", 1)
+				if err := os.WriteFile(bashrc, []byte(changedMarker), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			zshenv := filepath.Join(zhome, ".zshenv")
+			zlogin := filepath.Join(zhome, ".zlogin")
+			zshrc := filepath.Join(zhome, ".zshrc")
+			if output, err := exec.Command(script, "--remove-path", login, posix, bashrc, zshenv, zlogin, zshrc).CombinedOutput(); err != nil {
+				t.Fatalf("undo PATH: %v\n%s", err, output)
+			}
+			want := map[string]string{login: existing, posix: noFinalNewline, zshrc: reorder}
+			if tc.suffix {
+				want[posix] += "\n"
+			}
+			want[laterPath] += later
+			if tc.forge {
+				want[bashrc] = ""
+			}
+			for path, data := range want {
+				if got, err := os.ReadFile(path); err != nil || string(got) != data {
+					t.Errorf("undo %s: got %q, %v; want %q", path, got, err, data)
+				}
+			}
+			for _, path := range []string{bashrc, zshenv, zlogin} {
+				if _, keep := want[path]; keep {
+					continue
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("undo left an unchanged installer-created file: %s (%v)", path, err)
+				}
+			}
+			if tc.suffix {
+				cmd := exec.Command("/bin/sh", "-c", `. "$1"; printf '%s' "$CROSSHALL_TEST_LATER"`, "sh", posix)
+				if got, err := cmd.Output(); err != nil || string(got) != "preserved" {
+					t.Errorf("profile assignment after undo: %q, %v", got, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(installedDir, ".crosshall-path-owners")); !os.IsNotExist(err) {
+				t.Errorf("undo left ownership records: %v", err)
+			}
 		})
 	}
 }

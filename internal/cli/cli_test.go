@@ -118,12 +118,11 @@ func TestOwnerChannelCreateIsOwnerCall(t *testing.T) {
 	}
 }
 
-// --pool sizes the channel's join pool; 0 makes it grant-only.
 func TestOwnerChannelCreateTakesAPool(t *testing.T) {
 	ft := &fakeTransport{result: okResult(t, domain.ChannelResult{Channel: "practice"})}
 	stdout, _, code := run(t, Env{Transport: ft, OwnerGate: func() string { return "" }},
 		"owner", "channel", "create", "practice", "--pool", "0")
-	if code != core.ExitOK || stdout != "#practice created, with no join pool: members get root tokens only from crosshall owner budget grant.\n" {
+	if code != core.ExitOK || stdout != "#practice created, with no join pool.\n" {
 		t.Fatalf("exit %d, stdout %q", code, stdout)
 	}
 	if cmd, ok := ft.calls[0].Command.(domain.CreateChannel); !ok || cmd.Pool == nil || *cmd.Pool != 0 {

@@ -26,7 +26,7 @@ func TestPublishMigrationBackfillsAnnouncementClaims(t *testing.T) {
 	if err := v7.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := Open(ctx, root)
+	upgraded, err := openWithMigrations(ctx, root, migrations[:8])
 	if err != nil {
 		t.Fatal(err)
 	}

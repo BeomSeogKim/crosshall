@@ -106,9 +106,9 @@ func openObligationExchanges(ctx context.Context, tx store.Tx, m member) (map[in
 // applies wins: a linked handoff, an explicit --re, an explicit --new, the
 // exchange where the caller owes an answer, its last exchange, else a new one.
 // A non-nil result is a refusal to return instead.
-func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution, *core.Result, error) {
+func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask, budget rootBudget) (attribution, *core.Result, error) {
 	if cmd.New && cmd.Re != 0 {
-		return linkedRoot(ctx, tx, m, cmd.Re)
+		return linkedRoot(ctx, tx, m, cmd.Re, budget)
 	}
 	owed, err := openObligationExchanges(ctx, tx, m)
 	if err != nil {
@@ -158,7 +158,7 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 	}
 
 	if cmd.New {
-		return newRoot(ctx, tx, m, owed)
+		return newRoot(ctx, tx, m, owed, budget)
 	}
 
 	switch len(owed) {
@@ -179,7 +179,7 @@ func attribute(ctx context.Context, tx store.Tx, m member, cmd Ask) (attribution
 			return attribution{exchange: e}, nil, err
 		}
 	}
-	return newRoot(ctx, tx, m, owed)
+	return newRoot(ctx, tx, m, owed, budget)
 }
 
 func existing(ctx context.Context, tx store.Tx, m member, id int64) (attribution, *core.Result, error) {
@@ -205,7 +205,7 @@ func canFollowHandoff(ctx context.Context, tx store.Tx, m member, exchange int64
 	return linked, err
 }
 
-func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64) (attribution, *core.Result, error) {
+func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64, budget rootBudget) (attribution, *core.Result, error) {
 	var remaining int64
 	var read bool
 	err := tx.QueryRowContext(ctx, `SELECT e.granted - e.spent, r.picked_up_at_ms IS NOT NULL
@@ -229,33 +229,35 @@ func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64) (attr
 			fmt.Sprintf("continue it with crosshall ask @alias \"...\" --re %d", request))
 		return attribution{}, &r, nil
 	}
-	return rootCredit(ctx, tx, m, request)
+	return rootCredit(ctx, tx, m, request, budget)
 }
 
 // newRoot checks that the caller may open a new exchange: nothing owed, no
 // request addressed to it left unread (even one already answered or
 // cancelled), and a root token.
-func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64) (attribution, *core.Result, error) {
+func newRoot(ctx context.Context, tx store.Tx, m member, owed map[int64]int64, budget rootBudget) (attribution, *core.Result, error) {
 	if len(owed) > 0 {
 		r := Refuse(core.CodeMustAnswerFirst,
 			"you owe an answer. Reply first, or replace --new with --re <request-id> to follow up on the request.", readOwedHint(owed))
 		return attribution{}, &r, nil
 	}
-	return rootCredit(ctx, tx, m, 0)
+	return rootCredit(ctx, tx, m, 0, budget)
 }
 
-func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int64) (attribution, *core.Result, error) {
-	tokens, unread, err := rootCreditState(ctx, tx, m)
+func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int64, budget rootBudget) (attribution, *core.Result, error) {
+	unread, err := unreadRootRequest(ctx, tx, m)
 	if err != nil {
 		return attribution{}, nil, err
 	}
 	if unread != 0 {
 		return unreadRoot(unread)
 	}
-	if tokens < 1 {
-		r := Refuse(core.CodeNoRootCredit,
-			"you have no root tokens to start a new exchange",
-			fmt.Sprintf("ask the owner: crosshall owner budget grant %s/@%s --roots 1", m.channelName, m.alias))
+	if budget.tokens < 1 {
+		next := fmt.Sprintf("ask the owner: crosshall owner budget grant %s/@%s --roots 1", m.channelName, m.alias)
+		if budget.nextAtMS != 0 {
+			next = "your next root token arrives at " + rootRefillTime(budget.nextAtMS)
+		}
+		r := Refuse(core.CodeNoRootCredit, "you have no root tokens to start a new exchange", next)
 		return attribution{}, &r, nil
 	}
 	return attribution{exchange: exchangeRow{granted: DefaultCredit}, isNew: true, parentRequestID: parentRequestID}, nil, nil
@@ -263,11 +265,11 @@ func rootCredit(ctx context.Context, tx store.Tx, m member, parentRequestID int6
 
 // The unread guard covers every addressed request, including settled ones.
 // Use the same guard when explaining how to open a new exchange.
-func rootCreditState(ctx context.Context, tx store.Tx, m member) (tokens, unread int64, err error) {
-	err = tx.QueryRowContext(ctx, `SELECT p.root_tokens, COALESCE((
-		 SELECT MIN(r.message_id) FROM recipient r JOIN message msg ON msg.id = r.message_id
-		 WHERE r.principal_id = p.id AND r.owes = 1 AND r.picked_up_at_ms IS NULL AND msg.channel_id = ?
-	), 0) FROM principal p WHERE p.id = ?`, m.channel, m.principal).Scan(&tokens, &unread)
+func unreadRootRequest(ctx context.Context, tx store.Tx, m member) (unread int64, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(r.message_id), 0)
+		FROM recipient r JOIN message msg ON msg.id = r.message_id
+		WHERE r.principal_id = ? AND msg.channel_id = ? AND r.owes = 1 AND r.picked_up_at_ms IS NULL`,
+		m.principal, m.channel).Scan(&unread)
 	return
 }
 
@@ -289,7 +291,7 @@ func readOwedHint(owed map[int64]int64) string {
 // charge checks that the exchange can pay for one request of n units. An ask
 // costs one unit, so a shortfall means a zero balance: it opens an exhaustion
 // episode, once, and returns the refusal with the ways on.
-func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, now time.Time) (*core.Result, error) {
+func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, budget rootBudget, now time.Time) (*core.Result, error) {
 	if n <= a.exchange.balance() {
 		return nil, nil
 	}
@@ -303,13 +305,13 @@ func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, 
 			return nil, err
 		}
 	}
-	tokens, unread, err := rootCreditState(ctx, tx, m)
+	unread, err := unreadRootRequest(ctx, tx, m)
 	if err != nil {
 		return nil, err
 	}
 	var direct sql.NullInt64
 	var owed int
-	if tokens > 0 && unread == 0 {
+	if budget.tokens > 0 && unread == 0 {
 		if err := tx.QueryRowContext(ctx, `SELECT MIN(CASE WHEN msg.exchange_id = ? AND msg.kind = 'ask'
 				AND r.picked_up_at_ms IS NOT NULL THEN msg.id END), COUNT(*)
 			FROM obligation o JOIN message msg ON msg.id = o.message_id
@@ -322,7 +324,9 @@ func charge(ctx context.Context, tx store.Tx, m member, a attribution, n int64, 
 	next := fmt.Sprintf("Ask the owner to run crosshall owner budget grant %s/x%d 1. Use crosshall reply for an answer or crosshall note for information. Both are free.",
 		m.channelName, a.exchange.id)
 	switch {
-	case tokens == 0:
+	case budget.tokens == 0 && budget.nextAtMS != 0:
+		next = "You have no root tokens. Your next root token arrives at " + rootRefillTime(budget.nextAtMS) + ". " + next
+	case budget.tokens == 0:
 		next = "You have no root tokens. " + next
 	case unread != 0:
 		next = fmt.Sprintf("You have root tokens. Run crosshall read %d before opening a new exchange. ", unread) + next

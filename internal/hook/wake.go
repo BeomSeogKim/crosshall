@@ -30,7 +30,7 @@ const StatePolicyName = "hook-policy"
 // itself. It stays inside the 1 s timeout the manifests install.
 const startDeadline = 800 * time.Millisecond
 
-const startWait = startDeadline - Budget - logAllowance
+const startWait = startDeadline - Budget - 2*logAllowance
 
 // spawnWait is what any other callback gives a start: enough to launch the
 // process, which goes on starting by itself.
@@ -50,20 +50,21 @@ const (
 
 // wake starts a stopped dispatcher when the adapter policy is on. It
 // returns the entry time the callback continues from: a fresh one after an
-// enrolling callback's start succeeded, else the original. A failed start
+// enrolling callback's start succeeded, with the state root for its log
+// line, else the original. A failed start
 // is written to dispatcher.log and the callback goes on as before.
-func wake(entry time.Time, args []string, locate func() (Paths, error)) time.Time {
+func wake(entry time.Time, args []string, locate func() (Paths, error)) (time.Time, string) {
 	m, ok := loadManifest(args[0])
 	spec, known := m.event(args[1])
 	if !ok || !known {
-		return entry
+		return entry, ""
 	}
 	wait := spawnWait
 	if spec.Enroll {
 		wait = startWait
 	}
 	stopped := make(chan bool, 1)
-	started := make(chan bool, 1)
+	started := make(chan string, 1)
 	go func() {
 		if !time.Now().Before(entry.Add(Budget)) {
 			stopped <- false
@@ -80,7 +81,10 @@ func wake(entry time.Time, args []string, locate func() (Paths, error)) time.Tim
 		defer cancel()
 		spawned, err := p.Start(ctx)
 		logStart(p.State, m.Adapter+" "+args[1], entry, spawned, spec.Enroll, err)
-		started <- err == nil
+		if err != nil {
+			p.State = ""
+		}
+		started <- p.State
 	}()
 	// Finding a running dispatcher stays inside the ordinary Budget.
 	check := time.NewTimer(time.Until(entry.Add(Budget)))
@@ -88,21 +92,21 @@ func wake(entry time.Time, args []string, locate func() (Paths, error)) time.Tim
 	select {
 	case s := <-stopped:
 		if !s {
-			return entry
+			return entry, ""
 		}
 	case <-check.C:
-		return entry
+		return entry, ""
 	}
 	done := time.NewTimer(time.Until(entry.Add(wait + logAllowance)))
 	defer done.Stop()
 	select {
-	case ok := <-started:
-		if ok && spec.Enroll {
-			return time.Now()
+	case state := <-started:
+		if state != "" && spec.Enroll {
+			return time.Now(), state
 		}
 	case <-done.C:
 	}
-	return entry
+	return entry, ""
 }
 
 // stoppedAndEnabled reads the policy from the rendezvous while it exists,
@@ -154,8 +158,22 @@ func logStart(stateRoot, callback string, entry time.Time, spawned, waited bool,
 			_ = state.Chtimes(startFailedName, now, now)
 		}
 	}
-	f, openErr := spool.OpenServerFile(state, "dispatcher.log", os.O_WRONLY|os.O_APPEND|os.O_CREATE)
-	if openErr != nil {
+	appendLog(state, callback, entry, line)
+}
+
+// logLine adds one line to dispatcher.log in the state root.
+func logLine(stateRoot, callback string, entry time.Time, line string) {
+	state, err := spool.OpenServerRoot(stateRoot)
+	if err != nil {
+		return
+	}
+	defer state.Close()
+	appendLog(state, callback, entry, line)
+}
+
+func appendLog(state *os.Root, callback string, entry time.Time, line string) {
+	f, err := spool.OpenServerFile(state, "dispatcher.log", os.O_WRONLY|os.O_APPEND|os.O_CREATE)
+	if err != nil {
 		return
 	}
 	defer f.Close()

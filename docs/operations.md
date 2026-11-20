@@ -14,7 +14,7 @@ On a fresh install or upgrade in your own terminal, the installer shows the elig
 
 ## Starting and stopping the dispatcher
 
-`crosshall owner start` starts the dispatcher and reports success only once it answers. Other ordinary commands also start it on demand; `crosshall wait` and `crosshall owner doctor` do not. `crosshall owner stop` asks it to stop and waits until it has released the state directory's lock. An ordinary command that arrives meanwhile starts a new dispatcher, so stop your agents' commands first when you need it to stay stopped, for example to copy the state. `crosshall owner doctor` shows the state directory, the rendezvous directory and the dispatcher's PID.
+`crosshall owner start` starts the dispatcher and reports success only once it answers. Other ordinary commands also start it on demand; `crosshall wait` and `crosshall owner doctor` do not. An agent hook whose adapter is on starts it too: a session start waits for it and joins, within 800 ms in all, inside the hook's 1 s timeout, so a session opened first after a reboot still joins; any other hook only launches it. A start the hook could not make, or one not ready in time (`start_pending`), is written to `dispatcher.log` in the state directory. `crosshall owner stop` asks it to stop and waits until it has released the state directory's lock. An ordinary command or an agent hook that arrives meanwhile starts a new dispatcher, so stop your agents' commands first when you need it to stay stopped, for example to copy the state. `crosshall owner doctor` shows the state directory, the rendezvous directory and the dispatcher's PID.
 
 ## Removing crosshall
 

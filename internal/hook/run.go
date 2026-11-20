@@ -30,17 +30,18 @@ type hookTransport interface {
 
 // Run serves one callback. Path resolution and counter preparation share the
 // callback budget with dispatch. Only the supervisor records an outcome.
-func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, rendezvous func() (string, error)) {
+func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
 	if len(args) != 2 {
 		return
 	}
+	entry = wake(entry, args, locate)
 	end := entry.Add(Budget)
 	prepare := func() (*os.Root, *hookCounter) {
-		path, err := rendezvous()
+		paths, err := locate()
 		if err != nil || !time.Now().Before(end) {
 			return nil, nil
 		}
-		rv, err := ident.OpenPrivateDir(path)
+		rv, err := ident.OpenPrivateDir(paths.Rendezvous)
 		if err != nil || !time.Now().Before(end) {
 			return rv, nil
 		}

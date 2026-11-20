@@ -14,8 +14,8 @@ import (
 func runHook(entry time.Time, args []string) {
 	// A vendor may close its stdout reader while a response is in flight.
 	signal.Ignore(syscall.SIGPIPE)
-	hook.Run(entry, args, os.Stdin, os.Stdout, func() (string, error) {
+	hook.Run(entry, args, os.Stdin, os.Stdout, func() (hook.Paths, error) {
 		paths, err := resolvePaths()
-		return paths.rendezvous, err
+		return hook.Paths{State: paths.state, Rendezvous: paths.rendezvous, Start: paths.launch(false).Start}, err
 	})
 }

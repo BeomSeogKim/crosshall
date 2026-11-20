@@ -15,6 +15,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -221,6 +222,9 @@ func (s *server) invalidateAdapterFile(verb string) error {
 	switch verb {
 	case wire.VerbAdapterSet:
 		name = adapterPolicyName
+		if err := s.state.Remove(hook.StatePolicyName); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	case domain.VerbChannelDefault:
 		name = adapterRepoSetName
 	case domain.VerbAdapterEvidence:
@@ -265,6 +269,7 @@ func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error
 			return err
 		}
 		return errors.Join(publishAdapterText(root, adapterPolicyName, policy),
+			publishAdapterText(s.state, hook.StatePolicyName, policy),
 			publishAdapterText(root, adapterRepoSetName, repos),
 			publishAdapterText(root, adapterTurnEndName, turnEnd))
 	})

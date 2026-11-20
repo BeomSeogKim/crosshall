@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -28,6 +29,10 @@ func adapterFilesFixture(t *testing.T) (*server, *os.Root) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { root.Close() })
+	if s.state, err = os.OpenRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.state.Close() })
 	return s, root
 }
 
@@ -223,6 +228,11 @@ func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {
 	if got := read(adapterPolicyName); got != "agy 0 0 0\nclaude 1 1 2\ncodex 0 0 0\n" {
 		t.Fatalf("initial policy: %q", got)
 	}
+	// The state root keeps the same policy for a hook that finds the
+	// rendezvous cleared by a reboot.
+	if copied, err := s.state.ReadFile(hook.StatePolicyName); err != nil || string(copied) != read(adapterPolicyName) {
+		t.Fatalf("state root policy copy: %q, %v", copied, err)
+	}
 	wantRepos := []string{
 		fmt.Sprintf("%x\n", sha256.Sum256([]byte("/example/alpha"))),
 		fmt.Sprintf("%x\n", sha256.Sum256([]byte("/example/beta"))),
@@ -240,6 +250,9 @@ func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {
 			return err
 		}
 		requireMissing(adapterPolicyName)
+		if _, err := s.state.Lstat(hook.StatePolicyName); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the state root still has the old policy: %v", err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

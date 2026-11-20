@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -313,7 +314,9 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "off-1"}); got != "" {
 		t.Fatalf("switched-off adapter printed %q", got)
 	}
-	// No dispatcher: the adapter is on, the dispatcher is gone.
+	// No dispatcher: the adapter is on, the dispatcher is gone. The hook
+	// launches a new one without waiting for it, so the call itself either
+	// finds none yet or already reaches it.
 	w.owner().must("owner", "adapter", "set", "claude", "--enabled", "on")
 	w.kill()
 	if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "dead-1"}); got != "" {
@@ -334,10 +337,15 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	last := strings.Fields(lines[len(lines)-1])
-	if len(last) != 4 || last[2] != "no_dispatcher" {
+	if len(last) != 4 || (last[2] != "no_dispatcher" && last[2] != "rpc") {
 		t.Errorf("the call without a dispatcher was counted as %v", last)
-	} else if ms, _ := strconv.Atoi(last[3]); ms > 50 {
+	} else if ms, _ := strconv.Atoi(last[3]); ms >= int(hook.Budget.Milliseconds()) {
 		t.Errorf("the call without a dispatcher waited %d ms", ms)
+	}
+	for deadline := time.Now().Add(3 * time.Second); len(w.dispatcherPIDs()) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the hook did not launch a dispatcher")
+		}
 	}
 	if strings.Contains(string(raw), c.key) || strings.Contains(string(raw), "synthetic note") {
 		t.Fatal("a counter record carries an identity or content")

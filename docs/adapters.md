@@ -49,7 +49,7 @@ At a prompt, a joined session can see a `[crosshall] pending:` line with unread 
 
 ## Turning adapters off and removing them
 
-`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before removing managed entries. With input or output redirected, it previews the removal. Add `--apply` to remove hooks without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
+`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before starting a removal. Bare `crosshall uninstall` uses the previous approval when resuming an interrupted removal. With input or output redirected, it previews the removal. Add `--apply` to remove hooks without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
 
 ## What doctor reports
 

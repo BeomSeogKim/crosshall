@@ -230,10 +230,7 @@ func removeCreatedConfigDir(path string, owned createdConfigDir) error {
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil
-		}
-		return err
+		return fmt.Errorf("lock Antigravity configuration directory %q for cleanup: %w", owned.Name, err)
 	}
 	info, err = location.dir.Lstat(owned.Name)
 	if errors.Is(err, os.ErrNotExist) {

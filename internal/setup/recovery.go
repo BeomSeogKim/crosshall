@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strings"
 )
 
 func pendingCanResume(op operation, action string) bool {
@@ -12,6 +14,9 @@ func pendingCanResume(op operation, action string) bool {
 		return false
 	}
 	for _, e := range op.Edits {
+		if e.CleanupStarted && e.After.Exists {
+			return false
+		}
 		current, err := readConfig(e.Path)
 		if err != nil {
 			return false
@@ -137,6 +142,29 @@ func pendingShutdownPlan(op operation, reason error) operation {
 	return shutdown
 }
 
+func cleanupRecoveredDirectories(state *os.Root, j journal, e *edit) error {
+	if e.Adapter != "agy" {
+		return nil
+	}
+	unpublishedSetup := e.After.Exists && !e.Before.Exists && strings.HasPrefix(e.Before.Dir, missingConfigDir) &&
+		e.Record != nil && len(e.Record.Dirs) != 0
+	if !unpublishedSetup && len(e.CleanupDirs) == 0 {
+		return nil
+	}
+	current, err := readConfig(e.Path)
+	if err != nil {
+		return err
+	}
+	now := stamp(current)
+	if unpublishedSetup && !now.Exists && e.matchesBefore(now) {
+		return cleanupEditDirectories(state, j, e, e.Record.Dirs)
+	}
+	if e.matchesAfter(now) {
+		_, err = finishEdit(state, j, e, now)
+	}
+	return err
+}
+
 func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bool, selected ...string) (journal, string, error) {
 	state, lock, err := s.lockState()
 	if err != nil {
@@ -159,19 +187,9 @@ func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bo
 				blocked = fmt.Errorf("%s temporary configuration: %w", e.Adapter, err)
 				break
 			}
-			if len(e.CleanupDirs) == 0 {
-				continue
-			}
-			current, err := readConfig(e.Path)
-			if err != nil {
-				blocked = fmt.Errorf("%s configuration: %w", e.Adapter, err)
+			if err := cleanupRecoveredDirectories(state, j, e); err != nil {
+				blocked = fmt.Errorf("%s configuration directory cleanup: %w", e.Adapter, err)
 				break
-			}
-			if now := stamp(current); e.matchesAfter(now) {
-				if _, err := finishEdit(state, j, e, now); err != nil {
-					blocked = fmt.Errorf("%s configuration directory cleanup: %w", e.Adapter, err)
-					break
-				}
 			}
 		}
 	}

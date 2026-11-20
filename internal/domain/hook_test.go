@@ -1020,3 +1020,38 @@ func TestEndsOfOverlappingLaunchesDepartAfterTheLast(t *testing.T) {
 		}
 	})
 }
+
+// A killed current launch, found while handling an event of a launch that is
+// not current, makes another launch current: its presence is reported.
+func TestPresenceFollowsTheLaunchThatBecomesCurrent(t *testing.T) {
+	f, writer := adapterChannel(t)
+	alive := map[string]bool{"pid-1": true, "pid-2": true, "pid-3": true}
+	f.svc.LaunchProcess = testProcess
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return alive[ref] }
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.hook(s, start("pid-2", "resume", t0+1000))
+	f.hook(s, prompt("pid-2", "b-turn", t0+1500))
+	f.hook(s, start("pid-3", "resume", t0+2000))
+	f.hook(s, prompt("pid-3", "c-turn", t0+2500))
+	f.hook(s, stop("pid-3", "c-turn", t0+3000))
+	wantFact := func(expected string) {
+		t.Helper()
+		if observed := f.memberRow(writer, "claude1").Observed; observed == nil || observed.Fact != expected {
+			t.Fatalf("observed %+v, want %s", observed, expected)
+		}
+	}
+	wantFact(FactTurnFinishing)
+	rosterPresence := func() int { return f.count(`SELECT COUNT(*) FROM roster_change WHERE field = 'presence'`) }
+	before := rosterPresence()
+	alive["pid-3"] = false
+	f.hook(s, prompt("pid-1", "a-turn", t0+4000)) // pid-1 is not current: pid-2 is
+	wantFact(FactPromptSubmitted)
+	if got := rosterPresence(); got != before+1 {
+		t.Errorf("roster presence events after C → B: %d, want %d", got, before+1)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = 'a-turn'`); n != 0 {
+		t.Fatal("the prompt of a launch that is not current opened a turn")
+	}
+}

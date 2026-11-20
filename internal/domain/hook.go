@@ -467,6 +467,11 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 				return core.Result{}, err
 			}
 		}
+		// The event itself changes nothing, but settling may have made
+		// another launch current, and with it the member's presence.
+		if settled && live {
+			return okOrErr(out, presenceChanged(ctx, tx, b.channel, principal, before, now))
+		}
 		return OK(out)
 	}
 	switch cmd.Fact {

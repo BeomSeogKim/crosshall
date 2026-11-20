@@ -70,3 +70,16 @@ func TestLaunchAliveRejectsAnExitedUnreapedProcess(t *testing.T) {
 		t.Fatalf("the child was reaped before the check: %v", err)
 	}
 }
+
+func TestProcessStartIsTheSameOnEveryCall(t *testing.T) {
+	first, err := processStartMS(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 1000 {
+		if again, err := processStartMS(os.Getpid()); err != nil || again != first {
+			t.Fatalf("call %d: start %d, first %d, %v", i, again, first, err)
+		}
+		time.Sleep(time.Millisecond) // cross clock buckets
+	}
+}

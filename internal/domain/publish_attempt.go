@@ -46,7 +46,7 @@ const activePublishRoutes = `FROM publish_route r
 		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
 		AND b.state = 'live' AND b.publish_quiet = 0 AND b.dnd = 0
 		AND NOT EXISTS (SELECT 1 FROM publish_attempt a
-			WHERE a.binding_id = r.binding_id AND a.launch_ref = r.launch_ref AND a.observation = 'absorbed')`
+			WHERE a.binding_id = r.binding_id AND a.launch_ref = r.launch_ref AND a.observation IN ('absorbed', 'unknown'))`
 
 const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id

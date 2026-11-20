@@ -231,8 +231,33 @@ func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {
 	if n := p.count(`SELECT COUNT(*) FROM announcement WHERE message_id = ?`, ask); n != 1 {
 		t.Fatal("unclassified receipt released the claim")
 	}
+	p.resolve(id, PublishSubmitted)
 	p.turnEndAsk(p.writer, "reader", "after-unknown")
-	if p.reserve() == 0 {
-		t.Fatal("the matched receipt did not settle the lane")
+	if p.reserve() != 0 {
+		t.Fatal("an unclassified receipt allowed another batch on the same launch")
 	}
+}
+
+func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	at := p.now.UnixMilli()
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
+	if n := p.count(`SELECT COUNT(*) FROM observation WHERE kind = 'approval_requested' AND turn_ref = ?`, unrecorded); n != 1 {
+		t.Fatal("later activity was not recorded")
+	}
+	if n := p.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = ?`, unrecorded); n != 0 {
+		t.Fatal("fixture recorded the missing prompt")
+	}
+	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt(unrecorded, publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "unknown")
+	p.verifyPromptOrigin(cmd, "unknown")
 }

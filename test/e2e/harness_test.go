@@ -42,6 +42,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "build failed:", err)
 		os.Exit(1)
 	}
+	// The first launch of a fresh build pays a one-time start cost (#95);
+	// pay it here so timed hook tests measure only the per-launch cost.
+	warm := exec.Command(binary, "version")
+	warm.Env = []string{}
+	if out, err := warm.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warm-up failed: %v: %s\n", err, out)
+		os.Exit(1)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

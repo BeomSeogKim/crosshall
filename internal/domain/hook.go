@@ -246,16 +246,26 @@ func resetCue(ctx context.Context, tx store.Tx, principal int64, b hookBinding, 
 	return strings.Join(lines, "\n"), nil
 }
 
+// UnmappedStart supplies the same guidance whether the hook's index or the
+// dispatcher's enrollment transaction discovers the missing channel.
+func UnmappedStart(source string, epoch uint64) wire.HookResult {
+	out := wire.HookResult{Enrollment: "none", Epoch: epoch}
+	if source == "startup" {
+		out.Hint = "[crosshall] No channel is set for this project. Join your team's channel with `crosshall join <channel>`."
+	}
+	return out
+}
+
 // hookAutoJoin joins the repository's default channel: generated alias, zero tokens.
 func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, now time.Time) (core.Result, error) {
-	out := wire.HookResult{Enrollment: "none", Epoch: cmd.Epoch}
 	if cmd.RepoRoot == "" {
-		return OK(out)
+		return OK(UnmappedStart(cmd.Source, cmd.Epoch))
 	}
 	ch, found, err := defaultChannel(ctx, tx, cmd.RepoRoot)
 	if err != nil || !found || ch.state != "active" {
-		return okOrErr(out, err)
+		return okOrErr(UnmappedStart(cmd.Source, cmd.Epoch), err)
 	}
+	out := wire.HookResult{Epoch: cmd.Epoch}
 	if principal == 0 {
 		if req.Enroll == nil {
 			return core.Result{}, errors.New("domain: hook enrollment without an enrollment link")

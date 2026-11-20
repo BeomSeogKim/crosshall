@@ -28,7 +28,7 @@ The driver judges observable action in a live run. It does not simulate an agent
 
 ## Reproduce a row
 
-Use Python 3.8 or later and Bash on macOS or Linux. For the rows above, build the recorded Crosshall revision with Go from a checkout that contains that revision. Run these commands from the checkout containing this page.
+Use Python 3.8 or later and Bash on macOS or Linux. For the rows above, use the binary and driver from the recorded Crosshall revision. Run these commands from a checkout that contains that revision.
 
 ```sh
 fixture=$(mktemp -d)
@@ -36,13 +36,13 @@ mkdir "$fixture/source"
 git archive 730db4f | tar -x -C "$fixture/source"
 go -C "$fixture/source" build -trimpath -ldflags '-X main.version=git-730db4f' \
   -o "$fixture/crosshall" ./cmd/crosshall
-python3 scripts/protocol-conformance.py run --crosshall "$fixture/crosshall" --reader shell
+python3 "$fixture/source/scripts/protocol-conformance.py" run --crosshall "$fixture/crosshall" --reader shell
 ```
 
 The last command reproduces the Bash row. To run a vendor row, make the driver and test binary available to the running agent. Assign it the sample greeting review. It must report pending work by the deadline. The owner will fund a separately authorized greeting review on request. Ask it to run the following through its shell tool and answer the three prompts. Use `claude`, `codex` or `agy` for the Reader and replace the version with the public version of that same client. A session that cannot identify its version can report `unknown`. The three native participants identified their client versions with `claude --version`, `codex --version` and `agy --version`. Antigravity used its standard sandbox. Crosshall independently checks the identity type, while the version label comes from the caller.
 
 ```sh
-python3 scripts/protocol-conformance.py run --crosshall /absolute/path/to/crosshall \
+python3 "$fixture/source/scripts/protocol-conformance.py" run --crosshall "$fixture/crosshall" \
   --reader codex --agent-version 0.170.0
 ```
 

@@ -171,7 +171,7 @@ func (s *Service) note(ctx context.Context, tx store.Tx, caller core.Caller, req
 		if err != nil || r.Status != core.ExitOK {
 			return r, err
 		}
-		return withCurrentNoteDelivery(ctx, tx, r)
+		return withCurrentNoteDelivery(ctx, tx, r, now)
 	}
 	to, refusal, err := audience(ctx, tx, m, Ask{To: cmd.To, All: cmd.All})
 	if err != nil || refusal != nil {
@@ -200,7 +200,7 @@ func (s *Service) note(ctx context.Context, tx store.Tx, caller core.Caller, req
 		return core.Result{}, err
 	}
 	out := NoteResult{ID: id, Channel: m.channelName}
-	if out.Recipients, err = deliveries(ctx, tx, id); err != nil {
+	if out.Recipients, err = deliveries(ctx, tx, id, now); err != nil {
 		return core.Result{}, err
 	}
 	r, err := OK(out)
@@ -210,12 +210,12 @@ func (s *Service) note(ctx context.Context, tx store.Tx, caller core.Caller, req
 	return r, record(ctx, tx, m.principal, req.OpKey, scope, cmd, r, now)
 }
 
-func withCurrentNoteDelivery(ctx context.Context, tx store.Tx, r core.Result) (core.Result, error) {
+func withCurrentNoteDelivery(ctx context.Context, tx store.Tx, r core.Result, now time.Time) (core.Result, error) {
 	var out NoteResult
 	if err := json.Unmarshal(r.Data, &out); err != nil {
 		return core.Result{}, err
 	}
-	d, err := deliveries(ctx, tx, out.ID)
+	d, err := deliveries(ctx, tx, out.ID, now)
 	if err != nil {
 		return core.Result{}, err
 	}

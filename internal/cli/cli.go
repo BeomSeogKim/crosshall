@@ -37,6 +37,8 @@ Member commands:
   note @a [@b ...] "..."                            Tell members something; no answer expected (or --all)
   log [--since <id>] [--limit <n>]                  Show the channel's history
   focus "..."                                       Say in one line what you are working on
+  publish on|off                                    Turn notices to your session on or off;
+                                                    on never overrides an owner's off
   leave                                             Leave your channel
   run -- <command> [args...]                        Run a command with its own identity
 
@@ -58,11 +60,19 @@ Owner commands (from a separate owner terminal):
   owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
+  owner budget policy <channel>[/@<alias>] [--refill <N/h|0>] [--ceiling <N>]
+                                                    Show or set automatic root token refill
   owner budget grant <channel>/x<id> <units>         Add exchange credit
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
   owner budget grant <channel> --pool <n>            Add root tokens to a channel's join pool
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
-  owner adapter set <adapter> [--enabled on|off] [--reminder on|off]  Change adapter policy
+  owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default]
+                                                    Change adapter policy
+  owner publish hall on|off                         Turn notices on or off for the hall
+  owner publish member <binding-id> on|off|default  Set notices for one member; the member
+                                                    switch beats the adapter switch, which
+                                                    beats the hall switch
+  owner publish resume <binding-id>                 Lift a member's automatic publish suspension
   owner adapter evidence <file>                     Record a conformance run's results
 
 Other:
@@ -194,6 +204,11 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 			return o.usage(err.Error())
 		}
 		return send(ctx, env, opts, Call{Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
+	case domain.VerbPublish:
+		if len(rest) != 1 || rest[0] != "on" && rest[0] != "off" {
+			return o.usage("usage: crosshall publish on|off")
+		}
+		return send(ctx, env, opts, Call{Command: domain.Publish{On: rest[0] == "on"}, OpKey: opKey(env, opts)}, stdout, stderr)
 	case "who":
 		if len(rest) != 0 {
 			return o.usage("who takes no arguments")
@@ -282,6 +297,12 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 		return runAdapterEvidence(ctx, env, opts, args, stdout, stderr)
 	case args[0] == "adapter":
 		return runAdapterPolicy(ctx, env, opts, args, stdout, stderr)
+	case args[0] == "publish":
+		cmd, err := parseOwnerPublish(args[1:])
+		if err != nil {
+			return o.usage(err.Error())
+		}
+		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
 	// read-ledger
 	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore" || args[0] == "depart":
 		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)

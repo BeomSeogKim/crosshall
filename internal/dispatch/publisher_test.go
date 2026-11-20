@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,7 +50,9 @@ func newPublishTestFixture(t *testing.T) *publishTestFixture {
 		INSERT INTO binding(id, principal_id, channel_id, alias, joined_at_ms) VALUES (2, 2, 1, 'worker', 1);
 		INSERT INTO adapter_policy(adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('claude', 1, 1, 1, 1);
 		INSERT INTO adapter_launch(principal_id, launch_ref, profile, verified, started_hook_at_ms)
-			VALUES (2, 'launch', '{}', 1, 1);
+			VALUES (2, 'launch', '{"vendor_version":"2.1.0","platform":"darwin-arm64","mode":"default","manifest_rev":"r1"}', 1, 1);
+		INSERT INTO capability_evidence(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
+			VALUES ('claude', '2.1.0', 'darwin-arm64', 'default', 'r1', 'publish', 'tested', 'publish-test', 1);
 		INSERT INTO publish_route(binding_id, principal_id, generation, adapter, session_ref, launch_ref,
 			launch_verified, policy_epoch, mode, socket_path, watermark_message_id, state, registered_at_ms, updated_at_ms)
 			VALUES (2, 2, 3, 'claude', 'session', 'launch', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1);
@@ -584,4 +587,104 @@ func TestPublisherBlockedTransportLeavesScanAndTickResponsive(t *testing.T) {
 	p.workers.Wait()
 	f.requireAttempt(t, 1, domain.PublishSubmitted)
 	requireNoPublish(t, calls)
+}
+
+func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T) {
+	for _, retire := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retire=%t", retire), func(t *testing.T) {
+			f := newPublishTestFixture(t)
+			f.ask(t, 11)
+			stuck := make(chan struct{})
+			defer close(stuck)
+			started := make(chan struct{}, 1)
+			p := &publisher{db: f.db, timeout: 50 * time.Millisecond, abandon: 50 * time.Millisecond}
+			if retire {
+				f.reserve(t, true)
+				if err := p.recover(t.Context(), f.now); err != nil {
+					t.Fatal(err)
+				}
+				p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+					started <- struct{}{}
+					<-stuck // ignores its context
+					return true
+				}
+			} else {
+				p.transport.Send = func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+					started <- struct{}{}
+					<-stuck // ignores its context
+					return domain.PublishSubmitted
+				}
+			}
+			begun := time.Now()
+			tickPublisher(t, p, f.now, true)
+			awaitPublishTest(t, started)
+			awaitPublishTest(t, publishWorkersDone(p))
+			if elapsed := time.Since(begun); elapsed > 2*time.Second {
+				t.Fatalf("worker took %v past a 100ms bound", elapsed)
+			}
+			f.requireAttempt(t, 1, domain.PublishUncertain)
+			var queues []domain.PublishQueue
+			f.update(t, func(tx store.Tx) error {
+				var err error
+				queues, err = domain.HeldPublishQueues(t.Context(), tx)
+				return err
+			})
+			if len(queues) != 1 {
+				t.Fatalf("held queues %v: an unproven retirement released the lane", queues)
+			}
+		})
+	}
+}
+
+func TestPublisherStartupSeedsTheShippedProfiles(t *testing.T) {
+	f := newPublishTestFixture(t)
+	p := &publisher{db: f.db, profiles: []domain.PublishProfile{{Vendor: "claude", Version: "9.9.9", Platform: "darwin-arm64",
+		Mode: "default", ManifestRev: "r1", ResultRef: "sha256:bb", CheckedAtMS: 7}}}
+	if err := p.recover(t.Context(), f.now); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	f.update(t, func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM capability_evidence WHERE cap = 'publish'
+			AND level = 'tested' AND source = 'builtin' AND checked_at_ms = 7 AND vendor_version = '9.9.9'`).Scan(&n)
+	})
+	if n != 1 {
+		t.Fatalf("shipped profile rows %d, want 1", n)
+	}
+}
+
+func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	f.reserve(t, true)
+	p := &publisher{db: f.db, timeout: 10 * time.Millisecond, abandon: 10 * time.Millisecond}
+	if err := p.recover(t.Context(), f.now); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	stuck := make(chan struct{})
+	release := sync.OnceFunc(func() { close(stuck) })
+	defer release()
+	p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+		calls.Add(1)
+		<-stuck // ignores its context
+		return false
+	}
+	for i := range 5 {
+		tickPublisher(t, p, f.now.Add(time.Duration(i)*time.Second), false)
+		awaitPublishTest(t, publishWorkersDone(p))
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d probes for one queue while the first is stuck, want 1", n)
+	}
+	release()
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		tickPublisher(t, p, f.now.Add(time.Minute), false)
+		awaitPublishTest(t, publishWorkersDone(p))
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("after the callback returned: %d probes, want a new one", n)
+	}
 }

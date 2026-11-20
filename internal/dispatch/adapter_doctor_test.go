@@ -430,3 +430,76 @@ func TestDoctorShowsOnlyReminderEvidenceForInstalledBuild(t *testing.T) {
 		t.Fatalf("Claude reminder after evidence import: %+v", r)
 	}
 }
+
+func TestDoctorReportsPublishStatePerMemberAndCounters(t *testing.T) {
+	cfg, _ := doctorFixture(t)
+	ctx := t.Context()
+	db, err := store.Open(ctx, cfg.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	state, err := spool.OpenServerRoot(cfg.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	day := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	now := day.Add(10 * time.Hour)
+	at := now.Add(-time.Minute).UnixMilli()
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+		INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('claude', 1, 0, 1, 1);
+		INSERT INTO channel(id, name, created_at_ms) VALUES (1, 'dev', 1);
+		INSERT INTO principal(id, kind, vendor, created_at_ms) VALUES (1, 'session', 'claude', 1), (2, 'session', 'claude', 1);
+		INSERT INTO binding(id, principal_id, channel_id, alias, state, joined_at_ms)
+		VALUES (1, 1, 1, 'absorbed', 'live', 1), (2, 2, 1, 'quiet', 'live', 1);
+		UPDATE binding SET publish_quiet = 1 WHERE id = 2;
+		INSERT INTO adapter_launch(principal_id, launch_ref, profile, verified, started_hook_at_ms) VALUES
+		  (1, 'one', '{"adapter":"claude","vendor_version":"2.1.0","platform":"darwin-arm64","mode":"default","manifest_rev":"r1"}', 1, 1),
+		  (2, 'two', '{"adapter":"claude","vendor_version":"2.1.0","platform":"darwin-arm64","mode":"default","manifest_rev":"r1"}', 1, 1);
+		INSERT INTO publish_route(binding_id, principal_id, generation, adapter, session_ref, launch_ref,
+			launch_verified, policy_epoch, mode, socket_path, watermark_message_id, state, registered_at_ms, updated_at_ms)
+		VALUES (1, 1, 1, 'claude', 's1', 'one', 1, 1, 'default', '/tmp/cc-socks/1.sock', 0, 'active', 1, 1),
+		       (2, 2, 1, 'claude', 's2', 'two', 1, 1, 'default', '/tmp/cc-socks/2.sock', 0, 'active', 1, 1);
+		INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
+			policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, resolved_at_ms, observed_at_ms, observation)
+		VALUES (1, 1, 1, 1, 'claude', 's1', 'one', 1, 11, 1, 'submitted', ?1, ?1, ?1, ?1, 'own_turn'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 12, 1, 'submitted', ?1, ?1, ?1, ?1, 'absorbed'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 13, 1, 'not_submitted', ?1, ?1, ?1, NULL, NULL),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 14, 1, 'submitted', ?2, ?2, ?2, ?2, 'own_turn');
+		INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
+		VALUES (1, 'one', 'absorbed', 2, ?1, ?3)`,
+			at, day.UnixMilli()-1, at+30*60*1000)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapters := []doctorAdapter{{InstallStatus: setup.InstallStatus{Adapter: "claude"}}}
+	if _, err := doctorStoreInfo(ctx, state, adapters, now); err != nil {
+		t.Fatal(err)
+	}
+	raw := (LaunchConfig{}).doctorResult("", nil, adapters, nil).Data
+	var got struct {
+		Adapters []struct {
+			Publish *store.DoctorPublishState
+		}
+	}
+	if err := json.Unmarshal(raw, &got); err != nil || len(got.Adapters) != 1 || got.Adapters[0].Publish == nil {
+		t.Fatalf("doctor JSON: %s (%v)", raw, err)
+	}
+	p := got.Adapters[0].Publish
+	if want := (store.DoctorPublishCounters{Date: "20261121", Submitted: 2, NotSubmitted: 1, OwnTurn: 1, Absorbed: 1}); p.Counters != want {
+		t.Errorf("counters %+v, want %+v (the previous day's notice is not counted)", p.Counters, want)
+	}
+	if len(p.Members) != 2 {
+		t.Fatalf("members %+v", p.Members)
+	}
+	if m := p.Members[0]; m.Alias != "absorbed" || m.State.State != "suspended" || m.State.Reason != "notice 2 absorbed" ||
+		m.State.AtMS != at || m.State.UntilMS != at+30*60*1000 || m.State.Lift == "" {
+		t.Errorf("absorbed member %+v", m)
+	}
+	if m := p.Members[1]; m.Alias != "quiet" || m.State.State != "off" || m.State.Reason != "turned off by the member" {
+		t.Errorf("quiet member %+v", m)
+	}
+}

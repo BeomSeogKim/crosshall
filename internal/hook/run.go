@@ -80,6 +80,12 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	}
 	leaf, gen, repo, outcome := resolveLeaf(ctx, rv, client, spec, e)
 	if outcome != "" {
+		if outcome == "unmatched" && spec.Enroll {
+			result := domain.UnmappedStart(e.Source, policy.Epoch)
+			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
+				return failure
+			}
+		}
 		return outcome
 	}
 	defer leaf.Close()
@@ -123,21 +129,8 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err := json.Unmarshal(reply.Response.Data, &result); err != nil {
 		return "refused"
 	}
-	output, err := present(spec, result)
-	if err != nil {
-		return "refused"
-	}
-	current, err := readPolicy(rv, m.Adapter)
-	if err != nil || !current.Enabled || current.Epoch != policy.Epoch || result.Epoch != current.Epoch {
-		return "stale_epoch"
-	}
-	if hookExpired(ctx) {
-		return "deadline"
-	}
-	if len(output) > 0 {
-		if _, err := stdout.Write(output); err != nil {
-			return "refused"
-		}
+	if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
+		return failure
 	}
 	if notice && result.Ack != nil && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
@@ -148,6 +141,26 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 		}
 	}
 	return "rpc"
+}
+
+func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout io.Writer) string {
+	output, err := present(spec, result)
+	if err != nil {
+		return "refused"
+	}
+	current, err := readPolicy(rv, adapter)
+	if err != nil || !current.Enabled || current.Epoch != epoch || result.Epoch != current.Epoch {
+		return "stale_epoch"
+	}
+	if hookExpired(ctx) {
+		return "deadline"
+	}
+	if len(output) > 0 {
+		if _, err := stdout.Write(output); err != nil {
+			return "refused"
+		}
+	}
+	return ""
 }
 
 func transportOutcome(ctx context.Context, err error) string {
@@ -311,6 +324,11 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 			if result.Cue != "" {
 				parts = append(parts, result.Cue)
 			}
+		case "none":
+			if result.Hint == "" {
+				return nil, nil
+			}
+			return presentContext(spec.Name, result.Hint)
 		default:
 			return nil, nil
 		}

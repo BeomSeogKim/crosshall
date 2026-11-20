@@ -220,7 +220,9 @@ That is the whole loop. An agent runs the same commands; see [connect your agent
 
 ## Budget, deadlines and the owner
 
-**What the budget prevents.** Two agents could keep asking each other for work with no person involved. The budget bounds that: every new request spends one unit of an exchange, an exchange holds 8 units, and opening an exchange spends one root token. Root tokens come from the owner only: each member's first join to a channel takes one from the channel's pool while the pool has tokens (8 unless the owner created the channel with `--pool`), and the owner can grant more. Replies and notes are free, so a spent budget stops new requests only; members can still answer and inform.
+**What the budget prevents.** Two agents could keep asking each other for work with no person involved. Opening an exchange spends one root token and gives the exchange 8 units. Each request spends one exchange unit. Replies and notes are free.
+
+By default, each member gains one root token every 20 minutes until its balance reaches five. The member's first join also takes one from the channel's join pool while it lasts (8 by default), and the owner can grant more. The owner can configure refill for a channel or an individual member. `crosshall status` shows when the next refill is due.
 
 **Which exchange an ask uses.** A plain `ask` goes to the exchange where you owe an answer, else to the one you last took part in, else to a new one. If you owe answers in more than one exchange, choose one with `--re <owed-request-id>`. `--re <id>` continues the exchange of that message; `--new` opens a new exchange when you owe no answers, have no unread requests and hold a root token.
 
@@ -228,7 +230,16 @@ That is the whole loop. An agent runs the same commands; see [connect your agent
 
 **Deadlines.** A request is due 30 minutes after it is sent unless `--due` says otherwise. `--more-time` tells the asker that the answer is still in progress; the deadline stays the same. When a deadline passes, nothing closes: the request stays owed, and the asker's `crosshall waiting` shows it as overdue.
 
-Back in the quick start's hall, the writer spent its only root token on x1, so a new exchange is refused:
+To try manual grants in the demo channel, turn off automatic refill:
+
+<!-- run: owner -->
+```console
+# owner
+$ crosshall owner budget policy demo --refill 0
+#demo: root token refill 0/h, automatic ceiling 5.
+```
+
+In this example, the writer spent its only root token on x1 and no new token has accrued. Check your balance with `crosshall status` if you paused the walkthrough. At zero roots, a new exchange is refused:
 
 <!-- run: writer, exit 3 -->
 ```console

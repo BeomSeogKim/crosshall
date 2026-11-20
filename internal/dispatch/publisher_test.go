@@ -745,7 +745,7 @@ func TestPublisherWithoutASenderAnyMoreRecordsNoSubmission(t *testing.T) {
 	f := newPublishTestFixture(t)
 	f.ask(t, 11)
 	id := f.reserve(t, false)
-	t.Cleanup(publish.Swap(publish.Shipped())) // the sender is gone after the reservation
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{}))) // the sender is gone after the reservation
 	p := &publisher{db: f.db}
 	p.submit(t.Context(), id)
 	f.requireAttempt(t, id, domain.PublishNotSubmitted)
@@ -791,7 +791,7 @@ func countPublish(t *testing.T, f *publishTestFixture, table string) int {
 func TestPublisherReservesOnlyForAnAdapterThatSends(t *testing.T) {
 	f := newPublishTestFixture(t)
 	sent := make(chan string, 4)
-	t.Cleanup(publish.Swap(publish.Shipped().With("fixture", fixtureAdapter{publish.Transport{
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{}).With("fixture", fixtureAdapter{publish.Transport{
 		Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
 			sent <- line
 			return publish.Submitted

@@ -1,4 +1,4 @@
-package ident
+package proc
 
 import (
 	"os"

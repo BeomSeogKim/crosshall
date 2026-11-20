@@ -99,7 +99,7 @@ func testServices() Services {
 	}
 }
 
-func TestDispatcherRecoversPublishingWithoutTransport(t *testing.T) {
+func TestDispatcherRecoversAnInterruptedPublish(t *testing.T) {
 	f := newPublishTestFixture(t)
 	f.ask(t, 11)
 	id := f.reserve(t, true)
@@ -112,13 +112,13 @@ func TestDispatcherRecoversPublishingWithoutTransport(t *testing.T) {
 		log, _ := os.ReadFile(filepath.Join(f.root, "dispatcher.log"))
 		t.Fatalf("start: spawned=%t err=%v\n%s", spawned, err, log)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := cfg.Stop(ctx); err != nil {
-			t.Errorf("stop: %v", err)
-		}
-	})
+	// Only the dispatcher writes the store while it runs; its publisher
+	// ticks now, so read the recovered attempt after it stops.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cfg.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
 	f.requireAttempt(t, id, domain.PublishUncertain)
 }
 

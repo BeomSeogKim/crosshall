@@ -1,6 +1,6 @@
 //go:build darwin
 
-package ident
+package proc
 
 import (
 	"encoding/binary"
@@ -22,10 +22,10 @@ func processStartMS(pid int) (int64, error) {
 		return 0, errno
 	}
 	if size < 44 || int32(binary.LittleEndian.Uint32(buf[40:44])) != int32(pid) {
-		return 0, errors.New("process not found")
+		return 0, errProcessGone
 	}
 	if buf[36] == 5 /* SZOMB */ {
-		return 0, errors.New("process exited")
+		return 0, errProcessGone
 	}
 	sec := int64(binary.LittleEndian.Uint64(buf[0:8]))
 	usec := int64(binary.LittleEndian.Uint32(buf[8:12]))

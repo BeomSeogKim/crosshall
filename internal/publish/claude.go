@@ -1,6 +1,8 @@
 package publish
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,10 +12,10 @@ import (
 	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 // claude is Claude Code: a session inbox socket, registered by SessionStart.
-// It has no transport in this build.
 type claude struct{}
 
 func (c claude) Resolve(r Route) (string, string) {
@@ -61,7 +63,67 @@ func (claude) Echo(prompt string) (string, bool) {
 	return strings.CutSuffix(body, claudeSuffix)
 }
 
-func (claude) Transport() Transport { return Transport{} }
+func (claude) Transport() Transport {
+	return Transport{Prove: proveClaude, Send: sendClaude, Retired: claudeRetired}
+}
+
+// proveClaude reads the kernel identity of the session inbox socket's
+// listener without writing to it.
+func proveClaude(ctx context.Context, probe Probe) (Queue, bool) {
+	peer, err := proc.VerifySocket(ctx, probe.Address, probe.LaunchRef, probe.StartedHookAtMS)
+	if err != nil {
+		return Queue{}, false
+	}
+	return Queue{PID: peer.PID, StartMS: peer.StartMS}, true
+}
+
+// claudeMessage is one line of the session inbox socket. "later" queues
+// it as its own turn after the current one, never inside it.
+type claudeMessage struct {
+	Type    string `json:"type"`
+	Message struct {
+		Content string `json:"content"`
+	} `json:"message"`
+	From     string `json:"from"`
+	Priority string `json:"priority"`
+}
+
+// sendClaude writes one notice line to the proven listener. It re-dials
+// with the same kernel checks and requires the listener the proof named
+// (PID and start time) before writing. Nothing is written on any failure
+// before the write, so that is a proven non-submission; a partial write,
+// a write error or the deadline during the write is uncertain.
+func sendClaude(ctx context.Context, target Target, line string) Outcome {
+	msg := claudeMessage{Type: "user", From: "crosshall", Priority: "later"}
+	msg.Message.Content = line
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return NotSubmitted
+	}
+	payload = append(payload, '\n')
+	conn, peer, err := proc.DialVerifiedSocket(ctx, target.Address, fmt.Sprintf("pid-%d", target.Queue.PID), target.Queue.StartMS)
+	if err != nil {
+		return NotSubmitted
+	}
+	defer conn.Close()
+	if peer.PID != target.Queue.PID || peer.StartMS != target.Queue.StartMS || ctx.Err() != nil {
+		return NotSubmitted
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			return NotSubmitted
+		}
+	}
+	if n, err := conn.Write(payload); err != nil || n != len(payload) {
+		return Uncertain
+	}
+	return Submitted
+}
+
+// claudeRetired proves the listener's process is gone.
+func claudeRetired(_ context.Context, queue Queue) bool {
+	return proc.ProcessGone(queue.PID, queue.StartMS)
+}
 
 func claudeSocketDirs() []string {
 	uid := os.Getuid()

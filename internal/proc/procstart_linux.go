@@ -1,6 +1,6 @@
 //go:build linux
 
-package ident
+package proc
 
 import (
 	"errors"
@@ -66,7 +66,7 @@ func processStartMS(pid int) (int64, error) {
 		return 0, errors.New("malformed process status")
 	}
 	if state := fields[0]; state == "Z" || state == "X" || state == "x" {
-		return 0, errors.New("process exited")
+		return 0, errProcessGone
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
 	if err != nil {

@@ -1,6 +1,6 @@
 //go:build !darwin && !linux
 
-package ident
+package proc
 
 import "errors"
 

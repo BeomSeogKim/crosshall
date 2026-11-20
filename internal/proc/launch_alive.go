@@ -1,6 +1,12 @@
-package ident
+// Package proc identifies local processes: their start times, the launch a
+// reference names, and the kernel peer of a Unix socket. It imports nothing
+// from crosshall, so any package may use it.
+package proc
 
 import (
+	"errors"
+	"math"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -31,4 +37,24 @@ func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	pid, _ := strconv.Atoi(strings.TrimPrefix(process, "pid-"))
 	start, err := processStartMS(pid)
 	return err == nil && start <= startedHookAtMS
+}
+
+// errProcessGone is processStartMS's proof that no process has the PID: it
+// is absent or a zombie.
+var errProcessGone = errors.New("process gone")
+
+// ProcessGone reports proof that the process with pid and start time
+// startMS no longer runs: no process has the PID, it is a zombie, or the
+// PID belongs to a process that started at another time. An error that
+// proves neither (an unsupported platform, an unreadable process) is not
+// proof.
+func ProcessGone(pid, startMS int64) bool {
+	if pid <= 0 || pid > math.MaxInt32 {
+		return false
+	}
+	start, err := processStartMS(int(pid))
+	if err != nil {
+		return errors.Is(err, errProcessGone) || errors.Is(err, os.ErrNotExist)
+	}
+	return start != startMS
 }

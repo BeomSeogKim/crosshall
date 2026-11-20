@@ -107,12 +107,12 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err != nil {
 		return transportOutcome(ctx, err)
 	}
-	if (want && reply.Response.Status == core.ExitOK || !want) && !hookExpired(ctx) {
-		if routeReq, ok := makeRouteRequest(entry, m, spec, e, policy.Epoch); ok {
-			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
-		}
-	}
 	if clean || !want {
+		if !hookExpired(ctx) {
+			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+			}
+		}
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
@@ -140,6 +140,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	}
 	if notice && result.Ack != nil && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
+	}
+	if !hookExpired(ctx) {
+		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+		}
 	}
 	return "rpc"
 }
@@ -251,11 +256,11 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 	return req
 }
 
-func makeRouteRequest(entry time.Time, m manifest, spec eventSpec, e event, epoch uint64) (wire.Request, bool) {
+func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.Request, bool) {
 	if e.SocketPath == "" && e.PermissionMode == "" {
 		return wire.Request{}, false
 	}
-	ref := "route:" + e.reference(entry)
+	ref := e.reference(entry)
 	args, _ := json.Marshal(wire.HookRouteArgs{
 		Adapter:        m.Adapter,
 		LaunchRef:      e.LaunchRef,
@@ -267,7 +272,7 @@ func makeRouteRequest(entry time.Time, m manifest, spec eventSpec, e event, epoc
 		SocketPath:     e.SocketPath,
 	})
 	return wire.Request{
-		OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		OpKey: "hook:route:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
 		Verb:  wire.VerbHookRoute,
 		Args:  args,
 	}, true

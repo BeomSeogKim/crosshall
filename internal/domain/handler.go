@@ -464,6 +464,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0, departed_by_owner = 0,
+			route_epoch = route_epoch + 1,
 			owner_hook_fence_ms = CASE WHEN departed_by_owner = 1 THEN MAX(COALESCE(owner_hook_fence_ms, 0), ?)
 				ELSE owner_hook_fence_ms END,
 			alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
@@ -471,6 +472,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			return core.Result{}, err
 		}
 		if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {
+			return core.Result{}, err
+		}
+		if err := retirePublishRoute(ctx, tx, existing.id, "rejoined", now); err != nil {
 			return core.Result{}, err
 		}
 		if err := retirePublishRoute(ctx, tx, existing.id, "rejoined", now); err != nil {

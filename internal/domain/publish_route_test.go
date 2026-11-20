@@ -301,7 +301,7 @@ func TestPublishRouteRetiredByRestoreAndPublicRejoin(t *testing.T) {
 	enrollAndRoute(t, f, s, "pid-1", "startup", "/tmp/cc-socks/1.sock", "default", t0, 1)
 	bid := bindingIDOf(t, f, f.principalOf(s))
 
-	// Public leave + join (rejoin) retires the old route.
+	// Public leave + join (rejoin) retires the old route and bumps binding route_epoch.
 	if r := f.run(s, Leave{}, "leave-1"); r.Status != core.ExitOK {
 		t.Fatalf("leave: %+v", r)
 	}
@@ -311,6 +311,19 @@ func TestPublishRouteRetiredByRestoreAndPublicRejoin(t *testing.T) {
 	gen, _, _, _, state, reason, _ := routeState(t, f, bid)
 	if state != "ended" || reason != "left channel" {
 		t.Fatalf("after rejoin: gen=%d state=%q reason=%q", gen, state, reason)
+	}
+
+	// Stale pre-leave route packet arriving after rejoin must not reactivate the route.
+	rStale := f.exec(f.caller(s), Request{
+		Command:    claudeRoute("pid-1", "stale-pre-leave", "/tmp/cc-socks/1.sock", "default", t0+500, 1),
+		Vendor:     s.vendor,
+		SessionKey: s.key,
+		OpKey:      "hook:route:claude:pid-1:stale-pre-leave",
+	})
+	wantOK(t, rStale)
+	genAfterStale, _, _, _, stateAfterStale, _, _ := routeState(t, f, bid)
+	if genAfterStale != gen || stateAfterStale != "ended" {
+		t.Fatalf("stale pre-leave packet mutated route after rejoin: gen=%d state=%q", genAfterStale, stateAfterStale)
 	}
 
 	// Re-register route, then public owner restore retires it.
@@ -348,5 +361,51 @@ func TestPublishRouteWhoShowsCandidateOnly(t *testing.T) {
 	}
 	if !sawClaude || !sawPeer {
 		t.Fatalf("missing members in who: %+v", who.Members)
+	}
+}
+
+func TestPublishRouteSocketSupplementDeliveredLast(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+
+	// 1. Base enroll arrives, then newer bypassPermissions mode arrives BEFORE socket supplement.
+	f.hook(s, start("pid-1", "startup", t0))
+	bid := bindingIDOf(t, f, f.principalOf(s))
+	wantOK(t, f.exec(f.caller(s), Request{
+		Command:    claudeRoute("pid-1", "m-bypass", "", "bypassPermissions", t0+1_000, 1),
+		Vendor:     s.vendor,
+		SessionKey: s.key,
+		OpKey:      "hook:route:claude:pid-1:m-bypass",
+	}))
+	// Now the SessionStart socket supplement (at t0, mode "default") arrives last.
+	wantOK(t, f.exec(f.caller(s), Request{
+		Command:    claudeRoute("pid-1", "start-sock", "/tmp/cc-socks/1.sock", "default", t0, 1),
+		Vendor:     s.vendor,
+		SessionKey: s.key,
+		OpKey:      "hook:route:claude:pid-1:start-sock",
+	}))
+	_, _, _, mode, state, reason, _ := routeState(t, f, bid)
+	if mode != "bypassPermissions" || state != "invalidated" || reason != "bypass mode" {
+		t.Fatalf("supplement overwrote newer bypass: mode=%q state=%q reason=%q", mode, state, reason)
+	}
+
+	// 2. Enroll + SessionEnd, then socket supplement arrives last: must keep ended state.
+	s2 := f.newSession("claude")
+	f.hook(s2, start("pid-2", "startup", t0+2_000))
+	bid2 := bindingIDOf(t, f, f.principalOf(s2))
+	f.hook(s2, ended("pid-2", t0+3_000))
+	rEnded := f.exec(f.caller(s2), Request{
+		Command:    claudeRoute("pid-2", "late-sock", "/tmp/cc-socks/2.sock", "default", t0+2_000, 1),
+		Vendor:     s2.vendor,
+		SessionKey: s2.key,
+		OpKey:      "hook:route:claude:pid-2:late-sock",
+	})
+	if rEnded.Status != core.ExitRefused {
+		t.Fatalf("late supplement after SessionEnd: status=%d, want ExitRefused", rEnded.Status)
+	}
+	_, _, _, _, state2, reason2, _ := routeState(t, f, bid2)
+	if state2 != "ended" || reason2 != "session ended" {
+		t.Fatalf("supplement reactivated ended route: state=%q reason=%q", state2, reason2)
 	}
 }

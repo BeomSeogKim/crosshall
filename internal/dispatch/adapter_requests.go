@@ -41,8 +41,12 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 	if (req.Verb == wire.VerbHookEvent || req.Verb == wire.VerbHookRoute) && r.Caller.Role != core.RoleMember {
 		return nil, commandError(core.ExitNotEnrolled, core.CodeNotEnrolled, "hook event requires a live member"), nil
 	}
+	wantOpKey := "hook:" + adapter + ":" + launch + ":" + event
+	if req.Verb == wire.VerbHookRoute {
+		wantOpKey = "hook:route:" + adapter + ":" + launch + ":" + event
+	}
 	if launch == "" || len(launch) > 128 || strings.Contains(launch, ":") || event == "" || len(event) > 256 ||
-		req.OpKey != "hook:"+adapter+":"+launch+":"+event {
+		req.OpKey != wantOpKey {
 		return nil, commandError(core.ExitUsage, "", "invalid hook operation key"), nil
 	}
 	policy, err := store.ReadAdapterPolicy(ctx, tx, adapter)

@@ -1,6 +1,9 @@
+ALTER TABLE binding ADD COLUMN route_epoch INTEGER NOT NULL DEFAULT 1 CHECK (route_epoch >= 1);
+
 CREATE TABLE publish_route (
     binding_id INTEGER PRIMARY KEY REFERENCES binding(id),
     principal_id INTEGER NOT NULL REFERENCES principal(id),
+    binding_epoch INTEGER NOT NULL DEFAULT 1 CHECK (binding_epoch >= 1),
     generation INTEGER NOT NULL CHECK (generation >= 1),
     adapter TEXT NOT NULL,
     session_ref TEXT NOT NULL,

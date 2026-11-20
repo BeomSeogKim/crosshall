@@ -16,4 +16,6 @@ By default, `crosshall wait` watches for new requests or notes addressed to you 
 
 Without `--timeout`, it waits until a message arrives, you interrupt it, or the dispatcher becomes unavailable. If the wait finds that the dispatcher has stopped, it exits with code 5 and the JSON error code `dispatcher_unavailable`. Once the dispatcher is running again, check the inbox before starting another wait.
 
+Timed and untimed waits retry slow snapshots while the dispatcher reports that it is running. A timed wait still uses the deadline you set.
+
 When the timeout passes while the dispatcher is available, the command exits with code 6. Plain output prints the timeout message to stderr. With `--json`, the error object carries the code `wait_timeout`. Check the inbox after a timeout before rearming. A request shown by a wait is picked up when you open it with `crosshall read`.

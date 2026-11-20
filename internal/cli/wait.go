@@ -86,6 +86,17 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 	}
 
 	delay := waitFirstPoll
+	waitForNextPoll := func() bool {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-waitCtx.Done():
+			return false
+		case <-timer.C:
+			delay = min(delay*2, waitMaxPoll)
+			return true
+		}
+	}
 	for {
 		if waitCtx.Err() != nil {
 			return end()
@@ -105,8 +116,14 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
 			if result.Status == core.ExitUnavailable {
-				return o.fail(result.Status, result.Code, string(result.Code),
-					"if the dispatcher is down, run crosshall owner start and retry crosshall wait")
+				if probe == nil {
+					return o.fail(result.Status, result.Code, string(result.Code),
+						"if the dispatcher is down, run crosshall owner start and retry crosshall wait")
+				}
+				if !waitForNextPoll() {
+					return end()
+				}
+				continue
 			}
 			return render(opts, cmd, result, stdout, stderr)
 		}
@@ -133,13 +150,8 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		cmd.Cursor = &snapshot.Cursor
 		// Start with a short interval, then back off to one snapshot per
 		// second while the wait stays idle.
-		timer := time.NewTimer(delay)
-		select {
-		case <-waitCtx.Done():
-			timer.Stop()
+		if !waitForNextPoll() {
 			return end()
-		case <-timer.C:
-			delay = min(delay*2, waitMaxPoll)
 		}
 	}
 }

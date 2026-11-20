@@ -57,6 +57,7 @@ type Services struct {
 type Config struct {
 	LaunchConfig
 	Services
+	Publish PublishTransport
 }
 
 type server struct {
@@ -135,18 +136,33 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
+	publish := &publisher{db: db, transport: cfg.Publish}
+	if err := publish.recover(ctx, time.Now()); err != nil {
+		return err
+	}
+	if cfg.Publish.Send != nil {
+		defer func() {
+			cancel()
+			publish.workers.Wait()
+		}()
+	}
 	stopWatching := s.withdrawReadyOnCancel(ctx)
 	defer stopWatching()
 	if err := s.scan(ctx); err != nil {
 		return err
 	}
+	if cfg.Publish.Send != nil {
+		logPublishFailure(publish.tick(ctx, time.Now(), true))
+	}
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		publishTick := false
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-tick.C:
+			publishTick = true
 		case _, ok := <-events:
 			if !ok {
 				events = nil
@@ -160,6 +176,9 @@ func Serve(ctx context.Context, cfg Config) error {
 		}
 		if err := s.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logFailure(err)
+		}
+		if publishTick && cfg.Publish.Send != nil {
+			logPublishFailure(publish.tick(ctx, time.Now(), false))
 		}
 	}
 }

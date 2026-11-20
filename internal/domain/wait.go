@@ -106,7 +106,7 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms
 		FROM message m
 		LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
-		WHERE m.id > ? AND m.channel_id = ? AND m.sender_id <> ?
+		WHERE m.id > ? AND m.channel_id = ? AND m.sender_id <> ? AND `+notMoreTime+`
 			AND (NOT ? OR m.kind <> 'note')
 			AND (? OR EXISTS (
 				SELECT 1 FROM recipient r WHERE r.message_id = m.id AND r.principal_id = ?

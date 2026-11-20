@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -41,7 +42,7 @@ var factCapMS = map[string]int64{
 const SessionLaunch = "session"
 
 // OfferCap is the number of IDs one notice line carries.
-const OfferCap = 10
+const OfferCap = notice.OfferCap
 
 // HookEnroll is a session start: restore, re-join after a clean end, or auto-join.
 type HookEnroll struct{ wire.HookEnrollArgs }
@@ -418,6 +419,17 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			return okOrErr(out, err)
 		}
 	}
+	origin := "unknown"
+	if cmd.Receipt != "" && found && b.state == "live" && (caller.BindingID == nil || *caller.BindingID == b.id) {
+		// An absorbed notice reuses the original prompt's operation key.
+		ownTurn, err := observePublishReceipt(ctx, tx, b, principal, req.SessionKey, cmd, now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if ownTurn {
+			origin = "crosshall_wake"
+		}
+	}
 	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
 		return okOrErr(out, err)
 	}
@@ -432,9 +444,9 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	// The (launch, event) pair claims the event: a second copy changes and prints nothing.
 	res, err := tx.ExecContext(ctx, `INSERT INTO observation
 		(principal_id, kind, origin, source, observed_at_ms, fresh_until_ms, launch_ref, event_ref, turn_ref, hook_at_ms, profile)
-		VALUES (?, ?, 'unknown', ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
 		ON CONFLICT DO NOTHING`,
-		principal, cmd.Fact, evidence(cmd.Profile), ms(now), fresh, cmd.LaunchRef, cmd.EventRef, cmd.TurnRef, cmd.HookAtMS,
+		principal, cmd.Fact, origin, evidence(cmd.Profile), ms(now), fresh, cmd.LaunchRef, cmd.EventRef, cmd.TurnRef, cmd.HookAtMS,
 		profileJSON(cmd.Profile))
 	if err != nil {
 		return core.Result{}, err
@@ -680,7 +692,8 @@ func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBindi
 		filter = ""
 	}
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+noClosedObligation+` `+filter+`
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
+			AND `+noClosedObligation+` `+filter+`
 		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
 	if err != nil {
 		return err

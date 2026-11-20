@@ -99,6 +99,29 @@ func testServices() Services {
 	}
 }
 
+func TestDispatcherRecoversPublishingWithoutTransport(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	id := f.reserve(t, true)
+	root := filepath.Dir(f.root)
+	cfg := LaunchConfig{
+		Version: "test", StateRoot: f.root, DefaultStateRoot: filepath.Join(root, "default"),
+		Rendezvous: filepath.Join(root, "rendezvous"), Owner: true,
+	}
+	if spawned, err := cfg.Start(t.Context()); err != nil || !spawned {
+		log, _ := os.ReadFile(filepath.Join(f.root, "dispatcher.log"))
+		t.Fatalf("start: spawned=%t err=%v\n%s", spawned, err, log)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := cfg.Stop(ctx); err != nil {
+			t.Errorf("stop: %v", err)
+		}
+	})
+	f.requireAttempt(t, id, domain.PublishUncertain)
+}
+
 func TestDispatcherRestartRecoversClaim(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

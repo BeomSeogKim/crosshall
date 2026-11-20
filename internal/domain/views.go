@@ -170,9 +170,11 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	return OK(out)
 }
 
-// Notes and replies have no obligation. An unread owner cancellation stays
-// visible until read, while the recipient's own final reply clears the ask.
-const visibleInInbox = `COALESCE(o.state, 'open') IN ('open', 'cancelled')`
+const notMoreTime = `m.outcome IS NOT '` + OutcomeMoreTime + `'`
+
+// An unread owner cancellation stays visible until read, while the
+// recipient's own final reply clears the ask.
+const visibleInInbox = `COALESCE(o.state, 'open') IN ('open', 'cancelled') AND ` + notMoreTime
 
 // inboxItems serves both the inbox command and read-only wait snapshots.
 func inboxItems(ctx context.Context, tx store.Tx, member memberView, workOnly bool) (InboxResult, error) {
@@ -376,7 +378,8 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.sender_id, COALESCE(sb.alias, ''), m.exchange_id, m.due_at_ms, m.created_at_ms,
 		r.principal_id, b.id, r.alias_at_commit, o.state, COALESCE(b.state, 'departed'), r.picked_up_at_ms, o.settled_at_ms, o.more_time_at_ms,
 		EXISTS(SELECT 1 FROM message p JOIN recipient pr ON pr.message_id = p.id AND pr.principal_id = m.sender_id
-			WHERE p.in_reply_to = m.id AND p.kind = 'reply' AND p.sender_id = r.principal_id AND pr.picked_up_at_ms IS NULL),
+			WHERE p.in_reply_to = m.id AND p.kind = 'reply' AND p.outcome IS NOT '`+OutcomeMoreTime+`'
+				AND p.sender_id = r.principal_id AND pr.picked_up_at_ms IS NULL),
 		(SELECT json_group_array(json_object('stage', stage, 'at_ms', at_ms, 'evidence', evidence))
 		 FROM (SELECT stage, at_ms, evidence FROM receipt WHERE message_id = m.id AND principal_id = r.principal_id
 			ORDER BY at_ms, stage, seq))
@@ -387,7 +390,8 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		WHERE m.channel_id = ? AND m.kind = 'ask' AND (? = 0 OR (m.sender_id = ? AND (
 			EXISTS(SELECT 1 FROM obligation q WHERE q.message_id = m.id AND q.state = 'open')
 			OR EXISTS(SELECT 1 FROM message p JOIN recipient pr ON pr.message_id = p.id AND pr.principal_id = m.sender_id
-				WHERE p.in_reply_to = m.id AND p.kind = 'reply' AND pr.picked_up_at_ms IS NULL)
+				WHERE p.in_reply_to = m.id AND p.kind = 'reply' AND p.outcome IS NOT '`+OutcomeMoreTime+`'
+					AND pr.picked_up_at_ms IS NULL)
 		))) ORDER BY m.id, r.principal_id`, channel, waitingFor, waitingFor)
 	if err != nil {
 		return nil, err
@@ -553,7 +557,8 @@ const noClosedObligation = `NOT EXISTS (SELECT 1 FROM obligation oc
 // pendingIDs lists the unread messages still awaiting the member's attention.
 func pendingIDs(ctx context.Context, tx store.Tx, principal, channel int64) ([]int64, error) {
 	ids, err := selectIDs(ctx, tx, `SELECT m.id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+noClosedObligation+` ORDER BY m.id`, principal, channel)
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
+			AND `+noClosedObligation+` ORDER BY m.id`, principal, channel)
 	if ids == nil {
 		ids = []int64{}
 	}

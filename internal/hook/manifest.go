@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -232,7 +233,7 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 			if seenPrompt || json.Unmarshal(raw, &prompt) != nil {
 				receipt = ""
 			} else {
-				receipt = parsePublishReceipt(prompt)
+				receipt = notice.ClaudeReceipt(prompt)
 			}
 			seenPrompt = true
 			continue

@@ -161,6 +161,76 @@ func TestInboxAndWaitingFollowAddressedReplies(t *testing.T) {
 	}
 }
 
+func TestMoreTimeIsWaitingStatusAndHistory(t *testing.T) {
+	f, responder := adapterChannel(t)
+	asker := f.newSession("claude")
+	started := f.now.UnixMilli()
+	f.hook(asker, start("pid-1", "startup", started))
+	f.roots(asker, 1)
+	request := decode[AskResult](t, f.ask(asker, Ask{To: []string{"writer"}, Body: "review"}, ""))
+	initial := decode[WaitSnapshot](t, f.run(asker, Wait{}, ""))
+	f.now = f.now.Add(time.Second)
+	delay := decode[ReplyResult](t, f.reply(responder, Reply{To: request.ID, Outcome: OutcomeMoreTime, Body: "after lunch"}, ""))
+
+	inbox := decode[struct {
+		InboxResult
+		MemberInboxSummary
+	}](t, f.run(asker, Inbox{}, ""))
+	if len(inbox.Unread) != 0 || len(inbox.Pending) != 0 {
+		t.Errorf("more-time reply entered the inbox: %+v", inbox)
+	}
+	for _, mode := range []Wait{{}, {WorkOnly: true}, {Any: true}} {
+		mode.Existing = true
+		if got := decode[WaitSnapshot](t, f.run(asker, mode, "")); len(got.Unread) != 0 {
+			t.Errorf("more-time reply woke an existing wait: %+v", got)
+		}
+		mode.Cursor = &initial.Cursor
+		if got := decode[WaitSnapshot](t, f.run(asker, mode, "")); len(got.Unread) != 0 || got.Cursor.MessageID != delay.ID {
+			t.Errorf("more-time reply woke a pending wait or stalled its cursor: %+v", got)
+		}
+	}
+	if got := f.hook(asker, prompt("pid-1", "after-delay", started+2_000)); got.PendingLine != "" {
+		t.Errorf("boundary offered the more-time reply: %+v", got)
+	}
+
+	waiting := decode[WaitingResult](t, f.run(asker, Waiting{}, ""))
+	if len(waiting.Requests) != 1 || waiting.Requests[0].DueAtMS != request.DueAtMS || len(waiting.Requests[0].Recipients) != 1 {
+		t.Fatalf("waiting lost the open request or changed its deadline: %+v", waiting)
+	}
+	row := waiting.Requests[0].Recipients[0]
+	if row.State != "open" || row.MoreTimeAtMS == nil || row.SettledAtMS != nil || row.ReplyUnread {
+		t.Errorf("waiting lost the delay status or labelled it unread: %+v", row)
+	}
+	if got := decode[ReadResult](t, f.run(asker, Read{}, "")); len(got.Messages) != 0 {
+		t.Errorf("bare read returned the more-time reply: %+v", got)
+	}
+
+	answer := decode[ReplyResult](t, f.reply(responder, Reply{To: request.ID, Body: "done"}, ""))
+	messages := decode[ReadResult](t, f.run(asker, Read{}, "")).Messages
+	if len(messages) != 1 || messages[0].ID != answer.ID {
+		t.Errorf("bare read should return only the final reply: %+v", messages)
+	}
+	if got := decode[WaitingResult](t, f.run(asker, Waiting{}, "")); len(got.Requests) != 0 {
+		t.Errorf("unread delay kept a finished item in waiting: %+v", got)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM receipt WHERE message_id = ? AND stage = 'picked_up'`, delay.ID); n != 0 {
+		t.Errorf("more-time reply was marked picked up without being read: %d", n)
+	}
+
+	history := decode[LogResult](t, f.run(asker, Log{}, "")).Messages
+	if len(history) != 3 || history[1].ID != delay.ID || history[1].Outcome != OutcomeMoreTime || history[1].Body != "after lunch" {
+		t.Errorf("history lost the more-time reply: %+v", history)
+	}
+	explicit := decode[ReadResult](t, f.run(asker, Read{IDs: []int64{delay.ID}}, "")).Messages
+	if len(explicit) != 1 || explicit[0].Outcome != OutcomeMoreTime || explicit[0].Body != "after lunch" {
+		t.Errorf("explicit read lost the more-time reply: %+v", explicit)
+	}
+	thread := decode[ReadResult](t, f.run(asker, Read{IDs: []int64{request.ID}}, "")).Messages
+	if len(thread) != 1 || len(thread[0].Replies) != 2 || thread[0].Replies[0].ID != delay.ID {
+		t.Errorf("request history lost the more-time reply: %+v", thread)
+	}
+}
+
 func TestOpenRequestIsOnTimeAtItsDeadline(t *testing.T) {
 	f, sender, recipient, _ := channel3(t)
 	f.roots(sender, 1)

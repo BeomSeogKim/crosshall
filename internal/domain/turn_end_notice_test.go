@@ -71,10 +71,10 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	if n := f.count(`SELECT COUNT(*) FROM receipt WHERE stage = 'picked_up' AND principal_id = ?`, pid); n != 1 {
 		t.Fatalf("claim added pickup receipts: %d", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item WHERE principal_id = ? AND message_id IN (?, ?)`, pid, first, second); n != 1 {
+	if n := f.count(`SELECT COUNT(*) FROM announcement WHERE via = 'turn_end' AND principal_id = ? AND message_id IN (?, ?)`, pid, first, second); n != 1 {
 		t.Fatalf("claimed %d selected inbox asks, want 1", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 1 {
+	if n := f.count(`SELECT COUNT(*) FROM announcement`); n != 1 {
 		t.Fatalf("claimed %d items, want only the unread ask", n)
 	}
 	if r := f.hook(reader, cmd); r.TurnEndLine != "" {
@@ -91,7 +91,7 @@ func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	if r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", third) {
 		t.Fatalf("the next turn did not claim ask %d: %+v", third, r)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 2 {
+	if n := f.count(`SELECT COUNT(*) FROM announcement`); n != 2 {
 		t.Fatalf("a later turn failed to keep per-recipient deduplication: %d rows", n)
 	}
 	f.hook(reader, prompt("launch", "turn-4", f.now.UnixMilli()+1))
@@ -189,7 +189,7 @@ func TestTurnEndNoticeCapsOldestPerRecipientAcrossLaunches(t *testing.T) {
 	if r := f.hook(reader, stop("fresh-launch", "turn-fresh", f.now.UnixMilli()+1)); r.TurnEndLine != want {
 		t.Fatalf("new launch line = %q, want %q", r.TurnEndLine, want)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM turn_end_notice_item`); n != 2*OfferCap+1 {
+	if n := f.count(`SELECT COUNT(*) FROM announcement`); n != 2*OfferCap+1 {
 		t.Fatalf("claimed %d recipient rows, want %d", n, 2*OfferCap+1)
 	}
 }

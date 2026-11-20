@@ -39,7 +39,7 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
 		WHERE r.principal_id = ? AND m.channel_id = ? AND m.kind = 'ask'
 			AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM turn_end_notice_item i
+			AND NOT EXISTS (SELECT 1 FROM announcement i
 				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)
 		ORDER BY r.message_id LIMIT ?`, principal, channel, OfferCap)
 	if err != nil || len(ids) == 0 {
@@ -56,8 +56,8 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 	}
 	parts := make([]string, len(ids))
 	for i, message := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO turn_end_notice_item (notice_id, principal_id, message_id)
-			VALUES (?, ?, ?)`, id, principal, message); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO announcement (principal_id, message_id, via, ref, at_ms)
+			VALUES (?, ?, 'turn_end', ?, ?)`, principal, message, id, ms(now)); err != nil {
 			return "", err
 		}
 		parts[i] = strconv.FormatInt(message, 10)

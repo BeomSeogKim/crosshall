@@ -306,6 +306,11 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 				}
 			}
 		case "restored":
+			// After a context reset the core sends a short cue in place of
+			// what the session was already given.
+			if result.Cue != "" {
+				parts = append(parts, result.Cue)
+			}
 		default:
 			return nil, nil
 		}

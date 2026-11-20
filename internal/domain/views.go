@@ -521,7 +521,7 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 
 // bootstrapRoster serves a member that a hook enrolled: its hint and roster
 // were only offered, so its first ordinary command names the member again,
-// points to the rules the hook gave, and carries the changes since the
+// names the command that prints the rules, and carries the changes since the
 // snapshot the hook showed. The CLI acknowledges after rendering, which ends
 // the bootstrap.
 func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields map[string]json.RawMessage, now time.Time) error {

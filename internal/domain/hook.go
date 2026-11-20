@@ -216,7 +216,34 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
+	if cmd.Source == "clear" || cmd.Source == "compact" {
+		if out.Cue, err = resetCue(ctx, tx, principal, b, cmd.Source, out.PendingLine); err != nil {
+			return core.Result{}, err
+		}
+	}
 	return OK(out)
+}
+
+// resetCue is what a session gets back after its context was reset. Nothing
+// already offered is listed again: a cleared session is told who it is and
+// where the rules are, and work that this start does not offer is one count.
+func resetCue(ctx context.Context, tx store.Tx, principal int64, b hookBinding, source, offered string) (string, error) {
+	var lines []string
+	if source == "clear" {
+		lines = append(lines, ResetHint(b.alias, b.channelName))
+	}
+	if !b.dnd {
+		summary, err := memberInboxSummary(ctx, tx, principal, b.channel)
+		if err != nil {
+			return "", err
+		}
+		shown := len(strings.Fields(strings.TrimPrefix(offered, "[crosshall] pending: ")))
+		if len(summary.Pending) > shown || summary.OwedCount > 0 {
+			lines = append(lines, "[crosshall] "+strconv.Itoa(len(summary.Pending))+" unread, "+strconv.Itoa(summary.OwedCount)+
+				" owed. Run crosshall inbox.")
+		}
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // hookAutoJoin joins the repository's default channel: generated alias, zero tokens.

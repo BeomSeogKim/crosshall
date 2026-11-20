@@ -108,14 +108,24 @@ func RulesHint(alias, channel string) string {
 }
 
 // BootstrapHint is the hint on the first command of a member that a hook
-// enrolled: the hook's context carried the rules when the session started.
+// enrolled. The hook offered the rules, but nothing shows that they arrived,
+// so the hint names the member and where the rules are without claiming it.
 func BootstrapHint(alias, channel string) string {
-	return fmt.Sprintf("[crosshall] Joined #%s as @%s.\n", channel, alias) +
-		"The member rules were given when this session started. " + rulesAgain(channel)
+	return fmt.Sprintf("[crosshall] Joined #%s as @%s.\n", channel, alias) + rulesCommand(channel)
+}
+
+// ResetHint tells a session whose context was cleared who it is and where
+// the rules are.
+func ResetHint(alias, channel string) string {
+	return fmt.Sprintf("[crosshall] You are @%s in #%s. ", alias, channel) + rulesCommand(channel)
 }
 
 func rulesAgain(channel string) string {
 	return fmt.Sprintf("`crosshall join %s --rules` prints them again.", channel)
+}
+
+func rulesCommand(channel string) string {
+	return fmt.Sprintf("`crosshall join %s --rules` prints the member rules.", channel)
 }
 
 var hintRules = strings.Join([]string{

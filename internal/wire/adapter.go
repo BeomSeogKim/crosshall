@@ -65,12 +65,14 @@ type HookRouteArgs struct {
 }
 
 // HookResult contains only presentation owned by the core. An acknowledgement
-// is scoped to one output path and is independent of the roster cursor.
+// is scoped to one output path and is independent of the roster cursor. Cue is
+// the short text for a restored session whose context was reset.
 type HookResult struct {
 	Enrollment   string          `json:"enrollment,omitempty"`
 	Alias        string          `json:"alias,omitempty"`
 	Channel      string          `json:"channel,omitempty"`
 	Hint         string          `json:"hint,omitempty"`
+	Cue          string          `json:"cue,omitempty"`
 	Roster       json.RawMessage `json:"roster,omitempty"`
 	Omitted      int             `json:"omitted,omitempty"`
 	OfferID      int64           `json:"offer_id,omitempty"`

@@ -5,9 +5,6 @@ import (
 	"strings"
 )
 
-// launchClockSlackMS covers the whole-second boot time behind Linux start times.
-const launchClockSlackMS = 1000
-
 // LaunchProcess returns the process part of a bound Claude Code launch
 // reference ("pid-<pid>-<start digest>"): launches of one process share it.
 func LaunchProcess(ref string) (string, bool) {
@@ -23,8 +20,9 @@ func LaunchProcess(ref string) (string, bool) {
 }
 
 // LaunchAlive reports whether a bound Claude Code launch still runs: its PID
-// is live and that process started no later than the launch's first hook. A
-// reused PID belongs to a later process.
+// is a running process (not a zombie) that started no later than the
+// launch's first hook. A process starts before its own first hook, so a
+// reused PID, born after that hook, does not count.
 func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	process, ok := LaunchProcess(ref)
 	if !ok {
@@ -32,5 +30,5 @@ func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	}
 	pid, _ := strconv.Atoi(strings.TrimPrefix(process, "pid-"))
 	start, err := processStartMS(pid)
-	return err == nil && start <= startedHookAtMS+launchClockSlackMS
+	return err == nil && start <= startedHookAtMS
 }

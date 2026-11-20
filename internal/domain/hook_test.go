@@ -426,8 +426,13 @@ func TestCleanEndKeepsTheMemberWhileAnotherLaunchRuns(t *testing.T) {
 	if f.memberRow(writer, "claude1").Alias == "" {
 		t.Fatal("the resumed copy's end departed the member while the first launch still runs")
 	}
-	if len(asked) != 1 || asked[0] != fmt.Sprintf("pid-1@%d", t0) {
-		t.Fatalf("liveness asked for %v, want only the other open launch", asked)
+	for _, q := range asked {
+		if q != fmt.Sprintf("pid-1@%d", t0) {
+			t.Fatalf("liveness asked for %v, want only the other open launch", asked)
+		}
+	}
+	if len(asked) == 0 {
+		t.Fatal("liveness never asked")
 	}
 	// The first launch ends too: nothing else runs, so the member departs.
 	running["pid-1"] = false
@@ -925,4 +930,93 @@ func TestASameTurnStopDatedBeforeTheStartStillWins(t *testing.T) {
 	if o := f.memberRow(writer, "claude1").Observed; o == nil || o.Fact != FactTurnFinishing {
 		t.Fatalf("the stop of the current turn was dropped: %+v", o)
 	}
+}
+
+func TestCapabilitiesFollowTheSurvivingLaunch(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return ref == "pid-1" }
+	f.svc.LaunchProcess = testProcess
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	first := start("pid-1", "startup", t0)
+	second := start("pid-2", "resume", t0+1000)
+	first.Profile.VendorVersion = "2.1.327"
+	second.Profile.VendorVersion = "2.1.329"
+	f.hook(s, first)
+	f.hook(s, second)
+
+	var version string
+	projection := func() string {
+		t.Helper()
+		if err := f.db.QueryRow(`SELECT vendor_version FROM capability WHERE principal_id = ? AND cap = 'enroll'`, f.principalOf(s)).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	if got := projection(); got != second.Profile.VendorVersion {
+		t.Fatalf("initial version %q, want %q", got, second.Profile.VendorVersion)
+	}
+	f.hook(s, ended("pid-2", t0+2000))
+	if got := projection(); got != first.Profile.VendorVersion {
+		t.Errorf("version after survivor became current %q, want %q", got, first.Profile.VendorVersion)
+	}
+}
+
+func TestEndsOfOverlappingLaunchesDepartAfterTheLast(t *testing.T) {
+	departed := func(f *fixture) bool {
+		return f.count(`SELECT COUNT(*) FROM binding WHERE alias = 'claude1' AND state = 'departed'`) == 1
+	}
+	t.Run("newer launch killed, older ends", func(t *testing.T) {
+		f, _ := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true}
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2", "resume", t0+1_000))
+		running["pid-2"] = false // SIGKILL, no end
+		f.hook(s, ended("pid-1", t0+2_000))
+		if !departed(f) {
+			t.Fatal("a killed newer launch hid the end of the last running one")
+		}
+	})
+	t.Run("older ends first while the newer runs", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true} // pid-1 still winding down
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2", "resume", t0+1_000))
+		f.hook(s, ended("pid-1", t0+2_000))
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("the older launch's end departed while the newer runs")
+		}
+		f.hook(s, ended("pid-2", t0+3_000))
+		if !departed(f) {
+			t.Fatal("an ended launch whose process is still present kept the member")
+		}
+	})
+	t.Run("clear without an end, then the cleared launch ends", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true}
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { p, _ := testProcess(ref); return running[p] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		f.hook(s, start("pid-1", "startup", t0))
+		f.hook(s, start("pid-2-a", "resume", t0+1_000))
+		f.hook(s, start("pid-2-b", "clear", t0+2_000)) // the end of pid-2-a was never seen
+		f.hook(s, ended("pid-2-b", t0+3_000))
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("departed while pid-1 runs")
+		}
+		running["pid-2"] = false
+		f.hook(s, ended("pid-1", t0+4_000))
+		if !departed(f) {
+			t.Fatal("the open launch before the clear hid the end of the last running process")
+		}
+	})
 }

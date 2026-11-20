@@ -349,3 +349,74 @@ func TestM2EndOfOneOfTwoProcessesKeepsTheMember(t *testing.T) {
 		t.Fatal("the end of the last process did not depart the member")
 	}
 }
+
+// Issue #100 review: overlapping and killed launches of one session, with
+// real processes. Whatever the order, the end of the last running process
+// departs the member.
+func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
+	for _, which := range []string{"latest-sigkill", "overlapping-clean-ends", "same-pid-open-row"} {
+		t.Run(which, func(t *testing.T) {
+			w, writer, c := m2World(t)
+			spawn := func() *exec.Cmd {
+				process := exec.Command("/bin/sleep", "60")
+				if err := process.Start(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
+				return process
+			}
+			a, b := c, c
+			first, second := spawn(), spawn()
+			a.pid = strconv.Itoa(first.Process.Pid)
+			b.pid = strconv.Itoa(second.Process.Pid)
+			a.fire("SessionStart", map[string]any{"source": "startup"})
+			b.fire("SessionStart", map[string]any{"source": "resume"})
+			if got := tableCounts(t, w)["adapter_launch"]; got != 2 {
+				t.Fatalf("want two registered launches, got %d", got)
+			}
+			end := func(s claudeSession) {
+				before := tableCounts(t, w)["observation"]
+				if got := s.fire("SessionEnd", map[string]any{"reason": "other"}); got != "" {
+					t.Fatalf("SessionEnd returned %q", got)
+				}
+				s.waitForConsumption()
+				if got := tableCounts(t, w)["observation"]; got != before+1 {
+					t.Fatalf("SessionEnd observation count %d, want %d", got, before+1)
+				}
+			}
+			switch which {
+			case "latest-sigkill":
+				if err := second.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				if err := second.Wait(); err == nil {
+					t.Fatal("expected SIGKILL wait result")
+				}
+				end(a)
+			case "overlapping-clean-ends":
+				end(a)
+				if !rosterHas(t, writer, "claude1") {
+					t.Fatal("A end departed while B is open")
+				}
+				end(b)
+			case "same-pid-open-row":
+				b.fire("SessionStart", map[string]any{"source": "clear"})
+				if got := tableCounts(t, w)["adapter_launch"]; got != 3 {
+					t.Fatalf("want three registered launches, got %d", got)
+				}
+				end(b)
+				if !rosterHas(t, writer, "claude1") {
+					t.Fatal("B end departed while A is open")
+				}
+				if err := second.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				_ = second.Wait()
+				end(a)
+			}
+			if rosterHas(t, writer, "claude1") {
+				t.Fatal("member remains live after its last launch ended")
+			}
+		})
+	}
+}

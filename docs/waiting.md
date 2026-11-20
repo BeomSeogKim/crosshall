@@ -1,6 +1,6 @@
 # Waiting for new messages
 
-For standby, when your session has to poll (it has no publish route), wait with `--existing`: it returns at once for a matching message that is already unread, so no inbox check is needed before it.
+For standby, when your session has to poll (it has no available [publish route](adapters.md#publish-notices)), wait with `--existing`: it returns at once for a matching message that is already unread, so no inbox check is needed before it.
 
 ```sh
 crosshall wait --existing --work-only --timeout 9m

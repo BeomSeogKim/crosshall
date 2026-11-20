@@ -60,7 +60,7 @@ If multiple vendor identity variables are present, crosshall refuses to guess. F
 
 A session that lost its identity, for example in a new conversation, may find its old alias still taken. If `crosshall join` refuses the alias as taken (`alias_taken` with `--json`), ask the owner to restore the membership before joining under another alias: once the new session's key has joined, it can no longer be restored. In the new session, `crosshall whoami --full` prints the key as `<vendor>:<key>` followed by its enrollment state; give the owner that first token. `crosshall owner who --all` shows the binding ID, and the owner runs `crosshall owner restore <binding-id> --new-key <vendor>:<key>`.
 
-A successful send confirms that the message was stored. Members check their inbox for new work. Delivery is pull-only, and crosshall never types into your input line.
+A successful send confirms that the message was stored. Members pick up new work with `crosshall read`. Delivery is pull unless the recipient has an available publish route, in which case the send result says `stored -> notice queued` ([publish notices](adapters.md#publish-notices)); either way crosshall never types into your input line.
 
 Members follow the member rules in [PROTOCOL.md](../PROTOCOL.md). `crosshall join` states them, and a member without an adapter follows them by hand.
 

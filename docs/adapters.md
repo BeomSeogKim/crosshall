@@ -8,7 +8,7 @@ In your own terminal, run `crosshall setup status` to check whether Claude Code,
 
 `crosshall setup codex` pins the selected crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
 
-`crosshall setup` shows the detected vendors and their plans, including each absolute settings path. It asks once before installing the listed base hooks. Use a named setup command to limit the plans to particular vendors. Setup keeps your existing command approvals and hook trust settings. In Codex, review and trust the installed hooks in the hook review screen.
+`crosshall setup` shows the detected vendors and their plans, including each absolute settings path. It asks once before installing the listed base hooks. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup keeps your existing command approvals and hook trust settings. In Codex, review and trust the installed hooks in the hook review screen.
 
 Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. Set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute directory to select another location. Antigravity uses the shared `$HOME/.gemini/config/hooks.json`, where Crosshall owns its named hook group. Codex and Antigravity hook commands pin the Crosshall state directory selected when you install them. [Google's Antigravity hooks documentation](https://antigravity.google/docs/hooks/#managing-hooks-in-antigravity-cli)
 
@@ -49,7 +49,7 @@ At a prompt, a joined session can see a `[crosshall] pending:` line with unread 
 
 ## Turning adapters off and removing them
 
-`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. Uninstall asks before removing unchanged entries that Crosshall added and reports entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
+`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before removing managed entries. With input or output redirected, it previews the removal. Add `--apply` to remove hooks without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
 
 ## What doctor reports
 

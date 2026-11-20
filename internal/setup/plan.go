@@ -367,6 +367,9 @@ func planRemoval(spec hook.InstallSpec, record ownedFile) (edit, error) {
 		e.Remove, e.Restore = record.Entries, record.Undo
 		e.After.Exists, e.After.Mode = record.Original.Exists, record.Original.Mode
 		e.After.Hash, e.After.File = record.Original.Hash, ""
+		if spec.Adapter == "agy" && !e.After.Exists {
+			e.CleanupDirs = record.Dirs
+		}
 		return e, nil
 	}
 	updated, kept, err := removeEntries(current.Bytes, record.Entries)

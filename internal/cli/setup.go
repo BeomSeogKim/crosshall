@@ -19,7 +19,7 @@ type SetupRequest struct {
 	Prompt io.Writer
 	// Adapters names the vendors a setup or uninstall is limited to.
 	Adapters []string
-	// Apply installs the named vendors without reading input.
+	// Apply installs or removes hooks without reading input.
 	Apply bool
 	// Offer is the installer's private form: ask only when eligible.
 	Offer bool
@@ -28,7 +28,7 @@ type SetupRequest struct {
 	PathConsent func(bool) error
 }
 
-const setupUsage = "usage: setup [--dry-run] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run] [names]"
+const setupUsage = "usage: setup [--dry-run] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run|--apply] [names]"
 
 // scriptedForm is printed when an unnamed setup cannot ask questions.
 const scriptedForm = `setup asks for confirmation in a terminal. Nothing was changed.
@@ -98,7 +98,7 @@ func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
 		switch {
 		case arg == "--dry-run" && !req.DryRun:
 			req.DryRun = true
-		case arg == "--apply" && action == "setup" && !req.Apply:
+		case arg == "--apply" && !req.Apply:
 			req.Apply = true
 		case slices.Contains(adapters, arg) && !slices.Contains(req.Adapters, arg):
 			req.Adapters = append(req.Adapters, arg)
@@ -106,7 +106,7 @@ func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
 			return req, false
 		}
 	}
-	if req.Apply && (req.DryRun || len(req.Adapters) == 0) {
+	if req.Apply && (req.DryRun || action == "setup" && len(req.Adapters) == 0) {
 		return req, false
 	}
 	return req, true

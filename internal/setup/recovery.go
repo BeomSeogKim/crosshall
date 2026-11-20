@@ -115,9 +115,14 @@ func pendingRecoveryPathError(op operation) error {
 		if err != nil {
 			return fmt.Errorf("%s configuration: %w", e.Adapter, err)
 		}
-		if location.missing != "" || configIdentity(info) != e.StageDir {
-			return fmt.Errorf("%s configuration directory changed while the plan was pending", e.Adapter)
+		if location.missing != "" {
+			if e.matchesCleanupAbsence(location.missingParents[len(location.missingParents)-1]) {
+				continue
+			}
+		} else if configIdentity(info) == e.StageDir {
+			continue
 		}
+		return fmt.Errorf("%s configuration directory changed while the plan was pending", e.Adapter)
 	}
 	return nil
 }
@@ -148,10 +153,25 @@ func (s Service) recoverJournal(ctx context.Context, digest string, uninstall bo
 	}
 	blocked := pendingRecoveryPathError(*j.Pending)
 	if blocked == nil {
-		for _, e := range j.Pending.Edits {
+		for i := range j.Pending.Edits {
+			e := &j.Pending.Edits[i]
 			if err := e.stageCleanup(); err != nil {
 				blocked = fmt.Errorf("%s temporary configuration: %w", e.Adapter, err)
 				break
+			}
+			if len(e.CleanupDirs) == 0 {
+				continue
+			}
+			current, err := readConfig(e.Path)
+			if err != nil {
+				blocked = fmt.Errorf("%s configuration: %w", e.Adapter, err)
+				break
+			}
+			if now := stamp(current); e.matchesAfter(now) {
+				if _, err := finishEdit(state, j, e, now); err != nil {
+					blocked = fmt.Errorf("%s configuration directory cleanup: %w", e.Adapter, err)
+					break
+				}
 			}
 		}
 	}

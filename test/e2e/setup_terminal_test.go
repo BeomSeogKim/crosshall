@@ -106,6 +106,23 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 	}
 }
 
+func TestManualSetupDeclineKeepsTheInstallerOffer(t *testing.T) {
+	f := newSetupWorld(t)
+	before := readSetupFile(t, f.paths["claude"])
+	code, out := f.inTerminal(f.env, "n\n", nil, "setup")
+	if code != 0 || !strings.Contains(out, "claude: declined") || !strings.Contains(out, "codex: declined") {
+		t.Fatalf("manual setup exit %d:\n%s", code, out)
+	}
+	assertSetupFile(t, f.paths["claude"], before, true)
+	if _, err := os.Stat(f.state); !os.IsNotExist(err) {
+		t.Fatalf("manual decline created setup state: %v", err)
+	}
+	if code, out := f.inTerminal(f.env, "\n", nil, "setup", "--offer"); code != 0 ||
+		strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the listed hooks?") {
+		t.Fatalf("installer offer after manual decline exited %d:\n%s", code, out)
+	}
+}
+
 func TestSetupNeedsBothStreamsToBeATerminal(t *testing.T) {
 	f := newSetupWorld(t)
 	before := readSetupFile(t, f.paths["claude"])

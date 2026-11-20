@@ -158,11 +158,11 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 	}
 }
 
-func TestOneDeclineAppliesToEveryListedVendor(t *testing.T) {
+func TestOneManualDeclineSkipsEveryListedVendor(t *testing.T) {
 	ops := newFakeOps()
 	r := runPrompts(t, ops, Request{Terminal: true}, "n\n")
 	d := declined(t, r.s)
-	if r.err != nil || len(ops.installed) != 0 || !d["claude"] || !d["codex"] || d["agy"] ||
+	if r.err != nil || len(ops.installed) != 0 || len(d) != 0 ||
 		!strings.Contains(r.out, "claude: declined") || !strings.Contains(r.out, "codex: declined") {
 		t.Fatalf("installed %v declined %v: %v\n%s", ops.installed, d, r.err, r.out)
 	}
@@ -344,8 +344,9 @@ func TestTheInstallerOfferAsksOnlyWhenEligible(t *testing.T) {
 		len(ops.installed) != 0 || len(declined(t, s)) != 0 {
 		t.Fatalf("planned %v installed %v declined %v: %v\n%s", ops.planned, ops.installed, declined(t, s), r.err, r.out)
 	}
-	req := Request{Terminal: true, Adapters: []string{"codex"}}
-	if r := runPromptsIn(t, s, newFakeOps(), req, "n\n"); r.err != nil {
+	codexOnly := newFakeOps()
+	codexOnly.statuses[0].CLI = "missing"
+	if r := runPromptsIn(t, s, codexOnly, offer, "n\n"); r.err != nil {
 		t.Fatal(r.err)
 	}
 	ops = newFakeOps()

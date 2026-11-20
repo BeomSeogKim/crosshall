@@ -70,6 +70,7 @@ type ApprovalOffer struct {
 
 func (s Service) Run(ctx context.Context, req Request) error {
 	if req.Action == "uninstall" {
+		req.DryRun = req.DryRun || !req.Terminal && !req.Apply
 		empty, err := s.noUninstallFootprint(ctx, req.Adapters)
 		if err != nil {
 			return err
@@ -166,14 +167,16 @@ func (s Service) Run(ctx context.Context, req Request) error {
 						return err
 					}
 				}
-				ok, err := confirm(scanner, prompts, prompt)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					p := displayPlan(req, *j.Pending, nil, false)
-					p.Recovery = true
-					return printCompletion(req, p)
+				if !req.Apply {
+					ok, err := confirm(scanner, prompts, prompt)
+					if err != nil {
+						return err
+					}
+					if !ok {
+						p := displayPlan(req, *j.Pending, nil, false)
+						p.Recovery = true
+						return printCompletion(req, p)
+					}
 				}
 				j, digest, err = s.recoverJournal(ctx, digest, req.Action == "uninstall")
 				if err != nil {
@@ -235,7 +238,7 @@ func (s Service) Run(ctx context.Context, req Request) error {
 	if err := printPlan(prompts, p); err != nil {
 		return err
 	}
-	if !resume {
+	if !resume && !req.Apply {
 		ok, err := confirm(scanner, prompts, "Apply this plan?")
 		if err != nil {
 			return err

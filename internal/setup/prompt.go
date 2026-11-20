@@ -269,15 +269,17 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			return fmt.Errorf("record installer consent: %w", err)
 		}
 	}
-	answers := make(map[string]answer, len(eligible))
-	for _, plan := range eligible {
-		answers[plan.Adapter] = a
-	}
-	if seenErr == nil {
-		seenErr = p.s.rememberAnswers(answers, seen, p.now())
-	}
-	if seenErr != nil {
-		fmt.Fprintf(p.out, "Your answers could not be remembered: %v\n", seenErr)
+	if p.req.Offer || a == answerYes {
+		answers := make(map[string]answer, len(eligible))
+		for _, plan := range eligible {
+			answers[plan.Adapter] = a
+		}
+		if seenErr == nil {
+			seenErr = p.s.rememberAnswers(answers, seen, p.now())
+		}
+		if seenErr != nil {
+			fmt.Fprintf(p.out, "Your answers could not be remembered: %v\n", seenErr)
+		}
 	}
 	for _, plan := range eligible {
 		result.Vendors = append(result.Vendors, p.apply(ctx, choice{plan: plan, answer: a}))
@@ -341,14 +343,16 @@ func (p *prompter) uninstall(ctx context.Context) error {
 			result.Vendors = append(result.Vendors, o)
 			continue
 		}
-		var a answer
-		if plan.Resume || plan.Recovery {
-			a, err = p.interrupted(plan)
-		} else {
-			a, err = p.question(fmt.Sprintf("Remove the crosshall hooks for %s from %s?", plan.Name, plan.Path))
-		}
-		if err != nil {
-			return err
+		a := answerYes
+		if !p.req.Apply {
+			if plan.Resume || plan.Recovery {
+				a, err = p.interrupted(plan)
+			} else {
+				a, err = p.question(fmt.Sprintf("Remove the crosshall hooks for %s from %s?", plan.Name, plan.Path))
+			}
+			if err != nil {
+				return err
+			}
 		}
 		result.Vendors = append(result.Vendors, p.apply(ctx, choice{plan: plan, answer: a}))
 	}

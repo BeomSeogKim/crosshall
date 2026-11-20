@@ -125,6 +125,9 @@ func TestAgySetupOwnsOnlyItsNamedSessionStartGroup(t *testing.T) {
 				if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("uninstall left its newly created file: %v", err)
 				}
+				if _, err := os.Lstat(filepath.Join(f.Home, ".gemini")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("uninstall left its newly created directories: %v", err)
+				}
 			} else if restored := configBytes(t, target); string(restored) != test.after {
 				t.Fatalf("uninstall restored %q, want %q", restored, test.after)
 			}
@@ -196,6 +199,114 @@ func TestAgySetupResumesAfterCreatingOnlyTheFirstDirectory(t *testing.T) {
 	}
 	if status := readAdapterStatuses(t, f, s.Executable)[2]; status.Install != "installed" || !status.Owned {
 		t.Fatalf("recovered status = %+v", status)
+	}
+	plans, err = s.PlanUninstall(ctx, selected)
+	if err := s.Uninstall(ctx, requireAgyPlan(t, plans, err)); err != nil {
+		t.Fatal(err)
+	}
+	for path, exists := range map[string]bool{".gemini": true, ".gemini/config": false} {
+		assertAgyDirectory(t, filepath.Join(f.Home, path), exists)
+	}
+}
+
+func TestAgyUninstallRetainsUnownedAndNonemptyDirectories(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		existing      string
+		addedFile     string
+		configRemains bool
+	}{
+		{name: "existing gemini", existing: ".gemini"},
+		{name: "existing config", existing: ".gemini/config", configRemains: true},
+		{name: "new file in gemini", addedFile: ".gemini/owner.txt"},
+		{name: "new file in config", addedFile: ".gemini/config/owner.txt", configRemains: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := setuptest.New(t, "agy")
+			s := scopedService(f)
+			ctx := t.Context()
+			selected := []string{"agy"}
+			f.CheckTargets(t)
+			if test.existing != "" {
+				if err := os.MkdirAll(filepath.Join(f.Home, test.existing), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plans, err := s.PlanInstall(ctx, selected)
+			if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+				t.Fatal(err)
+			}
+			if test.addedFile != "" {
+				if err := os.WriteFile(filepath.Join(f.Home, test.addedFile), []byte("owner"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plans, err = s.PlanUninstall(ctx, selected)
+			if err := s.Uninstall(ctx, requireAgyPlan(t, plans, err)); err != nil {
+				t.Fatal(err)
+			}
+			assertAgyDirectory(t, filepath.Join(f.Home, ".gemini"), true)
+			assertAgyDirectory(t, filepath.Join(f.Home, ".gemini", "config"), test.configRemains)
+			if test.addedFile != "" {
+				if raw := configBytes(t, filepath.Join(f.Home, test.addedFile)); string(raw) != "owner" {
+					t.Fatalf("owner file changed: %q", raw)
+				}
+			}
+		})
+	}
+}
+
+func TestAgyUninstallResumesAfterRemovingOnlyTheConfigDirectory(t *testing.T) {
+	f := setuptest.New(t, "agy")
+	s := scopedService(f)
+	ctx := t.Context()
+	selected := []string{"agy"}
+	f.CheckTargets(t)
+	plans, err := s.PlanInstall(ctx, selected)
+	if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+		t.Fatal(err)
+	}
+	plans, err = s.PlanUninstall(ctx, selected)
+	plan := requireAgyPlan(t, plans, err)
+	j, _, err := readJournal(f.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Pending = &plan.op
+	e := &j.Pending.Edits[0]
+	e.StageDir = e.Before.Dir
+	e.CleanupStarted = true
+	writeStatusJournal(t, f, j)
+	if err := os.Remove(e.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Dir(e.Path)); err != nil {
+		t.Fatal(err)
+	}
+	plans, err = s.PlanUninstall(ctx, selected)
+	resume := requireAgyPlan(t, plans, err)
+	if !resume.Resume {
+		t.Fatalf("partial directory cleanup did not allow recovery: %+v", resume)
+	}
+	if err := s.Uninstall(ctx, resume); err != nil {
+		t.Fatal(err)
+	}
+	assertAgyDirectory(t, filepath.Join(f.Home, ".gemini"), false)
+	j, _, err = readJournal(f.State)
+	if err != nil || j.Pending != nil || len(j.Files) != 0 {
+		t.Fatalf("directory cleanup left ownership: %+v (%v)", j, err)
+	}
+}
+
+func assertAgyDirectory(t *testing.T, path string, exists bool) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if exists {
+		if err != nil || !info.IsDir() {
+			t.Fatalf("wanted directory at %q: %v (%v)", path, info, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wanted directory absent at %q: %v (%v)", path, info, err)
 	}
 }
 

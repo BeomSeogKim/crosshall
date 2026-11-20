@@ -95,7 +95,15 @@ func TestAntigravitySetupInstallsAndInvokesOnlyCLIStartup(t *testing.T) {
 	if err := f.db().QueryRow("SELECT COUNT(*) FROM publish_route WHERE adapter = 'agy'").Scan(&routes); err != nil || routes != 0 {
 		t.Fatalf("Antigravity startup acquired %d publish routes: %v", routes, err)
 	}
-	f.apply("yes\n", "uninstall", "antigravity")
+	installedFile := readSetupFile(t, config)
+	for _, args := range [][]string{{"uninstall", "antigravity"}, {"uninstall"}} {
+		preview := f.apply("yes\n", args...)
+		if preview.obj["dry_run"] != true || preview.obj["applied"] == true {
+			t.Fatalf("redirected %v did not preview: %s", args, preview.stdout)
+		}
+		assertSetupFile(t, config, installedFile, true)
+	}
+	f.apply("", "uninstall", "antigravity", "--apply")
 	assertSetupFile(t, config, original, false)
 	if got := invoke("antigravity-cli"); got != "{}\n" {
 		t.Fatalf("uninstalled hook still has an effect: %q", got)

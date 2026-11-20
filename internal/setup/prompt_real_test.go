@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 )
@@ -80,8 +81,8 @@ func TestTheInstallerOfferOverTheRealStatus(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(f.Home, ".claude")); !os.IsNotExist(err) {
 		t.Fatalf("a skipped offer wrote settings: %v", err)
 	}
-	if out, err = realRun(t, s, f, Request{Terminal: true, Adapters: []string{"codex"}}, "n\n"); err != nil {
-		t.Fatalf("explicit decline: %v\n%s", err, out)
+	if err := s.rememberAnswers(map[string]answer{"codex": answerNo}, snap(t, s), time.UnixMilli(1)); err != nil {
+		t.Fatal(err)
 	}
 	out, err = realRun(t, s, f, offer, "y\n")
 	if err != nil || strings.Contains(out, "Codex hooks in") || !strings.Contains(out, "claude: installed") {

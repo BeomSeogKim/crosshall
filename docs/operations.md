@@ -18,7 +18,7 @@ On a fresh install or upgrade in your own terminal, the installer shows the elig
 
 crosshall installs an executable in `~/.local/bin/crosshall` by default, runs a local dispatcher, and keeps its database, upgrade backups, log and owner spool in the state directory: `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`. Member spools live in a private rendezvous directory under `/tmp`. Optional hooks live in your agent settings.
 
-1. Run `crosshall uninstall` for each installation that has hooks. Review any edited or unmanaged hook entries it reports.
+1. In your own terminal, run `crosshall uninstall` for each installation that has hooks. From a script, use `crosshall uninstall --apply`. Review any edited or unmanaged hook entries it reports.
 2. In the owner terminal, record the two directory paths with `crosshall owner doctor`, stop any callers, and run `crosshall owner stop` for each state directory in use. For a dispatcher older than v0.1.0-rc.13, which has no `owner stop`, use the stop and wait steps in [upgrading](../UPGRADING.md).
 3. Remove the installed binary and the recorded state and rendezvous directories. Copy the state first if you want to keep messages, member records or backups.
 

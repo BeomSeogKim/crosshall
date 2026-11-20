@@ -99,11 +99,13 @@ fetch_prebuilt() {
   asset="crosshall-$os-$arch.tar.gz"
   url="https://github.com/BeomSeogKim/crosshall/releases/download/$tag/$asset"
   checksum_http=$(fetch "$url.sha256" "$stage/checksum" --write-out '%{http_code}') || curl_status=$?
+  if [[ $checksum_http == 404 ]]; then
+    prebuilt_reason="no release archive is published for $tag on $os/$arch"
+    return 1
+  fi
   if (( curl_status != 0 )); then
-    case "$curl_status:$checksum_http" in
-      22:404)
-        prebuilt_reason="no release archive is published for $tag on $os/$arch" ;;
-      5:*|6:*|7:*|28:*)
+    case "$curl_status" in
+      5|6|7|28)
         prebuilt_reason="could not reach the release for $tag on $os/$arch" ;;
       *)
         prebuilt_reason="no verified release archive found for $tag on $os/$arch because the checksum is unavailable" ;;

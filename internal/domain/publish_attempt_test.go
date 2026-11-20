@@ -404,3 +404,113 @@ func TestTheFinalFenceResolvesTheRouteThroughItsAdapter(t *testing.T) {
 	}
 	p.state(id, string(PublishNotSubmitted))
 }
+
+func (p *publishFixture) unproven() PublishProof {
+	p.t.Helper()
+	var proofs []PublishProof
+	p.update(func(ctx context.Context, tx store.Tx) (err error) {
+		proofs, err = UnprovenPublishRoutes(ctx, tx, p.now)
+		return err
+	})
+	if len(proofs) != 1 {
+		p.t.Fatalf("unproven routes %+v, want this one", proofs)
+	}
+	return proofs[0]
+}
+
+func (p *publishFixture) confirm(proof PublishProof, queue PublishQueue) bool {
+	p.t.Helper()
+	var recorded bool
+	p.update(func(ctx context.Context, tx store.Tx) (err error) {
+		recorded, err = ConfirmPublishProof(ctx, tx, proof, queue, p.now)
+		return err
+	})
+	return recorded
+}
+
+// A proof counts only for the launch it was asked for: the listener must be
+// the launch's process, started no later than the launch's first hook.
+func TestAProofMustBeTheExpectedLaunch(t *testing.T) {
+	p := newPublishFixture(t)
+	proof := p.unproven()
+	if proof.Probe.LaunchRef != publishTestLaunch || proof.Probe.Address != publishTestSocket ||
+		proof.Probe.Route.SocketPath != publishTestSocket || proof.Probe.StartedHookAtMS != p.now.UnixMilli() {
+		t.Fatalf("probe %+v lacks the registered launch evidence", proof.Probe)
+	}
+	for name, queue := range map[string]PublishQueue{
+		"another process":        {PID: 43, StartMS: p.queue.StartMS},
+		"started after the hook": {PID: 42, StartMS: p.now.UnixMilli() + 1},
+		"no start time":          {PID: 42},
+	} {
+		if p.confirm(proof, queue) {
+			t.Fatalf("%s: recorded %+v for launch %s", name, queue, proof.Probe.LaunchRef)
+		}
+	}
+	if !p.confirm(proof, p.queue) {
+		t.Fatal("the launch's own process was not recorded")
+	}
+}
+
+// Astra #433: a proof that returns after the member turned publish off
+// records nothing, so work stored while off is not offered once it is on.
+func TestAProofRechecksFirstActivationWhenItLands(t *testing.T) {
+	p := newPublishFixture(t)
+	proof := p.unproven()
+	p.mutate(`UPDATE binding SET publish_quiet = 1 WHERE id = ?`, p.binding.ID)
+	p.turnEndAsk(p.writer, "reader", "while-off-before-proof")
+	if p.confirm(proof, p.queue) {
+		t.Fatal("recorded a proof for a route that could not publish")
+	}
+	stored := p.turnEndAsk(p.writer, "reader", "while-off-after-proof")
+	p.mutate(`UPDATE binding SET publish_quiet = 0 WHERE id = ?`, p.binding.ID)
+	if !p.confirm(p.unproven(), p.queue) {
+		t.Fatal("no proof once the route could publish")
+	}
+	if id := p.reserve(); id != 0 {
+		t.Fatalf("offered work (up to %d) stored while the route was off", stored)
+	}
+	after := p.turnEndAsk(p.writer, "reader", "after-proof")
+	id := p.reserve()
+	if ids := p.begin(id); len(ids) != 1 || ids[0] != after {
+		t.Fatalf("offered %v, want only %d", ids, after)
+	}
+}
+
+// modeAddress resolves a different address in every permission mode.
+type modeAddress struct{ publish.Adapter }
+
+func (m modeAddress) Resolve(r publish.Route) (string, string) {
+	address, why := m.Adapter.Resolve(r)
+	if why != "" {
+		return "", why
+	}
+	return address + "#" + r.Mode, ""
+}
+
+// Astra #433: a proof is for one address, so a mode change that resolves a
+// new one needs a new proof before anything is sent there.
+func TestAModeThatMovesTheAddressNeedsANewProof(t *testing.T) {
+	p := newPublishFixture(t)
+	claude, _ := publish.Lookup("claude")
+	t.Cleanup(publish.Swap(publish.Adapters().With("claude", modeAddress{claude})))
+	p.proveRoute()
+	before := p.binding.Generation
+	r := p.exec(p.caller(p.reader), Request{
+		Command:    claudeRoute(publishTestLaunch, "mode-move", "", "acceptEdits", p.now.UnixMilli()+1_000, 1),
+		Vendor:     p.reader.vendor,
+		SessionKey: p.reader.key,
+		OpKey:      "hook:claude:" + publishTestLaunch + ":mode-move",
+	})
+	wantOK(t, r)
+	p.refreshBinding()
+	if p.binding.Generation != before+1 {
+		t.Fatalf("generation %d after the address moved, want %d", p.binding.Generation, before+1)
+	}
+	p.turnEndAsk(p.writer, "reader", "after-move")
+	if id := p.reserve(); id != 0 {
+		t.Fatal("reserved on the old proof for a new address")
+	}
+	if got := p.unproven().Probe.Address; got != publishTestSocket+"#acceptEdits" {
+		t.Fatalf("new proof asked for %q", got)
+	}
+}

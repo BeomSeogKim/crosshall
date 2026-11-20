@@ -100,8 +100,20 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 			p.submit(ctx, id)
 		})
 	}
+	// Forget the retry time of a route that no longer waits for a proof
+	// (proven, ended or a new generation); a running proof keeps its guard.
+	waiting := make(map[domain.PublishBinding]bool, len(proofs))
 	for _, proof := range proofs {
-		prove := p.transport(proof.Target.Adapter).Prove
+		waiting[proof.Binding] = true
+	}
+	p.proving.Range(func(key, value any) bool {
+		if !waiting[key.(domain.PublishBinding)] && !value.(time.Time).IsZero() {
+			p.proving.CompareAndDelete(key, value)
+		}
+		return true
+	})
+	for _, proof := range proofs {
+		prove := p.transport(proof.Probe.Adapter).Prove
 		if prove == nil {
 			continue
 		}
@@ -202,7 +214,7 @@ func (p *publisher) transport(adapter string) publish.Transport {
 // records that proof, so the route can reserve a notice. Until a proof
 // lands nothing is reserved for it.
 func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
-	prove func(context.Context, domain.PublishTarget) (domain.PublishQueue, bool), at time.Time) {
+	prove func(context.Context, publish.Probe) (domain.PublishQueue, bool), at time.Time) {
 	// Like a probe, the guard outlives an abandoned proof: it is released
 	// only when the callback returns.
 	release := func() { p.proving.Store(proof.Binding, at.Add(publishProveRetry)) }
@@ -217,16 +229,18 @@ func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
 		ok    bool
 	}
 	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() proven {
-		queue, ok := prove(call, proof.Target)
+		queue, ok := prove(call, proof.Probe)
 		return proven{queue, ok}
 	}, release)
 	if !ok || !got.ok || call.Err() != nil {
 		return
 	}
-	err := p.db.Update(call, func(tx store.Tx) error {
-		return domain.ConfirmPublishRoute(call, tx, proof.Binding, got.queue)
+	recorded := false
+	err := p.db.Update(call, func(tx store.Tx) (err error) {
+		recorded, err = domain.ConfirmPublishProof(call, tx, proof, got.queue, time.Now())
+		return err
 	})
-	if err == nil {
+	if err == nil && recorded {
 		p.proving.Delete(proof.Binding)
 	}
 	logPublishFailure(err)

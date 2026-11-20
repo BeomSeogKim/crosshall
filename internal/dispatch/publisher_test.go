@@ -827,12 +827,12 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 	for _, proves := range []bool{true, false} {
 		t.Run(fmt.Sprintf("proves=%t", proves), func(t *testing.T) {
 			f := newPublishTestFixture(t)
-			f.exec(t, `DELETE FROM publish_route_proof`)
-			proofs := make(chan domain.PublishTarget, 4)
+			f.provable(t)
+			proofs := make(chan publish.Probe, 4)
 			sent := make(chan string, 4)
 			useTransport(t, publish.Transport{
-				Prove: func(_ context.Context, target publish.Target) (publish.Queue, bool) {
-					proofs <- target
+				Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+					proofs <- probe
 					return publishTestTarget.Queue, proves
 				},
 				Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
@@ -844,7 +844,8 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 			t.Cleanup(p.workers.Wait)
 			tickPublisher(t, p, f.now, true)
 			p.workers.Wait()
-			if got := awaitPublishTest(t, proofs); got.Adapter != "claude" || got.Address != publishTestTarget.Address {
+			if got := awaitPublishTest(t, proofs); got.Adapter != "claude" || got.Address != publishTestTarget.Address ||
+				got.LaunchRef != "pid-2345" || got.StartedHookAtMS != 2000 {
 				t.Fatalf("proved %+v", got)
 			}
 			if n := countPublish(t, f, "publish_attempt"); n != 0 {
@@ -875,5 +876,64 @@ func requireNone[T any](t *testing.T, ch <-chan T) {
 	case value := <-ch:
 		t.Fatalf("unexpected %+v", value)
 	default:
+	}
+}
+
+// provable makes the fixture's route unproven and its launch the process
+// publishTestTarget.Queue names, so a transport can prove it.
+func (f *publishTestFixture) provable(t *testing.T) {
+	t.Helper()
+	f.exec(t, `DELETE FROM publish_route_proof;
+		UPDATE adapter_launch SET launch_ref = 'pid-2345', started_hook_at_ms = 2000;
+		UPDATE publish_route SET launch_ref = 'pid-2345'`)
+}
+
+// Astra #433: two launches whose routes name one listener; the listener is
+// proven only for the launch it is.
+func TestAListenerIsProvenOnlyForItsOwnLaunch(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.provable(t)
+	f.exec(t, `INSERT INTO principal(id, kind, vendor, created_at_ms) VALUES (3, 'session', 'claude', 1);
+		INSERT INTO binding(id, principal_id, channel_id, alias, joined_at_ms) VALUES (3, 3, 1, 'other', 1);
+		INSERT INTO adapter_launch(principal_id, launch_ref, profile, verified, started_hook_at_ms)
+			VALUES (3, 'pid-2346', '{"vendor_version":"2.1.0","platform":"darwin-arm64","mode":"default","manifest_rev":"r1"}', 1, 2000);
+		INSERT INTO publish_route(binding_id, principal_id, generation, adapter, session_ref, launch_ref,
+			launch_verified, policy_epoch, mode, socket_path, watermark_message_id, state, registered_at_ms, updated_at_ms)
+			VALUES (3, 3, 1, 'claude', 'session-3', 'pid-2346', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1)`)
+	asked := make(chan string, 4)
+	useTransport(t, publish.Transport{
+		Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+			asked <- probe.LaunchRef
+			return publishTestTarget.Queue, true // the one listener on the socket
+		},
+		Send: func(context.Context, publish.Target, string) publish.Outcome { return publish.Submitted },
+	})
+	p := &publisher{db: f.db}
+	t.Cleanup(p.workers.Wait)
+	tickPublisher(t, p, f.now, true)
+	p.workers.Wait()
+	got := []string{awaitPublishTest(t, asked), awaitPublishTest(t, asked)}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"pid-2345", "pid-2346"}) {
+		t.Fatalf("proofs asked for %v", got)
+	}
+	var proven []int64
+	f.update(t, func(tx store.Tx) error {
+		rows, err := tx.QueryContext(t.Context(), `SELECT binding_id FROM publish_route_proof ORDER BY binding_id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			proven = append(proven, id)
+		}
+		return rows.Err()
+	})
+	if !slices.Equal(proven, []int64{2}) {
+		t.Fatalf("proven bindings %v, want only the listener's own launch", proven)
 	}
 }

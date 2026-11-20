@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
@@ -65,7 +67,8 @@ const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON 
 
 const openPublishLane = `observed_at_ms IS NULL AND retired_at_ms IS NULL AND state <> 'not_submitted'`
 
-// ConfirmPublishRoute records a transport's positive proof for this generation.
+// ConfirmPublishRoute records a transport's positive proof for this
+// generation. The publisher goes through ConfirmPublishProof.
 func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBinding, queue PublishQueue) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE publish_route AS r SET watermark_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
 		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND r.launch_verified = 1
@@ -106,10 +109,10 @@ func bindingRouteResolves(ctx context.Context, tx store.Tx, binding int64) (bool
 }
 
 // PublishProof is a route that could publish but for the transport's
-// proof of the process that owns its address. Target.Queue is unknown.
+// proof of the process that listens on its address.
 type PublishProof struct {
 	Binding PublishBinding
-	Target  PublishTarget
+	Probe   publish.Probe
 }
 
 // UnprovenPublishRoutes lists the routes that wait only for that proof, so
@@ -117,8 +120,9 @@ type PublishProof struct {
 // before it has work: proof moves its watermark, which would hide work
 // that was waiting for it.
 func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]PublishProof, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.binding_id, r.generation, `+publishRouteColumns+` `+publishRoutes(now, false)+
-		` AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation)
+	rows, err := tx.QueryContext(ctx, `SELECT r.binding_id, r.generation, `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms `+
+		publishRoutes(now, false)+` AND NOT EXISTS (SELECT 1 FROM publish_route_proof p
+			WHERE p.binding_id = r.binding_id AND p.generation = r.generation)
 		ORDER BY r.binding_id`)
 	if err != nil {
 		return nil, err
@@ -127,16 +131,54 @@ func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]P
 	var proofs []PublishProof
 	for rows.Next() {
 		var proof PublishProof
-		var mode, socketPath, threadID string
-		if err := rows.Scan(&proof.Binding.ID, &proof.Binding.Generation, &proof.Target.Adapter, &mode, &socketPath, &threadID); err != nil {
+		probe := &proof.Probe
+		if err := rows.Scan(&proof.Binding.ID, &proof.Binding.Generation, &probe.Adapter, &probe.Route.Mode,
+			&probe.Route.SocketPath, &probe.Route.ThreadID, &probe.LaunchRef, &probe.StartedHookAtMS); err != nil {
 			return nil, err
 		}
 		var ok bool
-		if proof.Target.Address, ok = routeAddress(proof.Target.Adapter, mode, socketPath, threadID); ok {
+		if probe.Address, ok = routeAddress(probe.Adapter, probe.Route.Mode, probe.Route.SocketPath, probe.Route.ThreadID); ok {
 			proofs = append(proofs, proof)
 		}
 	}
 	return proofs, rows.Err()
+}
+
+// launchOwns reports whether queue is the probe's launch: the process its
+// launch reference names, started no later than the launch's first hook.
+func launchOwns(probe publish.Probe, queue PublishQueue) bool {
+	process, ok := ident.LaunchProcess(probe.LaunchRef)
+	return ok && queue.PID > 0 && process == fmt.Sprintf("pid-%d", queue.PID) &&
+		queue.StartMS > 0 && queue.StartMS <= probe.StartedHookAtMS
+}
+
+// ConfirmPublishProof records a transport's proof for a route only if the
+// proven process is the expected launch and, in this transaction, the
+// route is still unproven and could publish on its first activation: the
+// same generation, launch and resolved address the proof was asked for,
+// with every switch, suspension and profile check in force. A proof that
+// lost the race to a switch or a new launch records nothing, so work that
+// arrives while the route cannot publish is never offered once it can.
+func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, queue PublishQueue, now time.Time) (bool, error) {
+	if !launchOwns(proof.Probe, queue) {
+		return false, nil
+	}
+	var route publish.Probe
+	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms `+publishRoutes(now, false)+`
+		AND r.binding_id = ? AND r.generation = ? AND NOT EXISTS (SELECT 1 FROM publish_route_proof p
+			WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`, proof.Binding.ID, proof.Binding.Generation).
+		Scan(&route.Adapter, &route.Route.Mode, &route.Route.SocketPath, &route.Route.ThreadID, &route.LaunchRef, &route.StartedHookAtMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	route.Address, _ = routeAddress(route.Adapter, route.Route.Mode, route.Route.SocketPath, route.Route.ThreadID)
+	if route != proof.Probe {
+		return false, nil
+	}
+	return true, ConfirmPublishRoute(ctx, tx, proof.Binding, queue)
 }
 
 func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]PublishBinding, error) {

@@ -15,10 +15,12 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
-// A Claude PID is a label within this session. Only a SessionStart can pair
-// it with a launch. Compact and terminal events cannot create that evidence.
+// A launch PID, which an adapter whose manifest names a launch_env reports,
+// is a label within this session. Only a SessionStart can pair it with a
+// launch. Compact and terminal events cannot create that evidence. Without
+// a launch PID the launch stays session-scoped and unverified.
 func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry time.Time) (string, bool, error) {
-	if e.Identity.Vendor != "claude" || e.LaunchRef == "" {
+	if e.LaunchRef == "" {
 		return "session", false, nil
 	}
 	pid, err := strconv.ParseUint(e.LaunchRef, 10, 32)

@@ -75,10 +75,21 @@ func TestClaudeLaunchAmbiguityAndSessionOnlyCallbacks(t *testing.T) {
 	checkLaunch(t, leaf, "g1", "314", "", 11, false)
 	checkLaunch(t, leaf, "g1", "314", "resume", 12, true)
 	checkLaunch(t, leaf, "g1", "", "startup", 13, false)
-	e, spec := launchCallback("314", "")
+	// Capture is the manifest's, not the vendor's: an adapter without a
+	// launch_env reports no launch PID and stays session-scoped, and any
+	// adapter that reports one binds like Claude Code.
+	if codex, _ := loadManifest("codex"); codex.LaunchEnv != "" {
+		t.Fatalf("codex captures launches through %s", codex.LaunchEnv)
+	}
+	e, spec := launchCallback("", "startup")
 	e.Identity.Vendor = "codex"
 	if ref, verified, err := bindLaunch(leaf, "g1", e, spec, time.UnixMilli(14)); ref != "session" || verified || err != nil {
 		t.Fatalf("session-only adapter: %q, %t, %v", ref, verified, err)
+	}
+	e, spec = launchCallback("316", "startup")
+	e.Identity.Vendor = "fixture"
+	if ref, verified, err := bindLaunch(leaf, "g1", e, spec, time.UnixMilli(15)); ref == "session" || !verified || err != nil {
+		t.Fatalf("an adapter with a launch PID: %q, %t, %v", ref, verified, err)
 	}
 }
 

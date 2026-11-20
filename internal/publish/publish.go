@@ -42,13 +42,24 @@ const (
 // as not retired, and the worker waits a bounded time for the callback to
 // return. A Transport without Send means the adapter has no sender.
 type Transport struct {
-	// Prove identifies the process that owns a route's address, before
-	// any notice is reserved for it; ok is false without that proof.
-	Prove func(ctx context.Context, target Target) (queue Queue, ok bool)
+	// Prove identifies the process that listens on a route's address,
+	// before any notice is reserved for it; ok is false without that
+	// proof. The core records it only when that process is the probe's
+	// launch, started no later than the launch's first hook.
+	Prove func(ctx context.Context, probe Probe) (queue Queue, ok bool)
 	// Send writes one notice to a proven target.
 	Send func(context.Context, Target, string) Outcome
 	// Retired requires proof the queue is gone.
 	Retired func(context.Context, Queue) bool
+}
+
+// Probe is what a transport proves: the resolved target (its Queue is not
+// known yet), the registered route, and the launch expected to own it.
+type Probe struct {
+	Target
+	Route           Route
+	LaunchRef       string
+	StartedHookAtMS int64
 }
 
 // Route is what a vendor's hooks registered for one member session.

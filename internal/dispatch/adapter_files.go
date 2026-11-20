@@ -15,6 +15,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -271,7 +272,7 @@ func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error
 
 func adapterPolicyText(ctx context.Context, tx store.Tx) (string, error) {
 	var out strings.Builder
-	for _, adapter := range []string{"claude", "codex"} {
+	for _, adapter := range manifests.Names() {
 		var enabled, reminder int
 		var epoch uint64
 		err := tx.QueryRowContext(ctx, `SELECT enabled, reminder, epoch

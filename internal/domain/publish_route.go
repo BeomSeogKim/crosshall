@@ -270,8 +270,20 @@ func updatePublishRouteMode(ctx context.Context, tx store.Tx, bindingID, binding
 	nowEligible := modeEligible(curAdapter, newMode)
 	nowMS := ms(now)
 	if wasEligible == nowEligible {
-		_, err = tx.ExecContext(ctx, `UPDATE publish_route SET mode = ?, mode_at_ms = ?, updated_at_ms = ? WHERE binding_id = ?`,
-			newMode, hookAtMS, nowMS, bindingID)
+		// A proof is for one address: a mode that resolves another one
+		// starts a new generation, which needs its own proof.
+		next := int64(0)
+		if a, ok := publish.Lookup(curAdapter); ok {
+			route := publish.Route{SocketPath: curSocket.String, ThreadID: curThread.String}
+			route.Mode = curMode
+			before, _ := a.Resolve(route)
+			route.Mode = newMode
+			if after, _ := a.Resolve(route); after != before {
+				next = 1
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE publish_route SET mode = ?, mode_at_ms = ?, generation = generation + ?, updated_at_ms = ?
+			WHERE binding_id = ?`, newMode, hookAtMS, next, nowMS, bindingID)
 		return err
 	}
 	if !nowEligible {

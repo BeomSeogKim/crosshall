@@ -29,6 +29,28 @@ type DoctorPublishState struct {
 	Reason       string `json:"reason"`
 	ActiveRoutes int    `json:"active_routes"`
 	TotalRoutes  int    `json:"total_routes"`
+	// Counters count the notices reserved on the diagnostics day.
+	Counters DoctorPublishCounters `json:"counters"`
+	Members  []DoctorPublishMember `json:"members,omitempty"`
+}
+
+// DoctorPublishCounters counts notices by outcome and by observation.
+type DoctorPublishCounters struct {
+	Date         string `json:"date"`
+	Submitted    int    `json:"submitted"`
+	Uncertain    int    `json:"uncertain"`
+	NotSubmitted int    `json:"not_submitted"`
+	OwnTurn      int    `json:"own_turn"`
+	Absorbed     int    `json:"absorbed"`
+	Unknown      int    `json:"unknown"`
+}
+
+// DoctorPublishMember is one live member's publish state.
+type DoctorPublishMember struct {
+	Channel   string       `json:"channel"`
+	Alias     string       `json:"alias"`
+	BindingID int64        `json:"binding_id"`
+	State     PublishState `json:"publish"`
 }
 
 type DoctorEvidence struct {
@@ -112,7 +134,7 @@ func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, i
 	snapshot.Adapters = make(map[string]DoctorAdapterState, len(adapters))
 	day := now.UTC().Truncate(24 * time.Hour)
 	for _, name := range adapters {
-		state, err := readDoctorAdapter(ctx, tx, name, day)
+		state, err := readDoctorAdapter(ctx, tx, name, day, now)
 		if err == nil {
 			snapshot.Adapters[name] = state
 		}
@@ -136,7 +158,7 @@ func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, i
 	return snapshot, nil
 }
 
-func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time) (DoctorAdapterState, error) {
+func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time.Time) (DoctorAdapterState, error) {
 	policy, err := ReadAdapterPolicy(ctx, tx, adapter)
 	if err != nil {
 		return DoctorAdapterState{}, err
@@ -192,6 +214,9 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time
 	} else if sampleReason.Valid && sampleReason.String != "" {
 		state.Publish.Reason = sampleReason.String
 	}
+	if err := readDoctorPublish(ctx, tx, adapter, day, now, &state.Publish); err != nil {
+		return DoctorAdapterState{}, err
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT vendor_version, platform, mode, manifest_rev, cap, level
 		FROM capability_evidence WHERE vendor = ?
@@ -208,4 +233,41 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time
 		state.Evidence = append(state.Evidence, e)
 	}
 	return state, rows.Err()
+}
+
+func readDoctorPublish(ctx context.Context, tx Tx, adapter string, day, now time.Time, out *DoctorPublishState) error {
+	c := &out.Counters
+	c.Date = day.Format("20060102")
+	if err := tx.QueryRowContext(ctx, `SELECT
+			COALESCE(SUM(state = 'submitted'), 0), COALESCE(SUM(state = 'uncertain'), 0),
+			COALESCE(SUM(state = 'not_submitted'), 0), COALESCE(SUM(observation = 'own_turn'), 0),
+			COALESCE(SUM(observation = 'absorbed'), 0), COALESCE(SUM(observation = 'unknown'), 0)
+		FROM publish_attempt WHERE adapter = ? AND reserved_at_ms >= ? AND reserved_at_ms < ?`,
+		adapter, day.UnixMilli(), day.AddDate(0, 0, 1).UnixMilli()).
+		Scan(&c.Submitted, &c.Uncertain, &c.NotSubmitted, &c.OwnTurn, &c.Absorbed, &c.Unknown); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT c.name, b.alias, b.id FROM publish_route r
+		JOIN binding b ON b.id = r.binding_id JOIN channel c ON c.id = b.channel_id
+		WHERE r.adapter = ? AND b.state = 'live' ORDER BY c.name, b.alias`, adapter)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m DoctorPublishMember
+		if err := rows.Scan(&m.Channel, &m.Alias, &m.BindingID); err != nil {
+			return err
+		}
+		out.Members = append(out.Members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range out.Members {
+		if out.Members[i].State, _, err = ReadPublishState(ctx, tx, out.Members[i].BindingID, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }

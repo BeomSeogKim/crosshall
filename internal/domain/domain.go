@@ -119,6 +119,10 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 	// end owner-views
 	case VerbAdapterSet:
 		return decodeLedgerCommand[AdapterSet](args)
+	case VerbPublish:
+		return decodeLedgerCommand[Publish](args)
+	case VerbOwnerPublish:
+		return decodeLedgerCommand[OwnerPublish](args)
 	case VerbAdapterEvidence: // adapter-claude
 		return decodeLedgerCommand[AdapterEvidence](args)
 	// read-ledger

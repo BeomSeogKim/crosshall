@@ -12,6 +12,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 func runOwnerViews(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
@@ -113,8 +114,12 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 				if member.EvidenceStale {
 					state += ", stale"
 				}
+				route := member.Route
+				if member.Publish != nil {
+					route += "; publish: " + publishWords(*member.Publish)
+				}
 				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, %s",
-					member.Alias, member.BindingID, state, member.Vendor, focus, member.Route, ownerEvidenceText(member))
+					member.Alias, member.BindingID, state, member.Vendor, focus, route, ownerEvidenceText(member))
 				if member.Observed != nil {
 					fmt.Fprintf(w, "; last observed: %s", observedText(member.Observed))
 				}
@@ -281,6 +286,8 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			Reason       string
 			ActiveRoutes int `json:"active_routes"`
 			TotalRoutes  int `json:"total_routes"`
+			Counters     *store.DoctorPublishCounters
+			Members      []store.DoctorPublishMember
 		} `json:"publish"`
 		Hooks *struct {
 			Date            string
@@ -347,6 +354,13 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		if a.Publish != nil {
 			fmt.Fprintf(&output, "  publish: %s (%s, %d active / %d total routes)\n",
 				a.Publish.State, a.Publish.Reason, a.Publish.ActiveRoutes, a.Publish.TotalRoutes)
+			if c := a.Publish.Counters; c != nil {
+				fmt.Fprintf(&output, "  publish notices on %s UTC: %d submitted, %d uncertain, %d not submitted; observed %d own turn, %d absorbed, %d unknown\n",
+					c.Date, c.Submitted, c.Uncertain, c.NotSubmitted, c.OwnTurn, c.Absorbed, c.Unknown)
+			}
+			for _, m := range a.Publish.Members {
+				fmt.Fprintf(&output, "  publish for @%s in #%s (binding %d): %s\n", m.Alias, m.Channel, m.BindingID, publishWords(m.State))
+			}
 		}
 		if a.UnverifiedLaunches != nil {
 			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)

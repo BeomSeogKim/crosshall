@@ -69,6 +69,10 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.adapterEvidence(ctx, tx, caller, req, cmd, now)
 	case AdapterSet:
 		return s.adapterSet(ctx, tx, caller, req, cmd, now)
+	case Publish:
+		return s.publish(ctx, tx, caller, req, cmd, now)
+	case OwnerPublish:
+		return s.ownerPublish(ctx, tx, caller, req, cmd, now)
 	// read-ledger
 	case Read:
 		return s.read(ctx, tx, caller, req, cmd, now)
@@ -678,7 +682,7 @@ func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time
 		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
 			return nil, err
 		}
-		if err := withPublishStatus(ctx, tx, collected[i].bindingID, out[i].Vendor, &out[i]); err != nil {
+		if err := withPublishStatus(ctx, tx, collected[i].bindingID, &out[i], now); err != nil {
 			return nil, err
 		}
 	}

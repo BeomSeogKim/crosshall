@@ -67,7 +67,7 @@ func (e AdapterEvidence) valid() bool {
 			return false
 		}
 		switch r.Cap {
-		case "enroll", "observe", "boundary", "reminder", "turn_end":
+		case "enroll", "observe", "boundary", "reminder", "turn_end", "publish":
 		default:
 			return false
 		}
@@ -109,7 +109,8 @@ func (s *Service) adapterEvidence(ctx context.Context, tx store.Tx, caller core.
 			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (vendor, vendor_version, platform, mode, manifest_rev, cap) DO UPDATE SET
-			level = excluded.level, result_ref = excluded.result_ref, checked_at_ms = excluded.checked_at_ms
+			level = excluded.level, result_ref = excluded.result_ref, checked_at_ms = excluded.checked_at_ms,
+			source = 'owner'
 			WHERE excluded.checked_at_ms > capability_evidence.checked_at_ms`,
 			cmd.Vendor, cmd.VendorVersion, cmd.Platform, cmd.Mode, cmd.ManifestRev, r.Cap, r.Level, cmd.ResultRef, cmd.RunAtMS)
 		if err != nil {

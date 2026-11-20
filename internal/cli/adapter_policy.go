@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -12,7 +13,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex> [--enabled on|off] [--reminder on|off]"
+const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex> [--enabled on|off] [--reminder on|off] [--publish on|off|default]"
 
 func runAdapterPolicy(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
@@ -37,6 +38,21 @@ func parseAdapterPolicy(args []string) (domain.AdapterSet, error) {
 	cmd.Adapter = args[2]
 	for i := 3; i < len(args); i++ {
 		flag, _, _ := strings.Cut(args[i], "=")
+		if flag == "--publish" {
+			if cmd.Publish != nil {
+				return cmd, fmt.Errorf("%s was provided more than once", flag)
+			}
+			value, last, _, err := flagValue(args, i, flag)
+			if err != nil {
+				return cmd, err
+			}
+			if value != "on" && value != "off" && value != "default" {
+				return cmd, fmt.Errorf("%s takes on, off or default", flag)
+			}
+			cmd.Publish = &value
+			i = last
+			continue
+		}
 		var destination **bool
 		switch flag {
 		case "--enabled":
@@ -75,6 +91,31 @@ func renderAdapterPolicy(data []byte, w io.Writer) error {
 	if policy.Reminder {
 		reminder = "on"
 	}
-	_, err := fmt.Fprintf(w, "%s adapter enabled=%s reminder=%s epoch=%d\n", policy.Adapter, enabled, reminder, policy.Epoch)
+	publish := ""
+	if policy.Publish != "" {
+		publish = " publish=" + policy.Publish
+	}
+	_, err := fmt.Fprintf(w, "%s adapter enabled=%s reminder=%s%s epoch=%d\n", policy.Adapter, enabled, reminder, publish, policy.Epoch)
 	return err
+}
+
+func parseOwnerPublish(args []string) (domain.OwnerPublish, error) {
+	usage := fmt.Errorf("usage: crosshall owner publish hall on|off, member <binding-id> on|off|default, or resume <binding-id>")
+	var cmd domain.OwnerPublish
+	switch {
+	case len(args) == 2 && args[0] == "hall" && (args[1] == "on" || args[1] == "off"):
+		cmd.Hall, cmd.Switch = true, args[1]
+	case len(args) == 3 && args[0] == "member" && (args[2] == "on" || args[2] == "off" || args[2] == "default"):
+		cmd.Switch = args[2]
+		cmd.BindingID, _ = strconv.ParseInt(args[1], 10, 64)
+	case len(args) == 2 && args[0] == "resume":
+		cmd.Switch = args[0]
+		cmd.BindingID, _ = strconv.ParseInt(args[1], 10, 64)
+	default:
+		return cmd, usage
+	}
+	if !cmd.Hall && cmd.BindingID <= 0 {
+		return cmd, usage
+	}
+	return cmd, nil
 }

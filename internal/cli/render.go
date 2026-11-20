@@ -83,6 +83,8 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	switch cmd.(type) {
 	case domain.AdapterSet:
 		return renderAdapterPolicy(data, w)
+	case domain.Publish, domain.OwnerPublish:
+		return renderPublishSwitch(data, w)
 	case domain.AdapterEvidence: // adapter-claude
 		return renderAdapterEvidence(data, w)
 	case domain.Restore:
@@ -188,11 +190,7 @@ func RenderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 		}
 		route := m.Route
 		if m.Publish != nil {
-			if m.Publish.Reason != "" {
-				route = fmt.Sprintf("%s; publish: %s (%s)", route, m.Publish.State, m.Publish.Reason)
-			} else {
-				route = fmt.Sprintf("%s; publish: %s", route, m.Publish.State)
-			}
+			route += "; publish: " + publishWords(*m.Publish)
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", alias, m.Vendor, focus, activity, route)
 	}

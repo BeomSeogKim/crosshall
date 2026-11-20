@@ -35,6 +35,10 @@ func newPublishFixture(t *testing.T) *publishFixture {
 	p := &publishFixture{fixture: f, reader: reader, writer: writer, binding: PublishBinding{ID: binding},
 		queue: PublishQueue{PID: 42, StartMS: f.now.Add(-time.Second).UnixMilli()}, beforeID: beforeID}
 	p.refreshBinding()
+	p.mutate(`INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
+		SELECT DISTINCT 'claude', json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
+			json_extract(profile, '$.mode'), json_extract(profile, '$.manifest_rev'), 'publish', 'tested', 'publish-test', 1
+		FROM adapter_launch WHERE launch_ref = ?`, publishTestLaunch)
 	return p
 }
 
@@ -361,7 +365,7 @@ func TestPublishCapsAndProvenNonSubmission(t *testing.T) {
 		SELECT binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
 			policy_epoch, 42, ?, CASE WHEN n % 2 = 0 THEN 'submitted' ELSE 'uncertain' END, ?, ?, ?, ?, 'own_turn'
 		FROM publish_route CROSS JOIN seq WHERE binding_id = ?`,
-		publishHourlyCap, p.queue.StartMS, p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.binding.ID)
+		store.PublishHourlyCap, p.queue.StartMS, p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.now.UnixMilli(), p.binding.ID)
 	if id := p.reserve(); id != 0 {
 		t.Fatalf("possibly submitted attempts did not exhaust cap: %d", id)
 	}

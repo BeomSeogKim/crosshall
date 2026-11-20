@@ -19,6 +19,7 @@ const usage = `Usage: crosshall [--json] [--key <k>] <command>
 
 Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
+                                                    --rules prints the member rules again
   who                                               List the members of your channel
   read [<id>...]                                    Read messages
   inbox                                             List unread messages and open obligations
@@ -413,6 +414,10 @@ func parseJoin(args []string) (domain.Join, error) {
 				return cmd, err
 			}
 			cmd.Focus, i = v, j
+			continue
+		}
+		if args[i] == "--rules" {
+			cmd.Rules = true
 			continue
 		}
 		if strings.HasPrefix(args[i], "-") {

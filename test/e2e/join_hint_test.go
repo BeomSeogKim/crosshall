@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// A member that lost its context can see the hint again: a repeated join,
-// after a later command has acknowledged the first one, prints it under
-// "Already in" with the rules, and lists only roster changes.
+// A repeated join, after a later command has acknowledged the first one,
+// says "Already in" and names the command that prints the rules. A member
+// that lost its context runs that command and sees the rules again.
 func TestRepeatedJoinShowsTheHintAgain(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
@@ -18,7 +18,13 @@ func TestRepeatedJoinShowsTheHintAgain(t *testing.T) {
 	form := w.member()
 	form.must("join", "checkout", "--as", "form")
 	form.must("inbox")
-	again := form.mustPlain("join", "checkout")
+	repeated := form.mustPlain("join", "checkout")
+	if !strings.Contains(repeated, "[crosshall] Already in #checkout as @form.") ||
+		!strings.Contains(repeated, "`crosshall join checkout --rules` prints them again.") ||
+		strings.Contains(repeated, "run `crosshall inbox`") || len(repeated) > 200 {
+		t.Errorf("repeated join:\n%s", repeated)
+	}
+	again := form.mustPlain("join", "checkout", "--rules")
 	for _, want := range []string{
 		"[crosshall] Already in #checkout as @form.",
 		"Before voluntarily ending any turn while joined, run `crosshall inbox`",

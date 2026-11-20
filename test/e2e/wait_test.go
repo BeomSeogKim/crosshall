@@ -27,6 +27,12 @@ type waitExit struct {
 
 func startWait(t *testing.T, member *participant, args ...string) <-chan waitExit {
 	t.Helper()
+	_, result := startWaitProcess(t, member, args...)
+	return result
+}
+
+func startWaitProcess(t *testing.T, member *participant, args ...string) (*os.Process, <-chan waitExit) {
+	t.Helper()
 	// Bound even the no-timeout invocation if a regression leaves it running.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
@@ -42,7 +48,7 @@ func startWait(t *testing.T, member *participant, args ...string) <-chan waitExi
 		err := cmd.Wait()
 		result <- waitExit{out.String(), errOut.String(), err}
 	}()
-	return result
+	return cmd.Process, result
 }
 
 func requireWaiting(t *testing.T, child <-chan waitExit, duration time.Duration) {

@@ -1,10 +1,14 @@
 package spool
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"syscall"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 const ReadyLeaseFile = "ready.lease"
@@ -50,4 +54,38 @@ func ReadyLeaseHeld(root *os.Root, instance string) (bool, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(file, int64(len(instance))+1))
 	return err == nil && string(data) == instance, err
+}
+
+func (c Client) DispatcherRunning() bool {
+	root, err := ident.OpenPrivateDir(c.Rendezvous)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	raw, err := ident.ReadPrivateFile(root, "ready", 4096)
+	if err != nil {
+		return false
+	}
+	var marker struct {
+		Instance string `json:"instance"`
+		Version  int    `json:"v"`
+		PID      int    `json:"pid"`
+		Lease    bool   `json:"lease"`
+	}
+	if json.Unmarshal(raw, &marker) != nil || marker.Version != wire.Version ||
+		marker.Instance == "" || marker.PID <= 0 {
+		return false
+	}
+	if marker.Lease {
+		held, err := ReadyLeaseHeld(root, marker.Instance)
+		if held {
+			return true
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			return false
+		}
+	}
+	// Older dispatchers omit the lease, and restricted clients can be denied flock.
+	err = syscall.Kill(marker.PID, 0)
+	return err == nil || errors.Is(err, os.ErrPermission)
 }

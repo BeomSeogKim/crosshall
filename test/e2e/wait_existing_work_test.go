@@ -42,12 +42,18 @@ func awaitWorkWait(t *testing.T, child <-chan waitExit, reason string) waitMail 
 // persists even after the wait process reads and removes the response file.
 func startWaitAfterInitialQuery(t *testing.T, member *participant, args ...string) <-chan waitExit {
 	t.Helper()
+	_, child := startWaitProcessAfterInitialQuery(t, member, args...)
+	return child
+}
+
+func startWaitProcessAfterInitialQuery(t *testing.T, member *participant, args ...string) (*os.Process, <-chan waitExit) {
+	t.Helper()
 	path := filepath.Join(member.leaf(), "out")
 	before, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := startWait(t, member, args...)
+	process, child := startWaitProcess(t, member, args...)
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
 	tick := time.NewTicker(10 * time.Millisecond)
@@ -64,7 +70,7 @@ func startWaitAfterInitialQuery(t *testing.T, member *participant, args ...strin
 				t.Fatal(err)
 			}
 			if !after.ModTime().Equal(before.ModTime()) {
-				return child
+				return process, child
 			}
 		}
 	}

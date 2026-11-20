@@ -56,6 +56,14 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		return o.unavailableFor(env, cmd.Verb())
 	}
 
+	probe, _ := env.Transport.(interface{ DispatcherRunning() bool })
+	checkDispatcher := func() core.ExitCode {
+		if probe != nil && !probe.DispatcherRunning() {
+			return o.fail(core.ExitUnavailable, core.CodeDispatcherUnavailable, "dispatcher is unavailable",
+				"run crosshall owner start, check crosshall inbox, then retry crosshall wait")
+		}
+		return core.ExitOK
+	}
 	waitCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -66,6 +74,9 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 	end := func() core.ExitCode {
 		if ctx.Err() != nil {
 			return o.fail(core.ExitError, CodeLocalError, ctx.Err().Error(), "")
+		}
+		if status := checkDispatcher(); status != core.ExitOK {
+			return status
 		}
 		result, err := domain.WaitTimeout(latest)
 		if err != nil {
@@ -79,10 +90,16 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		if waitCtx.Err() != nil {
 			return end()
 		}
+		if status := checkDispatcher(); status != core.ExitOK {
+			return status
+		}
 		result, err := env.Transport.Do(waitCtx, Call{Command: cmd})
 		if err != nil || result.Status != core.ExitOK {
 			if waitCtx.Err() != nil {
 				return end()
+			}
+			if status := checkDispatcher(); status != core.ExitOK {
+				return status
 			}
 			if err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")

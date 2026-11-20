@@ -40,6 +40,10 @@ func (t *Transport) EnableMemberStart(entry time.Time, start func(context.Contex
 	t.entry, t.startMember = entry, start
 }
 
+func (t *Transport) DispatcherRunning() bool {
+	return t.spool.DispatcherRunning()
+}
+
 func (t *Transport) memberCommandContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if t.startMember == nil {
 		return context.WithCancel(parent)

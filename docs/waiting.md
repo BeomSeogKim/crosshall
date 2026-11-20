@@ -1,6 +1,6 @@
 # Waiting for new messages
 
-For standby, check the inbox and act on anything already there. When it is clear, wait with `--existing` so a matching message arriving between the inbox check and the wait also wakes you.
+For standby, check the inbox and act on anything already there. When it is clear and your session has to poll (it has no publish route), wait with `--existing` so a matching message arriving between the inbox check and the wait also wakes you.
 
 ```sh
 crosshall inbox

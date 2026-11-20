@@ -62,3 +62,34 @@ func TestTimedWaitChecksDispatcherWhileBackedOff(t *testing.T) {
 		}
 	})
 }
+
+type waitTestTransport func(Call) (core.Result, error)
+
+func (f waitTestTransport) Do(_ context.Context, call Call) (core.Result, error) {
+	return f(call)
+}
+
+func TestWaitDeliversPendingWorkAfterDispatcherDowngrade(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cursor := domain.WaitCursor{BindingID: 1, MessageID: 3}
+		transport := waitTestTransport(func(call Call) (core.Result, error) {
+			cmd := call.Command.(domain.Wait)
+			if cmd.Cursor == nil {
+				return domain.OK(domain.WaitSnapshot{Cursor: cursor, CursorFingerprint: "new-dispatcher-fingerprint"})
+			}
+			if *cmd.Cursor != cursor {
+				t.Fatalf("legacy poll got cursor %+v, want %+v", *cmd.Cursor, cursor)
+			}
+			return domain.OK(domain.WaitSnapshot{
+				Cursor: domain.WaitCursor{BindingID: 1, MessageID: 4},
+				InboxResult: domain.InboxResult{
+					Unread: []domain.InboxItem{{ID: 4, Kind: "ask", Sender: "other"}},
+				},
+			})
+		})
+		stdout, stderr, code := run(t, Env{Transport: transport}, "--json", "wait", "--existing", "--work-only")
+		if code != core.ExitOK || !strings.Contains(stdout, `"id":4`) || !strings.Contains(stdout, `"reason":"arrived"`) {
+			t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+		}
+	})
+}

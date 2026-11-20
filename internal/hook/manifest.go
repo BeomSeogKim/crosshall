@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 //go:embed manifests/*.json
@@ -88,6 +89,7 @@ type event struct {
 	Fact           string
 	VendorVersion  string
 	Mode           string
+	receipt        string
 	stopActive     string
 	name           string
 }
@@ -113,7 +115,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	if err != nil || len(body) > maxHookInput || !utf8.Valid(body) {
 		return event{}, errHookInput
 	}
-	fields, err := eventFields(body, m, spec)
+	fields, receipt, err := eventFields(body, m, spec)
 	if err != nil {
 		return event{}, err
 	}
@@ -144,6 +146,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		TurnRef:    fields[m.TurnField],
 		Source:     fields[spec.SourceField],
 		Reason:     fields[spec.ReasonField],
+		receipt:    receipt,
 		stopActive: fields[stopActiveField],
 	}
 	if (spec.TurnRequired && e.TurnRef == "") || (spec.Enroll && e.Source == "") {
@@ -177,12 +180,11 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	return e, nil
 }
 
-// Decode only selected metadata. Extra fields may contain whole prompts or
-// tool responses; skip them without retaining them in the resulting event.
-func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, error) {
+// Prompt text stays local. Only a marker and validated message IDs may leave it.
+func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, string, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return nil, errHookInput
+		return nil, "", errHookInput
 	}
 	selected := []string{m.EventField, m.SessionField, m.TurnField, spec.SourceField, spec.ReasonField, spec.MatchField}
 	if spec.Enroll {
@@ -192,15 +194,28 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, er
 		selected = append(selected, stopActiveField)
 	}
 	fields := make(map[string]string)
+	captureReceipt := m.Adapter == "claude" && spec.Fact == wire.HookPromptSubmitted
+	var receipt string
+	var seenPrompt bool
 	for dec.More() {
 		tok, err := dec.Token()
 		key, ok := tok.(string)
 		if err != nil || !ok {
-			return nil, errHookInput
+			return nil, "", errHookInput
 		}
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
-			return nil, errHookInput
+			return nil, "", errHookInput
+		}
+		if captureReceipt && key == "prompt" {
+			var prompt string
+			if seenPrompt || json.Unmarshal(raw, &prompt) != nil {
+				receipt = ""
+			} else {
+				receipt = parsePublishReceipt(prompt)
+			}
+			seenPrompt = true
+			continue
 		}
 		if key == "" || !slices.Contains(selected, key) {
 			continue
@@ -216,24 +231,24 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, er
 			continue
 		}
 		if duplicated {
-			return nil, errHookInput
+			return nil, "", errHookInput
 		}
 		var value string
 		if err := json.Unmarshal(raw, &value); err != nil {
 			if key == m.SessionField {
-				return nil, errHookIdentity
+				return nil, "", errHookIdentity
 			}
-			return nil, errHookInput
+			return nil, "", errHookInput
 		}
 		fields[key] = value
 	}
 	if _, err := dec.Token(); err != nil {
-		return nil, errHookInput
+		return nil, "", errHookInput
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, errHookInput
+		return nil, "", errHookInput
 	}
-	return fields, nil
+	return fields, receipt, nil
 }
 
 // launchBuild reads the launch's vendor version and mode from the hook's

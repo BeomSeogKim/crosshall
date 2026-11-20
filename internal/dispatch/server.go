@@ -607,6 +607,10 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				return errRefusalRollback
 			}
 		}
+		if policy, ok := request.Command.(domain.BudgetPolicy); ok && (policy.Refill != nil || policy.Ceiling != nil) && req.OpKey == "" {
+			result = commandError(core.ExitUsage, "", "an operation key is required for this command")
+			return errRefusalRollback
+		}
 		result, err = s.cfg.Handle.Handle(ctx, tx, resolved.Caller, request)
 		if err != nil {
 			return err

@@ -263,13 +263,17 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
-	a, refusal, err := attribute(ctx, tx, m, cmd)
+	budget, err := refillRoots(ctx, tx, m.binding, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	a, refusal, err := attribute(ctx, tx, m, cmd, budget)
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
 	// A request costs one unit whatever the number of recipients (#29).
 	const n = int64(1)
-	if refusal, err := charge(ctx, tx, m, a, n, now); err != nil || refusal != nil {
+	if refusal, err := charge(ctx, tx, m, a, n, budget, now); err != nil || refusal != nil {
 		return deref(refusal), err
 	}
 

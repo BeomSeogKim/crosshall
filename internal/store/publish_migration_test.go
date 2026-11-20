@@ -26,12 +26,12 @@ func TestPublishMigrationBackfillsAnnouncementClaims(t *testing.T) {
 	if err := v7.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := Open(ctx, root)
+	upgraded, err := openWithMigrations(ctx, root, migrations[:8])
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	if after := adapterLedgerSnapshot(t, upgraded.db, len(migrations)); after != before {
+	if after := adapterLedgerSnapshot(t, upgraded.db, 8); after != before {
 		t.Fatalf("ledger changed from %s to %s", before, after)
 	}
 	var count int

@@ -80,9 +80,10 @@ type StatusResult struct {
 // new exchange and the balance of each exchange it asked in or was asked in.
 // The owner ledger has none.
 type StatusSelf struct {
-	Alias      string            `json:"alias"`
-	RootTokens int64             `json:"root_tokens"`
-	Exchanges  []ExchangeBalance `json:"exchanges"`
+	Alias             string            `json:"alias"`
+	RootTokens        int64             `json:"root_tokens"`
+	NextRootTokenAtMS int64             `json:"next_root_token_at_ms,omitempty"`
+	Exchanges         []ExchangeBalance `json:"exchanges"`
 }
 
 type ChannelStatus struct {
@@ -244,7 +245,7 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 	if err != nil {
 		return core.Result{}, err
 	}
-	self, err := statusSelf(ctx, tx, member)
+	self, err := statusSelf(ctx, tx, member, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -254,12 +255,16 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 	return OK(StatusResult{GeneratedAtMS: ms(now), Self: &self, Channels: []ChannelStatus{ch}})
 }
 
-func statusSelf(ctx context.Context, tx store.Tx, member memberView) (StatusSelf, error) {
+func statusSelf(ctx context.Context, tx store.Tx, member memberView, now time.Time) (StatusSelf, error) {
 	out := StatusSelf{Exchanges: []ExchangeBalance{}}
-	if err := tx.QueryRowContext(ctx, `SELECT b.alias, p.root_tokens FROM binding b JOIN principal p ON p.id = b.principal_id
-		WHERE b.id = ?`, member.binding).Scan(&out.Alias, &out.RootTokens); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT alias FROM binding WHERE id = ?`, member.binding).Scan(&out.Alias); err != nil {
 		return out, err
 	}
+	budget, err := refillRoots(ctx, tx, member.binding, now)
+	if err != nil {
+		return out, err
+	}
+	out.RootTokens, out.NextRootTokenAtMS = budget.tokens, budget.nextAtMS
 	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.granted, e.spent FROM exchange e WHERE e.channel_id = ? AND EXISTS(
 		SELECT 1 FROM message m LEFT JOIN recipient r ON r.message_id = m.id
 		WHERE m.exchange_id = e.id AND m.kind = 'ask' AND (m.sender_id = ? OR r.principal_id = ?)) ORDER BY e.id`,

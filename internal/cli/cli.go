@@ -59,6 +59,8 @@ Owner commands (from a separate owner terminal):
   owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
+  owner budget policy <channel>[/@<alias>] [--refill <N/h|0>] [--ceiling <N>]
+                                                    Show or set automatic root token refill
   owner budget grant <channel>/x<id> <units>         Add exchange credit
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
   owner budget grant <channel> --pool <n>            Add root tokens to a channel's join pool

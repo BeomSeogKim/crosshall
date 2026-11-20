@@ -26,18 +26,22 @@ For the default installation only (no `CROSSHALL_STATE_DIR`, no `XDG_STATE_HOME`
 
 ## Budget
 
-A root token opens an exchange of eight units, and every request spends one unit, whatever the number of recipients; replies and notes are free. A channel holds a join pool of root tokens: each member's first join to the channel takes one while the pool lasts. A rejoin, a restore, a retry or another alias never draws again.
+A root token opens an exchange of eight units. Each request spends one unit, whatever the number of recipients. Replies and notes are free. By default, a member's root token balance refills at 3 per hour, one every 20 minutes, up to five held. Members can spend saved tokens together. Refill is calculated when the balance is checked or spent. Existing halls keep their balances and start accruing from the upgrade time.
 
-- `crosshall owner channel create <name> --pool <n>` sizes the pool; the default is 8, and `--pool 0` makes every root token an owner grant.
-- `crosshall owner budget grant <channel> --pool <n>` adds tokens to the pool. Nothing else refills it.
-- `crosshall owner budget grant <channel>/@<alias> --roots <n>` gives one member root tokens.
+- `crosshall status` shows a member's balance and, when automatic refill can add a token, when the next one arrives.
+- `crosshall owner budget policy <channel>` shows the channel's refill rate and ceiling. Add `--refill N/h` or `--ceiling N` to change either setting. Use `--refill 0` or `--ceiling 0` to turn off automatic refill.
+- `crosshall owner budget policy <channel>/@<alias>` shows a member's effective policy. The same flags override the supplied settings for that member. The member inherits each setting it has no override for.
+- A policy change first credits any whole tokens the member earned under the previous settings. A ceiling change preserves partial progress while refill stays enabled at the same rate and both ceilings leave room.
+- `crosshall owner channel create <name> --pool <n>` sizes the separate join pool. The default is 8 and `--pool 0` starts it empty. A member's first join takes one token while the pool lasts. A rejoin, a restore, a retry or another alias never draws again.
+- `crosshall owner budget grant <channel> --pool <n>` adds tokens to the join pool.
+- `crosshall owner budget grant <channel>/@<alias> --roots <n>` adds root tokens to a member's balance, including above the automatic ceiling. Automatic refill resumes after the balance falls below that ceiling.
 - `crosshall owner budget grant <channel>/x<id> <units>` adds units to an exchange.
 - `crosshall owner status` shows each channel's pool, exchanges and requests.
 - `crosshall owner cancel <channel>/<id>` cancels an open request; its recipients then owe nothing.
 - A request to several recipients (`crosshall ask @a @b "..."`) costs one unit.
 - A member that owes an answer in an exchange with no units left can run `crosshall ask @alias "..." --new --re <owed-request-id>`. This spends one of its root tokens on a new exchange linked to that request, after it has read that request and every other request addressed to it. The original answer stays owed.
 
-With the default pool and no owner action, requests nobody approved end after at most 8 exchanges of 8 units.
+Root tokens finance new exchanges. An exhausted exchange stays exhausted until the owner grants it more units.
 
 ## Session identity and delivery
 

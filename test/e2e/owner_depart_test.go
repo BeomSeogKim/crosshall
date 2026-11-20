@@ -202,9 +202,11 @@ func TestOwnerDepartKeepsOpenWorkForTheReturningKey(t *testing.T) {
 		t.Fatalf("bare join did not allocate a generated route alias: %s", returned.stdout)
 	}
 	returnedRow := liveDepartureBinding(t, owner, alias)
+	// The original two tokens and one refill from the 30-minute clock jump follow the binding.
+	credits := departureCredits(t, tax)
 	if returnedRow.ID != selected.ID || !slices.Equal(returnedRow.OpenRequestIDs, []int64{id}) ||
-		!slices.Contains(ids(tax.must("inbox").obj["owed"]), id) || departureCredits(t, tax) != 2 {
-		t.Fatalf("bare join lost the original binding, open request, or credits: %+v", returnedRow)
+		!slices.Contains(ids(tax.must("inbox").obj["owed"]), id) || credits != 3 {
+		t.Fatalf("bare join lost the original binding, open request, or credits: %+v with %d roots", returnedRow, credits)
 	}
 
 	// The retry of the recorded departure cannot act on the returning session.

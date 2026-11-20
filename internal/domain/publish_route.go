@@ -126,7 +126,10 @@ func resolveSessionKey(ctx context.Context, tx store.Tx, sessionKey string, prin
 	return key
 }
 
-func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, sessionKey string, cmd HookEnroll, now time.Time) error {
+func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, joinedAtMS, principal int64, sessionKey string, cmd HookEnroll, now time.Time) error {
+	if bindingEpoch > 1 && cmd.HookAtMS < joinedAtMS {
+		return nil
+	}
 	adapter := cmd.Profile.Adapter
 	if adapter != "claude" && adapter != "codex" {
 		return nil
@@ -268,6 +271,9 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 	}
 	if b.ownerHookFence.Valid && cmd.HookAtMS <= b.ownerHookFence.Int64 {
 		return OK(out)
+	}
+	if b.routeEpoch > 1 && cmd.HookAtMS < b.joinedAtMS {
+		return Refuse(core.CodeLeafMismatch, "stale pre-rejoin route registration", "re-enroll from the active session"), nil
 	}
 	if cmd.HookAtMS > ms(now)+futureSlackMS {
 		return OK(out)

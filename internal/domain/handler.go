@@ -477,9 +477,6 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		if err := retirePublishRoute(ctx, tx, existing.id, "rejoined", now); err != nil {
 			return core.Result{}, err
 		}
-		if err := retirePublishRoute(ctx, tx, existing.id, "rejoined", now); err != nil {
-			return core.Result{}, err
-		}
 	case focus != "" && focus != existing.focus:
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE binding SET focus = ?, focus_at_ms = ? WHERE id = ?`, focus, ms(now), existing.id); err != nil {

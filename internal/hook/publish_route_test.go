@@ -105,7 +105,9 @@ func TestCodexHookExtractsThreadAndSessionLaunch(t *testing.T) {
 }
 
 type contendedRouteTransport struct {
-	reply wire.HookResult
+	t      *testing.T
+	stdout *bytes.Buffer
+	reply  wire.HookResult
 }
 
 func (c contendedRouteTransport) HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error) {
@@ -114,6 +116,9 @@ func (c contendedRouteTransport) HookLookup(context.Context, ident.Identity, str
 
 func (c contendedRouteTransport) HookCall(ctx context.Context, _ ident.Identity, _ string, req wire.Request, _ bool) (spool.Reply, error) {
 	if req.Verb == wire.VerbHookRoute {
+		if !strings.Contains(c.stdout.String(), "[crosshall] pending: 42") {
+			c.t.Fatalf("base output not written before optional hook.route: %q", c.stdout.String())
+		}
 		return spool.Reply{}, context.DeadlineExceeded
 	}
 	data, _ := json.Marshal(c.reply)
@@ -180,7 +185,9 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	outcome := dispatchEvent(ctx, time.Now(), rv, contendedRouteTransport{
-		reply: wire.HookResult{Epoch: 1, PendingLine: "[crosshall] pending: 42"},
+		t:      t,
+		stdout: &stdout,
+		reply:  wire.HookResult{Epoch: 1, PendingLine: "[crosshall] pending: 42"},
 	}, []string{"claude", "UserPromptSubmit"}, strings.NewReader(input), &stdout, lookup)
 	if outcome != "rpc" {
 		t.Fatalf("outcome = %q, want rpc", outcome)

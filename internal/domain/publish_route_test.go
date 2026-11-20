@@ -305,6 +305,7 @@ func TestPublishRouteRetiredByRestoreAndPublicRejoin(t *testing.T) {
 	if r := f.run(s, Leave{}, "leave-1"); r.Status != core.ExitOK {
 		t.Fatalf("leave: %+v", r)
 	}
+	f.now = f.now.Add(time.Second)
 	if r := f.run(s, Join{Channel: "checkout", Alias: "claude1"}, "rejoin-1"); r.Status != core.ExitOK {
 		t.Fatalf("rejoin: %+v", r)
 	}
@@ -320,10 +321,45 @@ func TestPublishRouteRetiredByRestoreAndPublicRejoin(t *testing.T) {
 		SessionKey: s.key,
 		OpKey:      "hook:route:claude:pid-1:stale-pre-leave",
 	})
-	wantOK(t, rStale)
+	if rStale.Status != core.ExitRefused {
+		t.Fatalf("stale pre-leave route after rejoin: status=%d, want ExitRefused", rStale.Status)
+	}
 	genAfterStale, _, _, _, stateAfterStale, _, _ := routeState(t, f, bid)
 	if genAfterStale != gen || stateAfterStale != "ended" {
 		t.Fatalf("stale pre-leave packet mutated route after rejoin: gen=%d state=%q", genAfterStale, stateAfterStale)
+	}
+
+	// First delivery of a pre-leave base SessionStart + route after rejoin is fenced.
+	sPre := f.newSession("claude")
+	f.join(sPre, Join{Channel: "checkout", Alias: "claude-rejoin"}, "join-pre")
+	if r := f.run(sPre, Leave{}, "leave-pre"); r.Status != core.ExitOK {
+		t.Fatalf("leave: %+v", r)
+	}
+	f.now = f.now.Add(2 * time.Second)
+	postJoinMS := f.now.UnixMilli()
+	if r := f.run(sPre, Join{Channel: "checkout", Alias: "claude-rejoin"}, "rejoin-pre"); r.Status != core.ExitOK {
+		t.Fatalf("rejoin: %+v", r)
+	}
+	bidPre := bindingIDOf(t, f, f.principalOf(sPre))
+	f.hook(sPre, start("pid-old", "startup", postJoinMS-1_000))
+	if n := f.count(`SELECT COUNT(*) FROM publish_route WHERE binding_id = ?`, bidPre); n != 0 {
+		t.Fatalf("pre-leave SessionStart created publish_route after rejoin: count=%d", n)
+	}
+	rPreRoute := f.exec(f.caller(sPre), Request{
+		Command:    claudeRoute("pid-old", "pre-route", "/tmp/cc-socks/1.sock", "default", postJoinMS-1_000, 1),
+		Vendor:     sPre.vendor,
+		SessionKey: sPre.key,
+		OpKey:      "hook:route:claude:pid-old:pre-route",
+	})
+	if rPreRoute.Status != core.ExitRefused {
+		t.Fatalf("pre-leave hook.route after rejoin: status=%d, want ExitRefused", rPreRoute.Status)
+	}
+
+	// Fresh post-rejoin SessionStart + route is accepted.
+	enrollAndRoute(t, f, sPre, "pid-new", "startup", "/tmp/cc-socks/2.sock", "default", postJoinMS+1_000, 1)
+	_, _, launchPre, _, statePre, _, _ := routeState(t, f, bidPre)
+	if launchPre != "pid-new" || statePre != "active" {
+		t.Fatalf("fresh post-rejoin start: launch=%q state=%q", launchPre, statePre)
 	}
 
 	// Re-register route, then public owner restore retires it.

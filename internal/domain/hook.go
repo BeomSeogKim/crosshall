@@ -92,6 +92,7 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 type hookBinding struct {
 	id, channel    int64
 	routeEpoch     int64
+	joinedAtMS     int64
 	alias, state   string
 	channelName    string
 	dnd            bool
@@ -101,9 +102,9 @@ type hookBinding struct {
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.routeEpoch, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
+		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
@@ -197,7 +198,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
-	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, principal, req.SessionKey, cmd, now); err != nil {
+	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, cmd, now); err != nil {
 		return core.Result{}, err
 	}
 	// The launch and the live binding are written: project the member's capabilities.
@@ -284,7 +285,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
-	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, principal, req.SessionKey, cmd, now); err != nil {
+	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {

@@ -84,6 +84,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.cancel(ctx, tx, caller, req, cmd, now)
 	case BudgetGrant:
 		return s.grantBudget(ctx, tx, caller, req, cmd, now)
+	case BudgetPolicy:
+		return s.budgetPolicy(ctx, tx, caller, req, cmd, now)
 		// end read-ledger
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)

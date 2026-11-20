@@ -184,14 +184,6 @@ def exercise(writer, reader, owner, shell, spool, checks):
     receipt(writer, outside["id"], "declined")
     checks["R5"] = EVIDENCE["R5"]
 
-    # Newer halls can issue initial root tokens. Spend the actual starting balance
-    # on authorized, separate greeting reviews before testing the refusal.
-    roots = reader.call("status")["self"]["root_tokens"]
-    for i in range(roots):
-        request = reader.call("ask", "@writer", f"Review greeting variant {i+1}?", "--new")
-        open_mail(writer, request["id"], "ask", "reader")
-        answer = writer.call("reply", request["id"], "Reviewed.")
-        open_mail(reader, answer["id"], "reply", "writer")
     refused = reader.call("ask", "@writer", "Review a second greeting?", "--new", exit_code=3)
     require(refused["code"] == "no_root_credit" and "grant" in refused["hint"], "missing budget refusal or grant option")
     choose(shell, "The owner can fund the authorized second greeting review. Enter grant or bypass.", "grant")
@@ -234,7 +226,8 @@ def run(args):
             require(dispatcher.poll() is None and time.monotonic() < deadline, "private dispatcher did not become ready")
             time.sleep(0.025)
         owner = Participant(binary, env, root, stack)
-        owner.call("owner", "channel", "create", "practice")
+        owner.call("owner", "channel", "create", "practice", "--pool", 0)
+        owner.call("owner", "budget", "policy", "practice", "--refill", 0)
         writer = Participant(binary, env, root, stack, shell=True)
         reader_env = dict(env)
         if args.reader != "shell":

@@ -183,17 +183,22 @@ func grantUnits(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant
 }
 
 func grantRoots(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant, owner int64, now time.Time) (core.Result, error) {
-	var principal, roots int64
-	err := tx.QueryRowContext(ctx, `SELECT p.id, p.root_tokens FROM binding b
+	var binding, principal int64
+	err := tx.QueryRowContext(ctx, `SELECT b.id, p.id FROM binding b
 		JOIN principal p ON p.id = b.principal_id
 		WHERE b.channel_id = ? AND b.alias = ? AND b.state = 'live' AND p.kind = 'session'`,
-		ch.id, cmd.Alias).Scan(&principal, &roots)
+		ch.id, cmd.Alias).Scan(&binding, &principal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", cmd.Alias, ch.name), "crosshall owner who --all"), nil
 	}
 	if err != nil {
 		return core.Result{}, err
 	}
+	budget, err := refillRoots(ctx, tx, binding, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	roots := budget.tokens
 	if roots > math.MaxInt64-cmd.Roots {
 		return Fail(core.ExitUsage, "", "grant exceeds the member root token limit", "grant fewer root tokens"), nil
 	}

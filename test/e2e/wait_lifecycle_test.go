@@ -33,7 +33,7 @@ func assertWaitFailure(t *testing.T, child <-chan waitExit, status int, code str
 	}
 }
 
-func pauseWait(t *testing.T, process *os.Process) {
+func pauseFixtureProcess(t *testing.T, process *os.Process) {
 	t.Helper()
 	t.Cleanup(func() { _ = process.Signal(syscall.SIGCONT) })
 	if err := process.Signal(syscall.SIGSTOP); err != nil {
@@ -41,7 +41,7 @@ func pauseWait(t *testing.T, process *os.Process) {
 	}
 }
 
-func resumeWait(t *testing.T, process *os.Process) {
+func resumeFixtureProcess(t *testing.T, process *os.Process) {
 	t.Helper()
 	if err := process.Signal(syscall.SIGCONT); err != nil {
 		t.Fatal(err)
@@ -74,15 +74,44 @@ func TestWaitFailsWhenDispatcherStops(t *testing.T) {
 	}
 }
 
+func TestWaitRetriesSlowDispatcherPoll(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		args []string
+	}{
+		{"untimed", []string{"--existing"}},
+		{"timed", []string{"--existing", "--timeout", "7s"}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			w, _, members := setup(t)
+			form, tax := members[0], members[1]
+			pids := w.dispatcherPIDs()
+			if len(pids) != 1 {
+				t.Fatalf("want one fixture dispatcher, got %v", pids)
+			}
+			dispatcher, err := os.FindProcess(pids[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := startWaitAfterInitialQuery(t, form, mode.args...)
+			pauseFixtureProcess(t, dispatcher)
+			requireWaiting(t, child, 1600*time.Millisecond)
+			resumeFixtureProcess(t, dispatcher)
+			message := num(t, tax.must("note", "@form", "sent after the slow poll"), "id")
+			assertWorkItem(t, awaitWorkWait(t, child, "arrived").Unread, message, "note")
+		})
+	}
+}
+
 func TestWaitDeliversAcrossDispatcherRestart(t *testing.T) {
 	_, owner, members := setup(t)
 	form, tax := members[0], members[1]
 	process, child := startWaitProcessAfterInitialQuery(t, form, "--existing", "--timeout", "8s")
-	pauseWait(t, process)
+	pauseFixtureProcess(t, process)
 	owner.must("owner", "stop")
 	tax.must("who")
 	message := num(t, tax.must("note", "@form", "sent after the restart"), "id")
-	resumeWait(t, process)
+	resumeFixtureProcess(t, process)
 	assertWorkItem(t, awaitWorkWait(t, child, "arrived").Unread, message, "note")
 }
 
@@ -90,11 +119,11 @@ func TestWaitDeliversAcrossLeaveAndRejoin(t *testing.T) {
 	_, _, members := setup(t)
 	form, tax := members[0], members[1]
 	process, child := startWaitProcessAfterInitialQuery(t, form)
-	pauseWait(t, process)
+	pauseFixtureProcess(t, process)
 	form.must("leave")
 	form.must("join", "checkout", "--as", "form")
 	message := num(t, tax.must("note", "@form", "sent after rejoining"), "id")
-	resumeWait(t, process)
+	resumeFixtureProcess(t, process)
 	assertWorkItem(t, awaitWorkWait(t, child, "").Unread, message, "note")
 }
 
@@ -102,7 +131,7 @@ func TestWaitBurstLeavesAllMessagesInInbox(t *testing.T) {
 	_, _, members := setup(t)
 	form, tax := members[0], members[1]
 	process, child := startWaitProcessAfterInitialQuery(t, form, "--existing")
-	pauseWait(t, process)
+	pauseFixtureProcess(t, process)
 	const count = 8
 	var results [count]outcome
 	var sent sync.WaitGroup
@@ -120,7 +149,7 @@ func TestWaitBurstLeavesAllMessagesInInbox(t *testing.T) {
 		want = append(want, num(t, out, "id"))
 	}
 	slices.Sort(want)
-	resumeWait(t, process)
+	resumeFixtureProcess(t, process)
 	mail := awaitWorkWait(t, child, "arrived")
 	var seen []int64
 	for _, row := range mail.Unread {

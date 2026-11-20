@@ -198,7 +198,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
-	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS); err != nil {
+	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, cmd, now); err != nil {
@@ -288,7 +288,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
-	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS); err != nil {
+	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
@@ -449,7 +449,7 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	live := found && b.state == "live"
 	// Launches that can no longer be current are ended first, so a killed
 	// newer launch cannot hide a running older one (#100).
-	otherAlive, settled, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS)
+	otherAlive, settled, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -589,7 +589,7 @@ func latestLaunch(ctx context.Context, tx store.Tx, principal int64) (string, er
 // an end). It reports whether a launch of another process still runs and
 // whether it ended any launch. A launch whose start was never seen settles
 // nothing.
-func (s *Service) settleLaunches(ctx context.Context, tx store.Tx, principal int64, launch string, at int64) (alive, changed bool, err error) {
+func (s *Service) settleLaunches(ctx context.Context, tx store.Tx, principal int64, launch string, at int64, now time.Time) (alive, changed bool, err error) {
 	if s.LaunchProcess == nil {
 		return false, false, nil
 	}
@@ -640,6 +640,12 @@ func (s *Service) settleLaunches(ctx context.Context, tx store.Tx, principal int
 	for _, ref := range gone {
 		if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = ?
 			WHERE principal_id = ? AND launch_ref = ? AND ended_hook_at_ms IS NULL`, at, principal, ref); err != nil {
+			return false, false, err
+		}
+		// A publish route to an ended launch ends with it, as on its own end.
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route
+			SET state = 'ended', reason = 'launch ended', generation = generation + 1, updated_at_ms = ?
+			WHERE principal_id = ? AND launch_ref = ? AND state <> 'ended'`, ms(now), principal, ref); err != nil {
 			return false, false, err
 		}
 	}

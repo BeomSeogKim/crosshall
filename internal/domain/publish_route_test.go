@@ -445,3 +445,44 @@ func TestPublishRouteSocketSupplementDeliveredLast(t *testing.T) {
 		t.Fatalf("supplement reactivated ended route: state=%q reason=%q", state2, reason2)
 	}
 }
+
+func TestPublishRouteEndsWithALaunchThatOtherLaunchesOutlive(t *testing.T) {
+	t.Run("killed launch ended by settling", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		running := map[string]bool{"pid-1": true, "pid-2": true}
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		enrollAndRoute(t, f, s, "pid-1", "startup", "/tmp/cc-socks/1.sock", "default", t0, 1)
+		enrollAndRoute(t, f, s, "pid-2", "resume", "/tmp/cc-socks/2.sock", "default", t0+1_000, 1)
+		bid := bindingIDOf(t, f, f.principalOf(s))
+		gen, _, _, _, _, _, _ := routeState(t, f, bid)
+		running["pid-2"] = false // killed without an end
+		f.hook(s, prompt("pid-1", "turn-a", t0+2_000))
+		after, _, launch, _, state, reason, _ := routeState(t, f, bid)
+		if launch != "pid-2" || state != "ended" || reason != "launch ended" || after != gen+1 {
+			t.Fatalf("route to the killed launch: gen=%d->%d launch=%q state=%q reason=%q", gen, after, launch, state, reason)
+		}
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("the member left while pid-1 runs")
+		}
+	})
+	t.Run("clean end while another process runs", func(t *testing.T) {
+		f, writer := adapterChannel(t)
+		f.svc.LaunchAlive = func(ref string, _ int64) bool { return ref == "pid-1" }
+		f.svc.LaunchProcess = testProcess
+		s := f.newSession("claude")
+		t0 := f.now.UnixMilli()
+		enrollAndRoute(t, f, s, "pid-1", "startup", "/tmp/cc-socks/1.sock", "default", t0, 1)
+		enrollAndRoute(t, f, s, "pid-2", "resume", "/tmp/cc-socks/2.sock", "default", t0+1_000, 1)
+		bid := bindingIDOf(t, f, f.principalOf(s))
+		f.hook(s, ended("pid-2", t0+2_000))
+		if _, _, launch, _, state, reason, _ := routeState(t, f, bid); launch != "pid-2" || state != "ended" || reason != "session ended" {
+			t.Fatalf("route after the resumed copy ended: launch=%q state=%q reason=%q", launch, state, reason)
+		}
+		if f.memberRow(writer, "claude1").Alias == "" {
+			t.Fatal("the member left while pid-1 runs")
+		}
+	})
+}

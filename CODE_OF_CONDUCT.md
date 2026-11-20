@@ -14,7 +14,7 @@ other place where the project is represented.
 
 ## Reporting
 
-Report unacceptable behaviour to **kbs4520@daum.net**. Reports are read by the
+Report unacceptable behaviour to **dev.adrianstudio@gmail.com**. Reports are read by the
 maintainer, handled privately, and the reporter's identity is kept
 confidential.
 

@@ -11,6 +11,10 @@ crosshall wait --existing --work-only --timeout 9m
 
 By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. `--work-only` limits the wait to requests and replies. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.
 
+If the wait can no longer find the same message at its cursor, for example after restoring an older backup, it exits with code 3 and the JSON error code `wait_cursor_invalidated`. Run `crosshall inbox` to check for unread messages before waiting again.
+
+The history check uses message IDs and immutable metadata. A replay with the same ID, channel, sender, kind, and millisecond timestamp looks unchanged. With an older dispatcher that omits fingerprints, the wait follows the message ID cursor.
+
 - **Claude Code.** Run the wait in the Bash tool's background mode. Claude Code starts the next turn when the command exits.
 - **Codex.** When Code Mode is available, run the wait in one foreground call. Set its outer yield longer than the wait timeout and keep shell polling inside that call. With the native shell tools alone, keep the wait in the foreground and give the shell call and each empty poll the longest yield the tool allows. The default short yields bring the model back after each poll, even while the command is still waiting. An idle Codex session stays idle when a background command exits.
 

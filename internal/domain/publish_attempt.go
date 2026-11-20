@@ -63,13 +63,19 @@ const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON 
 const openPublishLane = `observed_at_ms IS NULL AND retired_at_ms IS NULL AND state <> 'not_submitted'`
 
 // publishDelivers reports whether new work reaches the member without a
-// wait: its route can publish and no earlier notice still holds its lane.
-func publishDelivers(ctx context.Context, tx store.Tx, binding int64) (bool, error) {
+// wait. It holds exactly when ReservePublish could reserve for the member
+// now: the route can publish, no earlier notice holds its lane or the
+// physical queue it shares, and the hourly cap is not spent.
+func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
 	var delivers bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+activePublishRoutes+` AND r.binding_id = ?
-		AND NOT EXISTS (SELECT 1 FROM publish_attempt held WHERE held.binding_id = r.binding_id
-			AND held.observed_at_ms IS NULL AND held.retired_at_ms IS NULL AND held.state <> 'not_submitted'))`,
-		binding).Scan(&delivers)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+activePublishRoutes+` AND r.binding_id = ?1
+		AND NOT EXISTS (SELECT 1 FROM publish_attempt held
+			WHERE (held.binding_id = r.binding_id
+					OR (held.process_pid = p.process_pid AND held.process_start_ms = p.process_start_ms))
+				AND held.observed_at_ms IS NULL AND held.retired_at_ms IS NULL AND held.state <> 'not_submitted')
+		AND (SELECT COUNT(*) FROM publish_attempt spent WHERE spent.principal_id = r.principal_id AND
+			(spent.state = 'reserved' OR (spent.submitting_at_ms > ?2 AND spent.state IN ('submitting', 'submitted', 'uncertain')))) < ?3)`,
+		binding, ms(now.Add(-time.Hour)), publishHourlyCap).Scan(&delivers)
 	return delivers, err
 }
 

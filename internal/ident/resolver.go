@@ -102,6 +102,7 @@ func (r SQLResolver) Resolve(ctx context.Context, tx store.Tx, ingress Ingress, 
 		return Resolution{
 			Caller: core.Caller{Role: core.RoleUnenrolled},
 			Vendor: id.Vendor,
+			Key:    id.Key,
 			Enroll: r.enrollment(tx, id, proof, fileID),
 		}, nil
 	}
@@ -124,7 +125,7 @@ func (r SQLResolver) Resolve(ctx context.Context, tx store.Tx, ingress Ingress, 
 	default:
 		return Resolution{}, &EnvironmentError{core.CodeBindingAmbiguous, "session has multiple live memberships"}
 	}
-	return Resolution{Caller: caller, Vendor: id.Vendor}, nil
+	return Resolution{Caller: caller, Vendor: id.Vendor, Key: id.Key}, nil
 }
 
 func (r SQLResolver) resolveOwner(ctx context.Context, tx store.Tx, ingress Ingress, proof Proof) (Resolution, error) {

@@ -162,14 +162,14 @@ func serve(paths statePaths, pathErr error) int {
 				if err != nil {
 					return dispatch.Resolution{}, err
 				}
-				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, Enroll: r.Enroll}, nil
+				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, SessionKey: r.Key, Enroll: r.Enroll}, nil
 			},
 			Decode: func(req wire.Request, r dispatch.Resolution) (domain.Request, error) {
 				cmd, err := domain.Decode(req.Verb, req.Args)
 				if err != nil {
 					return domain.Request{}, err
 				}
-				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, Enroll: r.Enroll, Ack: req.Ack}, nil
+				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
 				LaunchProcess: ident.LaunchProcess},

@@ -54,7 +54,17 @@ func (c Client) HookLookup(ctx context.Context, id ident.Identity, intent string
 // HookCall targets the generation used to evaluate this callback. Hooks
 // never refresh a lease or participate in the ordinary roster cursor.
 func (c Client) HookCall(ctx context.Context, id ident.Identity, generation string, req wire.Request, oneWay bool) (Reply, error) {
-	if req.Verb != wire.VerbHookEvent && (req.Verb != wire.VerbHookEnroll || oneWay) {
+	switch req.Verb {
+	case wire.VerbHookEvent:
+	case wire.VerbHookEnroll:
+		if oneWay {
+			return Reply{}, errors.New("unsupported hook operation")
+		}
+	case wire.VerbHookRoute:
+		if !oneWay {
+			return Reply{}, errors.New("unsupported hook operation")
+		}
+	default:
 		return Reply{}, errors.New("unsupported hook operation")
 	}
 	if generation == "" || req.OpKey == "" {

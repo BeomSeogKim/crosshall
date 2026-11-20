@@ -52,6 +52,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.hookEnroll(ctx, tx, caller, req, cmd, now)
 	case HookEvent:
 		return s.hookEvent(ctx, tx, caller, req, cmd, now)
+	case HookRoute:
+		return s.hookRoute(ctx, tx, caller, req, cmd, now)
 	// end adapter-domain
 	// owner-views
 	case OwnerWho:
@@ -467,6 +469,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE binding SET state = 'live', departed_at_ms = NULL, departed_by_hook = 0, departed_by_owner = 0,
+			route_epoch = route_epoch + 1,
 			owner_hook_fence_ms = CASE WHEN departed_by_owner = 1 THEN MAX(COALESCE(owner_hook_fence_ms, 0), ?)
 				ELSE owner_hook_fence_ms END,
 			alias = ?, joined_at_ms = ?, focus = ?, focus_at_ms = ? WHERE id = ?`,
@@ -474,6 +477,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			return core.Result{}, err
 		}
 		if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {
+			return core.Result{}, err
+		}
+		if err := retirePublishRoute(ctx, tx, existing.id, "rejoined", now); err != nil {
 			return core.Result{}, err
 		}
 	case focus != "" && focus != existing.focus:
@@ -628,7 +634,7 @@ func notEnrolled() core.Result {
 // roster lists the live members of a channel, the caller first, then by join time.
 func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time) ([]Member, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT b.principal_id, b.alias, p.vendor, b.focus, b.joined_at_ms,
+		`SELECT b.id, b.principal_id, b.alias, p.vendor, b.focus, b.joined_at_ms,
 		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id AND o.kind = 'command')
 		 FROM binding b JOIN principal p ON p.id = b.principal_id
 		 WHERE b.channel_id = ? AND b.state = 'live'
@@ -637,14 +643,18 @@ func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Member
+	type memberRow struct {
+		bindingID int64
+		member    Member
+	}
+	var collected []memberRow
 	for rows.Next() {
 		var (
-			principal, joined int64
-			last              sql.NullInt64
-			m                 Member
+			bindingID, principal, joined int64
+			last                         sql.NullInt64
+			m                            Member
 		)
-		if err := rows.Scan(&principal, &m.Alias, &m.Vendor, &m.Focus, &joined, &last); err != nil {
+		if err := rows.Scan(&bindingID, &principal, &m.Alias, &m.Vendor, &m.Focus, &joined, &last); err != nil {
 			return nil, err
 		}
 		seen := joined
@@ -654,14 +664,19 @@ func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time
 		m.LastCommandAgoS = max((ms(now)-seen)/1000, 0)
 		m.State, m.Route, m.Self = "unknown", "pull", principal == self
 		m.principal = principal
-		out = append(out, m)
+		collected = append(collected, memberRow{bindingID: bindingID, member: m})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
-	for i := range out {
+	out := make([]Member, len(collected))
+	for i := range collected {
+		out[i] = collected[i].member
 		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
+			return nil, err
+		}
+		if err := withPublishStatus(ctx, tx, collected[i].bindingID, out[i].Vendor, &out[i]); err != nil {
 			return nil, err
 		}
 	}

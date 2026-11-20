@@ -25,7 +25,8 @@ type Request struct {
 
 	// Vendor is the label of the caller's key (claude, codex, agy, route),
 	// set by the dispatcher. It names generated aliases and roster rows.
-	Vendor string
+	Vendor     string
+	SessionKey string
 	// Enroll links the caller's authenticated key to a principal created by
 	// a first join, inside the same transaction. The dispatcher sets it when
 	// the caller is unenrolled.
@@ -103,6 +104,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[HookEnroll](args)
 	case VerbHookEvent:
 		return decodeLedgerCommand[HookEvent](args)
+	case VerbHookRoute:
+		return decodeLedgerCommand[HookRoute](args)
 	// end adapter-domain
 	// owner-views
 	case VerbOwnerWho:

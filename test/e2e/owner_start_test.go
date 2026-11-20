@@ -19,9 +19,7 @@ import (
 
 const silentInstance = "silent-fixture"
 
-// holdSilentDispatcher leaves plausible ready files and a held state lock
-// without a daemon that can answer a request.
-func holdSilentDispatcher(t *testing.T, w *world) func() {
+func holdSilentDispatcher(t *testing.T, w *world, publishReady bool) func() {
 	t.Helper()
 	for _, dir := range []string{w.state, w.rendezvous()} {
 		if err := os.Mkdir(dir, 0700); err != nil {
@@ -35,6 +33,9 @@ func holdSilentDispatcher(t *testing.T, w *world) func() {
 	t.Cleanup(func() { lock.Close() })
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
+	}
+	if !publishReady {
+		return func() { lock.Close() }
 	}
 	root, err := spool.OpenServerRoot(w.rendezvous())
 	if err != nil {
@@ -59,18 +60,28 @@ func holdSilentDispatcher(t *testing.T, w *world) func() {
 }
 
 func TestOwnerStartTimesOutWhenIncumbentIsSilent(t *testing.T) {
-	w := newWorld(t)
-	holdSilentDispatcher(t, w)
-	got := w.owner().run("owner", "start")
-	if got.exit != 1 || !strings.Contains(got.stdout, "dispatcher did not become ready") ||
-		!strings.Contains(got.stdout, "context deadline exceeded") {
-		t.Fatalf("owner start must time out with the lock held and no reply: %+v", got)
+	for _, tc := range []struct {
+		name, stage  string
+		publishReady bool
+	}{
+		{"no marker", "waiting for a valid readiness marker", false},
+		{"silent probe", "waiting for a readiness probe reply", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			holdSilentDispatcher(t, w, tc.publishReady)
+			got := w.owner().run("owner", "start")
+			if got.exit != 1 || !strings.Contains(got.stdout, "dispatcher did not become ready") ||
+				!strings.Contains(got.stdout, tc.stage) || !strings.Contains(got.stdout, "context deadline exceeded") {
+				t.Fatalf("owner start must name the stage %q: %+v", tc.stage, got)
+			}
+		})
 	}
 }
 
 func TestOwnerStartWaitsForSilentIncumbentToReleaseLock(t *testing.T) {
 	w := newWorld(t)
-	release := holdSilentDispatcher(t, w)
+	release := holdSilentDispatcher(t, w, true)
 
 	cmd := exec.CommandContext(t.Context(), binary, "--json", "owner", "start")
 	cmd.Dir, cmd.Env = w.home, w.owner().env()

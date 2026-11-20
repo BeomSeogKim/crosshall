@@ -91,6 +91,8 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 
 type hookBinding struct {
 	id, channel    int64
+	routeEpoch     int64
+	joinedAtMS     int64
 	alias, state   string
 	channelName    string
 	dnd            bool
@@ -100,9 +102,9 @@ type hookBinding struct {
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
+		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
@@ -199,6 +201,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
+	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, cmd, now); err != nil {
+		return core.Result{}, err
+	}
 	// The launch and the live binding are written: project the member's capabilities.
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
 		return core.Result{}, err
@@ -284,6 +289,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		return core.Result{}, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS); err != nil {
+		return core.Result{}, err
+	}
+	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
@@ -504,6 +512,12 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			return core.Result{}, err
 		}
 	case FactSessionEnded:
+		if live {
+			sessionRef := resolveSessionKey(ctx, tx, req.SessionKey, principal, cmd.Profile.Adapter)
+			if err := endPublishRoute(ctx, tx, b.id, b.routeEpoch, cmd.LaunchRef, sessionRef, cmd.Epoch, cmd.HookAtMS, "session ended", now); err != nil {
+				return core.Result{}, err
+			}
+		}
 		// Only a bound launch can end: an unverified (session-scoped) end is an
 		// observation, and its launch stays eligible for the next notice. An
 		// end older than its launch's start is a stale callback.

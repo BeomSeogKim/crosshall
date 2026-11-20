@@ -406,6 +406,9 @@ func (s *Service) leave(ctx context.Context, tx store.Tx, caller core.Caller, re
 		`UPDATE binding SET state = 'departed', departed_at_ms = ? WHERE id = ?`, ms(now), m.binding); err != nil {
 		return core.Result{}, err
 	}
+	if err := invalidatePublishRouteForLeave(ctx, tx, m.binding, now); err != nil {
+		return core.Result{}, err
+	}
 	if err := rosterChange(ctx, tx, m.channel, m.principal, "departed"); err != nil {
 		return core.Result{}, err
 	}

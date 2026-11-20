@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -34,6 +35,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 	defer ticker.Stop()
 	var exited <-chan bool
 	var launchFailed bool
+	stage := "checking the dispatcher state lock"
 	for wait.Err() == nil {
 		held, err := lockState(state)
 		if err != nil {
@@ -43,20 +45,30 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 			break
 		}
 		if held {
+			stage = "waiting for a valid readiness marker"
 			marker := cfg.readinessCandidate()
-			if marker.Instance != "" && cfg.probeReadiness(wait, marker) {
-				held, err = lockState(state)
+			if marker.Instance != "" {
+				stage = "waiting for a readiness probe reply"
+				if cfg.probeReadiness(wait, marker) {
+					stage = "confirming the responding dispatcher still owns readiness"
+					held, err = lockState(state)
+					if err != nil {
+						return err
+					}
+					if held && cfg.readinessCandidate() == marker && wait.Err() == nil {
+						return nil
+					}
+				}
+			}
+		} else {
+			stage = "waiting for the dispatcher to hold its state lock"
+			if launchFailed {
+				stage = "waiting after the startup child exited unsuccessfully"
+			} else if exited == nil {
+				exited, err = cfg.startCandidate(state)
 				if err != nil {
 					return err
 				}
-				if held && cfg.readinessCandidate() == marker && wait.Err() == nil {
-					return nil
-				}
-			}
-		} else if exited == nil && !launchFailed {
-			exited, err = cfg.startCandidate(state)
-			if err != nil {
-				return err
 			}
 		}
 		select {
@@ -69,7 +81,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 		case <-wait.Done():
 		}
 	}
-	return startupError(wait.Err())
+	return fmt.Errorf("dispatcher did not become ready while %s (see dispatcher.log): %w", stage, wait.Err())
 }
 
 func (cfg LaunchConfig) startCandidate(state *os.Root) (<-chan bool, error) {

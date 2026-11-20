@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -109,6 +108,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 		return transportOutcome(ctx, err)
 	}
 	if clean || !want {
+		if !hookExpired(ctx) {
+			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+			}
+		}
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
@@ -136,6 +140,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	}
 	if notice && result.Ack != nil && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
+	}
+	if !hookExpired(ctx) {
+		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+		}
 	}
 	return "rpc"
 }
@@ -240,10 +249,33 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		req.Args, _ = json.Marshal(wire.HookEventArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
 			Fact: e.Fact, TurnRef: e.TurnRef, HookAtMS: entry.UnixMilli(), WantOutput: want, Epoch: epoch,
+			Receipt:            e.receipt,
 			ContinuationActive: e.stopActive == "true",
 		})
 	}
 	return req
+}
+
+func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.Request, bool) {
+	if e.SocketPath == "" && e.PermissionMode == "" {
+		return wire.Request{}, false
+	}
+	ref := e.reference(entry)
+	args, _ := json.Marshal(wire.HookRouteArgs{
+		Adapter:        m.Adapter,
+		LaunchRef:      e.LaunchRef,
+		LaunchVerified: e.LaunchVerified,
+		EventRef:       ref,
+		HookAtMS:       entry.UnixMilli(),
+		Epoch:          epoch,
+		PermissionMode: e.PermissionMode,
+		SocketPath:     e.SocketPath,
+	})
+	return wire.Request{
+		OpKey: "hook:route:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		Verb:  wire.VerbHookRoute,
+		Args:  args,
+	}, true
 }
 
 // present renders only the fields appropriate for this boundary.
@@ -302,17 +334,9 @@ func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
 	if line == "" {
 		return nil, nil
 	}
-	ids, ok := strings.CutPrefix(line, "[crosshall] pending: ")
-	if !ok || len(ids) > 20*domain.OfferCap || strings.Count(ids, " ") >= domain.OfferCap {
+	ids, ok := strings.CutPrefix(line, pendingNoticePrefix)
+	if !ok || !validPendingIDs(ids) {
 		return nil, errors.New("invalid turn-end line")
-	}
-	var previous int64
-	for _, value := range strings.Split(ids, " ") {
-		id, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || id <= previous || strconv.FormatInt(id, 10) != value {
-			return nil, errors.New("invalid turn-end message id")
-		}
-		previous = id
 	}
 	switch spec.Output {
 	case "context":

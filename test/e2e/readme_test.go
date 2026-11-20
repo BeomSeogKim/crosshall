@@ -180,11 +180,12 @@ func readmeCommands(t *testing.T, lines []string) []readmeCommand {
 	return out
 }
 
-// Clock times and ages differ from run to run; everything else must match.
+// Deadline dates, clock times and ages vary between runs.
 var readmeVolatile = []struct {
 	re   *regexp.Regexp
 	with string
 }{
+	{regexp.MustCompile(`^(#\d+ (?:stored\.|ask from @\S+ in #\S+,) due )[A-Z][a-z]{2} \d{1,2} (\d{2}:\d{2})\b`), "$1$2"},
 	{regexp.MustCompile(`\b\d{2}:\d{2}\b`), "HH:MM"},
 	{regexp.MustCompile(`\b\d+[smhd] ago\b`), "N ago"},
 }
@@ -200,6 +201,18 @@ func readmeNormalize(lines []string) string {
 		text = v.re.ReplaceAllString(text, v.with)
 	}
 	return text
+}
+
+func TestReadmeNormalizeDueDate(t *testing.T) {
+	for _, tc := range []struct{ output, want string }{
+		{"#1 stored. due Nov 21 00:15. exchange x1 (new): 7 left.", "#1 stored. due HH:MM. exchange x1 (new): 7 left."},
+		{"#1 ask from @writer in #demo, due Dec 1 00:15\n#2 stored. due Dec 1 00:15.",
+			"#1 ask from @writer in #demo, due HH:MM\n#2 stored. due Dec 1 HH:MM."},
+	} {
+		if got := readmeNormalize(strings.Split(tc.output, "\n")); got != tc.want {
+			t.Errorf("normalized output:\n%s\nwant:\n%s", got, tc.want)
+		}
+	}
 }
 
 // readmeReleaseBinary builds crosshall with a release version: a development

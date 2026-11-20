@@ -39,22 +39,21 @@ func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	return err == nil && start <= startedHookAtMS
 }
 
-// errProcessGone is processStartMS's proof that no process has the PID: it
+// errProcessGone is processStart's proof that no process has the PID: it
 // is absent or a zombie.
 var errProcessGone = errors.New("process gone")
 
-// ProcessGone reports proof that the process with pid and start time
-// startMS no longer runs: no process has the PID, it is a zombie, or the
-// PID belongs to a process that started at another time. An error that
-// proves neither (an unsupported platform, an unreadable process) is not
-// proof.
-func ProcessGone(pid, startMS int64) bool {
+// ProcessGone reports proof that the process with pid and start identity
+// (see Start) no longer runs: no process has the PID, it is a zombie, or
+// the PID belongs to a process with another start. An error that proves
+// neither (an unsupported platform, an unreadable process) is not proof.
+func ProcessGone(pid, identity int64) bool {
 	if pid <= 0 || pid > math.MaxInt32 {
 		return false
 	}
-	start, err := processStartMS(int(pid))
+	start, err := processStart(int(pid))
 	if err != nil {
 		return errors.Is(err, errProcessGone) || errors.Is(err, os.ErrNotExist)
 	}
-	return start != startMS
+	return start.Identity != identity
 }

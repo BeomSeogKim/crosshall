@@ -217,7 +217,7 @@ func (p *publisher) transport(adapter string) publish.Transport {
 // records that proof, so the route can reserve a notice. Until a proof
 // lands nothing is reserved for it.
 func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
-	prove func(context.Context, publish.Probe) (domain.PublishQueue, bool), at time.Time) {
+	prove func(context.Context, publish.Probe) (publish.Proven, bool), at time.Time) {
 	// Like a probe, the guard outlives an abandoned proof: it is released
 	// only when the callback returns.
 	release := func() { p.proving.Store(proof.Binding, at.Add(publishProveRetry)) }
@@ -227,20 +227,20 @@ func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
 		release()
 		return
 	}
-	type proven struct {
-		queue domain.PublishQueue
-		ok    bool
+	type result struct {
+		proven publish.Proven
+		ok     bool
 	}
-	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() proven {
-		queue, ok := prove(call, proof.Probe)
-		return proven{queue, ok}
+	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() result {
+		proven, ok := prove(call, proof.Probe)
+		return result{proven, ok}
 	}, release)
 	if !ok || !got.ok || call.Err() != nil {
 		return
 	}
 	recorded := false
 	err := p.db.Update(call, func(tx store.Tx) (err error) {
-		recorded, err = domain.ConfirmPublishProof(call, tx, proof, got.queue)
+		recorded, err = domain.ConfirmPublishProof(call, tx, proof, got.proven)
 		return err
 	})
 	if err == nil && recorded {

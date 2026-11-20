@@ -4,4 +4,4 @@ package proc
 
 import "errors"
 
-func processStartMS(int) (int64, error) { return 0, errors.New("process start unavailable") }
+func processStart(int) (Start, error) { return Start{}, errors.New("process start unavailable") }

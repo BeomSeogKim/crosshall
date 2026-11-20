@@ -11,25 +11,20 @@ import (
 	"syscall"
 )
 
-// PublishPeer holds the kernel-verified process identity of a connected socket.
+// PublishPeer holds the kernel-verified process identity of a connected
+// socket: its PID, its start identity (see Start) and its wall-clock start
+// estimate.
 type PublishPeer struct {
-	PID     int64
-	StartMS int64
+	PID      int64
+	Identity int64
+	StartMS  int64
 }
 
-// DialVerifiedSocket connects to socketPath without writing, verifies the path
-// is a user-owned Unix socket (not a symlink), reads the listener PID from the
-// kernel, and checks that PID's OS start time against launchRef and
-// startedHookAtMS. The caller owns the returned *net.UnixConn on success.
-func DialVerifiedSocket(ctx context.Context, socketPath, launchRef string, startedHookAtMS int64) (*net.UnixConn, PublishPeer, error) {
-	process, ok := LaunchProcess(launchRef)
-	if !ok || startedHookAtMS <= 0 {
-		return nil, PublishPeer{}, errors.New("invalid launch reference")
-	}
-	wantPID, err := strconv.Atoi(strings.TrimPrefix(process, "pid-"))
-	if err != nil || wantPID <= 0 {
-		return nil, PublishPeer{}, errors.New("invalid launch PID")
-	}
+// DialSocketPeer connects to socketPath without writing, verifies the path
+// is a user-owned Unix socket (not a symlink), and reads the listener's PID
+// from the kernel and that process's start. The caller owns the returned
+// *net.UnixConn on success.
+func DialSocketPeer(ctx context.Context, socketPath string) (*net.UnixConn, PublishPeer, error) {
 	fi, err := os.Lstat(socketPath)
 	if err != nil {
 		return nil, PublishPeer{}, err
@@ -67,20 +62,42 @@ func DialVerifiedSocket(ctx context.Context, socketPath, launchRef string, start
 		conn.Close()
 		return nil, PublishPeer{}, peerErr
 	}
-	if pid <= 0 || pid != wantPID {
+	if pid <= 0 {
 		conn.Close()
-		return nil, PublishPeer{}, fmt.Errorf("socket peer PID %d does not match launch PID %d", pid, wantPID)
+		return nil, PublishPeer{}, fmt.Errorf("socket peer PID %d", pid)
 	}
-	startMS, err := processStartMS(pid)
+	start, err := processStart(pid)
 	if err != nil {
 		conn.Close()
 		return nil, PublishPeer{}, err
 	}
-	if startMS > startedHookAtMS {
-		conn.Close()
-		return nil, PublishPeer{}, fmt.Errorf("socket peer PID %d started at %d after launch hook %d", pid, startMS, startedHookAtMS)
+	return conn, PublishPeer{PID: int64(pid), Identity: start.Identity, StartMS: start.AtMS}, nil
+}
+
+// DialVerifiedSocket is DialSocketPeer that also requires the listener to be
+// launchRef's process, started no later than startedHookAtMS.
+func DialVerifiedSocket(ctx context.Context, socketPath, launchRef string, startedHookAtMS int64) (*net.UnixConn, PublishPeer, error) {
+	process, ok := LaunchProcess(launchRef)
+	if !ok || startedHookAtMS <= 0 {
+		return nil, PublishPeer{}, errors.New("invalid launch reference")
 	}
-	return conn, PublishPeer{PID: int64(pid), StartMS: startMS}, nil
+	wantPID, err := strconv.Atoi(strings.TrimPrefix(process, "pid-"))
+	if err != nil || wantPID <= 0 {
+		return nil, PublishPeer{}, errors.New("invalid launch PID")
+	}
+	conn, peer, err := DialSocketPeer(ctx, socketPath)
+	if err != nil {
+		return nil, PublishPeer{}, err
+	}
+	if peer.PID != int64(wantPID) {
+		conn.Close()
+		return nil, PublishPeer{}, fmt.Errorf("socket peer PID %d does not match launch PID %d", peer.PID, wantPID)
+	}
+	if peer.StartMS > startedHookAtMS {
+		conn.Close()
+		return nil, PublishPeer{}, fmt.Errorf("socket peer PID %d started at %d after launch hook %d", peer.PID, peer.StartMS, startedHookAtMS)
+	}
+	return conn, peer, nil
 }
 
 // VerifySocket connects, verifies the listener's kernel PID and OS start time

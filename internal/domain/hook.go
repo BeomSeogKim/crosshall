@@ -707,8 +707,9 @@ func endSession(ctx context.Context, tx store.Tx, b hookBinding, principal int64
 
 // offerPending commits an offer of the oldest unread items the session was
 // not told about yet, by an earlier offer, a turn-end notice or a publish
-// notice it observed, before any output. It asks for a notice acknowledgement only when nothing eligible
-// remains.
+// notice the model saw (observed as its own turn, absorbed or unknown; a
+// notice a gate blocked was never seen), before any output. It asks for a
+// notice acknowledgement only when nothing eligible remains.
 func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch string, epoch uint64,
 	reason string, out *wire.HookResult, now time.Time) error {
 	if b.dnd {
@@ -721,7 +722,8 @@ func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBindi
 			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
 				AND a.via = 'turn_end')
 			AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt pa ON pa.id = i.attempt_id
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id AND pa.observed_at_ms IS NOT NULL)
+				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id
+					AND pa.observation IN ('own_turn', 'absorbed', 'unknown'))
 		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
 	if err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/notice"
@@ -69,12 +70,12 @@ func (claude) Transport() Transport {
 
 // proveClaude reads the kernel identity of the session inbox socket's
 // listener without writing to it.
-func proveClaude(ctx context.Context, probe Probe) (Queue, bool) {
+func proveClaude(ctx context.Context, probe Probe) (Proven, bool) {
 	peer, err := proc.VerifySocket(ctx, probe.Address, probe.LaunchRef, probe.StartedHookAtMS)
 	if err != nil {
-		return Queue{}, false
+		return Proven{}, false
 	}
-	return Queue{PID: peer.PID, StartMS: peer.StartMS}, true
+	return Proven{Queue: Queue{PID: peer.PID, StartMS: peer.Identity}, StartedAtMS: peer.StartMS}, true
 }
 
 // claudeMessage is one line of the session inbox socket. "later" queues
@@ -89,10 +90,9 @@ type claudeMessage struct {
 }
 
 // sendClaude writes one notice line to the proven listener. It re-dials
-// with the same kernel checks and requires the listener the proof named
-// (PID and start time) before writing. Nothing is written on any failure
-// before the write, so that is a proven non-submission; a partial write,
-// a write error or the deadline during the write is uncertain.
+// with the same socket checks and requires the listener the proof named
+// before writing. Nothing is written on any failure before the write, so
+// that is a proven non-submission; anything after it is writeLine's.
 func sendClaude(ctx context.Context, target Target, line string) Outcome {
 	msg := claudeMessage{Type: "user", From: "crosshall", Priority: "later"}
 	msg.Message.Content = line
@@ -101,20 +101,35 @@ func sendClaude(ctx context.Context, target Target, line string) Outcome {
 		return NotSubmitted
 	}
 	payload = append(payload, '\n')
-	conn, peer, err := proc.DialVerifiedSocket(ctx, target.Address, fmt.Sprintf("pid-%d", target.Queue.PID), target.Queue.StartMS)
+	conn, peer, err := proc.DialSocketPeer(ctx, target.Address)
 	if err != nil {
 		return NotSubmitted
 	}
 	defer conn.Close()
-	if peer.PID != target.Queue.PID || peer.StartMS != target.Queue.StartMS || ctx.Err() != nil {
+	// The proof already checked the launch and its first hook; the same PID
+	// and start identity is that process, not a later one with the PID.
+	if peer.PID != target.Queue.PID || peer.Identity != target.Queue.StartMS || ctx.Err() != nil {
 		return NotSubmitted
 	}
+	return writeLine(ctx, conn, payload)
+}
+
+// lineWriter is the part of a connection writeLine uses.
+type lineWriter interface {
+	SetWriteDeadline(time.Time) error
+	Write([]byte) (int, error)
+}
+
+// writeLine writes the whole payload by the context's deadline. Once a
+// write is attempted the listener may have read part of it, so every
+// failure from here on, a failed deadline included, is uncertain.
+func writeLine(ctx context.Context, w lineWriter, payload []byte) Outcome {
 	if deadline, ok := ctx.Deadline(); ok {
-		if err := conn.SetWriteDeadline(deadline); err != nil {
-			return NotSubmitted
+		if err := w.SetWriteDeadline(deadline); err != nil {
+			return Uncertain
 		}
 	}
-	if n, err := conn.Write(payload); err != nil || n != len(payload) {
+	if n, err := w.Write(payload); err != nil || n != len(payload) {
 		return Uncertain
 	}
 	return Submitted

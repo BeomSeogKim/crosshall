@@ -831,9 +831,9 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 			proofs := make(chan publish.Probe, 4)
 			sent := make(chan string, 4)
 			useTransport(t, publish.Transport{
-				Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+				Prove: func(_ context.Context, probe publish.Probe) (publish.Proven, bool) {
 					proofs <- probe
-					return publishTestTarget.Queue, proves
+					return publish.Proven{Queue: publishTestTarget.Queue, StartedAtMS: 1234}, proves
 				},
 				Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
 					sent <- line
@@ -904,9 +904,9 @@ func TestAListenerIsProvenOnlyForItsOwnLaunch(t *testing.T) {
 			VALUES (3, 3, 1, 'claude', 'session-3', 'pid-2346', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1)`)
 	asked := make(chan string, 4)
 	useTransport(t, publish.Transport{
-		Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+		Prove: func(_ context.Context, probe publish.Probe) (publish.Proven, bool) {
 			asked <- probe.LaunchRef
-			return publishTestTarget.Queue, true // the one listener on the socket
+			return publish.Proven{Queue: publishTestTarget.Queue, StartedAtMS: 1234}, true // the one listener on the socket
 		},
 		Send: func(context.Context, publish.Target, string) publish.Outcome { return publish.Submitted },
 	})

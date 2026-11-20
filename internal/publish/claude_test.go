@@ -3,11 +3,13 @@ package publish
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -52,11 +54,11 @@ func selfProbe(path string) Probe {
 
 func provenSelf(t *testing.T, path string) Target {
 	t.Helper()
-	queue, ok := proveClaude(t.Context(), selfProbe(path))
-	if !ok || queue.PID != int64(os.Getpid()) || queue.StartMS <= 0 {
-		t.Fatalf("proof of this process's socket: %+v %t", queue, ok)
+	proven, ok := proveClaude(t.Context(), selfProbe(path))
+	if !ok || proven.Queue.PID != int64(os.Getpid()) || proven.Queue.StartMS <= 0 || proven.StartedAtMS <= 0 {
+		t.Fatalf("proof of this process's socket: %+v %t", proven, ok)
 	}
-	return Target{Adapter: "claude", Address: path, Queue: queue}
+	return Target{Adapter: "claude", Address: path, Queue: proven.Queue}
 }
 
 func TestClaudeSenderWritesOneLaterLineToTheProvenListener(t *testing.T) {
@@ -82,8 +84,8 @@ func TestClaudeProofIsForTheLaunchItNames(t *testing.T) {
 	path, _, lines := selfSocket(t)
 	probe := selfProbe(path)
 	probe.LaunchRef = fmt.Sprintf("pid-%d", os.Getpid()+1)
-	if queue, ok := proveClaude(t.Context(), probe); ok {
-		t.Fatalf("proved %+v for another launch", queue)
+	if proven, ok := proveClaude(t.Context(), probe); ok {
+		t.Fatalf("proved %+v for another launch", proven)
 	}
 	probe = selfProbe(path)
 	probe.StartedHookAtMS = 1 // a launch whose first hook came before this process started
@@ -101,7 +103,7 @@ func TestClaudeSenderWritesNothingWithoutTheProvenListener(t *testing.T) {
 	path, ln, lines := selfSocket(t)
 	target := provenSelf(t, path)
 	restarted := target
-	restarted.Queue.StartMS++ // the PID now names a process that started later
+	restarted.Queue.StartMS++ // the PID now names a process with another start
 	missing := target
 	missing.Address = filepath.Join(filepath.Dir(path), "gone.sock")
 	for name, c := range map[string]Target{"another start time": restarted, "no socket": missing} {
@@ -137,5 +139,39 @@ func TestClaudeQueueRetiresOnlyWhenItsProcessIsGone(t *testing.T) {
 	}
 	if !claudeRetired(t.Context(), Queue{PID: int64(cmd.Process.Pid), StartMS: queue.StartMS}) {
 		t.Fatal("an exited, reaped process is not proof the queue is gone")
+	}
+}
+
+type scriptedWriter struct {
+	deadlineErr error
+	n           func(int) int
+	err         error
+	wrote       int
+}
+
+func (w *scriptedWriter) SetWriteDeadline(time.Time) error { return w.deadlineErr }
+func (w *scriptedWriter) Write(p []byte) (int, error) {
+	w.wrote = w.n(len(p))
+	return w.wrote, w.err
+}
+
+// Once a write is attempted only a complete one is submitted.
+func TestWriteLineOutcomes(t *testing.T) {
+	all := func(n int) int { return n }
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for name, c := range map[string]struct {
+		w    *scriptedWriter
+		want Outcome
+	}{
+		"full write":            {&scriptedWriter{n: all}, Submitted},
+		"short write, timeout":  {&scriptedWriter{n: func(n int) int { return n / 2 }, err: os.ErrDeadlineExceeded}, Uncertain},
+		"short write, no error": {&scriptedWriter{n: func(n int) int { return n - 1 }}, Uncertain},
+		"nothing, EPIPE":        {&scriptedWriter{n: func(int) int { return 0 }, err: syscall.EPIPE}, Uncertain},
+		"failed deadline":       {&scriptedWriter{deadlineErr: errors.New("closed"), n: all}, Uncertain},
+	} {
+		if got := writeLine(ctx, c.w, []byte("line\n")); got != c.want {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
 	}
 }

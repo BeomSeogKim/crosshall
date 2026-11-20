@@ -295,3 +295,20 @@ func TestThePromptLineSkipsIDsAnObservedNoticeCarried(t *testing.T) {
 		t.Fatalf("prompt line %q, want only the unobserved notice's %d", got.PendingLine, unseen)
 	}
 }
+
+// Fable #448: a notice a gate blocked never reached the model, so its IDs
+// stay on the prompt line.
+func TestThePromptLineKeepsIDsOfABlockedNotice(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	blocked := p.turnEndAsk(p.writer, "reader", "blocked")
+	id := p.reserve()
+	if ids := p.begin(id); !slices.Equal(ids, []int64{blocked}) {
+		t.Fatalf("notice carried %v", ids)
+	}
+	p.mutate(`UPDATE publish_attempt SET observation = 'blocked', observed_at_ms = ? WHERE id = ?`, p.now.UnixMilli(), id)
+	if got := p.hook(p.reader, prompt(publishTestLaunch, "user", p.now.UnixMilli()+300)); got.PendingLine != pendingLine(blocked) {
+		t.Fatalf("prompt line %q, want the blocked notice's %d", got.PendingLine, blocked)
+	}
+}

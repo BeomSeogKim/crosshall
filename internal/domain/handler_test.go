@@ -433,7 +433,7 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	f.owner(CreateChannel{Name: "checkout"}, "")
 	a, b, c := f.newSession("claude"), f.newSession("codex"), f.newSession("agy")
 	first := decode[JoinResult](t, f.join(a, Join{Channel: "checkout", Alias: "form"}, ""))
-	if first.RosterSeq == 0 || !strings.Contains(first.Hint, "Act on outstanding work before rearming.") {
+	if first.RosterSeq == 0 || !strings.Contains(first.Hint, "Act on outstanding work before rearming:") {
 		t.Fatalf("first join %+v", first)
 	}
 	// The first response was lost: a re-join with a fresh key and no ack
@@ -454,7 +454,7 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	// A member that lost its context asks for the rules.
 	asked := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout", Rules: true}, lost.RosterSeq))
 	if !strings.HasPrefix(asked.Hint, "[crosshall] Already in #checkout as @form.\n") ||
-		!strings.Contains(asked.Hint, "Later arrivals belong to the next turn.") || !strings.Contains(asked.Hint, "Act on outstanding work before rearming.") {
+		!strings.Contains(asked.Hint, "Later arrivals belong to the next turn.") || !strings.Contains(asked.Hint, "Act on outstanding work before rearming:") {
 		t.Fatalf("re-join asking for the rules %+v", asked)
 	}
 	// The dispatcher records the ack after the handler; simulate that.

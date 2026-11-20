@@ -15,6 +15,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -334,8 +335,8 @@ func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
 	if line == "" {
 		return nil, nil
 	}
-	ids, ok := strings.CutPrefix(line, pendingNoticePrefix)
-	if !ok || !validPendingIDs(ids) {
+	ids, ok := strings.CutPrefix(line, notice.PendingPrefix)
+	if !ok || notice.ParseIDs(ids) == nil {
 		return nil, errors.New("invalid turn-end line")
 	}
 	switch spec.Output {

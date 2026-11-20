@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -41,7 +42,7 @@ var factCapMS = map[string]int64{
 const SessionLaunch = "session"
 
 // OfferCap is the number of IDs one notice line carries.
-const OfferCap = 10
+const OfferCap = notice.OfferCap
 
 // HookEnroll is a session start: restore, re-join after a clean end, or auto-join.
 type HookEnroll struct{ wire.HookEnrollArgs }

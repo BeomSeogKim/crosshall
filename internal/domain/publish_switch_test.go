@@ -286,7 +286,7 @@ func TestPublishThirdSuspensionLastsForTheLaunch(t *testing.T) {
 }
 
 func TestPublishVersionSuspension(t *testing.T) {
-	for _, by := range []string{"profile list", "resume"} {
+	for _, by := range []string{"evidence import", "resume"} {
 		t.Run(by, func(t *testing.T) {
 			p := newPublishFixture(t)
 			p.proveRoute()
@@ -298,18 +298,16 @@ func TestPublishVersionSuspension(t *testing.T) {
 				p.requirePublish("resume does not add the version", "suspended", `version "`)
 				return
 			}
+			var e AdapterEvidence
 			p.update(func(ctx context.Context, tx store.Tx) error {
-				var profile PublishProfile
-				err := tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
+				return tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
 					json_extract(profile, '$.mode'), json_extract(profile, '$.manifest_rev') FROM adapter_launch WHERE launch_ref = ?`,
-					publishTestLaunch).Scan(&profile.Version, &profile.Platform, &profile.Mode, &profile.ManifestRev)
-				if err != nil {
-					return err
-				}
-				profile.Vendor = "claude"
-				return SeedPublishProfiles(ctx, tx, []PublishProfile{profile}, p.now)
+					publishTestLaunch).Scan(&e.VendorVersion, &e.Platform, &e.Mode, &e.ManifestRev)
 			})
-			p.requirePublish("the shipped list holds the version", "available", "")
+			e.Vendor, e.RunAtMS, e.ResultRef = "claude", p.now.UnixMilli(), "sha256:01"
+			e.Results = []EvidenceResult{{Cap: "publish", Level: "tested", Check: "interactive conformance"}}
+			wantOK(t, p.owner(e, "import"))
+			p.requirePublish("the imported evidence holds the version", "available", "")
 		})
 	}
 }
@@ -362,68 +360,153 @@ func TestPublishHeldAndCappedStates(t *testing.T) {
 	p.requirePublish("after the cap window", "available", "")
 }
 
-func TestPublishSendResultSaysWhetherAPublishIsPending(t *testing.T) {
-	p := newPublishFixture(t)
-	next := func(key string) Delivery {
-		t.Helper()
-		r := decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, key))
-		return r.Recipients[0]
-	}
-	if d := next("candidate"); d.Next != "waits for its next crosshall command" || d.Publish == nil ||
-		*d.Publish != (PublishStatus{State: "candidate"}) {
-		t.Fatalf("candidate route: %+v", d)
-	}
-	p.proveRoute()
-	if d := next("available"); d.Next != "publish pending" || d.Publish != nil {
-		t.Fatalf("available route: %+v", d)
-	}
-	wantOK(t, p.run(p.reader, Publish{}, "off"))
-	if d := next("off"); d.Next != "waits for its next crosshall command" || d.Publish == nil || d.Publish.State != "off" {
-		t.Fatalf("member off: %+v", d)
-	}
-	note := decode[NoteResult](t, p.run(p.writer, Note{To: []string{"reader"}, Body: "fyi"}, "note"))
-	if d := note.Recipients[0]; d.Publish != nil {
-		t.Fatalf("a note carried a publish reason: %+v", d)
-	}
-	pull := decode[AskResult](t, p.ask(p.reader, Ask{To: []string{"writer"}, Body: "pull"}, "pull"))
-	if d := pull.Recipients[0]; d.Next != "waits for its next crosshall command" || d.Publish != nil {
-		t.Fatalf("a member without a route: %+v", d)
-	}
-}
-
 func TestPublishWaitingShowsSubmissionObservationAndPickup(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	ask := decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, "work")).ID
-	notice := func() *LedgerNotice {
+	recipient := func() LedgerRecipient {
 		t.Helper()
 		for _, r := range decode[WaitingResult](t, p.run(p.writer, Waiting{}, "")).Requests {
 			if r.ID == ask {
-				return r.Recipients[0].Notice
+				return r.Recipients[0]
 			}
 		}
 		t.Fatalf("#%d not waiting", ask)
-		return nil
+		return LedgerRecipient{}
 	}
-	if n := notice(); n != nil {
+	if n := recipient().Notice; n != nil {
 		t.Fatalf("notice before any attempt: %+v", n)
+	}
+	fence := p.now.UnixMilli()
+	id := p.reserve()
+	p.begin(id)
+	p.now = p.now.Add(time.Second)
+	p.resolve(id, PublishNotSubmitted)
+	if n := recipient().Notice; n == nil || n.ID != id || n.State != "not_submitted" {
+		t.Fatalf("a released claim lost its notice: %+v", n)
+	}
+	// A known non-submission is retried only on a newer generation.
+	p.mutate(`UPDATE publish_route SET generation = generation + 1 WHERE binding_id = ?`, p.binding.ID)
+	p.proveRoute()
+	id = p.reserve()
+	p.begin(id)
+	p.now = p.now.Add(time.Second)
+	p.resolve(id, PublishSubmitted)
+	n := recipient().Notice
+	if n == nil || n.ID != id || n.State != "submitted" || n.ResolvedAtMS == nil || *n.ResolvedAtMS != p.now.UnixMilli() ||
+		n.SubmittingAtMS == nil || *n.SubmittingAtMS == *n.ResolvedAtMS || n.ObservedAtMS != nil {
+		t.Fatalf("submitted notice: %+v (fence at %d)", n, fence)
+	}
+	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = 'own_turn' WHERE id = ?`, p.now.UnixMilli(), id)
+	p.pickUp(p.reader, ask)
+	if n := recipient().Notice; n == nil || n.Observation != "own_turn" || n.ObservedAtMS == nil {
+		t.Fatalf("observed notice: %+v", n)
+	}
+
+	// The reader's final reply is offered to the writer, who waits on it.
+	writer := bindingIDOf(t, p.fixture, p.principalOf(p.writer))
+	wantOK(t, p.reply(p.reader, Reply{To: ask, Body: "done"}, "answer"))
+	p.mutate(`INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
+			policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, resolved_at_ms)
+		SELECT b.id, b.principal_id, 1, 1, 'codex', 's', 'l', 1, 77, 1, 'submitted', ?1, ?1, ?1 FROM binding b WHERE b.id = ?2`,
+		p.now.UnixMilli(), writer)
+	p.mutate(`INSERT INTO publish_attempt_item (attempt_id, principal_id, message_id)
+		SELECT (SELECT MAX(id) FROM publish_attempt), m.sender_id, r.id FROM message m JOIN message r ON r.in_reply_to = m.id
+		WHERE m.id = ?`, ask)
+	if n := recipient().ReplyNotice; n == nil || n.State != "submitted" {
+		t.Fatalf("the reply's notice to the asker is missing: %+v", n)
+	}
+
+	pull := decode[AskResult](t, p.ask(p.reader, Ask{To: []string{"writer"}, Body: "pull"}, "pull")).ID
+	for _, r := range decode[WaitingResult](t, p.run(p.reader, Waiting{}, "")).Requests {
+		if r.ID == pull && (r.Recipients[0].Notice != nil || r.Recipients[0].ReplyNotice != nil) {
+			t.Fatal("a member on pull gained a notice line")
+		}
+	}
+}
+
+func TestPublishHeldFollowsThePhysicalQueueAcrossBindings(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	other := p.newSession("claude")
+	wantOK(t, p.join(other, Join{Channel: "checkout", Alias: "other"}, "other-join"))
+	enrollAndRoute(t, p.fixture, other, publishTestLaunch, "startup", publishTestSocket, "default", p.now.UnixMilli(), 1)
+	b := PublishBinding{ID: bindingIDOf(t, p.fixture, p.principalOf(other))}
+	b.Generation, _, _, _, _, _, _ = routeState(t, p.fixture, b.ID)
+	p.update(func(ctx context.Context, tx store.Tx) error { return ConfirmPublishRoute(ctx, tx, b, p.queue) })
+	p.turnEndAsk(p.writer, "reader", "first")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("no reservation")
+	}
+	var state store.PublishState
+	p.update(func(ctx context.Context, tx store.Tx) error {
+		var err error
+		state, _, err = store.ReadPublishState(ctx, tx, b.ID, p.now)
+		return err
+	})
+	if state.State != "held" || state.Notice != id {
+		t.Fatalf("the other binding on the same queue shows %+v while reserved attempt %d holds it", state, id)
+	}
+}
+
+func TestPublishOwnerHardStopIsReportedOverTheEndedRoute(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	disabled := false
+	wantOK(t, p.owner(AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: "claude", Enabled: &disabled}}, "disable"))
+	if s := p.publishState(); s.State != "off" || !strings.Contains(s.Reason, "disabled") {
+		t.Fatalf("adapter disabled shows %+v", s)
+	}
+}
+
+func TestPublishResumeAndSuspensionInOneMillisecond(t *testing.T) {
+	t.Run("suspension then resume", func(t *testing.T) {
+		p := newPublishFixture(t)
+		p.proveRoute()
+		p.observed("absorbed")
+		wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+		p.turnEndAsk(p.writer, "reader", "after")
+		p.requirePublish("resume committed after the suspension", "available", "")
+	})
+	t.Run("resume then suspension", func(t *testing.T) {
+		p := newPublishFixture(t)
+		p.proveRoute()
+		wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+		p.observed("absorbed")
+		p.requirePublish("suspension committed after the resume", "suspended", "absorbed")
+	})
+}
+
+func TestPublishSendResultIsPullUnlessThisMessageIsQueued(t *testing.T) {
+	p := newPublishFixture(t)
+	const pull = "waits for its next crosshall command"
+	send := func(key string) Delivery {
+		t.Helper()
+		return decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, key)).Recipients[0]
+	}
+	if d := send("candidate"); d.Next != pull {
+		t.Fatalf("candidate route: %+v", d)
+	}
+	p.proveRoute()
+	if d := send("candidate"); d.Next != pull {
+		t.Fatalf("replay of a message below the activation watermark: %+v", d)
+	}
+	if d := send("queued"); d.Next != "notice queued" {
+		t.Fatalf("available route, eligible message: %+v", d)
 	}
 	id := p.reserve()
 	p.begin(id)
 	p.resolve(id, PublishSubmitted)
-	if n := notice(); n == nil || n.ID != id || n.State != "submitted" || n.SubmittedAtMS == nil || n.ObservedAtMS != nil {
-		t.Fatalf("submitted notice: %+v", n)
+	if d := send("queued"); d.Next != pull {
+		t.Fatalf("replay after the notice was submitted: %+v", d)
 	}
-	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = 'own_turn' WHERE id = ?`, p.now.UnixMilli(), id)
-	p.pickUp(p.reader, ask)
-	n := notice()
-	if n == nil || n.Observation != "own_turn" || n.ObservedAtMS == nil {
-		t.Fatalf("observed notice: %+v", n)
+	wantOK(t, p.run(p.reader, Publish{}, "off"))
+	if d := send("off"); d.Next != pull {
+		t.Fatalf("member off: %+v", d)
 	}
-	pull := decode[AskResult](t, p.ask(p.reader, Ask{To: []string{"writer"}, Body: "pull"}, "pull")).ID
-	for _, r := range decode[WaitingResult](t, p.run(p.reader, Waiting{}, "")).Requests {
-		if r.ID == pull && r.Recipients[0].Notice != nil {
-			t.Fatal("a member on pull gained a notice line")
-		}
+	note := decode[NoteResult](t, p.run(p.writer, Note{To: []string{"reader"}, Body: "fyi"}, "note"))
+	if d := note.Recipients[0]; d.Next != pull {
+		t.Fatalf("a note: %+v", d)
 	}
 }

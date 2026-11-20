@@ -1,6 +1,10 @@
 ALTER TABLE binding ADD COLUMN publish_owner INTEGER CHECK (publish_owner IN (0, 1));
 
-ALTER TABLE binding ADD COLUMN publish_resumed_at_ms INTEGER NOT NULL DEFAULT 0;
+-- The owner's last resume, in commit order: suspensions and attempts with
+-- a higher ID came after it.
+ALTER TABLE binding ADD COLUMN publish_resume_suspension INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE binding ADD COLUMN publish_resume_attempt INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE adapter_policy ADD COLUMN publish INTEGER CHECK (publish IN (0, 1));
 

@@ -131,8 +131,10 @@ type LedgerRecipient struct {
 	// only: what it was last seen doing, with no judgement attached. It is
 	// in absolute time, so the ledger does not change with the clock.
 	Observed *ObservedFact `json:"observed,omitempty"`
-	// Notice is the publish notice that offered this request, if any.
-	Notice *LedgerNotice `json:"notice,omitempty"`
+	// Notice is the publish notice that offered this request, if any, and
+	// ReplyNotice the one that offered the asker this recipient's reply.
+	Notice      *LedgerNotice `json:"notice,omitempty"`
+	ReplyNotice *LedgerNotice `json:"reply_notice,omitempty"`
 }
 
 type Receipt struct {
@@ -420,7 +422,10 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 			r.ReplyUnread = false
 		}
 		r.setDeadlineState(m.DueAtMS, ms(now))
-		if r.Notice, err = ledgerNotice(ctx, tx, r.PrincipalID, m.ID); err != nil {
+		if r.Notice, err = ledgerNotice(ctx, tx, r.PrincipalID, m.ID, 0, false); err != nil {
+			return nil, err
+		}
+		if r.ReplyNotice, err = ledgerNotice(ctx, tx, m.SenderID, m.ID, r.PrincipalID, true); err != nil {
 			return nil, err
 		}
 		if r.State == "open" {
@@ -440,23 +445,31 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 	return out, rows.Err()
 }
 
-// LedgerNotice is a publish notice as waiting shows it: its submission,
-// and whether the member's next prompt was observed to carry it.
+// LedgerNotice is a publish notice as waiting shows it, read from the
+// attempt's durable items: when it passed the final fence, when the
+// transport's outcome was recorded, and how the member's next prompt was
+// observed to carry it.
 type LedgerNotice struct {
-	ID            int64  `json:"id"`
-	State         string `json:"state"`
-	SubmittedAtMS *int64 `json:"submitted_at_ms"`
-	Observation   string `json:"observation,omitempty"`
-	ObservedAtMS  *int64 `json:"observed_at_ms"`
+	ID             int64  `json:"id"`
+	State          string `json:"state"`
+	SubmittingAtMS *int64 `json:"submitting_at_ms"`
+	ResolvedAtMS   *int64 `json:"resolved_at_ms"`
+	Observation    string `json:"observation,omitempty"`
+	ObservedAtMS   *int64 `json:"observed_at_ms"`
 }
 
-func ledgerNotice(ctx context.Context, tx store.Tx, principal, message int64) (*LedgerNotice, error) {
+// ledgerNotice reads the latest notice that offered request message to
+// principal or, with reply set, the latest that offered principal a final
+// reply from replier to request message.
+func ledgerNotice(ctx context.Context, tx store.Tx, principal, message, replier int64, reply bool) (*LedgerNotice, error) {
 	var n LedgerNotice
 	var observation sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT a.id, a.state, a.submitting_at_ms, a.observation, a.observed_at_ms
-		FROM announcement x JOIN publish_attempt a ON a.id = x.ref
-		WHERE x.via = 'publish' AND x.principal_id = ? AND x.message_id = ?`, principal, message).
-		Scan(&n.ID, &n.State, &n.SubmittedAtMS, &observation, &n.ObservedAtMS)
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.state, a.submitting_at_ms, a.resolved_at_ms, a.observation, a.observed_at_ms
+		FROM publish_attempt_item i JOIN publish_attempt a ON a.id = i.attempt_id
+		WHERE i.principal_id = ?1 AND (NOT ?4 AND i.message_id = ?2 OR ?4 AND i.message_id IN (SELECT p.id FROM message p
+			WHERE p.in_reply_to = ?2 AND p.kind = 'reply' AND p.outcome IN ('answer', 'decline') AND p.sender_id = ?3))
+		ORDER BY a.id DESC LIMIT 1`, principal, message, replier, reply).
+		Scan(&n.ID, &n.State, &n.SubmittingAtMS, &n.ResolvedAtMS, &observation, &n.ObservedAtMS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

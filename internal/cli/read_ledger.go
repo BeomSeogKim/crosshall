@@ -335,7 +335,10 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 			fmt.Fprintf(w, ", more time requested at %s", ledgerTime(*at))
 		}
 		if n := recipient.Notice; n != nil {
-			fmt.Fprintf(w, "; %s", noticeText(*n))
+			fmt.Fprintf(w, "; %s", noticeText("notice", *n))
+		}
+		if n := recipient.ReplyNotice; n != nil {
+			fmt.Fprintf(w, "; %s", noticeText("reply notice", *n))
 		}
 		if o := recipient.Observed; o != nil && nowMS != 0 {
 			seen := o.At(nowMS)

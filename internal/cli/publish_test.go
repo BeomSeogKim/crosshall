@@ -95,19 +95,13 @@ func TestPublishStatesRenderInWho(t *testing.T) {
 
 func TestSendResultWordsForPublish(t *testing.T) {
 	ft := &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Channel: "dev", Recipients: []domain.Delivery{
-		{Alias: "pending", State: "stored", Next: "publish pending"},
-		{Alias: "candidate", State: "stored", Next: "waits for its next crosshall command",
-			Publish: &domain.PublishStatus{State: "candidate", Reason: "profile not tested"}},
-		{Alias: "suspended", State: "stored", Next: "waits for its next crosshall command",
-			Publish: &domain.PublishStatus{State: "suspended", Reason: "version \"9\" not in the profile list", Lift: "lifts when the launch ends"}},
+		{Alias: "queued", State: "stored", Next: "notice queued"},
 		{Alias: "pull", State: "stored", Next: "waits for its next crosshall command"},
 	}})}
-	stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "ask", "@pending", "work")
+	stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "ask", "@queued", "work")
 	for _, want := range []string{
-		"@pending    stored -> publish pending\n",
-		"@candidate  stored -> waits for its next crosshall command (publish candidate)\n",
-		"@suspended  stored -> waits for its next crosshall command (publish suspended)\n",
-		"@pull       stored -> waits for its next crosshall command\n",
+		"@queued  stored -> notice queued\n",
+		"@pull    stored -> waits for its next crosshall command\n",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("send result lacks %q:\n%s", want, stdout)
@@ -117,23 +111,45 @@ func TestSendResultWordsForPublish(t *testing.T) {
 
 func TestWaitingShowsNoticeSubmissionObservationAndPickup(t *testing.T) {
 	now := time.Now()
-	submitted, observed, picked := now.Add(-3*time.Minute).UnixMilli(), now.Add(-2*time.Minute).UnixMilli(), now.Add(-time.Minute).UnixMilli()
+	fence, written := now.Add(-4*time.Minute).UnixMilli(), now.Add(-3*time.Minute).UnixMilli()
+	observed, picked := now.Add(-2*time.Minute).UnixMilli(), now.Add(-time.Minute).UnixMilli()
 	ft := &fakeTransport{result: okResult(t, domain.WaitingResult{GeneratedAtMS: now.UnixMilli(), Channel: "dev",
 		Requests: []domain.LedgerRequest{{ID: 42, Sender: "lead", DueAtMS: now.Add(time.Hour).UnixMilli(), Recipients: []domain.LedgerRecipient{
-			{Alias: "opus", State: "open", PickedUpAtMS: &picked, Notice: &domain.LedgerNotice{
-				ID: 7, State: "submitted", SubmittedAtMS: &submitted, Observation: "own_turn", ObservedAtMS: &observed}},
-			{Alias: "held", State: "open", Notice: &domain.LedgerNotice{ID: 8, State: "uncertain", SubmittedAtMS: &submitted}},
+			{Alias: "opus", State: "replied", PickedUpAtMS: &picked, Notice: &domain.LedgerNotice{
+				ID: 7, State: "submitted", SubmittingAtMS: &fence, ResolvedAtMS: &written, Observation: "own_turn", ObservedAtMS: &observed},
+				ReplyNotice: &domain.LedgerNotice{ID: 9, State: "submitted", SubmittingAtMS: &fence, ResolvedAtMS: &written}},
+			{Alias: "held", State: "open", Notice: &domain.LedgerNotice{ID: 8, State: "uncertain", SubmittingAtMS: &fence, ResolvedAtMS: &written}},
+			{Alias: "failed", State: "open", Notice: &domain.LedgerNotice{ID: 10, State: "not_submitted", SubmittingAtMS: &fence, ResolvedAtMS: &written}},
 			{Alias: "pull", State: "open"},
 		}}}})}
 	stdout, _, _ := run(t, Env{Transport: ft}, "waiting")
 	for _, want := range []string{
-		"@opus picked up " + ledgerTime(picked) + " (1m ago); notice 7 submitted " + ledgerTime(submitted) +
-			", observed " + ledgerTime(observed) + " (own turn)\n",
-		"@held stored; notice 8 submission uncertain since " + ledgerTime(submitted) + ", not observed\n",
+		"; notice 7 submitted " + ledgerTime(written) + ", observed " + ledgerTime(observed) + " (own turn); reply notice 9 submitted " +
+			ledgerTime(written) + ", not observed\n",
+		"@held stored; notice 8 submission uncertain since " + ledgerTime(written) + ", not observed\n",
+		"@failed stored; notice 10 not submitted " + ledgerTime(written) + "\n",
 		"@pull stored\n",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("waiting lacks %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestResumeWordsAreHonest(t *testing.T) {
+	for _, test := range []struct {
+		state domain.PublishStatus
+		want  string
+	}{
+		{domain.PublishStatus{State: "available"}, "Publish suspensions lifted for @opus in #dev (binding 7).\n"},
+		{domain.PublishStatus{State: "suspended", Reason: `version "9" not in the profile list`},
+			"Resume recorded, but publish stays suspended for @opus in #dev (binding 7).\n"},
+	} {
+		ft := &fakeTransport{result: okResult(t, domain.PublishSwitchResult{BindingID: 7, Channel: "dev", Alias: "opus",
+			Switch: "resume", Changed: true, Publish: &test.state})}
+		stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "owner", "publish", "resume", "7")
+		if !strings.HasPrefix(stdout, test.want) {
+			t.Errorf("stdout %q, want prefix %q", stdout, test.want)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -648,5 +649,41 @@ func TestPublisherStartupSeedsTheShippedProfiles(t *testing.T) {
 	})
 	if n != 1 {
 		t.Fatalf("shipped profile rows %d, want 1", n)
+	}
+}
+
+func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	f.reserve(t, true)
+	p := &publisher{db: f.db, timeout: 10 * time.Millisecond, abandon: 10 * time.Millisecond}
+	if err := p.recover(t.Context(), f.now); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	stuck := make(chan struct{})
+	release := sync.OnceFunc(func() { close(stuck) })
+	defer release()
+	p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+		calls.Add(1)
+		<-stuck // ignores its context
+		return false
+	}
+	for i := range 5 {
+		tickPublisher(t, p, f.now.Add(time.Duration(i)*time.Second), false)
+		awaitPublishTest(t, publishWorkersDone(p))
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d probes for one queue while the first is stuck, want 1", n)
+	}
+	release()
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		tickPublisher(t, p, f.now.Add(time.Minute), false)
+		awaitPublishTest(t, publishWorkersDone(p))
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("after the callback returned: %d probes, want a new one", n)
 	}
 }

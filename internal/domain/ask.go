@@ -60,9 +60,6 @@ type Delivery struct {
 	SettledAtMS  int64  `json:"settled_at_ms,omitempty"`
 	MoreTimeAtMS int64  `json:"more_time_at_ms,omitempty"`
 	Next         string `json:"next,omitempty"`
-	// Publish is the state word of a recipient's publish route when the
-	// route exists but cannot publish this message now.
-	Publish *PublishStatus `json:"publish,omitempty"`
 }
 
 // AskResult is the data of a committed request.
@@ -355,8 +352,7 @@ func receipt(ctx context.Context, tx store.Tx, msg, principal int64, stage, evid
 func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]Delivery, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT r.alias_at_commit, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms,
-		        COALESCE(b.state, 'departed'), COALESCE(b.id, 0),
-		        m.kind = 'ask' OR m.kind = 'reply' AND m.outcome IN ('answer', 'decline')
+		        COALESCE(b.state, 'departed'), COALESCE(b.id, 0)
 		 FROM recipient r JOIN message m ON m.id = r.message_id
 		 LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
 		 LEFT JOIN binding b ON b.principal_id = r.principal_id AND b.channel_id = m.channel_id
@@ -373,9 +369,8 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]D
 			state                     sql.NullString
 			binding                   string
 			bindingID                 int64
-			publishable               bool
 		)
-		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding, &bindingID, &publishable); err != nil {
+		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding, &bindingID); err != nil {
 			return nil, err
 		}
 		d.PickedUpAtMS, d.SettledAtMS, d.MoreTimeAtMS = picked.Int64, settled.Int64, moreTime.Int64
@@ -391,16 +386,14 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]D
 			d.State, d.Next = "stored", "held until it rejoins"
 		default:
 			d.State, d.Next = "stored", "waits for its next crosshall command"
-			if publishable {
-				status, found, err := store.ReadPublishState(ctx, tx, bindingID, now)
-				if err != nil {
-					return nil, err
-				}
-				if status.State == "available" {
-					d.Next = "publish pending"
-				} else if found {
-					d.Publish = &PublishStatus{State: status.State}
-				}
+			// Anything short of a notice that will offer this message is pull,
+			// and says exactly what pull says.
+			queued, err := publishQueued(ctx, tx, bindingID, msg, now)
+			if err != nil {
+				return nil, err
+			}
+			if queued {
+				d.Next = "notice queued"
 			}
 		}
 		out = append(out, d)

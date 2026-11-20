@@ -49,11 +49,14 @@ func renderPublishSwitch(data []byte, w io.Writer) error {
 		subject = fmt.Sprintf("@%s in #%s (binding %d)", r.Alias, r.Channel, r.BindingID)
 	}
 	action := "Publish switch " + r.Switch
-	if r.Switch == "resume" {
-		action = "Publish suspension lifted"
-	}
 	if !r.Changed {
 		action += ", unchanged"
+	}
+	if r.Switch == "resume" {
+		action = "Publish suspensions lifted"
+		if r.Publish != nil && r.Publish.State == "suspended" {
+			action = "Resume recorded, but publish stays suspended"
+		}
 	}
 	fmt.Fprintf(w, "%s for %s.\n", action, subject)
 	if r.Publish != nil {
@@ -63,24 +66,24 @@ func renderPublishSwitch(data []byte, w io.Writer) error {
 }
 
 // noticeText shows a publish notice's submission and observation; pickup is
-// the request's own state.
-func noticeText(n domain.LedgerNotice) string {
-	text := fmt.Sprintf("notice %d ", n.ID)
+// the request's own state. Submitted is the recorded write, not the fence.
+func noticeText(label string, n domain.LedgerNotice) string {
+	text := fmt.Sprintf("%s %d ", label, n.ID)
 	switch {
 	case n.State == "reserved":
 		text += "not yet submitted"
-	case n.SubmittedAtMS == nil:
-		text += n.State
-	case n.State == "submitting":
-		text += "being submitted since " + ledgerTime(*n.SubmittedAtMS)
+	case n.State == "submitting" && n.SubmittingAtMS != nil:
+		text += "being submitted since " + ledgerTime(*n.SubmittingAtMS)
+	case n.ResolvedAtMS == nil:
+		text += strings.ReplaceAll(n.State, "_", " ")
 	case n.State == "uncertain":
-		text += "submission uncertain since " + ledgerTime(*n.SubmittedAtMS)
+		text += "submission uncertain since " + ledgerTime(*n.ResolvedAtMS)
 	default:
-		text += n.State + " " + ledgerTime(*n.SubmittedAtMS)
+		text += strings.ReplaceAll(n.State, "_", " ") + " " + ledgerTime(*n.ResolvedAtMS)
 	}
 	if n.ObservedAtMS != nil {
 		text += fmt.Sprintf(", observed %s (%s)", ledgerTime(*n.ObservedAtMS), strings.ReplaceAll(n.Observation, "_", " "))
-	} else if n.SubmittedAtMS != nil {
+	} else if n.State == "submitted" || n.State == "uncertain" {
 		text += ", not observed"
 	}
 	return text

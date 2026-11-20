@@ -108,10 +108,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if _, running := p.retiring.LoadOrStore(queue, struct{}{}); running {
 			continue
 		}
-		p.workers.Go(func() {
-			defer p.retiring.Delete(queue)
-			p.retire(ctx, queue)
-		})
+		// The guard outlives an abandoned probe: it is released only when
+		// the callback itself returns, so a stuck probe is never doubled.
+		p.workers.Go(func() { p.retire(ctx, queue, func() { p.retiring.Delete(queue) }) })
 	}
 	return nil
 }
@@ -166,20 +165,21 @@ func (p *publisher) send(ctx context.Context, target domain.PublishTarget, line 
 	}
 	outcome, ok := bounded(ctx, cmp.Or(p.abandon, publishTimeout), func() domain.PublishOutcome {
 		return p.transport.Send(ctx, target, line)
-	})
+	}, nil)
 	if !ok || ctx.Err() != nil {
 		return domain.PublishUncertain
 	}
 	return outcome
 }
 
-func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue) {
+func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue, release func()) {
 	probe, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
 	if probe.Err() != nil {
+		release()
 		return
 	}
-	retired, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return p.transport.Retired(probe, queue) })
+	retired, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return p.transport.Retired(probe, queue) }, release)
 	if ok && retired && probe.Err() == nil {
 		logPublishFailure(p.db.Update(probe, func(tx store.Tx) error {
 			return domain.RetirePublishQueue(probe, tx, queue, time.Now())
@@ -189,10 +189,16 @@ func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue) {
 
 // bounded runs call until ctx ends, then waits at most abandon for it to
 // return. ok is false when ctx ended first; a call that outlives abandon is
-// left running and logged.
-func bounded[T any](ctx context.Context, abandon time.Duration, call func() T) (result T, ok bool) {
+// left running and logged. A non-nil returned runs when call returns, even
+// after bounded has given up on it.
+func bounded[T any](ctx context.Context, abandon time.Duration, call func() T, returned func()) (result T, ok bool) {
 	done := make(chan T, 1)
-	go func() { done <- call() }()
+	go func() {
+		done <- call()
+		if returned != nil {
+			returned()
+		}
+	}()
 	select {
 	case result = <-done:
 		return result, true

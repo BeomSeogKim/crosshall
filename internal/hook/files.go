@@ -28,7 +28,11 @@ type adapterPolicy struct {
 }
 
 func readPolicy(rv *os.Root, adapter string) (adapterPolicy, error) {
-	data, err := ident.ReadPrivateFile(rv, "policy", 4096)
+	return readPolicyFile(rv, "policy", adapter)
+}
+
+func readPolicyFile(dir *os.Root, name, adapter string) (adapterPolicy, error) {
+	data, err := ident.ReadPrivateFile(dir, name, 4096)
 	if err != nil {
 		return adapterPolicy{}, err
 	}

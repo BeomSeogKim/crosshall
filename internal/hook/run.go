@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,26 +31,36 @@ type hookTransport interface {
 
 // Run serves one callback. Path resolution and counter preparation share the
 // callback budget with dispatch. Only the supervisor records an outcome.
-func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, rendezvous func() (string, error)) {
+func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
 	if len(args) != 2 {
 		return
 	}
+	began := entry
+	entry, startedState := wake(entry, args, locate)
 	end := entry.Add(Budget)
 	prepare := func() (*os.Root, *hookCounter) {
-		path, err := rendezvous()
+		paths, err := locate()
 		if err != nil || !time.Now().Before(end) {
 			return nil, nil
 		}
-		rv, err := ident.OpenPrivateDir(path)
+		rv, err := ident.OpenPrivateDir(paths.Rendezvous)
 		if err != nil || !time.Now().Before(end) {
 			return rv, nil
 		}
 		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
+	var outcome atomic.Value
 	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		return dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
+		o := dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
+		outcome.Store(o)
+		return o
 	})
+	if startedState != "" {
+		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
+			logLine(startedState, args[0]+" "+args[1], began, "started the dispatcher, but the session start was not answered in time")
+		}
+	}
 	if !wrote && args[0] == "agy" && time.Now().Before(end) {
 		done := make(chan struct{})
 		go func() {

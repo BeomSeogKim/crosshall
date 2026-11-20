@@ -110,8 +110,8 @@ func TestAntigravitySessionStartWritesInjectionOrNoOpJSON(t *testing.T) {
 		t.Fatalf("startup output: %q, %v", out, err)
 	}
 	var noOp strings.Builder
-	Run(time.Now(), []string{"agy", "SessionStart"}, strings.NewReader("{}"), &noOp, func() (string, error) {
-		return "", errors.New("no dispatcher")
+	Run(time.Now(), []string{"agy", "SessionStart"}, strings.NewReader("{}"), &noOp, func() (Paths, error) {
+		return Paths{}, errors.New("no dispatcher")
 	})
 	if noOp.String() != "{}\n" {
 		t.Fatalf("no-op output: %q", noOp.String())

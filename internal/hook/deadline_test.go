@@ -68,9 +68,9 @@ func TestHookCounterAfterSuspension(t *testing.T) {
 			t.Fatalf("overdue outcome: %q", got)
 		}
 		// A late invocation cannot start a lookup for an unopened counter.
-		Run(entry, []string{"codex", "Stop"}, nil, nil, func() (string, error) {
+		Run(entry, []string{"codex", "Stop"}, nil, nil, func() (Paths, error) {
 			t.Error("started a new rendezvous lookup after the deadline")
-			return "", nil
+			return Paths{}, nil
 		})
 	})
 }

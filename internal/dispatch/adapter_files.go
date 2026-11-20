@@ -15,6 +15,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -221,6 +222,9 @@ func (s *server) invalidateAdapterFile(verb string) error {
 	switch verb {
 	case wire.VerbAdapterSet:
 		name = adapterPolicyName
+		if err := s.state.Remove(hook.StatePolicyName); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	case domain.VerbChannelDefault:
 		name = adapterRepoSetName
 	case domain.VerbAdapterEvidence:
@@ -237,6 +241,23 @@ func (s *server) invalidateAdapterFile(verb string) error {
 		return err
 	}
 	return nil
+}
+
+// withdrawPolicy removes both policy copies on an owner stop, so hooks read
+// every adapter as off and start nothing until the next start publishes
+// them again. A crash or a reboot leaves the copies for the hooks.
+func (s *server) withdrawPolicy() {
+	root, err := spool.OpenServerRoot(s.cfg.Rendezvous)
+	if err == nil {
+		defer root.Close()
+		err = root.Remove(adapterPolicyName)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logFailure(err)
+	}
+	if err := s.state.Remove(hook.StatePolicyName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logFailure(err)
+	}
 }
 
 // publishAdapterFiles writes the committed snapshots after a policy or
@@ -265,6 +286,7 @@ func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error
 			return err
 		}
 		return errors.Join(publishAdapterText(root, adapterPolicyName, policy),
+			publishAdapterText(s.state, hook.StatePolicyName, policy),
 			publishAdapterText(root, adapterRepoSetName, repos),
 			publishAdapterText(root, adapterTurnEndName, turnEnd))
 	})

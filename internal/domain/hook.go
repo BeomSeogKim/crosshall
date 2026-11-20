@@ -419,6 +419,17 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			return okOrErr(out, err)
 		}
 	}
+	origin := "unknown"
+	if cmd.Receipt != "" && found && b.state == "live" && (caller.BindingID == nil || *caller.BindingID == b.id) {
+		// An absorbed notice reuses the original prompt's operation key.
+		ownTurn, err := observePublishReceipt(ctx, tx, b, principal, req.SessionKey, cmd, now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if ownTurn {
+			origin = "crosshall_wake"
+		}
+	}
 	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
 		return okOrErr(out, err)
 	}
@@ -433,9 +444,9 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	// The (launch, event) pair claims the event: a second copy changes and prints nothing.
 	res, err := tx.ExecContext(ctx, `INSERT INTO observation
 		(principal_id, kind, origin, source, observed_at_ms, fresh_until_ms, launch_ref, event_ref, turn_ref, hook_at_ms, profile)
-		VALUES (?, ?, 'unknown', ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
 		ON CONFLICT DO NOTHING`,
-		principal, cmd.Fact, evidence(cmd.Profile), ms(now), fresh, cmd.LaunchRef, cmd.EventRef, cmd.TurnRef, cmd.HookAtMS,
+		principal, cmd.Fact, origin, evidence(cmd.Profile), ms(now), fresh, cmd.LaunchRef, cmd.EventRef, cmd.TurnRef, cmd.HookAtMS,
 		profileJSON(cmd.Profile))
 	if err != nil {
 		return core.Result{}, err

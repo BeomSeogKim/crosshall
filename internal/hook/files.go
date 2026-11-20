@@ -173,6 +173,12 @@ func stampClean(rv, leaf *os.Root, generation, effect, turn string) bool {
 	return err == nil && string(seen) == seenText(ack)
 }
 
+func hasSeenNotice(leaf *os.Root, generation string) bool {
+	seen, err := ident.ReadPrivateFile(leaf, "seen-notice", 4096)
+	fields := strings.Fields(string(seen))
+	return err == nil && len(fields) == 3 && fields[1] == generation
+}
+
 func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookAck) error {
 	// Hold the same stable inode across the comparison and atomic publication.
 	// Losing a lock costs a future check; no hook waits on another hook's disk I/O.

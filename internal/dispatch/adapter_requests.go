@@ -14,6 +14,7 @@ import (
 func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, r Resolution) (*domain.AdapterContext, core.Result, error) {
 	var adapter, launch, event string
 	var epoch uint64
+	var recoverEnrollment bool
 	switch req.Verb {
 	case wire.VerbHookEnroll:
 		var args wire.HookEnrollArgs
@@ -27,6 +28,7 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 			return nil, commandError(core.ExitUsage, "", "invalid hook event"), nil
 		}
 		adapter, launch, event, epoch = args.Profile.Adapter, args.LaunchRef, args.EventRef, args.Epoch
+		recoverEnrollment = !req.OneWayHook() && args.CanRecoverEnrollment()
 	case wire.VerbHookRoute:
 		var args wire.HookRouteArgs
 		if err := json.Unmarshal(req.Args, &args); err != nil {
@@ -38,7 +40,8 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 		!domain.ValidAdapterName(adapter) {
 		return nil, commandError(core.ExitRefused, "", "hook identity does not match the member exchange"), nil
 	}
-	if (req.Verb == wire.VerbHookEvent || req.Verb == wire.VerbHookRoute) && r.Caller.Role != core.RoleMember {
+	if (req.Verb == wire.VerbHookEvent || req.Verb == wire.VerbHookRoute) && r.Caller.Role != core.RoleMember &&
+		(!recoverEnrollment || r.Caller.PrincipalID != nil) {
 		return nil, commandError(core.ExitNotEnrolled, core.CodeNotEnrolled, "hook event requires a live member"), nil
 	}
 	wantOpKey := "hook:" + adapter + ":" + launch + ":" + event

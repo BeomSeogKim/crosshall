@@ -127,7 +127,7 @@ func logStart(stateRoot, callback string, entry time.Time, spawned, waited bool,
 	case spawned && !waited && errors.Is(err, context.DeadlineExceeded):
 		line = "started the dispatcher without waiting for it"
 	case spawned && errors.Is(err, context.DeadlineExceeded):
-		line = "start_pending: the dispatcher was not ready in time; the session joins after a restart"
+		line = "start_pending: the dispatcher was not ready in time"
 	default:
 		line = "could not start the dispatcher: " + err.Error()
 	}

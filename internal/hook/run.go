@@ -116,6 +116,9 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, e.VendorVersion, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
+	if spec.RecoverEnroll && !clean && repo == "" && e.CWD != "" && !hasSeenNotice(leaf, gen) {
+		repo = mappedEnrollmentRoot(ctx, rv, e)
+	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	if dispatcherGone(rv) {
@@ -190,12 +193,16 @@ func transportOutcome(ctx context.Context, err error) string {
 func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec eventSpec, e event) (*os.Root, string, string, string) {
 	leaf, gen, err := spool.OpenHookLeaf(rv, e.Identity)
 	if err == nil {
-		return leaf, gen, enrollmentRoot(spec, e), ""
+		var repo string
+		if spec.Enroll {
+			repo = enrollmentRoot(e)
+		}
+		return leaf, gen, repo, ""
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, "", "", "refused"
 	}
-	if !spec.Enroll {
+	if !spec.Enroll && !spec.RecoverEnroll {
 		return nil, "", "", "unmatched"
 	}
 	if dispatcherGone(rv) {
@@ -204,7 +211,19 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 	if hookExpired(ctx) {
 		return nil, "", "", "deadline"
 	}
-	gen, resp, err := client.HookLookup(ctx, e.Identity, "lookup")
+	intent := "lookup"
+	var repo string
+	if spec.RecoverEnroll {
+		repo = mappedEnrollmentRoot(ctx, rv, e)
+		if hookExpired(ctx) {
+			return nil, "", "", "deadline"
+		}
+		if repo == "" {
+			return nil, "", "", "unmatched"
+		}
+		intent = "join"
+	}
+	gen, resp, err := client.HookLookup(ctx, e.Identity, intent)
 	if err != nil {
 		return nil, "", "", transportOutcome(ctx, err)
 	}
@@ -212,8 +231,10 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 	if resp.Status != core.ExitOK && !newSession {
 		return nil, "", "", "refused"
 	}
-	repo := enrollmentRoot(spec, e)
-	if newSession {
+	if spec.Enroll {
+		repo = enrollmentRoot(e)
+	}
+	if newSession && spec.Enroll {
 		match, err := hasDefault(ctx, rv, repo)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, "", "", transportOutcome(ctx, err)
@@ -243,12 +264,23 @@ func resolveLeaf(ctx context.Context, rv *os.Root, client hookTransport, spec ev
 	return leaf, gen, repo, ""
 }
 
-func enrollmentRoot(spec eventSpec, e event) string {
-	if !spec.Enroll || e.CWD == "" {
+func enrollmentRoot(e event) string {
+	if e.CWD == "" {
 		return ""
 	}
 	root, _ := cli.RepoRoot(e.CWD)
 	return root
+}
+
+func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, e event) string {
+	if hookExpired(ctx) {
+		return ""
+	}
+	repo := enrollmentRoot(e)
+	if match, _ := hasDefault(ctx, rv, repo); match {
+		return repo
+	}
+	return ""
 }
 
 func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo string, want bool, epoch uint64) wire.Request {
@@ -274,9 +306,13 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		})
 	} else {
 		req.Verb = wire.VerbHookEvent
+		if !want {
+			repo = ""
+		}
 		req.Args, _ = json.Marshal(wire.HookEventArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
 			Fact: e.Fact, TurnRef: e.TurnRef, HookAtMS: entry.UnixMilli(), WantOutput: want, Epoch: epoch,
+			EnrollRepoRoot:     repo,
 			Receipt:            e.receipt,
 			ContinuationActive: e.stopActive == "true",
 		})
@@ -315,7 +351,7 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		return nil, nil
 	}
 	var parts []string
-	if spec.Enroll {
+	if spec.Enroll || spec.RecoverEnroll && result.Enrollment == "joined" {
 		switch result.Enrollment {
 		case "joined":
 			if result.Hint != "" {

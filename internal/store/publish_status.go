@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
@@ -28,6 +31,18 @@ const (
 		AND e.platform = json_extract(l.profile, '$.platform') AND e.mode = json_extract(l.profile, '$.mode')
 		AND e.manifest_rev = json_extract(l.profile, '$.manifest_rev'))`
 )
+
+// PublishAdapterReady holds when the route's adapter has a notice format
+// in this build and the route names an address.
+var PublishAdapterReady = publishAdapterReady(publish.Shipped().Publishing())
+
+func publishAdapterReady(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "'" + strings.ReplaceAll(name, "'", "''") + "'"
+	}
+	return "r.adapter IN (" + strings.Join(quoted, ", ") + ") AND COALESCE(r.socket_path, r.thread_id) IS NOT NULL"
+}
 
 // PublishNotSuspended holds when no suspension of the route's launch,
 // committed after the owner's last resume, is still in force at nowMS.
@@ -57,13 +72,14 @@ type PublishState struct {
 func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time) (state PublishState, found bool, err error) {
 	var (
 		routeState, routeReason, adapter, launchRef, bindingState, version string
+		socketPath, threadID                                               string
 		principal, resumedAfter                                            int64
-		verified, socket, dnd, quiet, enabled, epochOK, current            bool
+		verified, dnd, quiet, enabled, epochOK, current                    bool
 		proven, tested, listed, versionListed                              bool
 		owner, vendor, hall                                                sql.NullBool
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
-			r.launch_verified, r.socket_path IS NOT NULL, b.state, b.dnd, b.publish_quiet, b.publish_owner,
+			r.launch_verified, COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''), b.state, b.dnd, b.publish_quiet, b.publish_owner,
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
 			COALESCE(l.launch_ref = r.launch_ref AND l.verified = 1, 0),
@@ -79,7 +95,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
-		&principal, &verified, &socket, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
+		&principal, &verified, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
 		&hall, &current, &version, &proven, &tested, &listed, &versionListed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
@@ -166,8 +182,17 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		return PublishState{}, false, err
 	}
 	state.State = "candidate"
+	sender, known := publish.Lookup(adapter)
+	notices := false
+	if known {
+		_, notices = sender.Notice(nil)
+	}
+	complete, why := known && notices, ""
+	if complete {
+		complete, why = sender.Complete(publish.Route{SocketPath: socketPath, ThreadID: threadID})
+	}
 	switch {
-	case adapter != "claude":
+	case !known || !notices:
 		state.Reason = "no sender for " + adapter
 	case !verified:
 		state.Reason = "unverified launch"
@@ -175,8 +200,8 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		state.Reason = "launch not current"
 	case !epochOK:
 		state.Reason = "adapter policy changed"
-	case !socket:
-		state.Reason = "no socket"
+	case !complete:
+		state.Reason = why
 	case !tested:
 		state.Reason = "profile not tested"
 	case !proven:

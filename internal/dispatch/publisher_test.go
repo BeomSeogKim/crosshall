@@ -19,6 +19,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -143,7 +144,7 @@ func (f *publishTestFixture) publisher(t *testing.T, gate <-chan struct{}) (*pub
 	calls := make(chan publishTestCall, 8)
 	p := &publisher{
 		db: f.db,
-		transport: PublishTransport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+		adapters: claudeOnly(publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 			calls <- publishTestCall{ctx, target, line}
 			if gate != nil {
 				select {
@@ -153,7 +154,7 @@ func (f *publishTestFixture) publisher(t *testing.T, gate <-chan struct{}) (*pub
 				}
 			}
 			return domain.PublishSubmitted
-		}},
+		}}),
 	}
 	t.Cleanup(p.workers.Wait)
 	return p, calls
@@ -268,11 +269,11 @@ func TestPublisherStartsFreshCoalescingWindowOnlyAfterDrainingBatch(t *testing.T
 				f.ask(t, nextID)
 			}
 			p, calls := f.publisher(t, nil)
-			capture := p.transport.Send
-			p.transport.Send = func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+			capture := p.transport("claude").Send
+			p.setSend(func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 				capture(ctx, target, line)
 				return domain.PublishNotSubmitted
-			}
+			})
 			tickPublisher(t, p, f.now, false)
 			tickPublisher(t, p, f.now.Add(time.Second), false)
 			p.workers.Wait()
@@ -317,12 +318,12 @@ func TestPublisherRestartRecoversDurableAttempt(t *testing.T) {
 				defer cancel()
 				result := make(chan error, 1)
 				var call publishTestCall
-				p := &publisher{db: f.db, transport: PublishTransport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+				p := &publisher{db: f.db, adapters: claudeOnly(publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 					call = publishTestCall{ctx, target, line}
 					result <- f.db.Close()
 					cancel()
 					return domain.PublishSubmitted
-				}}}
+				}})}
 				p.submit(ctx, id)
 				if err := awaitPublishTest(t, result); err != nil {
 					t.Fatal(err)
@@ -412,15 +413,15 @@ func TestPublisherTransportCancellationWaitsForCallbackExit(t *testing.T) {
 				if err := p.recover(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
-				p.transport.Retired = func(ctx context.Context, _ domain.PublishQueue) bool {
+				p.setRetired(func(ctx context.Context, _ domain.PublishQueue) bool {
 					run(ctx)
 					return true
-				}
+				})
 			} else {
-				p.transport.Send = func(ctx context.Context, _ domain.PublishTarget, _ string) domain.PublishOutcome {
+				p.setSend(func(ctx context.Context, _ domain.PublishTarget, _ string) domain.PublishOutcome {
 					run(ctx)
 					return domain.PublishSubmitted
-				}
+				})
 			}
 			t.Cleanup(p.workers.Wait)
 			ctx, cancel := context.WithCancel(t.Context())
@@ -445,13 +446,13 @@ func TestPublisherTransportCancellationWaitsForCallbackExit(t *testing.T) {
 			awaitPublishTest(t, done)
 			awaitPublishTest(t, exited)
 			f.requireAttempt(t, 1, domain.PublishUncertain)
-			var queues []domain.PublishQueue
+			var queues []domain.HeldPublishQueue
 			f.update(t, func(tx store.Tx) error {
 				var err error
 				queues, err = domain.HeldPublishQueues(t.Context(), tx)
 				return err
 			})
-			if !slices.Equal(queues, []domain.PublishQueue{publishTestTarget.Queue}) {
+			if !slices.Equal(queues, []domain.HeldPublishQueue{{Adapter: "claude", Queue: publishTestTarget.Queue}}) {
 				t.Fatalf("held queues=%v, want %v", queues, publishTestTarget.Queue)
 			}
 		})
@@ -494,7 +495,7 @@ func TestPublisherRetriesOutcomeWriteWithoutResending(t *testing.T) {
 	defer log.SetOutput(previous)
 	calls := make(chan publishTestCall, 2)
 	returnOutcome := make(chan struct{})
-	p := &publisher{db: f.db, transport: PublishTransport{
+	p := &publisher{db: f.db, adapters: claudeOnly(publish.Transport{
 		Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 			calls <- publishTestCall{ctx, target, line}
 			select {
@@ -504,7 +505,7 @@ func TestPublisherRetriesOutcomeWriteWithoutResending(t *testing.T) {
 				return domain.PublishNotSubmitted
 			}
 		},
-	}}
+	})}
 	t.Cleanup(p.workers.Wait)
 	tickPublisher(t, p, f.now, true)
 	requirePublished(t, awaitPublishTest(t, calls), 11)
@@ -603,17 +604,17 @@ func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T)
 				if err := p.recover(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
-				p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+				p.setRetired(func(context.Context, domain.PublishQueue) bool {
 					started <- struct{}{}
 					<-stuck // ignores its context
 					return true
-				}
+				})
 			} else {
-				p.transport.Send = func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+				p.setSend(func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
 					started <- struct{}{}
 					<-stuck // ignores its context
 					return domain.PublishSubmitted
-				}
+				})
 			}
 			begun := time.Now()
 			tickPublisher(t, p, f.now, true)
@@ -623,7 +624,7 @@ func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T)
 				t.Fatalf("worker took %v past a 100ms bound", elapsed)
 			}
 			f.requireAttempt(t, 1, domain.PublishUncertain)
-			var queues []domain.PublishQueue
+			var queues []domain.HeldPublishQueue
 			f.update(t, func(tx store.Tx) error {
 				var err error
 				queues, err = domain.HeldPublishQueues(t.Context(), tx)
@@ -665,11 +666,11 @@ func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
 	stuck := make(chan struct{})
 	release := sync.OnceFunc(func() { close(stuck) })
 	defer release()
-	p.transport.Retired = func(context.Context, domain.PublishQueue) bool {
+	p.setRetired(func(context.Context, domain.PublishQueue) bool {
 		calls.Add(1)
 		<-stuck // ignores its context
 		return false
-	}
+	})
 	for i := range 5 {
 		tickPublisher(t, p, f.now.Add(time.Duration(i)*time.Second), false)
 		awaitPublishTest(t, publishWorkersDone(p))
@@ -687,4 +688,50 @@ func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("after the callback returned: %d probes, want a new one", n)
 	}
+}
+
+func claudeOnly(t publish.Transport) publish.Registry {
+	return publish.Shipped().WithTransport("claude", t)
+}
+
+func (p *publisher) setSend(send func(context.Context, domain.PublishTarget, string) domain.PublishOutcome) {
+	t := p.transport("claude")
+	t.Send = send
+	p.adapters = claudeOnly(t)
+}
+
+func (p *publisher) setRetired(retired func(context.Context, domain.PublishQueue) bool) {
+	t := p.transport("claude")
+	t.Retired = retired
+	p.adapters = claudeOnly(t)
+}
+
+type markedNotice struct{ publish.Adapter }
+
+func (markedNotice) Notice(ids []int64) (string, bool) { return fmt.Sprint("marked ", ids), true }
+
+func TestPublisherRendersTheNoticeThroughTheAdapter(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	lines := make(chan string, 1)
+	registry := publish.Registry{"claude": markedNotice{publish.Shipped()["claude"]}}.WithTransport("claude",
+		publish.Transport{Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
+			lines <- line
+			return publish.Submitted
+		}})
+	p := &publisher{db: f.db, adapters: registry}
+	t.Cleanup(p.workers.Wait)
+	tickPublisher(t, p, f.now, true)
+	if line := awaitPublishTest(t, lines); line != "marked [11]" {
+		t.Fatalf("sent %q, want the adapter's own text", line)
+	}
+}
+
+func TestPublisherWithoutASenderRecordsNoSubmission(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	id := f.reserve(t, false)
+	p := &publisher{db: f.db, adapters: publish.Shipped()}
+	p.submit(t.Context(), id)
+	f.requireAttempt(t, id, domain.PublishNotSubmitted)
 }

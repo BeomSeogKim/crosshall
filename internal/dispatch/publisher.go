@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
-	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -17,20 +17,10 @@ const publishCoalesce = time.Second
 const publishTimeout = time.Second
 const publishRecordRetry = 250 * time.Millisecond
 
-// PublishTransport is injected by publisher tests. Both callbacks get a
-// context canceled at the deadline; a transport that runs a child process
-// should kill it then. The publisher does not rely on that: past the
-// deadline a send is recorded uncertain and a probe as not retired, and the
-// worker waits a bounded time for the callback to return. Retired requires
-// proof the queue is gone.
-type PublishTransport struct {
-	Send    func(context.Context, domain.PublishTarget, string) domain.PublishOutcome
-	Retired func(context.Context, domain.PublishQueue) bool
-}
-
 type publisher struct {
-	db        *store.Store
-	transport PublishTransport
+	db *store.Store
+	// adapters render each adapter's notices and carry its transport.
+	adapters publish.Registry
 	// profiles are the tested publish profiles this binary ships.
 	profiles []domain.PublishProfile
 	// timeout bounds each transport call and abandon the wait for a
@@ -54,7 +44,7 @@ func (p *publisher) recover(ctx context.Context, now time.Time) error {
 func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error {
 	next := make(map[domain.PublishBinding]time.Time)
 	var attempts []int64
-	var queues []domain.PublishQueue
+	var queues []domain.HeldPublishQueue
 	err := p.db.Update(ctx, func(tx store.Tx) error {
 		bindings, err := domain.PublishCandidates(ctx, tx, now)
 		if err != nil {
@@ -86,7 +76,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 			}
 		}
 		attempts, err = domain.ReservedPublishAttempts(ctx, tx)
-		if err == nil && p.transport.Retired != nil {
+		if err == nil {
 			queues, err = domain.HeldPublishQueues(ctx, tx)
 		}
 		return err
@@ -104,13 +94,17 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 			p.submit(ctx, id)
 		})
 	}
-	for _, queue := range queues {
-		if _, running := p.retiring.LoadOrStore(queue, struct{}{}); running {
+	for _, held := range queues {
+		retired := p.transport(held.Adapter).Retired
+		if retired == nil {
+			continue
+		}
+		if _, running := p.retiring.LoadOrStore(held.Queue, struct{}{}); running {
 			continue
 		}
 		// The guard outlives an abandoned probe: it is released only when
 		// the callback itself returns, so a stuck probe is never doubled.
-		p.workers.Go(func() { p.retire(ctx, queue, func() { p.retiring.Delete(queue) }) })
+		p.workers.Go(func() { p.retire(ctx, held.Queue, retired, func() { p.retiring.Delete(held.Queue) }) })
 	}
 	return nil
 }
@@ -127,7 +121,12 @@ func (p *publisher) submit(ctx context.Context, id int64) {
 		logPublishFailure(err)
 		return
 	}
-	outcome := p.send(ctx, target, notice.Claude(ids))
+	outcome := domain.PublishNotSubmitted // an adapter without a sender sends nothing
+	if a, ok := p.adapters[target.Adapter]; ok {
+		if line, ok := a.Notice(ids); ok && a.Transport().Send != nil {
+			outcome = p.send(ctx, a.Transport().Send, target, line)
+		}
+	}
 	p.record(ctx, id, outcome, time.Now())
 }
 
@@ -157,14 +156,15 @@ func (p *publisher) record(ctx context.Context, id int64, outcome domain.Publish
 	}
 }
 
-func (p *publisher) send(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+func (p *publisher) send(ctx context.Context, send func(context.Context, domain.PublishTarget, string) domain.PublishOutcome,
+	target domain.PublishTarget, line string) domain.PublishOutcome {
 	ctx, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
 	if ctx.Err() != nil {
 		return domain.PublishNotSubmitted
 	}
 	outcome, ok := bounded(ctx, cmp.Or(p.abandon, publishTimeout), func() domain.PublishOutcome {
-		return p.transport.Send(ctx, target, line)
+		return send(ctx, target, line)
 	}, nil)
 	if !ok || ctx.Err() != nil {
 		return domain.PublishUncertain
@@ -172,15 +172,22 @@ func (p *publisher) send(ctx context.Context, target domain.PublishTarget, line 
 	return outcome
 }
 
-func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue, release func()) {
+func (p *publisher) transport(adapter string) publish.Transport {
+	if a, ok := p.adapters[adapter]; ok {
+		return a.Transport()
+	}
+	return publish.Transport{}
+}
+
+func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue, retired func(context.Context, domain.PublishQueue) bool, release func()) {
 	probe, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
 	if probe.Err() != nil {
 		release()
 		return
 	}
-	retired, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return p.transport.Retired(probe, queue) }, release)
-	if ok && retired && probe.Err() == nil {
+	gone, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return retired(probe, queue) }, release)
+	if ok && gone && probe.Err() == nil {
 		logPublishFailure(p.db.Update(probe, func(tx store.Tx) error {
 			return domain.RetirePublishQueue(probe, tx, queue, time.Now())
 		}))

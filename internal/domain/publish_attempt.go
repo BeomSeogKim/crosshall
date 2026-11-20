@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -14,23 +15,16 @@ type PublishBinding struct {
 	Generation int64
 }
 
-type PublishQueue struct {
-	PID     int64
-	StartMS int64
-}
-
-type PublishTarget struct {
-	Adapter string
-	Address string
-	Queue   PublishQueue
-}
-
-type PublishOutcome string
+type (
+	PublishQueue   = publish.Queue
+	PublishTarget  = publish.Target
+	PublishOutcome = publish.Outcome
+)
 
 const (
-	PublishNotSubmitted PublishOutcome = "not_submitted"
-	PublishSubmitted    PublishOutcome = "submitted"
-	PublishUncertain    PublishOutcome = "uncertain"
+	PublishNotSubmitted = publish.NotSubmitted
+	PublishSubmitted    = publish.Submitted
+	PublishUncertain    = publish.Uncertain
 )
 
 // activePublishRoutes selects the routes a notice may use at now.
@@ -42,7 +36,7 @@ func activePublishRoutes(now time.Time) string {
 	JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
 		WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 		ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
-	WHERE r.adapter = 'claude' AND r.state = 'active' AND r.socket_path IS NOT NULL
+	WHERE ` + store.PublishAdapterReady + ` AND r.state = 'active'
 		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
 		AND b.state = 'live' AND b.dnd = 0
 		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileTested
@@ -166,7 +160,7 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
 	var target PublishTarget
-	err := tx.QueryRowContext(ctx, `SELECT r.adapter, r.socket_path, p.process_pid, p.process_start_ms `+
+	err := tx.QueryRowContext(ctx, `SELECT r.adapter, COALESCE(r.socket_path, r.thread_id), p.process_pid, p.process_start_ms `+
 		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ? AND a.state = 'reserved'
 			AND a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
 			AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
@@ -263,19 +257,26 @@ func RecoverPublish(ctx context.Context, tx store.Tx, now time.Time) error {
 	return err
 }
 
-func HeldPublishQueues(ctx context.Context, tx store.Tx) ([]PublishQueue, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT process_pid, process_start_ms FROM publish_attempt WHERE `+openPublishLane)
+// HeldPublishQueue is a vendor queue an unobserved notice holds, and the
+// adapter whose transport can prove it gone.
+type HeldPublishQueue struct {
+	Adapter string
+	Queue   PublishQueue
+}
+
+func HeldPublishQueues(ctx context.Context, tx store.Tx) ([]HeldPublishQueue, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT adapter, process_pid, process_start_ms FROM publish_attempt WHERE `+openPublishLane)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var queues []PublishQueue
+	var queues []HeldPublishQueue
 	for rows.Next() {
-		var queue PublishQueue
-		if err := rows.Scan(&queue.PID, &queue.StartMS); err != nil {
+		var held HeldPublishQueue
+		if err := rows.Scan(&held.Adapter, &held.Queue.PID, &held.Queue.StartMS); err != nil {
 			return nil, err
 		}
-		queues = append(queues, queue)
+		queues = append(queues, held)
 	}
 	return queues, rows.Err()
 }

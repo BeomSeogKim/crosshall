@@ -50,6 +50,9 @@ type InboxResult struct {
 	// Cancelled lists requests the owner cancelled before the member read
 	// them. They are not unread work: no answer is owed.
 	Cancelled []InboxItem `json:"cancelled,omitempty"`
+	// Delivers reports that the hall can publish new work to this member
+	// now, so an empty inbox needs no wait.
+	Delivers bool `json:"delivers,omitempty"`
 }
 
 type MemberInboxSummary struct {
@@ -168,6 +171,9 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	}
 	out, err := inboxItems(ctx, tx, member, false)
 	if err != nil {
+		return core.Result{}, err
+	}
+	if out.Delivers, err = publishDelivers(ctx, tx, member.binding, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {
@@ -568,9 +574,10 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 }
 
 // bootstrapRoster serves a member that a hook enrolled: its hint and roster
-// were only offered, so its first ordinary command repeats the hint and the
-// changes since the snapshot the hook showed. The CLI acknowledges after
-// rendering, which ends the bootstrap.
+// were only offered, so its first ordinary command names the member again,
+// names the command that prints the rules, and carries the changes since the
+// snapshot the hook showed. The CLI acknowledges after rendering, which ends
+// the bootstrap.
 func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields map[string]json.RawMessage, now time.Time) error {
 	var baseline sql.NullInt64
 	var alias string
@@ -592,7 +599,7 @@ func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields
 	if changes == nil {
 		changes = []Member{}
 	}
-	fields["join_hint"], _ = json.Marshal(Hint(alias, member.name))
+	fields["join_hint"], _ = json.Marshal(BootstrapHint(alias, member.name))
 	fields["roster_seq"], _ = json.Marshal(seq)
 	fields["roster_changes"], err = json.Marshal(changes)
 	return err

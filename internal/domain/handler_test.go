@@ -442,12 +442,20 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	if lost.Hint == "" || len(lost.Members) != 1 {
 		t.Fatalf("re-join after a lost response %+v", lost)
 	}
-	// Once acknowledged, a re-join shows the hint again under "Already in",
-	// and of the roster only the changes after the cursor.
+	// Once acknowledged, a re-join says "Already in" and names the command
+	// that prints the rules instead of repeating them, and of the roster
+	// shows only the changes after the cursor.
 	acked := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout"}, lost.RosterSeq))
 	if !strings.HasPrefix(acked.Hint, "[crosshall] Already in #checkout as @form.\n") ||
-		!strings.Contains(acked.Hint, "run `crosshall inbox`") || len(acked.Members) != 0 || len(acked.Changes) != 0 {
+		!strings.Contains(acked.Hint, "`crosshall join checkout --rules`") || strings.Contains(acked.Hint, "run `crosshall inbox`") ||
+		len(acked.Hint) > 160 || len(acked.Members) != 0 || len(acked.Changes) != 0 {
 		t.Fatalf("acknowledged re-join %+v", acked)
+	}
+	// A member that lost its context asks for the rules.
+	asked := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout", Rules: true}, lost.RosterSeq))
+	if !strings.HasPrefix(asked.Hint, "[crosshall] Already in #checkout as @form.\n") ||
+		!strings.Contains(asked.Hint, "run `crosshall inbox`") || !strings.Contains(asked.Hint, "Act on outstanding work before rearming.") {
+		t.Fatalf("re-join asking for the rules %+v", asked)
 	}
 	// The dispatcher records the ack after the handler; simulate that.
 	if _, err := f.db.Exec(`UPDATE binding SET roster_ack_seq = ?, hint_acked = 1 WHERE alias = 'form'`, acked.RosterSeq); err != nil {
@@ -476,6 +484,22 @@ func TestJoinOutputRepeatsUntilAcknowledged(t *testing.T) {
 	gone := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout"}, next.RosterSeq))
 	if len(gone.Changes) != 1 || gone.Changes[0].Alias != "tax" || gone.Changes[0].Change != "departed" {
 		t.Fatalf("departure not shown %+v", gone.Changes)
+	}
+	// A second session that took the freed alias and left as well reads as
+	// the same line, so it is shown once.
+	d := f.newSession("codex")
+	wantOK(t, f.join(d, Join{Channel: "checkout", Alias: "tax"}, ""))
+	if _, err := f.db.Exec(`UPDATE binding SET state = 'departed' WHERE alias = 'tax'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO roster_change (channel_id, seq, principal_id, field)
+		SELECT channel_id, (SELECT MAX(seq) + 1 FROM roster_change), principal_id, 'departed' FROM binding
+		WHERE alias = 'tax' ORDER BY id DESC LIMIT 1`); err != nil {
+		t.Fatal(err)
+	}
+	twice := decode[JoinResult](t, f.joinAck(a, Join{Channel: "checkout"}, next.RosterSeq))
+	if len(twice.Changes) != 1 || twice.Changes[0].Alias != "tax" || twice.Changes[0].Change != "departed" {
+		t.Fatalf("a reused alias departed more than once for the reader: %+v", twice.Changes)
 	}
 }
 

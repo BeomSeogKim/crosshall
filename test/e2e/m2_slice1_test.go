@@ -447,3 +447,35 @@ func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
 		})
 	}
 }
+
+// A compaction or a clear resets the context but not the membership. The
+// hook lists nothing the session was already offered: it gives one count of
+// the work still waiting, and after a clear also who the session is and the
+// command that prints the rules.
+func TestM2ContextResetGetsACueNotARepeat(t *testing.T) {
+	w, writer, c := m2World(t)
+	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude1") {
+		t.Fatalf("auto-join context %q", got)
+	}
+	const pointer = "[crosshall] You are @claude1 in #checkout. `crosshall join checkout --rules` prints the member rules."
+	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "clear"})); got != pointer {
+		t.Fatalf("clear with nothing waiting: %q", got)
+	}
+	if got := c.fire("SessionStart", map[string]any{"source": "compact"}); got != "" {
+		t.Fatalf("compact with nothing waiting: %q", got)
+	}
+	grantRoots(t, w, "writer", 1)
+	id := num(t, writer.must("ask", "@claude1", "a request offered before the reset"), "id")
+	pending := pendingContext([]string{strconv.FormatInt(id, 10)})
+	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "before-reset", "prompt": "go on"})); got != pending {
+		t.Fatalf("prompt offer %q", got)
+	}
+	const count = "[crosshall] 1 unread, 0 owed. Run crosshall inbox."
+	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "compact"})); got != count {
+		t.Fatalf("compact with an offered ask unread: %q", got)
+	}
+	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "clear"})); got != pointer+"\n"+count {
+		t.Fatalf("clear with an offered ask unread: %q", got)
+	}
+	assertWorkUnread(t, w.db(), id)
+}

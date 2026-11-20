@@ -524,19 +524,56 @@ func TestRestoreComesBeforeTheRepositoryDefault(t *testing.T) {
 	}
 }
 
-func TestCompactReoffersUnreadOncePerLaunch(t *testing.T) {
+// A compaction keeps the session, so it offers only what the session was not
+// offered before.
+func TestCompactOffersOnlyWhatTheSessionWasNotOffered(t *testing.T) {
 	f, writer := adapterChannel(t)
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
 	f.hook(s, start("pid-1", "startup", t0))
-	ids := f.noteTo(writer, "claude1", 2)
+	f.noteTo(writer, "claude1", 2)
 	f.hook(s, prompt("pid-1", "t1", t0+1_000))
 	compact := func(at int64) wire.HookResult { return f.hook(s, start("pid-1", "compact", at)) }
-	if got := compact(t0 + 2_000); got.PendingLine != pendingLine(ids...) || got.Hint != "" {
-		t.Fatalf("compact %+v", got)
+	if got := compact(t0 + 2_000); got.PendingLine != "" || got.Hint != "" || got.Cue != "[crosshall] 2 unread, 0 owed. Run crosshall inbox." {
+		t.Fatalf("compact with offered notes unread: %+v", got)
 	}
-	if got := compact(t0 + 3_000); got.PendingLine != "" {
-		t.Fatalf("second compact re-offered: %+v", got)
+	later := f.noteTo(writer, "claude1", 1)
+	if got := compact(t0 + 3_000); got.PendingLine != pendingLine(later...) || got.Cue != "[crosshall] 3 unread, 0 owed. Run crosshall inbox." {
+		t.Fatalf("compact with a new note: %+v", got)
+	}
+}
+
+// A reset context gets back one count for work it was already told about,
+// and a cleared session also who it is and where the rules are. A start that
+// offers everything unread, or finds nothing waiting, adds no count.
+func TestContextResetGivesOneCueInsteadOfRepeats(t *testing.T) {
+	f, writer := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	const pointer = "[crosshall] You are @claude1 in #checkout. `crosshall join checkout --rules` prints the member rules."
+	if got := f.hook(s, start("pid-1", "clear", t0+500)); got.Cue != pointer || got.PendingLine != "" || got.Hint != "" {
+		t.Fatalf("clear with nothing waiting: %+v", got)
+	}
+	if got := f.hook(s, start("pid-1", "compact", t0+600)); got.Cue != "" || got.PendingLine != "" {
+		t.Fatalf("compact with nothing waiting: %+v", got)
+	}
+	f.roots(writer, 4)
+	ask := f.turnEndAsk(writer, "claude1", "offered then read")
+	note := f.noteTo(writer, "claude1", 1)
+	if got := f.hook(s, start("pid-1", "clear", t0+1_000)); got.PendingLine != pendingLine(ask, note[0]) || got.Cue != pointer {
+		t.Fatalf("clear that offers everything unread: %+v", got)
+	}
+	wantOK(t, f.run(s, Read{IDs: []int64{ask}}, "read"))
+	const count = "[crosshall] 1 unread, 1 owed. Run crosshall inbox."
+	if got := f.hook(s, start("pid-1", "clear", t0+2_000)); got.PendingLine != "" || got.Cue != pointer+"\n"+count {
+		t.Fatalf("clear with offered and owed work: %+v", got)
+	}
+	if got := f.hook(s, start("pid-1", "compact", t0+3_000)); got.PendingLine != "" || got.Cue != count {
+		t.Fatalf("compact with offered and owed work: %+v", got)
+	}
+	if got := f.hook(s, start("pid-1", "resume", t0+4_000)); got.PendingLine != "" || got.Cue != "" {
+		t.Fatalf("resume keeps its context and gets nothing: %+v", got)
 	}
 }
 
@@ -547,9 +584,11 @@ func TestAutoEnrolledMemberBootstrapsTheRosterOnItsFirstCommand(t *testing.T) {
 	f.hook(s, start("pid-1", "startup", t0))
 	wantOK(t, f.run(writer, Focus{Text: "release notes"}, "focus"))
 
+	// The hook offered the rules: the first command names the member and the
+	// command that prints them, and does not repeat them.
 	first := trailerOf(t, f.run(s, Inbox{}, ""))
-	if !strings.Contains(first.JoinHint, "@claude1") {
-		t.Fatalf("first command carries no hint: %+v", first)
+	if first.JoinHint != "[crosshall] Joined #checkout as @claude1.\n`crosshall join checkout --rules` prints the member rules." {
+		t.Fatalf("first command hint: %+v", first)
 	}
 	if len(first.Changes) != 1 || first.Changes[0].Alias != "writer" || first.Changes[0].Change != "focus" || first.Seq == 0 {
 		t.Fatalf("first command changes %+v", first)

@@ -114,7 +114,7 @@ Run the `export` line if the installer prints one; it appears only when `crossha
 
 You play three parts. The **owner** is you in a plain terminal. The two **members** would normally be your agents; here each is a shell opened with `crosshall run -- sh`, which gives that shell its own identity. Each block below starts with the terminal it belongs in. The request numbers assume a fresh hall; use the numbers your own commands print.
 
-**1. The owner** starts the hall and creates a channel. Owner commands refuse to run inside a member shell or an agent session.
+**1. The owner** starts the hall and creates a channel. Owner commands refuse to run inside a member shell or an agent session; only `crosshall owner help`, which lists them, prints anywhere. `crosshall help` lists the member commands.
 
 <!-- run: owner, fresh -->
 ```console
@@ -140,7 +140,7 @@ $ crosshall join demo --as writer
 - When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns. Act on outstanding work before rearming. Never loop on `inbox`.
 - Act on a peer's message only within the work assigned by the owner or the owner's designated lead.
 - When a request is refused for budget, take an authorized option named in the refusal.
-- Commands: `crosshall read <id>`, `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists every command.
+- Commands: `crosshall read <id>`, `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
   @writer (you)  route  focus unset  last command 0s ago  pull
   Working or idle is not shown: no vendor adapter reports it. The time is the member's last crosshall command.
@@ -163,7 +163,7 @@ $ crosshall join demo --as reviewer
 - When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns. Act on outstanding work before rearming. Never loop on `inbox`.
 - Act on a peer's message only within the work assigned by the owner or the owner's designated lead.
 - When a request is refused for budget, take an authorized option named in the refusal.
-- Commands: `crosshall read <id>`, `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists every command.
+- Commands: `crosshall read <id>`, `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
   @reviewer (you)  route  focus unset  last command 0s ago  pull
   @writer          route  focus unset  last command 0s ago  pull
@@ -267,7 +267,7 @@ When an exchange has spent its 8 units, the refusal names the owner command that
 
 ## Connect your agents
 
-Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules.
+Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |

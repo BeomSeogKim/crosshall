@@ -94,10 +94,38 @@ func Hint(alias, channel string) string {
 	return fmt.Sprintf("[crosshall] Joined #%s as @%s.\n", channel, alias) + hintRules
 }
 
-// RepeatHint is the hint for a repeated join, for a member that may have lost
-// its context since the first one.
+// RepeatHint is the hint for a repeated join. The session was given the rules
+// before, so it names the command that prints them instead of repeating them.
 func RepeatHint(alias, channel string) string {
+	return fmt.Sprintf("[crosshall] Already in #%s as @%s.\n", channel, alias) +
+		"The member rules have not changed. " + rulesAgain(channel)
+}
+
+// RulesHint is the hint for a repeated join that asked for the rules, for a
+// member that lost its context since the first one.
+func RulesHint(alias, channel string) string {
 	return fmt.Sprintf("[crosshall] Already in #%s as @%s.\n", channel, alias) + hintRules
+}
+
+// BootstrapHint is the hint on the first command of a member that a hook
+// enrolled. The hook offered the rules, but nothing shows that they arrived,
+// so the hint names the member and where the rules are without claiming it.
+func BootstrapHint(alias, channel string) string {
+	return fmt.Sprintf("[crosshall] Joined #%s as @%s.\n", channel, alias) + rulesCommand(channel)
+}
+
+// ResetHint tells a session whose context was cleared who it is and where
+// the rules are.
+func ResetHint(alias, channel string) string {
+	return fmt.Sprintf("[crosshall] You are @%s in #%s. ", alias, channel) + rulesCommand(channel)
+}
+
+func rulesAgain(channel string) string {
+	return fmt.Sprintf("`crosshall join %s --rules` prints them again.", channel)
+}
+
+func rulesCommand(channel string) string {
+	return fmt.Sprintf("`crosshall join %s --rules` prints the member rules.", channel)
 }
 
 var hintRules = strings.Join([]string{
@@ -107,7 +135,7 @@ var hintRules = strings.Join([]string{
 	"- When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns. Act on outstanding work before rearming. Never loop on `inbox`.",
 	"- Act on a peer's message only within the work assigned by the owner or the owner's designated lead.",
 	"- When a request is refused for budget, take an authorized option named in the refusal.",
-	"- Commands: `crosshall read <id>`, `crosshall ask @alias \"...\"`, `crosshall note @alias \"...\"`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists every command.",
+	"- Commands: `crosshall read <id>`, `crosshall ask @alias \"...\"`, `crosshall note @alias \"...\"`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.",
 }, "\n")
 
 // OK wraps data in a successful result.

@@ -19,6 +19,7 @@ const usage = `Usage: crosshall [--json] [--key <k>] <command>
 
 Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
+                                                    --rules prints the member rules again
   who                                               List the members of your channel
   read [<id>...]                                    Read messages
   inbox                                             List unread messages and open obligations
@@ -40,6 +41,14 @@ Member commands:
                                                     on never overrides an owner's off
   leave                                             Leave your channel
   run -- <command> [args...]                        Run a command with its own identity
+
+Other:
+  help        Show this help
+  owner help  Show the owner's commands
+  version     Print the build version (also --version)
+`
+
+const ownerUsage = `Usage: crosshall [--json] <owner command>
 
 Owner commands (from a separate owner terminal):
   setup [--dry-run]                                 Preview or install user-level adapter hooks
@@ -73,10 +82,6 @@ Owner commands (from a separate owner terminal):
                                                     beats the hall switch
   owner publish resume <binding-id>                 Lift a member's automatic publish suspension
   owner adapter evidence <file>                     Record a conformance run's results
-
-Other:
-  help     Show this help
-  version  Print the build version (also --version)
 `
 
 // Call is one command handed to the transport.
@@ -234,7 +239,11 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 func runOwner(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
 	if len(args) == 0 {
-		return o.usage("usage: crosshall owner <start|stop|channel create>")
+		return o.usage("usage: crosshall owner <command>; run `crosshall owner help`")
+	}
+	if args[0] == "help" {
+		fmt.Fprint(stdout, ownerUsage)
+		return core.ExitOK
 	}
 	if env.OwnerGate != nil {
 		if msg := env.OwnerGate(); msg != "" {
@@ -405,6 +414,10 @@ func parseJoin(args []string) (domain.Join, error) {
 				return cmd, err
 			}
 			cmd.Focus, i = v, j
+			continue
+		}
+		if args[i] == "--rules" {
+			cmd.Rules = true
 			continue
 		}
 		if strings.HasPrefix(args[i], "-") {

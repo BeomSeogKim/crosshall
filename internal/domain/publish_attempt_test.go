@@ -514,3 +514,62 @@ func TestAModeThatMovesTheAddressNeedsANewProof(t *testing.T) {
 		t.Fatalf("new proof asked for %q", got)
 	}
 }
+
+// An inbox tells the member whether the hall delivers to it: only with a
+// proven route, and not while an earlier notice still holds its lane.
+func TestInboxReportsWhetherTheHallDelivers(t *testing.T) {
+	p := newPublishFixture(t)
+	delivers := func() bool { return decode[InboxResult](t, p.run(p.reader, Inbox{}, "")).Delivers }
+	if delivers() {
+		t.Fatal("a candidate route reads as delivering")
+	}
+	p.proveRoute()
+	if !delivers() {
+		t.Fatal("a proven route does not read as delivering")
+	}
+	p.turnEndAsk(p.writer, "reader", "holds the lane")
+	id := p.reserve()
+	if id == 0 || delivers() {
+		t.Fatalf("attempt %d: a member with a notice outstanding reads as delivering", id)
+	}
+	if len(p.begin(id)) == 0 {
+		t.Fatal("the reservation did not start")
+	}
+	p.resolve(id, PublishNotSubmitted)
+	if !delivers() {
+		t.Fatal("a released lane does not read as delivering")
+	}
+	if decode[InboxResult](t, p.run(p.writer, Inbox{}, "")).Delivers {
+		t.Fatal("a member without a route reads as delivering")
+	}
+	// Another binding's notice on the same physical queue holds it too.
+	other := bindingIDOf(t, p.fixture, p.principalOf(p.writer))
+	const attempt = `INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
+		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms)
+		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?)`
+	at := p.now.UnixMilli()
+	p.mutate(attempt, other, p.principalOf(p.writer), p.queue.PID, p.queue.StartMS, at, at, nil)
+	if delivers() {
+		t.Fatal("a member whose shared queue is held reads as delivering")
+	}
+	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ? WHERE binding_id = ?`, at, other)
+	if !delivers() {
+		t.Fatal("a released shared queue does not read as delivering")
+	}
+	// A member that spent its hourly notices is on pull until the hour turns.
+	reader := p.principalOf(p.reader)
+	for i := int64(0); i < store.PublishHourlyCap-1; i++ {
+		p.mutate(attempt, p.binding.ID, reader, 1000+i, 1, at, at, at)
+	}
+	if !delivers() {
+		t.Fatal("a member one notice under the cap does not read as delivering")
+	}
+	p.mutate(attempt, p.binding.ID, reader, 2000, 1, at, at, at)
+	if delivers() {
+		t.Fatal("a member at the hourly cap reads as delivering")
+	}
+	p.now = p.now.Add(time.Hour + time.Second)
+	if !delivers() {
+		t.Fatal("a new hour does not read as delivering")
+	}
+}

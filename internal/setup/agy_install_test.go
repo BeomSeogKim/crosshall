@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
@@ -296,6 +297,140 @@ func TestAgyUninstallResumesAfterRemovingOnlyTheConfigDirectory(t *testing.T) {
 	if err != nil || j.Pending != nil || len(j.Files) != 0 {
 		t.Fatalf("directory cleanup left ownership: %+v (%v)", j, err)
 	}
+}
+
+func TestAgyUninstallRecoversJournaledDirectoriesBeforeHooks(t *testing.T) {
+	for _, step := range []string{".gemini", "config", "stage", "stage with busy parent"} {
+		t.Run(step, func(t *testing.T) {
+			f := setuptest.New(t, "agy")
+			s := scopedService(f)
+			ctx := t.Context()
+			selected := []string{"agy"}
+			f.CheckTargets(t)
+			plans, err := s.PlanInstall(ctx, selected)
+			plan := requireAgyPlan(t, plans, err)
+			j := emptyJournal()
+			j.Pending = &plan.op
+			e := &j.Pending.Edits[0]
+			before, err := readConfig(e.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := e.materialize(before.Bytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			interrupted := errors.New("fixture interruption")
+			err = s.WithSetupLock(func(state *os.Root) error {
+				if err := writeJournal(state, j); err != nil {
+					return err
+				}
+				return replaceConfigJournaled(e.Path, before, next, e.After.Mode, false, func(name, id, dir string) error {
+					e.Stage, e.After.File, e.StageDir = name, id, dir
+					if err := writeJournal(state, j); err != nil {
+						return err
+					}
+					return interrupted
+				}, func(dir createdConfigDir) error {
+					e.Record.Dirs = append(e.Record.Dirs, dir)
+					if err := writeJournal(state, j); err != nil {
+						return err
+					}
+					if dir.Name == step {
+						return interrupted
+					}
+					return nil
+				})
+			})
+			if !errors.Is(err, interrupted) {
+				t.Fatalf("setup did not reach the interruption: %v", err)
+			}
+			parent := filepath.Join(f.Home, ".gemini")
+			var lock *os.File
+			if step == "stage with busy parent" {
+				lock = lockAgyDirectory(t, parent)
+			}
+			plans, err = s.PlanUninstall(ctx, selected)
+			recovery := requireAgyPlan(t, plans, err)
+			if !recovery.Recovery {
+				t.Fatalf("unfinished setup did not require recovery: %+v", recovery)
+			}
+			if err := s.Uninstall(ctx, recovery); err != nil {
+				t.Fatal(err)
+			}
+			if lock != nil {
+				assertAgyDirectory(t, filepath.Join(parent, "config"), false)
+				assertAgyDirectory(t, parent, true)
+				j, _, err := readJournal(f.State)
+				if err != nil || j.Pending == nil || !j.Pending.Edits[0].CleanupStarted {
+					t.Fatalf("busy recovery forgot its cleanup: %+v (%v)", j, err)
+				}
+				if err := lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+				plans, err = s.PlanUninstall(ctx, selected)
+				retry := requireAgyPlan(t, plans, err)
+				if err := s.Uninstall(ctx, retry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertAgyDirectory(t, parent, false)
+			j, _, err = readJournal(f.State)
+			if err != nil || j.Pending != nil || len(j.Files) != 0 {
+				t.Fatalf("recovery left ownership: %+v (%v)", j, err)
+			}
+		})
+	}
+}
+
+func TestAgyUninstallRetriesBusyOwnedDirectory(t *testing.T) {
+	f := setuptest.New(t, "agy")
+	s := scopedService(f)
+	ctx := t.Context()
+	selected := []string{"agy"}
+	f.CheckTargets(t)
+	plans, err := s.PlanInstall(ctx, selected)
+	if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(f.Home, ".gemini")
+	lock := lockAgyDirectory(t, parent)
+	plans, err = s.PlanUninstall(ctx, selected)
+	err = s.Uninstall(ctx, requireAgyPlan(t, plans, err))
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("uninstall did not report a retryable directory lock: %v", err)
+	}
+	assertAgyDirectory(t, filepath.Join(parent, "config"), false)
+	assertAgyDirectory(t, parent, true)
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	plans, err = s.PlanUninstall(ctx, selected)
+	resume := requireAgyPlan(t, plans, err)
+	if !resume.Resume {
+		t.Fatalf("busy directory cleanup did not allow retry: %+v", resume)
+	}
+	if err := s.Uninstall(ctx, resume); err != nil {
+		t.Fatal(err)
+	}
+	assertAgyDirectory(t, parent, false)
+	j, _, err := readJournal(f.State)
+	if err != nil || j.Pending != nil || len(j.Files) != 0 {
+		t.Fatalf("retried cleanup left ownership: %+v (%v)", j, err)
+	}
+}
+
+func lockAgyDirectory(t *testing.T, path string) *os.File {
+	t.Helper()
+	lock, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	return lock
 }
 
 func assertAgyDirectory(t *testing.T, path string, exists bool) {

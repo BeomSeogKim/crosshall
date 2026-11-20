@@ -223,7 +223,7 @@ func (e edit) matchesAfter(now fingerprint) bool {
 }
 
 func (e edit) matchesCleanupAbsence(dir string) bool {
-	if e.Adapter != "agy" || !e.CleanupStarted || e.After.Exists {
+	if e.Adapter != "agy" || !e.CleanupStarted {
 		return false
 	}
 	for _, owned := range e.CleanupDirs {
@@ -377,16 +377,8 @@ func finishEdit(state *os.Root, j journal, e *edit, observed fingerprint) (finge
 	if e.Adapter != "agy" || observed.Exists || len(e.CleanupDirs) == 0 {
 		return observed, nil
 	}
-	if !e.CleanupStarted {
-		e.CleanupStarted = true
-		if err := writeJournal(state, j); err != nil {
-			return fingerprint{}, err
-		}
-	}
-	for _, dir := range slices.Backward(e.CleanupDirs) {
-		if err := removeCreatedConfigDir(e.Path, dir); err != nil {
-			return fingerprint{}, err
-		}
+	if err := cleanupEditDirectories(state, j, e, e.CleanupDirs); err != nil {
+		return fingerprint{}, err
 	}
 	current, err := readConfig(e.Path)
 	if err != nil {
@@ -397,4 +389,19 @@ func finishEdit(state *os.Root, j journal, e *edit, observed fingerprint) (finge
 		return fingerprint{}, errors.New("configuration changed during directory cleanup")
 	}
 	return now, nil
+}
+
+func cleanupEditDirectories(state *os.Root, j journal, e *edit, dirs []createdConfigDir) error {
+	if !e.CleanupStarted {
+		e.CleanupDirs, e.CleanupStarted = dirs, true
+		if err := writeJournal(state, j); err != nil {
+			return err
+		}
+	}
+	for _, dir := range slices.Backward(e.CleanupDirs) {
+		if err := removeCreatedConfigDir(e.Path, dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }

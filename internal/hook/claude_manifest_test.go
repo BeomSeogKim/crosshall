@@ -6,12 +6,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 )
 
 // The Claude Code manifest's install description is the data setup reads.
 // Every installed event must have a runtime handler.
 func TestClaudeManifestInstallDescription(t *testing.T) {
-	raw, err := profiles.ReadFile("manifests/claude.json")
+	raw, err := manifests.FS.ReadFile("claude.json")
 	if err != nil {
 		t.Fatal(err)
 	}

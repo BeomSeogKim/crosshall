@@ -3,7 +3,6 @@ package hook
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,13 +15,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
-
-//go:embed manifests/*.json
-var profiles embed.FS
 
 var (
 	errHookInput    = errors.New("invalid hook input")
@@ -67,7 +65,7 @@ type eventSpec struct {
 
 func loadManifest(adapter string) (manifest, bool) {
 	var m manifest
-	raw, err := profiles.ReadFile("manifests/" + adapter + ".json")
+	raw, err := manifests.FS.ReadFile(adapter + ".json")
 	if err != nil || json.Unmarshal(raw, &m) != nil || m.Adapter != adapter || m.Revision == "" {
 		return manifest{}, false
 	}
@@ -215,7 +213,10 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		selected = append(selected, stopActiveField)
 	}
 	fields := make(map[string]string)
-	captureReceipt := m.Adapter == "claude" && spec.Fact == wire.HookPromptSubmitted
+	// An adapter that publishes recognizes its own notice echoed back as a
+	// prompt; the shared grammar validates the IDs it carries.
+	sender, publishes := publish.Lookup(m.Adapter)
+	captureReceipt := publishes && spec.Fact == wire.HookPromptSubmitted
 	var receipt string
 	var seenPrompt bool
 	for dec.More() {
@@ -230,10 +231,11 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		}
 		if captureReceipt && key == "prompt" {
 			var prompt string
-			if seenPrompt || json.Unmarshal(raw, &prompt) != nil {
-				receipt = ""
-			} else {
-				receipt = notice.ClaudeReceipt(prompt)
+			receipt = ""
+			if !seenPrompt && json.Unmarshal(raw, &prompt) == nil {
+				if ids, ok := sender.Echo(prompt); ok {
+					receipt = notice.Receipt(ids)
+				}
 			}
 			seenPrompt = true
 			continue

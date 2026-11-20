@@ -6,10 +6,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 )
 
 func TestCodexInstallManifest(t *testing.T) {
-	raw, err := profiles.ReadFile("manifests/codex.json")
+	raw, err := manifests.FS.ReadFile("codex.json")
 	if err != nil {
 		t.Fatal(err)
 	}

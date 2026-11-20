@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -24,6 +25,7 @@ type publishFixture struct {
 
 func newPublishFixture(t *testing.T) *publishFixture {
 	t.Helper()
+	usePublishSender(t)
 	f, writer := adapterChannel(t)
 	reader := f.newSession("claude")
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, "reader-join"))
@@ -374,4 +376,31 @@ func TestPublishCapsAndProvenNonSubmission(t *testing.T) {
 	if id == 0 || !slices.Equal(p.begin(id), items[:OfferCap]) {
 		t.Fatal("cap did not reset or a newer generation could not recover known non-submission")
 	}
+}
+
+// usePublishSender gives Claude a transport in the effective registry, so
+// its routes can publish; the domain never calls it.
+func usePublishSender(t *testing.T) {
+	t.Helper()
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{
+		Send: func(context.Context, publish.Target, string) publish.Outcome { return publish.NotSubmitted },
+	})))
+}
+
+// The final fence resolves the registered route through its adapter, the
+// same rule selection and status use, mode included: a reserved notice
+// whose route no longer resolves is not submitted.
+func TestTheFinalFenceResolvesTheRouteThroughItsAdapter(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "fence")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("nothing reserved")
+	}
+	p.mutate(`UPDATE publish_route SET mode = 'bypassPermissions' WHERE binding_id = ?`, p.binding.ID)
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted %v to a route its adapter does not resolve", ids)
+	}
+	p.state(id, string(PublishNotSubmitted))
 }

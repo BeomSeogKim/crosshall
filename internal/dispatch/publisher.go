@@ -16,11 +16,10 @@ import (
 const publishCoalesce = time.Second
 const publishTimeout = time.Second
 const publishRecordRetry = 250 * time.Millisecond
+const publishProveRetry = 10 * time.Second
 
 type publisher struct {
 	db *store.Store
-	// adapters render each adapter's notices and carry its transport.
-	adapters publish.Registry
 	// profiles are the tested publish profiles this binary ships.
 	profiles []domain.PublishProfile
 	// timeout bounds each transport call and abandon the wait for a
@@ -29,7 +28,10 @@ type publisher struct {
 	due              map[domain.PublishBinding]time.Time
 	working          sync.Map
 	retiring         sync.Map
-	workers          sync.WaitGroup
+	// proving guards one proof per route: zero while one runs, then the
+	// time a failed proof may be retried (publishProveRetry).
+	proving sync.Map
+	workers sync.WaitGroup
 }
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
@@ -45,6 +47,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	next := make(map[domain.PublishBinding]time.Time)
 	var attempts []int64
 	var queues []domain.HeldPublishQueue
+	var proofs []domain.PublishProof
 	err := p.db.Update(ctx, func(tx store.Tx) error {
 		bindings, err := domain.PublishCandidates(ctx, tx, now)
 		if err != nil {
@@ -75,6 +78,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 				}
 			}
 		}
+		if proofs, err = domain.UnprovenPublishRoutes(ctx, tx, now); err != nil {
+			return err
+		}
 		attempts, err = domain.ReservedPublishAttempts(ctx, tx)
 		if err == nil {
 			queues, err = domain.HeldPublishQueues(ctx, tx)
@@ -93,6 +99,19 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 			defer p.working.Delete(id)
 			p.submit(ctx, id)
 		})
+	}
+	for _, proof := range proofs {
+		prove := p.transport(proof.Target.Adapter).Prove
+		if prove == nil {
+			continue
+		}
+		if after, seen := p.proving.LoadOrStore(proof.Binding, time.Time{}); seen {
+			if retry := after.(time.Time); retry.IsZero() || now.Before(retry) {
+				continue // a proof runs, or failed and waits
+			}
+		}
+		p.proving.Store(proof.Binding, time.Time{})
+		p.workers.Go(func() { p.prove(ctx, proof, prove, now) })
 	}
 	for _, held := range queues {
 		retired := p.transport(held.Adapter).Retired
@@ -122,7 +141,7 @@ func (p *publisher) submit(ctx context.Context, id int64) {
 		return
 	}
 	outcome := domain.PublishNotSubmitted // an adapter without a sender sends nothing
-	if a, ok := p.adapters[target.Adapter]; ok {
+	if a, ok := publish.Lookup(target.Adapter); ok {
 		if line, ok := a.Notice(ids); ok && a.Transport().Send != nil {
 			outcome = p.send(ctx, a.Transport().Send, target, line)
 		}
@@ -173,10 +192,44 @@ func (p *publisher) send(ctx context.Context, send func(context.Context, domain.
 }
 
 func (p *publisher) transport(adapter string) publish.Transport {
-	if a, ok := p.adapters[adapter]; ok {
+	if a, ok := publish.Lookup(adapter); ok {
 		return a.Transport()
 	}
 	return publish.Transport{}
+}
+
+// prove asks the adapter which process owns the route's address and
+// records that proof, so the route can reserve a notice. Until a proof
+// lands nothing is reserved for it.
+func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
+	prove func(context.Context, domain.PublishTarget) (domain.PublishQueue, bool), at time.Time) {
+	// Like a probe, the guard outlives an abandoned proof: it is released
+	// only when the callback returns.
+	release := func() { p.proving.Store(proof.Binding, at.Add(publishProveRetry)) }
+	call, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
+	defer cancel()
+	if call.Err() != nil {
+		release()
+		return
+	}
+	type proven struct {
+		queue domain.PublishQueue
+		ok    bool
+	}
+	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() proven {
+		queue, ok := prove(call, proof.Target)
+		return proven{queue, ok}
+	}, release)
+	if !ok || !got.ok || call.Err() != nil {
+		return
+	}
+	err := p.db.Update(call, func(tx store.Tx) error {
+		return domain.ConfirmPublishRoute(call, tx, proof.Binding, got.queue)
+	})
+	if err == nil {
+		p.proving.Delete(proof.Binding)
+	}
+	logPublishFailure(err)
 }
 
 func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue, retired func(context.Context, domain.PublishQueue) bool, release func()) {

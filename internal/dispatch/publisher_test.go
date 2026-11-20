@@ -39,6 +39,10 @@ type publishTestFixture struct {
 
 func newPublishTestFixture(t *testing.T) *publishTestFixture {
 	t.Helper()
+	// Claude can publish; a test that sends gives it its own transport.
+	useTransport(t, publish.Transport{Send: func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+		return domain.PublishNotSubmitted
+	}})
 	f := &publishTestFixture{root: filepath.Join(t.TempDir(), "state"), now: time.Now()}
 	if err := os.Mkdir(f.root, 0700); err != nil {
 		t.Fatal(err)
@@ -142,19 +146,19 @@ type publishTestCall struct {
 func (f *publishTestFixture) publisher(t *testing.T, gate <-chan struct{}) (*publisher, <-chan publishTestCall) {
 	t.Helper()
 	calls := make(chan publishTestCall, 8)
+	useTransport(t, publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+		calls <- publishTestCall{ctx, target, line}
+		if gate != nil {
+			select {
+			case <-ctx.Done():
+				return domain.PublishUncertain
+			case <-gate:
+			}
+		}
+		return domain.PublishSubmitted
+	}})
 	p := &publisher{
 		db: f.db,
-		adapters: claudeOnly(publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
-			calls <- publishTestCall{ctx, target, line}
-			if gate != nil {
-				select {
-				case <-ctx.Done():
-					return domain.PublishUncertain
-				case <-gate:
-				}
-			}
-			return domain.PublishSubmitted
-		}}),
 	}
 	t.Cleanup(p.workers.Wait)
 	return p, calls
@@ -181,7 +185,7 @@ func awaitPublishTest[T any](t *testing.T, ch <-chan T) T {
 
 func requirePublished(t *testing.T, call publishTestCall, ids ...int64) {
 	t.Helper()
-	if call.target != publishTestTarget || call.line != notice.Claude(ids) {
+	if call.target != publishTestTarget || call.line != claudeNotice(ids) {
 		t.Fatalf("published to %+v with %q, want %+v with IDs %v", call.target, call.line, publishTestTarget, ids)
 	}
 }
@@ -270,7 +274,7 @@ func TestPublisherStartsFreshCoalescingWindowOnlyAfterDrainingBatch(t *testing.T
 			}
 			p, calls := f.publisher(t, nil)
 			capture := p.transport("claude").Send
-			p.setSend(func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+			setSend(t, func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 				capture(ctx, target, line)
 				return domain.PublishNotSubmitted
 			})
@@ -318,12 +322,13 @@ func TestPublisherRestartRecoversDurableAttempt(t *testing.T) {
 				defer cancel()
 				result := make(chan error, 1)
 				var call publishTestCall
-				p := &publisher{db: f.db, adapters: claudeOnly(publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
+				useTransport(t, publish.Transport{Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 					call = publishTestCall{ctx, target, line}
 					result <- f.db.Close()
 					cancel()
 					return domain.PublishSubmitted
-				}})}
+				}})
+				p := &publisher{db: f.db}
 				p.submit(ctx, id)
 				if err := awaitPublishTest(t, result); err != nil {
 					t.Fatal(err)
@@ -413,12 +418,12 @@ func TestPublisherTransportCancellationWaitsForCallbackExit(t *testing.T) {
 				if err := p.recover(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
-				p.setRetired(func(ctx context.Context, _ domain.PublishQueue) bool {
+				setRetired(t, func(ctx context.Context, _ domain.PublishQueue) bool {
 					run(ctx)
 					return true
 				})
 			} else {
-				p.setSend(func(ctx context.Context, _ domain.PublishTarget, _ string) domain.PublishOutcome {
+				setSend(t, func(ctx context.Context, _ domain.PublishTarget, _ string) domain.PublishOutcome {
 					run(ctx)
 					return domain.PublishSubmitted
 				})
@@ -495,7 +500,7 @@ func TestPublisherRetriesOutcomeWriteWithoutResending(t *testing.T) {
 	defer log.SetOutput(previous)
 	calls := make(chan publishTestCall, 2)
 	returnOutcome := make(chan struct{})
-	p := &publisher{db: f.db, adapters: claudeOnly(publish.Transport{
+	useTransport(t, publish.Transport{
 		Send: func(ctx context.Context, target domain.PublishTarget, line string) domain.PublishOutcome {
 			calls <- publishTestCall{ctx, target, line}
 			select {
@@ -505,7 +510,8 @@ func TestPublisherRetriesOutcomeWriteWithoutResending(t *testing.T) {
 				return domain.PublishNotSubmitted
 			}
 		},
-	})}
+	})
+	p := &publisher{db: f.db}
 	t.Cleanup(p.workers.Wait)
 	tickPublisher(t, p, f.now, true)
 	requirePublished(t, awaitPublishTest(t, calls), 11)
@@ -604,13 +610,13 @@ func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T)
 				if err := p.recover(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
-				p.setRetired(func(context.Context, domain.PublishQueue) bool {
+				setRetired(t, func(context.Context, domain.PublishQueue) bool {
 					started <- struct{}{}
 					<-stuck // ignores its context
 					return true
 				})
 			} else {
-				p.setSend(func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+				setSend(t, func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
 					started <- struct{}{}
 					<-stuck // ignores its context
 					return domain.PublishSubmitted
@@ -666,7 +672,7 @@ func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
 	stuck := make(chan struct{})
 	release := sync.OnceFunc(func() { close(stuck) })
 	defer release()
-	p.setRetired(func(context.Context, domain.PublishQueue) bool {
+	setRetired(t, func(context.Context, domain.PublishQueue) bool {
 		calls.Add(1)
 		<-stuck // ignores its context
 		return false
@@ -690,20 +696,27 @@ func TestPublisherKeepsOneProbePerQueueWhileACallbackIsStuck(t *testing.T) {
 	}
 }
 
-func claudeOnly(t publish.Transport) publish.Registry {
-	return publish.Shipped().WithTransport("claude", t)
+// useTransport gives claude t in the effective registry for this test.
+func useTransport(t *testing.T, tr publish.Transport) {
+	t.Helper()
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", tr)))
 }
 
-func (p *publisher) setSend(send func(context.Context, domain.PublishTarget, string) domain.PublishOutcome) {
-	t := p.transport("claude")
-	t.Send = send
-	p.adapters = claudeOnly(t)
+func claudeTransport() publish.Transport {
+	a, _ := publish.Lookup("claude")
+	return a.Transport()
 }
 
-func (p *publisher) setRetired(retired func(context.Context, domain.PublishQueue) bool) {
-	t := p.transport("claude")
-	t.Retired = retired
-	p.adapters = claudeOnly(t)
+func setSend(t *testing.T, send func(context.Context, domain.PublishTarget, string) domain.PublishOutcome) {
+	tr := claudeTransport()
+	tr.Send = send
+	useTransport(t, tr)
+}
+
+func setRetired(t *testing.T, retired func(context.Context, domain.PublishQueue) bool) {
+	tr := claudeTransport()
+	tr.Retired = retired
+	useTransport(t, tr)
 }
 
 type markedNotice struct{ publish.Adapter }
@@ -719,7 +732,8 @@ func TestPublisherRendersTheNoticeThroughTheAdapter(t *testing.T) {
 			lines <- line
 			return publish.Submitted
 		}})
-	p := &publisher{db: f.db, adapters: registry}
+	t.Cleanup(publish.Swap(registry))
+	p := &publisher{db: f.db}
 	t.Cleanup(p.workers.Wait)
 	tickPublisher(t, p, f.now, true)
 	if line := awaitPublishTest(t, lines); line != "marked [11]" {
@@ -727,11 +741,139 @@ func TestPublisherRendersTheNoticeThroughTheAdapter(t *testing.T) {
 	}
 }
 
-func TestPublisherWithoutASenderRecordsNoSubmission(t *testing.T) {
+func TestPublisherWithoutASenderAnyMoreRecordsNoSubmission(t *testing.T) {
 	f := newPublishTestFixture(t)
 	f.ask(t, 11)
 	id := f.reserve(t, false)
-	p := &publisher{db: f.db, adapters: publish.Shipped()}
+	t.Cleanup(publish.Swap(publish.Shipped())) // the sender is gone after the reservation
+	p := &publisher{db: f.db}
 	p.submit(t.Context(), id)
 	f.requireAttempt(t, id, domain.PublishNotSubmitted)
+}
+
+func claudeNotice(ids []int64) string {
+	line, _ := publish.Shipped()["claude"].Notice(ids)
+	return line
+}
+
+// fixtureAdapter is an adapter this build does not ship: its address is the
+// route's thread and its notice is "fixture <ids>".
+type fixtureAdapter struct{ transport publish.Transport }
+
+func (fixtureAdapter) Resolve(r publish.Route) (string, string) {
+	if r.ThreadID == "" {
+		return "", "no thread"
+	}
+	return r.ThreadID, ""
+}
+func (fixtureAdapter) ModeEligible(string) bool        { return true }
+func (fixtureAdapter) AcceptsSocket(string) bool       { return false }
+func (fixtureAdapter) SessionThread(ref string) string { return ref }
+func (fixtureAdapter) Notice(ids []int64) (string, bool) {
+	return "fixture " + notice.IDList(ids), true
+}
+func (fixtureAdapter) Echo(prompt string) (string, bool) {
+	return strings.CutPrefix(prompt, "fixture ")
+}
+func (a fixtureAdapter) Transport() publish.Transport { return a.transport }
+
+func countPublish(t *testing.T, f *publishTestFixture, table string) int {
+	t.Helper()
+	var n int
+	f.update(t, func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&n)
+	})
+	return n
+}
+
+// Astra #426: another adapter's sender must not make a Claude route
+// without one reserve, fail and suspend.
+func TestPublisherReservesOnlyForAnAdapterThatSends(t *testing.T) {
+	f := newPublishTestFixture(t)
+	sent := make(chan string, 4)
+	t.Cleanup(publish.Swap(publish.Shipped().With("fixture", fixtureAdapter{publish.Transport{
+		Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
+			sent <- line
+			return publish.Submitted
+		},
+	}})))
+	p := &publisher{db: f.db}
+	t.Cleanup(p.workers.Wait)
+	for i, id := range []int64{11, 12, 13} {
+		f.ask(t, id)
+		tickPublisher(t, p, f.now.Add(time.Duration(i)*2*time.Second), i == 0)
+	}
+	p.workers.Wait()
+	requireNone(t, sent)
+	if n := countPublish(t, f, "publish_attempt"); n != 0 {
+		t.Fatalf("%d attempts reserved for a route whose adapter cannot send", n)
+	}
+	if n := countPublish(t, f, "publish_suspension"); n != 0 {
+		t.Fatalf("%d suspensions", n)
+	}
+	var state store.PublishState
+	f.update(t, func(tx store.Tx) (err error) {
+		state, _, err = store.ReadPublishState(t.Context(), tx, 2, f.now)
+		return err
+	})
+	if state.State != "candidate" || state.Reason != "no sender for claude" {
+		t.Fatalf("status %+v, want the same answer selection gave", state)
+	}
+}
+
+// A route the transport has not proven reserves nothing; the adapter's
+// proof is asked for first and, once recorded, the route publishes.
+func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
+	for _, proves := range []bool{true, false} {
+		t.Run(fmt.Sprintf("proves=%t", proves), func(t *testing.T) {
+			f := newPublishTestFixture(t)
+			f.exec(t, `DELETE FROM publish_route_proof`)
+			proofs := make(chan domain.PublishTarget, 4)
+			sent := make(chan string, 4)
+			useTransport(t, publish.Transport{
+				Prove: func(_ context.Context, target publish.Target) (publish.Queue, bool) {
+					proofs <- target
+					return publishTestTarget.Queue, proves
+				},
+				Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
+					sent <- line
+					return publish.Submitted
+				},
+			})
+			p := &publisher{db: f.db}
+			t.Cleanup(p.workers.Wait)
+			tickPublisher(t, p, f.now, true)
+			p.workers.Wait()
+			if got := awaitPublishTest(t, proofs); got.Adapter != "claude" || got.Address != publishTestTarget.Address {
+				t.Fatalf("proved %+v", got)
+			}
+			if n := countPublish(t, f, "publish_attempt"); n != 0 {
+				t.Fatalf("%d attempts before a proof", n)
+			}
+			f.ask(t, 11)
+			tickPublisher(t, p, f.now.Add(time.Second), true)
+			p.workers.Wait()
+			if !proves {
+				requireNone(t, sent)
+				requireNone(t, proofs) // a failed proof waits publishProveRetry
+				if n := countPublish(t, f, "publish_route_proof"); n != 0 {
+					t.Fatalf("a failed proof was recorded")
+				}
+				return
+			}
+			if line := awaitPublishTest(t, sent); line != claudeNotice([]int64{11}) {
+				t.Fatalf("sent %q", line)
+			}
+			requireNone(t, proofs)
+		})
+	}
+}
+
+func requireNone[T any](t *testing.T, ch <-chan T) {
+	t.Helper()
+	select {
+	case value := <-ch:
+		t.Fatalf("unexpected %+v", value)
+	default:
+	}
 }

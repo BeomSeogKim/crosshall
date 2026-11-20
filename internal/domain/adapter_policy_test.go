@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -252,4 +253,23 @@ func TestAdapterPolicyRefreshesCurrentLiveLaunchCapabilities(t *testing.T) {
 	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "codex", Enabled: &off}}, "disable"))
 	check(active, "enroll", "tested", "1.0", "exec", false, 7)
 	check(active, "boundary", "candidate", "1.0", "exec", false, 2)
+}
+
+// An adapter is valid exactly when the build ships its hook manifest, so a
+// new adapter needs a manifest, not an edit to a name list.
+func TestValidAdapterNamesAreTheHookManifests(t *testing.T) {
+	names := manifests.Names()
+	if len(names) == 0 {
+		t.Fatal("no hook manifests")
+	}
+	for _, name := range names {
+		if !ValidAdapterName(name) {
+			t.Errorf("%s has a manifest but is not a valid adapter", name)
+		}
+	}
+	for _, name := range []string{"", "agy", "claude.json", "../claude"} {
+		if ValidAdapterName(name) {
+			t.Errorf("%q is valid without a manifest", name)
+		}
+	}
 }

@@ -5,11 +5,11 @@ package publish
 // and no transport.
 type codex struct{}
 
-func (codex) Complete(r Route) (bool, string) {
+func (codex) Resolve(r Route) (string, string) {
 	if r.ThreadID == "" {
-		return false, "no thread"
+		return "", "no thread"
 	}
-	return true, ""
+	return r.ThreadID, ""
 }
 
 func (codex) ModeEligible(string) bool { return true }
@@ -20,5 +20,7 @@ func (codex) AcceptsSocket(string) bool { return false }
 func (codex) SessionThread(sessionRef string) string { return sessionRef }
 
 func (codex) Notice([]int64) (string, bool) { return "", false }
+
+func (codex) Echo(string) (string, bool) { return "", false }
 
 func (codex) Transport() Transport { return Transport{} }

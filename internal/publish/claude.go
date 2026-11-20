@@ -16,11 +16,14 @@ import (
 // It has no transport in this build.
 type claude struct{}
 
-func (claude) Complete(r Route) (bool, string) {
-	if r.SocketPath == "" {
-		return false, "no socket"
+func (c claude) Resolve(r Route) (string, string) {
+	switch {
+	case r.SocketPath == "":
+		return "", "no socket"
+	case !c.ModeEligible(r.Mode):
+		return "", "bypass mode"
 	}
-	return true, ""
+	return r.SocketPath, ""
 }
 
 func (claude) ModeEligible(mode string) bool {
@@ -44,7 +47,19 @@ func (claude) AcceptsSocket(path string) bool {
 // SessionThread is empty: SessionStart's hook.route supplies the socket.
 func (claude) SessionThread(string) string { return "" }
 
-func (claude) Notice(ids []int64) (string, bool) { return notice.Claude(ids), true }
+const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall inbox."
+
+func (claude) Notice(ids []int64) (string, bool) {
+	return notice.PendingPrefix + notice.IDList(ids) + claudeSuffix, true
+}
+
+func (claude) Echo(prompt string) (string, bool) {
+	body, ok := strings.CutPrefix(prompt, notice.PendingPrefix)
+	if !ok {
+		return "", false
+	}
+	return strings.CutSuffix(body, claudeSuffix)
+}
 
 func (claude) Transport() Transport { return Transport{} }
 

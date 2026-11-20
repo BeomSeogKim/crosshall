@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -18,10 +19,9 @@ type AdapterSet struct{ wire.AdapterPolicyArgs }
 func (AdapterSet) command()     {}
 func (AdapterSet) Verb() string { return VerbAdapterSet }
 
-// ValidAdapterName reports whether this adapter has a policy switch.
-func ValidAdapterName(adapter string) bool {
-	return adapter == "claude" || adapter == "codex"
-}
+// ValidAdapterName reports whether this adapter has a policy switch: the
+// build supports it with a hook manifest.
+func ValidAdapterName(adapter string) bool { return manifests.Has(adapter) }
 
 func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd AdapterSet, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {

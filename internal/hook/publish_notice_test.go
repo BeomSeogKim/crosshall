@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -81,5 +82,26 @@ func assertPublishHookRequest(t *testing.T, vendor, promptFields, want string) {
 	if err != nil || request.OpKey != baseline.OpKey || request.Verb != baseline.Verb ||
 		string(withoutReceipt) != string(baseline.Args) {
 		t.Fatalf("receipt changed ordinary observation: %s (%v)", packet, err)
+	}
+}
+
+// echoFixture recognizes "fixture <ids>"; it stands in for any adapter.
+type echoFixture struct{ publish.Adapter }
+
+func (echoFixture) Echo(prompt string) (string, bool) { return strings.CutPrefix(prompt, "fixture ") }
+
+// The hook asks the route's adapter to recognize its own notice and keeps
+// the ID validation shared: no adapter is named here.
+func TestPublishNoticeReceiptIsTheAdaptersToRecognize(t *testing.T) {
+	codex, _ := publish.Lookup("codex")
+	t.Cleanup(publish.Swap(publish.Shipped().With("codex", echoFixture{codex})))
+	for prompt, want := range map[string]string{
+		"fixture 12 15": "publish:12 15",
+		"fixture 15 12": "",
+		"fixture 12 x":  "",
+		"[crosshall] pending: 12 15" + fixtureNoticeSuffix: "",
+	} {
+		raw, _ := json.Marshal(prompt)
+		assertPublishHookRequest(t, "codex", `,"prompt":`+string(raw), want)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
 func (p *publishFixture) observation(id int64, want string) int64 {
@@ -25,7 +26,10 @@ func (p *publishFixture) observation(id int64, want string) int64 {
 
 func (p *publishFixture) promptReceipt(turn, launch string, atMS int64, ids []int64) HookEvent {
 	cmd := prompt(launch, turn, atMS)
-	cmd.Receipt = notice.ClaudeReceipt(notice.Claude(ids))
+	claude, _ := publish.Lookup("claude")
+	line, _ := claude.Notice(ids)
+	echoed, _ := claude.Echo(line)
+	cmd.Receipt = notice.Receipt(echoed)
 	if cmd.Receipt == "" {
 		p.t.Fatal("invalid receipt fixture")
 	}

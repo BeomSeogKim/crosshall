@@ -34,11 +34,8 @@ func routeCandidateReason(adapter string, launchVerified bool, mode, socketPath,
 	if !ok {
 		return "invalidated", "unsupported adapter"
 	}
-	if complete, why := a.Complete(publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}); !complete {
+	if _, why := a.Resolve(publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}); why != "" {
 		return "invalidated", why
-	}
-	if !a.ModeEligible(mode) {
-		return "invalidated", "bypass mode"
 	}
 	if !launchVerified {
 		return "active", "unverified launch"

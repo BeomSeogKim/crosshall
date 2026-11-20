@@ -32,16 +32,19 @@ const (
 		AND e.manifest_rev = json_extract(l.profile, '$.manifest_rev'))`
 )
 
-// PublishAdapterReady holds when the route's adapter has a notice format
-// in this build and the route names an address.
-var PublishAdapterReady = publishAdapterReady(publish.Shipped().Publishing())
-
-func publishAdapterReady(names []string) string {
+// PublishAdapterSends holds when the route's adapter can publish: it has a
+// notice format and a transport that sends. Whether the route itself names
+// an address is the adapter's to resolve (publish.Registry.Address).
+func PublishAdapterSends() string {
+	names := publish.Adapters().Senders()
+	if len(names) == 0 {
+		return "0"
+	}
 	quoted := make([]string, len(names))
 	for i, name := range names {
 		quoted[i] = "'" + strings.ReplaceAll(name, "'", "''") + "'"
 	}
-	return "r.adapter IN (" + strings.Join(quoted, ", ") + ") AND COALESCE(r.socket_path, r.thread_id) IS NOT NULL"
+	return "r.adapter IN (" + strings.Join(quoted, ", ") + ")"
 }
 
 // PublishNotSuspended holds when no suspension of the route's launch,
@@ -72,14 +75,14 @@ type PublishState struct {
 func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time) (state PublishState, found bool, err error) {
 	var (
 		routeState, routeReason, adapter, launchRef, bindingState, version string
-		socketPath, threadID                                               string
+		mode, socketPath, threadID                                         string
 		principal, resumedAfter                                            int64
 		verified, dnd, quiet, enabled, epochOK, current                    bool
 		proven, tested, listed, versionListed                              bool
 		owner, vendor, hall                                                sql.NullBool
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
-			r.launch_verified, COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''), b.state, b.dnd, b.publish_quiet, b.publish_owner,
+			r.launch_verified, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''), b.state, b.dnd, b.publish_quiet, b.publish_owner,
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
 			COALESCE(l.launch_ref = r.launch_ref AND l.verified = 1, 0),
@@ -95,7 +98,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
-		&principal, &verified, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
+		&principal, &verified, &mode, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
 		&hall, &current, &version, &proven, &tested, &listed, &versionListed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
@@ -182,17 +185,10 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		return PublishState{}, false, err
 	}
 	state.State = "candidate"
-	sender, known := publish.Lookup(adapter)
-	notices := false
-	if known {
-		_, notices = sender.Notice(nil)
-	}
-	complete, why := known && notices, ""
-	if complete {
-		complete, why = sender.Complete(publish.Route{SocketPath: socketPath, ThreadID: threadID})
-	}
+	adapters := publish.Adapters()
+	_, why := adapters.Address(adapter, publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID})
 	switch {
-	case !known || !notices:
+	case !adapters.Sends(adapter):
 		state.Reason = "no sender for " + adapter
 	case !verified:
 		state.Reason = "unverified launch"
@@ -200,7 +196,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		state.Reason = "launch not current"
 	case !epochOK:
 		state.Reason = "adapter policy changed"
-	case !complete:
+	case why != "":
 		state.Reason = why
 	case !tested:
 		state.Reason = "profile not tested"

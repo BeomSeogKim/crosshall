@@ -1,6 +1,10 @@
 package hook
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+)
 
 // InstallSpec describes a vendor's user-level hook file.
 type InstallSpec struct {
@@ -16,7 +20,7 @@ type InstallSpec struct {
 
 // InstallSpecs returns the installation descriptions in adapter order.
 func InstallSpecs() []InstallSpec {
-	files, _ := profiles.ReadDir("manifests")
+	files, _ := manifests.FS.ReadDir(".")
 	var specs []InstallSpec
 	for _, file := range files {
 		m, ok := loadManifest(strings.TrimSuffix(file.Name(), ".json"))

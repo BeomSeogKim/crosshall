@@ -68,9 +68,10 @@ const (
 	CodeKeyRetired       Code = "key_retired"
 	CodeLeafMismatch     Code = "leaf_mismatch"
 
-	CodeUnsent         Code = "unsent"
-	CodeOutcomeUnknown Code = "outcome_unknown"
-	CodeWaitTimeout    Code = "wait_timeout"
+	CodeUnsent                Code = "unsent"
+	CodeOutcomeUnknown        Code = "outcome_unknown"
+	CodeWaitTimeout           Code = "wait_timeout"
+	CodeDispatcherUnavailable Code = "dispatcher_unavailable"
 )
 
 // Result is the command outcome shared by the handler, dispatcher and CLI.

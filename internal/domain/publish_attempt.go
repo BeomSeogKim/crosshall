@@ -212,13 +212,17 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 	// Only a transport's non-submission counts: one stopped at the fence did
 	// not reach the vendor. Count, in commit order, since the owner's resume
 	// and since this launch's last suspension for the same reason.
+	// The last publishFailuresToSuspend outcomes the transport gave on this
+	// launch must all be non-submissions: a submission in between breaks
+	// the run.
 	var failures int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt this ON this.id = ?1
-		JOIN binding b ON b.id = this.binding_id
-		WHERE a.binding_id = this.binding_id AND a.launch_ref = this.launch_ref AND a.state = 'not_submitted'
-			AND a.submitting_at_ms IS NOT NULL AND a.id > b.publish_resume_attempt
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT a.state FROM publish_attempt a
+		JOIN publish_attempt this ON this.id = ?1 JOIN binding b ON b.id = this.binding_id
+		WHERE a.binding_id = this.binding_id AND a.launch_ref = this.launch_ref AND a.submitting_at_ms IS NOT NULL
+			AND a.state IN ('submitted', 'uncertain', 'not_submitted') AND a.id > b.publish_resume_attempt
 			AND a.id > COALESCE((SELECT MAX(s.notice) FROM publish_suspension s WHERE s.binding_id = this.binding_id
-				AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)`, id).Scan(&failures); err != nil {
+				AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)
+		ORDER BY a.id DESC LIMIT ?2) WHERE state = 'not_submitted'`, id, publishFailuresToSuspend).Scan(&failures); err != nil {
 		return err
 	}
 	if failures < publishFailuresToSuspend {

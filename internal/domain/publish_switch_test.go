@@ -314,18 +314,33 @@ func TestPublishVersionSuspension(t *testing.T) {
 
 func TestPublishShippedProfilesAreSeededAndOwnerRowsKept(t *testing.T) {
 	p := newPublishFixture(t)
-	shipped := []PublishProfile{{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r"}}
+	shipped := []PublishProfile{{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r", ResultRef: "sha256:aa", CheckedAtMS: 5}}
 	seed := func(profiles []PublishProfile) {
-		p.update(func(ctx context.Context, tx store.Tx) error { return SeedPublishProfiles(ctx, tx, profiles, p.now) })
+		p.update(func(ctx context.Context, tx store.Tx) error { return SeedPublishProfiles(ctx, tx, profiles) })
 	}
 	seed(shipped)
+	p.now = p.now.Add(time.Hour)
 	seed(shipped)
-	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE result_ref = 'builtin' AND level = 'tested'`); n != 1 {
-		t.Fatalf("shipped rows %d, want 1", n)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE source = 'builtin' AND level = 'tested'
+		AND result_ref = 'sha256:aa' AND checked_at_ms = 5`); n != 1 {
+		t.Fatalf("shipped rows with the run's own time: %d, want 1 after a restart", n)
+	}
+
+	// An owner import cannot claim to be shipped, even with the same
+	// reference, and a newer import is not outranked by a restart.
+	e := AdapterEvidence{Vendor: "claude", VendorVersion: "1", Platform: "p", Mode: "m", ManifestRev: "r",
+		RunAtMS: 9, ResultRef: "builtin", Results: []EvidenceResult{{Cap: "publish", Level: "candidate", Check: "rerun"}}}
+	wantOK(t, p.owner(e, "import"))
+	e.VendorVersion = "2"
+	wantOK(t, p.owner(e, "import-2"))
+	seed(shipped)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE vendor_version = '1' AND source = 'owner'
+		AND level = 'candidate' AND checked_at_ms = 9`); n != 1 {
+		t.Fatalf("a restart outranked newer owner evidence: %d", n)
 	}
 	seed(nil)
-	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE result_ref = 'builtin'`); n != 0 {
-		t.Fatalf("a profile the binary no longer ships stayed: %d", n)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE vendor_version IN ('1', '2') AND result_ref = 'builtin'`); n != 2 {
+		t.Fatalf("seeding removed owner rows that used the builtin reference: %d left, want 2", n)
 	}
 	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE cap = 'publish' AND result_ref = 'publish-test'`); n != 1 {
 		t.Fatalf("seeding removed an imported row: %d", n)
@@ -509,4 +524,24 @@ func TestPublishSendResultIsPullUnlessThisMessageIsQueued(t *testing.T) {
 	if d := note.Recipients[0]; d.Next != pull {
 		t.Fatalf("a note: %+v", d)
 	}
+}
+
+func TestPublishSuspendsOnlyOnThreeNonSubmissionsInARow(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.notSubmitted(1)
+	p.now = p.now.Add(time.Millisecond)
+	p.turnEndAsk(p.writer, "reader", "success")
+	id := p.reserve()
+	if id == 0 || len(p.begin(id)) == 0 {
+		t.Fatal("no notice to submit")
+	}
+	p.resolve(id, PublishSubmitted)
+	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = 'own_turn' WHERE id = ?`, p.now.UnixMilli(), id)
+	p.notSubmitted(2)
+	p.turnEndAsk(p.writer, "reader", "after-fail-success-fail-fail")
+	p.requirePublish("fail, success, fail, fail", "available", "")
+	p.notSubmitted(1)
+	p.turnEndAsk(p.writer, "reader", "after-three-in-a-row")
+	p.requirePublish("three in a row", "suspended", "the third in a row")
 }

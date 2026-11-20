@@ -2,15 +2,16 @@ package domain
 
 import (
 	"context"
-	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 // PublishProfile is a vendor profile that an interactive conformance run
-// proved for publish (design section 8).
+// proved for publish (design section 8), with that run's reference and time.
 type PublishProfile struct {
 	Vendor, Version, Platform, Mode, ManifestRev string
+	ResultRef                                    string
+	CheckedAtMS                                  int64
 }
 
 // TestedPublishProfiles ships with the binary, so a stock install needs no
@@ -19,17 +20,18 @@ type PublishProfile struct {
 var TestedPublishProfiles []PublishProfile
 
 // SeedPublishProfiles records the shipped profiles as tested publish
-// evidence. Rows an earlier binary shipped that this one does not are
-// removed; rows an owner imported are kept, and win over a shipped row.
-func SeedPublishProfiles(ctx context.Context, tx store.Tx, profiles []PublishProfile, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM capability_evidence WHERE cap = 'publish' AND result_ref = 'builtin'`); err != nil {
+// evidence, marked as shipped and dated by their conformance run, so a
+// restart never makes them look newer. Shipped rows this binary no longer
+// ships are removed; an owner's row for the same profile is kept as it is.
+func SeedPublishProfiles(ctx context.Context, tx store.Tx, profiles []PublishProfile) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM capability_evidence WHERE cap = 'publish' AND source = 'builtin'`); err != nil {
 		return err
 	}
 	for _, p := range profiles {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
-			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
-			VALUES (?, ?, ?, ?, ?, 'publish', 'tested', 'builtin', ?) ON CONFLICT DO NOTHING`,
-			p.Vendor, p.Version, p.Platform, p.Mode, p.ManifestRev, ms(now)); err != nil {
+			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms, source)
+			VALUES (?, ?, ?, ?, ?, 'publish', 'tested', ?, ?, 'builtin') ON CONFLICT DO NOTHING`,
+			p.Vendor, p.Version, p.Platform, p.Mode, p.ManifestRev, p.ResultRef, p.CheckedAtMS); err != nil {
 			return err
 		}
 	}

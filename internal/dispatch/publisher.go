@@ -44,7 +44,7 @@ type publisher struct {
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
 	return p.db.Update(ctx, func(tx store.Tx) error {
-		if err := domain.SeedPublishProfiles(ctx, tx, p.profiles, now); err != nil {
+		if err := domain.SeedPublishProfiles(ctx, tx, p.profiles); err != nil {
 			return err
 		}
 		return domain.RecoverPublish(ctx, tx, now)

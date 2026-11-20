@@ -638,14 +638,15 @@ func TestPublisherDeadlineHoldsWhenTheTransportIgnoresCancellation(t *testing.T)
 
 func TestPublisherStartupSeedsTheShippedProfiles(t *testing.T) {
 	f := newPublishTestFixture(t)
-	p := &publisher{db: f.db, profiles: []domain.PublishProfile{{Vendor: "claude", Version: "9.9.9", Platform: "darwin-arm64", Mode: "default", ManifestRev: "r1"}}}
+	p := &publisher{db: f.db, profiles: []domain.PublishProfile{{Vendor: "claude", Version: "9.9.9", Platform: "darwin-arm64",
+		Mode: "default", ManifestRev: "r1", ResultRef: "sha256:bb", CheckedAtMS: 7}}}
 	if err := p.recover(t.Context(), f.now); err != nil {
 		t.Fatal(err)
 	}
 	var n int
 	f.update(t, func(tx store.Tx) error {
 		return tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM capability_evidence WHERE cap = 'publish'
-			AND level = 'tested' AND result_ref = 'builtin' AND vendor_version = '9.9.9'`).Scan(&n)
+			AND level = 'tested' AND source = 'builtin' AND checked_at_ms = 7 AND vendor_version = '9.9.9'`).Scan(&n)
 	})
 	if n != 1 {
 		t.Fatalf("shipped profile rows %d, want 1", n)

@@ -11,7 +11,7 @@ func TestTurnEndMigrationPreservesEvidence(t *testing.T) {
 	}
 	seedAdapterLedger(t, v3)
 	before := adapterLedgerSnapshot(t, v3.db, 3)
-	if _, err := v3.db.ExecContext(ctx, `INSERT INTO capability_evidence VALUES
+	if _, err := v3.db.ExecContext(ctx, `INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
 		('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'enroll', 'tested', 'seed-enroll', 123),
 		('codex', 'unverified', 'linux-amd64', 'unverified', 'codex-1', 'reminder', 'unavailable', 'seed-reminder', 456)`); err != nil {
 		t.Fatal(err)
@@ -34,11 +34,11 @@ func TestTurnEndMigrationPreservesEvidence(t *testing.T) {
 			('codex', 'unverified', 'linux-amd64', 'unverified', 'codex-1', 'reminder', 'unavailable', 'seed-reminder', 456))`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("evidence after migration = %d rows, error = %v", count, err)
 	}
-	if _, err := upgraded.db.ExecContext(ctx, `INSERT INTO capability_evidence VALUES
+	if _, err := upgraded.db.ExecContext(ctx, `INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
 		('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'turn_end', 'tested', 'new-result', 789)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := upgraded.db.ExecContext(ctx, `INSERT INTO capability_evidence VALUES
+	if _, err := upgraded.db.ExecContext(ctx, `INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
 		('claude', '2.1.327', 'darwin-arm64', 'print', 'claude-1', 'wake', 'tested', 'unknown-cap', 789)`); err == nil {
 		t.Fatal("unexpected capability passed the rebuilt CHECK")
 	}

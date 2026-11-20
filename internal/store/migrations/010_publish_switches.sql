@@ -20,6 +20,17 @@ CREATE TABLE publish_suspension (
 
 CREATE INDEX publish_suspension_launch ON publish_suspension(binding_id, launch_ref);
 
+-- A store from before this migration held a launch after any absorbed or
+-- unknown notice. Each becomes a suspension under the new rules: thirty
+-- minutes, or the rest of the launch from the third on that launch.
+INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
+SELECT binding_id, launch_ref, observation, id, observed_at_ms,
+    CASE WHEN ROW_NUMBER() OVER (PARTITION BY binding_id, launch_ref ORDER BY id) >= 3
+        THEN NULL ELSE observed_at_ms + 1800000 END
+FROM publish_attempt
+WHERE observation IN ('absorbed', 'unknown') AND observed_at_ms IS NOT NULL
+ORDER BY id;
+
 CREATE TABLE hall_publish (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
@@ -38,6 +49,9 @@ CREATE TABLE capability_evidence (
     level TEXT NOT NULL CHECK (level IN ('tested', 'candidate', 'unavailable')),
     result_ref TEXT NOT NULL,
     checked_at_ms INTEGER NOT NULL,
+    -- Who recorded the row: an owner import, or the profile list the binary
+    -- ships. Imports cannot set it.
+    source TEXT NOT NULL DEFAULT 'owner' CHECK (source IN ('owner', 'builtin')),
     PRIMARY KEY (vendor, vendor_version, platform, mode, manifest_rev, cap)
 );
 

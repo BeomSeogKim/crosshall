@@ -19,6 +19,16 @@ type DoctorAdapterState struct {
 	Evidence           []DoctorEvidence
 	UnverifiedLaunches int
 	TurnEndNotice      DoctorTurnEndNotice
+	Publish            DoctorPublishState
+}
+
+// DoctorPublishState reports registered publish routes for one adapter.
+// In slice 1, routes are never available for sending.
+type DoctorPublishState struct {
+	State        string `json:"state"`
+	Reason       string `json:"reason"`
+	ActiveRoutes int    `json:"active_routes"`
+	TotalRoutes  int    `json:"total_routes"`
 }
 
 type DoctorEvidence struct {
@@ -160,6 +170,27 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day time.Time
 		Scan(&state.UnverifiedLaunches, &state.TurnEndNotice.Available, &state.TurnEndNotice.CommittedClaims)
 	if err != nil {
 		return DoctorAdapterState{}, err
+	}
+	var activeRoutes, totalRoutes int
+	var sampleReason sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END), 0),
+		       COUNT(*),
+		       MAX(CASE WHEN state = 'active' THEN reason ELSE NULL END)
+		FROM publish_route WHERE adapter = ?`, adapter).
+		Scan(&activeRoutes, &totalRoutes, &sampleReason); err != nil {
+		return DoctorAdapterState{}, err
+	}
+	state.Publish = DoctorPublishState{
+		State:        "candidate",
+		Reason:       "slice 1 registry only (no sender)",
+		ActiveRoutes: activeRoutes,
+		TotalRoutes:  totalRoutes,
+	}
+	if activeRoutes == 0 {
+		state.Publish.Reason = "no active route"
+	} else if sampleReason.Valid && sampleReason.String != "" {
+		state.Publish.Reason = sampleReason.String
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT vendor_version, platform, mode, manifest_rev, cap, level

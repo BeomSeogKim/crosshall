@@ -196,6 +196,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
+	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, principal, req.SessionKey, cmd, now); err != nil {
+		return core.Result{}, err
+	}
 	// The launch and the live binding are written: project the member's capabilities.
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
 		return core.Result{}, err
@@ -278,6 +281,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		return core.Result{}, err
 	}
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+		return core.Result{}, err
+	}
+	if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, principal, req.SessionKey, cmd, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
@@ -472,6 +478,12 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			return core.Result{}, err
 		}
 	case FactSessionEnded:
+		if live {
+			sessionRef := resolveSessionKey(ctx, tx, req.SessionKey, principal, cmd.Profile.Adapter)
+			if err := endPublishRoute(ctx, tx, b.id, cmd.LaunchRef, sessionRef, cmd.Epoch, cmd.HookAtMS, "session ended", now); err != nil {
+				return core.Result{}, err
+			}
+		}
 		// Only a bound launch can end: an unverified (session-scoped) end is an
 		// observation, and its launch stays eligible for the next notice. An
 		// end older than its launch's start is a stale callback.

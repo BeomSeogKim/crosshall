@@ -12,8 +12,7 @@ import (
 )
 
 func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, r Resolution) (*domain.AdapterContext, core.Result, error) {
-	var profile wire.HookProfile
-	var launch, event string
+	var adapter, launch, event string
 	var epoch uint64
 	switch req.Verb {
 	case wire.VerbHookEnroll:
@@ -21,26 +20,32 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 		if err := json.Unmarshal(req.Args, &args); err != nil {
 			return nil, commandError(core.ExitUsage, "", "invalid hook enrollment"), nil
 		}
-		profile, launch, event, epoch = args.Profile, args.LaunchRef, args.EventRef, args.Epoch
+		adapter, launch, event, epoch = args.Profile.Adapter, args.LaunchRef, args.EventRef, args.Epoch
 	case wire.VerbHookEvent:
 		var args wire.HookEventArgs
 		if err := json.Unmarshal(req.Args, &args); err != nil {
 			return nil, commandError(core.ExitUsage, "", "invalid hook event"), nil
 		}
-		profile, launch, event, epoch = args.Profile, args.LaunchRef, args.EventRef, args.Epoch
+		adapter, launch, event, epoch = args.Profile.Adapter, args.LaunchRef, args.EventRef, args.Epoch
+	case wire.VerbHookRoute:
+		var args wire.HookRouteArgs
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return nil, commandError(core.ExitUsage, "", "invalid hook route"), nil
+		}
+		adapter, launch, event, epoch = args.Adapter, args.LaunchRef, args.EventRef, args.Epoch
 	}
-	if arrival.Owner || r.Caller.Role == core.RoleOwner || r.Vendor != profile.Adapter ||
-		(profile.Adapter != "claude" && profile.Adapter != "codex") {
+	if arrival.Owner || r.Caller.Role == core.RoleOwner || r.Vendor != adapter ||
+		(adapter != "claude" && adapter != "codex") {
 		return nil, commandError(core.ExitRefused, "", "hook identity does not match the member exchange"), nil
 	}
-	if req.Verb == wire.VerbHookEvent && r.Caller.Role != core.RoleMember {
+	if (req.Verb == wire.VerbHookEvent || req.Verb == wire.VerbHookRoute) && r.Caller.Role != core.RoleMember {
 		return nil, commandError(core.ExitNotEnrolled, core.CodeNotEnrolled, "hook event requires a live member"), nil
 	}
 	if launch == "" || len(launch) > 128 || strings.Contains(launch, ":") || event == "" || len(event) > 256 ||
-		req.OpKey != "hook:"+profile.Adapter+":"+launch+":"+event {
+		req.OpKey != "hook:"+adapter+":"+launch+":"+event {
 		return nil, commandError(core.ExitUsage, "", "invalid hook operation key"), nil
 	}
-	policy, err := store.ReadAdapterPolicy(ctx, tx, profile.Adapter)
+	policy, err := store.ReadAdapterPolicy(ctx, tx, adapter)
 	if err != nil {
 		return nil, core.Result{}, err
 	}

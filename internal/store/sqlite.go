@@ -32,7 +32,10 @@ var joinPoolSchema string
 //go:embed migrations/006_linked_handoff.sql
 var linkedHandoffSchema string
 
-var migrations = []string{initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema, joinPoolSchema, linkedHandoffSchema}
+//go:embed migrations/007_publish_routes.sql
+var publishRoutesSchema string
+
+var migrations = []string{initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema, joinPoolSchema, linkedHandoffSchema, publishRoutesSchema}
 
 // Store owns the dispatcher's single SQLite connection.
 type Store struct {

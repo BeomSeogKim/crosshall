@@ -107,6 +107,11 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 	if err != nil {
 		return transportOutcome(ctx, err)
 	}
+	if (want && reply.Response.Status == core.ExitOK || !want) && !hookExpired(ctx) {
+		if routeReq, ok := makeRouteRequest(entry, m, spec, e, policy.Epoch); ok {
+			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
+		}
+	}
 	if clean || !want {
 		return "clean" // published without waiting for a response
 	}
@@ -244,6 +249,28 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		})
 	}
 	return req
+}
+
+func makeRouteRequest(entry time.Time, m manifest, spec eventSpec, e event, epoch uint64) (wire.Request, bool) {
+	if e.SocketPath == "" && e.PermissionMode == "" {
+		return wire.Request{}, false
+	}
+	ref := "route:" + e.reference(entry)
+	args, _ := json.Marshal(wire.HookRouteArgs{
+		Adapter:        m.Adapter,
+		LaunchRef:      e.LaunchRef,
+		LaunchVerified: e.LaunchVerified,
+		EventRef:       ref,
+		HookAtMS:       entry.UnixMilli(),
+		Epoch:          epoch,
+		PermissionMode: e.PermissionMode,
+		SocketPath:     e.SocketPath,
+	})
+	return wire.Request{
+		OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		Verb:  wire.VerbHookRoute,
+		Args:  args,
+	}, true
 }
 
 // present renders only the fields appropriate for this boundary.

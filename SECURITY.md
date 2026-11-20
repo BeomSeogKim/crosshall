@@ -13,7 +13,7 @@ Report it privately, by either of:
 
 - GitHub's private vulnerability reporting on this repository (the
   "Report a vulnerability" button under the Security tab), or
-- email to **kbs4520@daum.net** with the subject starting `[security]`.
+- email to **dev.adrianstudio@gmail.com** with the subject starting `[security]`.
 
 Include what you found, how to reproduce it, and what an attacker could do
 with it. You will get an acknowledgement, and a fix or a decision is

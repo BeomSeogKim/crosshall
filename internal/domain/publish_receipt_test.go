@@ -265,3 +265,33 @@ func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
 	p.observation(id, "unknown")
 	p.verifyPromptOrigin(cmd, "unknown")
 }
+
+// Fable: a publish notice the session observed counts as already told for
+// the prompt line, like a turn-end announcement; a notice claimed but not
+// observed does not, since the session may never have seen it.
+func TestThePromptLineSkipsIDsAnObservedNoticeCarried(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	seen := p.turnEndAsk(p.writer, "reader", "seen")
+	id := p.reserve()
+	if ids := p.begin(id); !slices.Equal(ids, []int64{seen}) {
+		t.Fatalf("notice carried %v", ids)
+	}
+	got := p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli()+100, []int64{seen}))
+	p.observation(id, "own_turn")
+	if got.PendingLine != "" {
+		t.Fatalf("the notice's own turn repeats its IDs: %q", got.PendingLine)
+	}
+	p.hook(p.reader, stop(publishTestLaunch, "notice", p.now.UnixMilli()+200))
+	unseen := p.turnEndAsk(p.writer, "reader", "unseen")
+	p.resolve(id, PublishSubmitted)
+	id = p.reserve()
+	if ids := p.begin(id); !slices.Equal(ids, []int64{unseen}) {
+		t.Fatalf("second notice carried %v", ids)
+	}
+	got = p.hook(p.reader, prompt(publishTestLaunch, "user", p.now.UnixMilli()+300))
+	if got.PendingLine != pendingLine(unseen) {
+		t.Fatalf("prompt line %q, want only the unobserved notice's %d", got.PendingLine, unseen)
+	}
+}

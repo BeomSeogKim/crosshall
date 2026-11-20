@@ -425,11 +425,17 @@ func (p *publishFixture) unproven() PublishProof {
 	return proofs[0]
 }
 
-func (p *publishFixture) confirm(proof PublishProof, queue PublishQueue) bool {
+// proven is the fixture listener's proof: its queue, started at the
+// queue's start time.
+func (p *publishFixture) proven() publish.Proven {
+	return publish.Proven{Queue: p.queue, StartedAtMS: p.queue.StartMS}
+}
+
+func (p *publishFixture) confirm(proof PublishProof, proven publish.Proven) bool {
 	p.t.Helper()
 	var recorded bool
 	p.update(func(ctx context.Context, tx store.Tx) (err error) {
-		recorded, err = ConfirmPublishProof(ctx, tx, proof, queue)
+		recorded, err = ConfirmPublishProof(ctx, tx, proof, proven)
 		return err
 	})
 	return recorded
@@ -444,16 +450,18 @@ func TestAProofMustBeTheExpectedLaunch(t *testing.T) {
 		proof.Probe.Route.SocketPath != publishTestSocket || proof.Probe.StartedHookAtMS != p.now.UnixMilli() {
 		t.Fatalf("probe %+v lacks the registered launch evidence", proof.Probe)
 	}
-	for name, queue := range map[string]PublishQueue{
-		"another process":        {PID: 43, StartMS: p.queue.StartMS},
-		"started after the hook": {PID: 42, StartMS: p.now.UnixMilli() + 1},
-		"no start time":          {PID: 42},
+	start := p.queue.StartMS
+	for name, proven := range map[string]publish.Proven{
+		"another process":        {Queue: PublishQueue{PID: 43, StartMS: start}, StartedAtMS: start},
+		"started after the hook": {Queue: p.queue, StartedAtMS: p.now.UnixMilli() + 1},
+		"no start estimate":      {Queue: p.queue},
+		"no start identity":      {Queue: PublishQueue{PID: 42}, StartedAtMS: start},
 	} {
-		if p.confirm(proof, queue) {
-			t.Fatalf("%s: recorded %+v for launch %s", name, queue, proof.Probe.LaunchRef)
+		if p.confirm(proof, proven) {
+			t.Fatalf("%s: recorded %+v for launch %s", name, proven, proof.Probe.LaunchRef)
 		}
 	}
-	if !p.confirm(proof, p.queue) {
+	if !p.confirm(proof, p.proven()) {
 		t.Fatal("the launch's own process was not recorded")
 	}
 }
@@ -493,7 +501,7 @@ func TestARouteActivatesAtItsFirstAvailability(t *testing.T) {
 			p := newPublishFixture(t)
 			probe := p.unproven() // the proof is asked for, then the route stops
 			c.block(p)
-			if !p.confirm(probe, p.queue) {
+			if !p.confirm(probe, p.proven()) {
 				t.Fatal("the listener's identity was not recorded")
 			}
 			p.activate()

@@ -12,11 +12,20 @@ import (
 	"sync"
 )
 
-// Queue is the vendor process a notice is written to: its PID and start
-// time.
+// Queue is the vendor process a notice is written to: its PID and its
+// start identity, a kernel value every reader gets the same for the life
+// of the process (proc.Start). It is stored and compared at every send.
 type Queue struct {
 	PID     int64
 	StartMS int64
+}
+
+// Proven is a transport's proof of a listener: its queue, and the
+// process's wall-clock start estimate, used only to check that it started
+// no later than the launch's first hook.
+type Proven struct {
+	Queue       Queue
+	StartedAtMS int64
 }
 
 // Target is where one notice goes.
@@ -46,7 +55,7 @@ type Transport struct {
 	// before any notice is reserved for it; ok is false without that
 	// proof. The core records it only when that process is the probe's
 	// launch, started no later than the launch's first hook.
-	Prove func(ctx context.Context, probe Probe) (queue Queue, ok bool)
+	Prove func(ctx context.Context, probe Probe) (proven Proven, ok bool)
 	// Send writes one notice to a proven target.
 	Send func(context.Context, Target, string) Outcome
 	// Retired requires proof the queue is gone.

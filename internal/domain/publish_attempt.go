@@ -184,12 +184,12 @@ func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]P
 	return proofs, rows.Err()
 }
 
-// launchOwns reports whether queue is the probe's launch: the process its
+// launchOwns reports whether the proven listener is the probe's launch: the process its
 // launch reference names, started no later than the launch's first hook.
-func launchOwns(probe publish.Probe, queue PublishQueue) bool {
+func launchOwns(probe publish.Probe, proven publish.Proven) bool {
 	process, ok := ident.LaunchProcess(probe.LaunchRef)
-	return ok && queue.PID > 0 && process == fmt.Sprintf("pid-%d", queue.PID) &&
-		queue.StartMS > 0 && queue.StartMS <= probe.StartedHookAtMS
+	return ok && proven.Queue.PID > 0 && process == fmt.Sprintf("pid-%d", proven.Queue.PID) && proven.Queue.StartMS > 0 &&
+		proven.StartedAtMS > 0 && proven.StartedAtMS <= probe.StartedHookAtMS
 }
 
 // ConfirmPublishProof records a transport's proof for a route only if the
@@ -197,8 +197,8 @@ func launchOwns(probe publish.Probe, queue PublishQueue) bool {
 // route is still unproven on the same generation, launch and resolved
 // address the proof was asked for. It records identity only; whether and
 // from which message the route publishes is ActivatePublishRoutes'.
-func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, queue PublishQueue) (bool, error) {
-	if !launchOwns(proof.Probe, queue) {
+func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, proven publish.Proven) (bool, error) {
+	if !launchOwns(proof.Probe, proven) {
 		return false, nil
 	}
 	var route publish.Probe
@@ -221,7 +221,7 @@ func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, q
 	if route != proof.Probe {
 		return false, nil
 	}
-	return true, ConfirmPublishRoute(ctx, tx, proof.Binding, queue)
+	return true, ConfirmPublishRoute(ctx, tx, proof.Binding, proven.Queue)
 }
 
 func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]PublishBinding, error) {

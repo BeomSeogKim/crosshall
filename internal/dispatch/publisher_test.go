@@ -745,7 +745,7 @@ func TestPublisherWithoutASenderAnyMoreRecordsNoSubmission(t *testing.T) {
 	f := newPublishTestFixture(t)
 	f.ask(t, 11)
 	id := f.reserve(t, false)
-	t.Cleanup(publish.Swap(publish.Shipped())) // the sender is gone after the reservation
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{}))) // the sender is gone after the reservation
 	p := &publisher{db: f.db}
 	p.submit(t.Context(), id)
 	f.requireAttempt(t, id, domain.PublishNotSubmitted)
@@ -791,7 +791,7 @@ func countPublish(t *testing.T, f *publishTestFixture, table string) int {
 func TestPublisherReservesOnlyForAnAdapterThatSends(t *testing.T) {
 	f := newPublishTestFixture(t)
 	sent := make(chan string, 4)
-	t.Cleanup(publish.Swap(publish.Shipped().With("fixture", fixtureAdapter{publish.Transport{
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{}).With("fixture", fixtureAdapter{publish.Transport{
 		Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
 			sent <- line
 			return publish.Submitted
@@ -831,9 +831,9 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 			proofs := make(chan publish.Probe, 4)
 			sent := make(chan string, 4)
 			useTransport(t, publish.Transport{
-				Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+				Prove: func(_ context.Context, probe publish.Probe) (publish.Proven, bool) {
 					proofs <- probe
-					return publishTestTarget.Queue, proves
+					return publish.Proven{Queue: publishTestTarget.Queue, StartedAtMS: 1234}, proves
 				},
 				Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
 					sent <- line
@@ -904,9 +904,9 @@ func TestAListenerIsProvenOnlyForItsOwnLaunch(t *testing.T) {
 			VALUES (3, 3, 1, 'claude', 'session-3', 'pid-2346', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1)`)
 	asked := make(chan string, 4)
 	useTransport(t, publish.Transport{
-		Prove: func(_ context.Context, probe publish.Probe) (publish.Queue, bool) {
+		Prove: func(_ context.Context, probe publish.Probe) (publish.Proven, bool) {
 			asked <- probe.LaunchRef
-			return publishTestTarget.Queue, true // the one listener on the socket
+			return publish.Proven{Queue: publishTestTarget.Queue, StartedAtMS: 1234}, true // the one listener on the socket
 		},
 		Send: func(context.Context, publish.Target, string) publish.Outcome { return publish.Submitted },
 	})

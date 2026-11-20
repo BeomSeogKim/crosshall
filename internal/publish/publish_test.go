@@ -71,12 +71,15 @@ func TestClaudeRecognizesOnlyItsOwnNotice(t *testing.T) {
 	}
 }
 
-func TestNothingSendsInTheShippedBuild(t *testing.T) {
-	if got := Shipped().Senders(); len(got) != 0 {
-		t.Fatalf("shipped senders %v before a sender is built", got)
+func TestOnlyClaudeSendsInTheShippedBuild(t *testing.T) {
+	if got := Shipped().Senders(); !slices.Equal(got, []string{"claude"}) {
+		t.Fatalf("shipped senders %v", got)
 	}
-	if _, why := Adapters().Address("claude", Route{SocketPath: "/tmp/cc-socks/1.sock"}); why != "no sender for claude" {
-		t.Fatalf("claude route: %q", why)
+	if _, why := Shipped().Address("codex", Route{ThreadID: "t"}); why != "no sender for codex" {
+		t.Fatalf("codex route: %q", why)
+	}
+	if tr := Shipped()["claude"].Transport(); tr.Prove == nil || tr.Retired == nil {
+		t.Fatal("the Claude sender cannot prove or retire its queue")
 	}
 }
 
@@ -93,7 +96,7 @@ func (f fixture) Transport() Transport            { return f.transport }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }
-	r := Shipped().With("fixture", fixture{Transport{Send: send}})
+	r := Shipped().WithTransport("claude", Transport{}).With("fixture", fixture{Transport{Send: send}})
 	if got := r.Senders(); !slices.Equal(got, []string{"fixture"}) {
 		t.Fatalf("senders %v: one adapter's sender must not count for another", got)
 	}

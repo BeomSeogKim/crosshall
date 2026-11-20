@@ -64,8 +64,8 @@ func TestUninstallRecoversAnInterruptedSetup(t *testing.T) {
 	}
 	left, err := os.ReadFile(path)
 	if err != nil || !bytes.Contains(left, []byte(`"owner_setting":true`)) ||
-		bytes.Contains(left, []byte("crosshall binary")) || strings.Join(disabled, ",") != "claude,codex" {
-		t.Fatalf("uninstall did not retain owner settings and disable both policies: %q, %v, %v", left, disabled, err)
+		bytes.Contains(left, []byte("crosshall binary")) || strings.Join(disabled, ",") != "claude,codex,agy" {
+		t.Fatalf("uninstall did not retain owner settings and disable all adapter policies: %q, %v, %v", left, disabled, err)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestOversizePlanNeverEntersTheJournal(t *testing.T) {
 	}
 }
 
-func TestUninstallDisablesBothAdaptersAndRetainsAmbiguousConfiguration(t *testing.T) {
+func TestUninstallDisablesAllAdaptersAndRetainsAmbiguousConfiguration(t *testing.T) {
 	service, claude := setupFixture(t)
 	codex := filepath.Join(os.Getenv("CODEX_HOME"), "hooks.json")
 	if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "codex"),
@@ -107,7 +107,7 @@ func TestUninstallDisablesBothAdaptersAndRetainsAmbiguousConfiguration(t *testin
 			t.Fatalf("uninstall enabled %s", adapter)
 		}
 		if _, err := os.Lstat(codex); err != nil {
-			t.Fatalf("removed the safe config before both policies were disabled: %v", err)
+			t.Fatalf("removed the safe config before all adapter policies were disabled: %v", err)
 		}
 		disabled = append(disabled, adapter)
 		return nil
@@ -118,7 +118,7 @@ func TestUninstallDisablesBothAdaptersAndRetainsAmbiguousConfiguration(t *testin
 	if out, err := runSetupTest(t, service, "uninstall", "yes\n", false); err != nil || !strings.Contains(out, "retain") {
 		t.Fatalf("uninstall must retain the ambiguous file: %q, %v", out, err)
 	}
-	if strings.Join(disabled, ",") != "claude,codex" {
+	if strings.Join(disabled, ",") != "claude,codex,agy" {
 		t.Fatalf("policies disabled: %v", disabled)
 	}
 	if raw, err := os.ReadFile(claude); err != nil || !bytes.Equal(raw, ambiguous) {
@@ -129,7 +129,7 @@ func TestUninstallDisablesBothAdaptersAndRetainsAmbiguousConfiguration(t *testin
 	}
 }
 
-func TestUninstallDisablesBothAdaptersWhenConfigChangesAfterPreview(t *testing.T) {
+func TestUninstallDisablesAllAdaptersWhenConfigChangesAfterPreview(t *testing.T) {
 	service, path := setupFixture(t)
 	if _, err := runSetupTest(t, service, "setup", "yes\nno\nno\n", false); err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestUninstallDisablesBothAdaptersWhenConfigChangesAfterPreview(t *testing.T
 	}
 	err = service.apply(t.Context(), digest, op)
 	if err == nil || !strings.Contains(err.Error(), "configuration changed after planning") ||
-		strings.Join(disabled, ",") != "claude,codex" {
+		strings.Join(disabled, ",") != "claude,codex,agy" {
 		t.Fatalf("policy disablement should precede the stale-plan refusal: %v, %v", disabled, err)
 	}
 	if raw, err := os.ReadFile(path); err != nil || !bytes.Equal(raw, ownerEdit) {

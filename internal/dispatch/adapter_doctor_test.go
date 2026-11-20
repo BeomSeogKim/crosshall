@@ -211,7 +211,8 @@ func TestDoctorExplainsCodexSharedDaemonRouting(t *testing.T) {
 			if err := json.Unmarshal(result.Data, &data); err != nil {
 				t.Fatal(err)
 			}
-			if len(data.Adapters) != 2 || data.Adapters[0].Route != "" || data.Adapters[1].Adapter != "codex" || data.Adapters[1].Route != test.route {
+			if len(data.Adapters) != 3 || data.Adapters[0].Route != "" || data.Adapters[1].Adapter != "codex" ||
+				data.Adapters[1].Route != test.route || data.Adapters[2].Adapter != "agy" || data.Adapters[2].Route != "" {
 				t.Errorf("doctor adapters = %+v, want Codex route %q", data.Adapters, test.route)
 			}
 			if test.route == "" {
@@ -305,10 +306,10 @@ func TestDoctorReportsAdapterEvidenceAndTodayCounters(t *testing.T) {
 		}
 	}
 	var before, data diagnostics
-	if err := json.Unmarshal(beforeImport.Data, &before); err != nil || len(before.Adapters) != 2 {
+	if err := json.Unmarshal(beforeImport.Data, &before); err != nil || len(before.Adapters) != 3 {
 		t.Fatalf("adapter diagnostics before evidence import: %s (%v)", beforeImport.Data, err)
 	}
-	if err := json.Unmarshal(result.Data, &data); err != nil || len(data.Adapters) != 2 {
+	if err := json.Unmarshal(result.Data, &data); err != nil || len(data.Adapters) != 3 {
 		t.Fatalf("adapter diagnostics: %s (%v)", result.Data, err)
 	}
 	for i, adapter := range data.Adapters {
@@ -391,7 +392,7 @@ func TestDoctorShowsOnlyReminderEvidenceForInstalledBuild(t *testing.T) {
 				Reminder         *reminderDiagnostic
 			}
 		}
-		if err := json.Unmarshal(r.Data, &data); err != nil || len(data.Adapters) != 2 {
+		if err := json.Unmarshal(r.Data, &data); err != nil || len(data.Adapters) != 3 {
 			t.Fatalf("adapter diagnostics: %s (%v)", r.Data, err)
 		}
 		claude := data.Adapters[0]

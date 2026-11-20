@@ -217,7 +217,7 @@ Keep `~/.local/bin` on PATH in your agent sessions and tell the agent, for examp
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | only in `claude -p`, after the owner imports evidence | 2.1.328, macOS |
 | Codex CLI | `CODEX_THREAD_ID` | a wait in the foreground | yes; its observations are marked unverified | unavailable | 0.170.0, macOS |
-| Antigravity | `ANTIGRAVITY_CONVERSATION_ID` | not measured | no | unavailable | 1.5.11 as the agent reported it, macOS |
+| Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | not measured | SessionStart | unavailable | 1.5.11 as the agent reported it, macOS |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
 
 - **Standing by:** crosshall does not wake an idle session. An agent waiting for work runs one bounded wait, `crosshall wait --existing --work-only --timeout 9m`, whose result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).

@@ -47,7 +47,6 @@ type promptResult struct {
 type choice struct {
 	plan   VendorPlan
 	answer answer
-	rules  ClaudeRules
 }
 
 type prompter struct {
@@ -129,21 +128,23 @@ func (p *prompter) offer(ctx context.Context) error {
 	if err != nil {
 		return nil
 	}
+	eligible := make(map[string]bool)
 	for _, st := range statuses {
 		if st.HookAdapter && st.Footprint != "none" {
 			return nil
 		}
+		eligible[st.Adapter] = st.HookAdapter && st.CLI == "found"
 	}
 	prefs, err := p.s.readOfferPrefs()
 	if err != nil {
 		return nil
 	}
-	plans = slices.DeleteFunc(plans, func(plan VendorPlan) bool { return prefs.Vendors[plan.Adapter].Answer == "no" })
+	plans = slices.DeleteFunc(plans, func(plan VendorPlan) bool {
+		return !eligible[plan.Adapter] || prefs.Vendors[plan.Adapter].Answer == "no"
+	})
 	if len(plans) == 0 {
 		return nil
 	}
-	fmt.Fprintln(p.out, "crosshall can install hooks for the agents below, one question each.")
-	fmt.Fprintln(p.out, "A no is remembered and the installer will not ask about that agent again; Enter skips it this time.")
 	return p.askFrom(ctx, plans, prefs.snapshot(), nil)
 }
 
@@ -208,8 +209,6 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 	return p.finish(result, note)
 }
 
-// ask shows each vendor's plan, asks about it, then applies the accepted
-// plans in order and remembers each explicit answer.
 func (p *prompter) ask(ctx context.Context, plans []VendorPlan) error {
 	// The decisions as they stood before asking: an answer given here does
 	// not replace a decision another run makes meanwhile.
@@ -219,8 +218,7 @@ func (p *prompter) ask(ctx context.Context, plans []VendorPlan) error {
 
 func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[string]int64, seenErr error) error {
 	result := promptResult{Kind: "setup"}
-	var choices []choice
-	answers := map[string]answer{}
+	var eligible []VendorPlan
 	for _, plan := range plans {
 		if plan.Err != nil {
 			o := outcomeOf(plan)
@@ -229,36 +227,62 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			fmt.Fprintf(p.out, "%s: %v\n", plan.Name, plan.Err)
 			continue
 		}
+		if plan.Resume || plan.Recovery {
+			if err := p.printPlan(plan); err != nil {
+				return err
+			}
+			a, err := p.interrupted(plan)
+			if err != nil {
+				return err
+			}
+			result.Vendors = append(result.Vendors, p.apply(ctx, choice{plan: plan, answer: a}))
+			continue
+		}
+		if _, err := fmt.Fprintf(p.out, "%s hooks in %s (%s)\n", plan.Name, plan.Path, pathSource(plan)); err != nil {
+			return err
+		}
+		plan.Approvals = nil
 		if err := p.printPlan(plan); err != nil {
 			return err
 		}
-		c := choice{plan: plan}
-		var err error
-		switch {
-		case plan.Resume || plan.Recovery:
-			c.answer, err = p.interrupted(plan)
-		default:
-			c.answer, err = p.question(fmt.Sprintf("Install %s hooks in %s (%s)?", plan.Name, plan.Path, pathSource(plan)))
-			if err == nil {
-				answers[plan.Adapter] = c.answer
-			}
-			if err == nil && c.answer == answerYes {
-				c.rules, err = p.claudeRules(plan)
-			}
-		}
-		if err != nil {
+		eligible = append(eligible, plan)
+	}
+	if len(eligible) == 0 {
+		return p.finish(result, "")
+	}
+	if p.req.Offer {
+		if _, err := fmt.Fprintln(p.out, "A no skips future installer offers for the listed agents. Enter skips this offer."); err != nil {
 			return err
 		}
-		choices = append(choices, c)
 	}
-	if seenErr == nil {
-		seenErr = p.s.rememberAnswers(answers, seen, p.now())
+	label := "Install the listed hooks?"
+	pathConsent := p.req.Offer && p.req.PathConsent != nil
+	if pathConsent {
+		label = "Apply the shown PATH change and install the listed hooks?"
 	}
-	if seenErr != nil {
-		fmt.Fprintf(p.out, "Your answers could not be remembered: %v\n", seenErr)
+	a, err := p.question(label)
+	if err != nil {
+		return err
 	}
-	for _, c := range choices {
-		result.Vendors = append(result.Vendors, p.apply(ctx, c))
+	if pathConsent {
+		if err := p.req.PathConsent(a == answerYes); err != nil {
+			return fmt.Errorf("record installer consent: %w", err)
+		}
+	}
+	if p.req.Offer || a == answerYes {
+		answers := make(map[string]answer, len(eligible))
+		for _, plan := range eligible {
+			answers[plan.Adapter] = a
+		}
+		if seenErr == nil {
+			seenErr = p.s.rememberAnswers(answers, seen, p.now())
+		}
+		if seenErr != nil {
+			fmt.Fprintf(p.out, "Your answers could not be remembered: %v\n", seenErr)
+		}
+	}
+	for _, plan := range eligible {
+		result.Vendors = append(result.Vendors, p.apply(ctx, choice{plan: plan, answer: a}))
 	}
 	return p.finish(result, "")
 }
@@ -278,7 +302,7 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 	if c.plan.Action == "uninstall" {
 		err = p.ops.Uninstall(ctx, c.plan)
 	} else {
-		err = p.ops.Install(ctx, c.plan, c.rules)
+		err = p.ops.Install(ctx, c.plan, ClaudeRules{})
 	}
 	switch {
 	case err != nil:
@@ -295,26 +319,6 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		}
 	}
 	return o
-}
-
-func (p *prompter) claudeRules(plan VendorPlan) (ClaudeRules, error) {
-	var rules ClaudeRules
-	for _, o := range plan.Approvals {
-		if o.Manual {
-			continue
-		}
-		a, err := p.question(fmt.Sprintf("Add %s %s-command allow rules?", plan.Name, o.Kind))
-		if err != nil {
-			return rules, err
-		}
-		switch o.Kind {
-		case "read":
-			rules.Read = a == answerYes
-		case "send":
-			rules.Send = a == answerYes
-		}
-	}
-	return rules, nil
 }
 
 // uninstall removes the named vendors (a bare uninstall keeps the rc.6 path).
@@ -339,14 +343,16 @@ func (p *prompter) uninstall(ctx context.Context) error {
 			result.Vendors = append(result.Vendors, o)
 			continue
 		}
-		var a answer
-		if plan.Resume || plan.Recovery {
-			a, err = p.interrupted(plan)
-		} else {
-			a, err = p.question(fmt.Sprintf("Remove the crosshall hooks for %s from %s?", plan.Name, plan.Path))
-		}
-		if err != nil {
-			return err
+		a := answerYes
+		if !p.req.Apply {
+			if plan.Resume || plan.Recovery {
+				a, err = p.interrupted(plan)
+			} else {
+				a, err = p.question(fmt.Sprintf("Remove the crosshall hooks for %s from %s?", plan.Name, plan.Path))
+			}
+			if err != nil {
+				return err
+			}
 		}
 		result.Vendors = append(result.Vendors, p.apply(ctx, choice{plan: plan, answer: a}))
 	}

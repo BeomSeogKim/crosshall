@@ -9,11 +9,13 @@ import (
 	"unicode/utf8"
 )
 
-// Entry is a complete hook group, or an allow rule when Event is empty.
 type Entry struct {
 	Event string          `json:"event,omitempty"`
+	Group string          `json:"group,omitempty"`
 	Value json.RawMessage `json:"value"`
 }
+
+const agyHookGroup = "crosshall"
 
 var (
 	errInvalidConfig = errors.New("invalid or ambiguous vendor configuration JSON")
@@ -32,6 +34,7 @@ type configNode struct {
 
 type configField struct {
 	key   string
+	start int
 	value *configNode
 }
 
@@ -66,6 +69,10 @@ func readConfigNode(raw []byte, dec *json.Decoder) (*configNode, error) {
 		node.kind = '{'
 		seen := make(map[string]bool)
 		for dec.More() {
+			keyStart := int(dec.InputOffset())
+			for keyStart < len(raw) && strings.IndexByte(" \r\n\t,", raw[keyStart]) >= 0 {
+				keyStart++
+			}
 			token, err := dec.Token()
 			key, ok := token.(string)
 			if err != nil || !ok || seen[key] {
@@ -76,7 +83,7 @@ func readConfigNode(raw []byte, dec *json.Decoder) (*configNode, error) {
 			if err != nil {
 				return nil, err
 			}
-			node.fields = append(node.fields, configField{key, child})
+			node.fields = append(node.fields, configField{key, keyStart, child})
 		}
 	case json.Delim('['):
 		node.kind = '['
@@ -165,17 +172,28 @@ func parseConfigEntry(entry Entry) (configEntry, error) {
 		return configEntry{}, errInvalidEntry
 	}
 	parsed := configEntry{value: node}
-	if entry.Event == "" {
+	switch {
+	case entry.Group != "":
+		if entry.Group != agyHookGroup || entry.Event != "SessionStart" || node.kind != '{' || len(node.fields) != 1 {
+			return configEntry{}, errInvalidEntry
+		}
+		list := node.field(entry.Event)
+		if list == nil || list.kind != '[' || len(list.items) != 1 || list.items[0].kind != '{' {
+			return configEntry{}, errInvalidEntry
+		}
+		parsed.handler = list.items[0]
+	case entry.Event == "":
 		if _, ok := node.stringValue(); !ok {
 			return configEntry{}, errInvalidEntry
 		}
 		return parsed, nil
+	default:
+		children, err := configHookHandlers(node)
+		if err != nil || len(children) != 1 {
+			return configEntry{}, errInvalidEntry
+		}
+		parsed.handler = children[0]
 	}
-	children, err := configHookHandlers(node)
-	if err != nil || len(children) != 1 {
-		return configEntry{}, errInvalidEntry
-	}
-	parsed.handler = children[0]
 	typ, _ := parsed.handler.field("type").stringValue()
 	command, _ := parsed.handler.field("command").stringValue()
 	if typ != "command" || command == "" {
@@ -288,7 +306,12 @@ func addEntries(original []byte, want []Entry) ([]byte, []Entry, error) {
 		if matches.installed > 0 {
 			continue
 		}
-		updated = appendConfigEntry(updated, container, missing, entry.Value)
+		if entry.Group != "" {
+			key, _ := json.Marshal(entry.Group)
+			updated = appendConfigValue(updated, container, append(append(key, ':'), entry.Value...))
+		} else {
+			updated = appendConfigEntry(updated, container, missing, entry.Value)
+		}
 		added = append(added, entry)
 	}
 	return updated, added, nil
@@ -310,12 +333,7 @@ func removeEntries(original []byte, claims []Entry) ([]byte, []Entry, error) {
 			remaining = append(remaining, entry)
 			continue
 		}
-		start, end := list.items[matches.index].start, list.items[matches.index].end
-		if matches.index > 0 {
-			start = list.items[matches.index-1].end
-		} else if len(list.items) > 1 {
-			end = list.items[1].start
-		}
+		start, end := configEntryRange(list, matches.index)
 		updated = spliceConfig(updated, start, end, nil)
 	}
 	return updated, remaining, nil
@@ -349,6 +367,21 @@ func locateConfigEntry(doc *configNode, entry Entry) (*configNode, []string, con
 	if err != nil || doc == nil {
 		return nil, nil, configMatches{}, err
 	}
+	if entry.Group != "" {
+		if doc.kind != '{' {
+			return nil, nil, configMatches{}, errInvalidConfig
+		}
+		for i, field := range doc.fields {
+			if field.key == entry.Group {
+				matches := configMatches{related: 1, index: i}
+				if sameConfigValue(field.value, want.value) {
+					matches.installed, matches.full = 1, 1
+				}
+				return doc, nil, matches, nil
+			}
+		}
+		return doc, nil, configMatches{}, nil
+	}
 	container, missing, err := findConfigSlot(doc, entry)
 	if err != nil || len(missing) > 0 {
 		return container, missing, configMatches{}, err
@@ -358,7 +391,6 @@ func locateConfigEntry(doc *configNode, entry Entry) (*configNode, []string, con
 }
 
 func appendConfigEntry(raw []byte, container *configNode, missing []string, value []byte) []byte {
-	offset := container.start + 1
 	if len(missing) > 0 {
 		value = append(append([]byte{'['}, value...), ']')
 		for i := len(missing) - 1; i >= 0; i-- {
@@ -369,6 +401,11 @@ func appendConfigEntry(raw []byte, container *configNode, missing []string, valu
 			}
 		}
 	}
+	return appendConfigValue(raw, container, value)
+}
+
+func appendConfigValue(raw []byte, container *configNode, value []byte) []byte {
+	offset := container.start + 1
 	if len(container.fields) > 0 {
 		offset = container.fields[len(container.fields)-1].value.end
 	} else if len(container.items) > 0 {
@@ -378,6 +415,26 @@ func appendConfigEntry(raw []byte, container *configNode, missing []string, valu
 		value = append([]byte{','}, value...)
 	}
 	return spliceConfig(raw, offset, offset, value)
+}
+
+func configEntryRange(container *configNode, index int) (start, end int) {
+	if container.kind == '{' {
+		field := container.fields[index]
+		start, end = field.start, field.value.end
+		if index > 0 {
+			start = container.fields[index-1].value.end
+		} else if len(container.fields) > 1 {
+			end = container.fields[1].start
+		}
+		return start, end
+	}
+	start, end = container.items[index].start, container.items[index].end
+	if index > 0 {
+		start = container.items[index-1].end
+	} else if len(container.items) > 1 {
+		end = container.items[1].start
+	}
+	return start, end
 }
 
 func spliceConfig(raw []byte, start, end int, value []byte) []byte {

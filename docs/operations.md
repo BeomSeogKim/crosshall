@@ -8,7 +8,7 @@ For the owner: identities, members that go quiet, and the commands that run from
 
 If there is no verified archive, the installer reports why and builds from the checked-out tag with Go 1.27.4 or later, which may download Go modules missing from the local cache. Use `./scripts/install.sh --source` to choose the source build directly. Without Go, replacing a different existing executable at the destination requires `--force`. Run from a checkout that is not at a release tag, the installer names a local release tag and the command that switches to it.
 
-On a fresh install or upgrade in your own terminal, the installer offers hooks for each supported CLI it finds on PATH (Claude Code or Codex). Answer `no` to skip future automatic offers for that vendor, or press Enter to skip it this time. The installer skips the questions in agent sessions, in CI, or when input or output is redirected. It also skips both vendors if it finds existing crosshall hooks, an installation record, a saved adapter policy or an interrupted setup for either vendor, or if it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry. See [adapters](adapters.md).
+On a fresh install or upgrade in your own terminal, the installer shows the eligible hook plans for Claude Code, Codex and Antigravity CLI together. It asks for one confirmation, including the PATH change when one was shown. Answer `no` to skip future automatic offers for the listed agents, or press Enter to skip this offer. The installer skips hook questions in agent sessions, in CI, and when input or output is redirected. It also skips them when it finds existing Crosshall hooks, an installation record, a saved adapter policy or an interrupted setup, or when it cannot determine the installation state. If optional setup fails, the binary stays installed and the installer prints a command to retry. See [adapters](adapters.md).
 
 ## Starting and stopping the dispatcher
 
@@ -18,7 +18,7 @@ On a fresh install or upgrade in your own terminal, the installer offers hooks f
 
 crosshall installs an executable in `~/.local/bin/crosshall` by default, runs a local dispatcher, and keeps its database, upgrade backups, log and owner spool in the state directory: `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`. Member spools live in a private rendezvous directory under `/tmp`. Optional hooks live in your agent settings.
 
-1. Run `crosshall uninstall` for each installation that has hooks. Review any edited or unmanaged hook entries it reports.
+1. In your own terminal, run `crosshall uninstall` for each installation that has hooks. From a script, use `crosshall uninstall --apply`. Review any edited or unmanaged hook entries it reports.
 2. In the owner terminal, record the two directory paths with `crosshall owner doctor`, stop any callers, and run `crosshall owner stop` for each state directory in use. For a dispatcher older than v0.1.0-rc.13, which has no `owner stop`, use the stop and wait steps in [upgrading](../UPGRADING.md).
 3. Remove the installed binary and the recorded state and rendezvous directories. Copy the state first if you want to keep messages, member records or backups.
 

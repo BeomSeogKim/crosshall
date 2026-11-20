@@ -76,9 +76,9 @@ func TestInterruptedUninstallDisablesPoliciesWithMovedVendorHome(t *testing.T) {
 		return nil
 	}
 	out, err := runSetupTest(t, service, "uninstall", "yes\n", false)
-	if err != nil || strings.Join(disabled, ",") != "claude,codex" ||
+	if err != nil || strings.Join(disabled, ",") != "claude,codex,agy" ||
 		!strings.Contains(out, "retain") || !strings.Contains(out, path) {
-		t.Fatalf("uninstall should disable both policies and report the retained path: %q, %v, %v", out, disabled, err)
+		t.Fatalf("uninstall should disable all adapter policies and report the retained path: %q, %v, %v", out, disabled, err)
 	}
 	to, err := os.Readlink(home)
 	if err != nil || to != moved {

@@ -70,7 +70,10 @@ func detectVersion(ctx context.Context, spec hook.InstallSpec, b build) string {
 	defer cancel()
 	cmd := exec.CommandContext(probe, b.Executable, "--version")
 	cmd.Dir = scratch
-	cmd.Env = []string{"HOME=" + scratch, spec.HomeEnv + "=" + config, "TMPDIR=" + scratch, "PATH=" + os.Getenv("PATH")}
+	cmd.Env = []string{"HOME=" + scratch, "TMPDIR=" + scratch, "PATH=" + os.Getenv("PATH")}
+	if spec.HomeEnv != "" {
+		cmd.Env = append(cmd.Env, spec.HomeEnv+"="+config)
+	}
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 100 * time.Millisecond
 	var output bytes.Buffer
@@ -113,7 +116,11 @@ func resolveConfigPath(spec hook.InstallSpec) (configTarget, error) {
 	if !validConfigHome(home) {
 		return configTarget{}, errors.New("HOME must explicitly name an absolute configuration home")
 	}
-	config, overridden := os.LookupEnv(spec.HomeEnv)
+	var config string
+	var overridden bool
+	if spec.HomeEnv != "" {
+		config, overridden = os.LookupEnv(spec.HomeEnv)
+	}
 	source := "override"
 	if overridden {
 		if !validConfigHome(config) {
@@ -126,6 +133,8 @@ func resolveConfigPath(spec hook.InstallSpec) (configTarget, error) {
 			config = filepath.Join(home, ".claude")
 		case "codex":
 			config = filepath.Join(home, ".codex")
+		case "agy":
+			config = filepath.Join(home, ".gemini", "config")
 		default:
 			return configTarget{}, fmt.Errorf("no default configuration home for adapter %s", spec.Adapter)
 		}
@@ -144,8 +153,9 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 	if !filepath.IsAbs(executable) || strings.ContainsAny(executable, "\r\n\x00") || spec.Timeout <= 0 {
 		return nil, errors.New("invalid hook executable or timeout")
 	}
-	if spec.Adapter == "codex" && !validHookStateRoot(stateRoot) {
-		return nil, errors.New("the Codex hook state root must be an absolute path")
+	pinState := spec.Adapter == "codex" || spec.Adapter == "agy"
+	if pinState && !validHookStateRoot(stateRoot) {
+		return nil, fmt.Errorf("the %s hook state root must be an absolute path", statusAdapterName(spec.Adapter))
 	}
 	entries := make([]Entry, 0, len(spec.Events))
 	seen := make(map[string]bool)
@@ -167,11 +177,19 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 			h.Command, h.Args = executable, args
 		case "shell":
 			h.Command = shellQuote(executable) + " " + strings.Join(args, " ")
-			if spec.Adapter == "codex" {
-				h.Command = codexStateAssignment + shellQuote(stateRoot) + " " + h.Command
+			if pinState {
+				h.Command = hookStateAssignment + shellQuote(stateRoot) + " " + h.Command
 			}
 		default:
 			return nil, fmt.Errorf("unsupported install encoding %q", spec.Encoding)
+		}
+		if spec.Adapter == "agy" {
+			raw, err := json.Marshal(map[string][]handler{event: {h}})
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, Entry{Event: event, Group: agyHookGroup, Value: raw})
+			continue
 		}
 		raw, err := json.Marshal(struct {
 			Matcher string    `json:"matcher,omitempty"`

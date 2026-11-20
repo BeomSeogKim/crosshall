@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -26,11 +27,18 @@ type journal struct {
 }
 
 type ownedFile struct {
-	Path     string      `json:"path"`
-	Original fingerprint `json:"original"`
-	Latest   fingerprint `json:"latest"`
-	Entries  []Entry     `json:"entries"`
-	Undo     [][]span    `json:"undo,omitempty"`
+	Path     string             `json:"path"`
+	Original fingerprint        `json:"original"`
+	Latest   fingerprint        `json:"latest"`
+	Entries  []Entry            `json:"entries"`
+	Undo     [][]span           `json:"undo,omitempty"`
+	Dirs     []createdConfigDir `json:"created_dirs,omitempty"`
+}
+
+type createdConfigDir struct {
+	Name     string `json:"name"`
+	Identity string `json:"directory_id"`
+	Parent   string `json:"parent_id"`
 }
 
 type fingerprint struct {
@@ -69,17 +77,19 @@ type retainedFile struct {
 }
 
 type edit struct {
-	Adapter  string      `json:"adapter"`
-	Path     string      `json:"path"`
-	Before   fingerprint `json:"before"`
-	After    fingerprint `json:"after"`
-	Add      []Entry     `json:"add,omitempty"`
-	Remove   []Entry     `json:"remove,omitempty"`
-	Kept     []Entry     `json:"kept,omitempty"`
-	Restore  [][]span    `json:"restore,omitempty"`
-	Record   *ownedFile  `json:"record,omitempty"`
-	Stage    string      `json:"stage,omitempty"`
-	StageDir string      `json:"stage_dir,omitempty"`
+	Adapter        string             `json:"adapter"`
+	Path           string             `json:"path"`
+	Before         fingerprint        `json:"before"`
+	After          fingerprint        `json:"after"`
+	Add            []Entry            `json:"add,omitempty"`
+	Remove         []Entry            `json:"remove,omitempty"`
+	Kept           []Entry            `json:"kept,omitempty"`
+	Restore        [][]span           `json:"restore,omitempty"`
+	Record         *ownedFile         `json:"record,omitempty"`
+	Stage          string             `json:"stage,omitempty"`
+	StageDir       string             `json:"stage_dir,omitempty"`
+	CleanupDirs    []createdConfigDir `json:"cleanup_dirs,omitempty"`
+	CleanupStarted bool               `json:"cleanup_started,omitempty"`
 }
 
 type span struct {
@@ -209,7 +219,27 @@ func (s Service) lockState() (*os.Root, *os.File, error) {
 func (e edit) matchesAfter(now fingerprint) bool {
 	return now.Exists == e.After.Exists && now.Hash == e.After.Hash && now.Mode == e.After.Mode &&
 		(!now.Exists || (e.After.File != "" && now.File == e.After.File)) &&
-		e.publicationDirectoryMatches(now.Dir)
+		(e.publicationDirectoryMatches(now.Dir) || !now.Exists && e.matchesCleanupAbsence(now.Dir))
+}
+
+func (e edit) matchesCleanupAbsence(dir string) bool {
+	if e.Adapter != "agy" || !e.CleanupStarted || e.After.Exists {
+		return false
+	}
+	for _, owned := range e.CleanupDirs {
+		missing := missingConfigDir + owned.Parent
+		switch owned.Name {
+		case ".gemini":
+			missing += "/.gemini/config"
+		case "config":
+		default:
+			continue
+		}
+		if dir == missing {
+			return true
+		}
+	}
+	return false
 }
 
 func (e edit) publicationDirectoryMatches(dir string) bool {
@@ -253,7 +283,7 @@ func (e edit) stageCleanup() error {
 		return err
 	}
 	dir := configIdentity(info)
-	if dir != e.After.Dir && e.After.Dir != missingConfigDir+location.parentID {
+	if dir != e.After.Dir && !location.matchesMissingDir(e.After.Dir) {
 		return nil
 	}
 	files, err := fs.ReadDir(location.dir.FS(), ".")
@@ -302,7 +332,7 @@ func applyEdit(state *os.Root, j journal, e *edit) (fingerprint, error) {
 	}
 	now := stamp(current)
 	if e.matchesAfter(now) {
-		return now, nil
+		return finishEdit(state, j, e, now)
 	}
 	if !e.matchesBefore(now) {
 		return fingerprint{}, errors.New("configuration changed since the recorded plan")
@@ -315,10 +345,20 @@ func applyEdit(state *os.Root, j journal, e *edit) (fingerprint, error) {
 		return fingerprint{}, errors.New("configuration differs from the recorded result")
 	}
 	current.DirIdentity = e.Before.Dir
+	var recordMkdir []func(createdConfigDir) error
+	if e.Adapter == "agy" && e.Record != nil {
+		recordMkdir = append(recordMkdir, func(dir createdConfigDir) error {
+			e.Record.Dirs = slices.DeleteFunc(e.Record.Dirs, func(owned createdConfigDir) bool {
+				return owned.Name == dir.Name
+			})
+			e.Record.Dirs = append(e.Record.Dirs, dir)
+			return writeJournal(state, j)
+		})
+	}
 	err = replaceConfigJournaled(e.Path, current, next, e.After.Mode, !e.After.Exists, func(name, ident, dir string) error {
 		e.Stage, e.After.File, e.StageDir = name, ident, dir
 		return writeJournal(state, j)
-	})
+	}, recordMkdir...)
 	if err != nil {
 		return fingerprint{}, err
 	}
@@ -330,5 +370,31 @@ func applyEdit(state *os.Root, j journal, e *edit) (fingerprint, error) {
 	if !e.matchesAfter(observed) {
 		return fingerprint{}, errors.New("configuration changed after replacement")
 	}
-	return observed, nil
+	return finishEdit(state, j, e, observed)
+}
+
+func finishEdit(state *os.Root, j journal, e *edit, observed fingerprint) (fingerprint, error) {
+	if e.Adapter != "agy" || observed.Exists || len(e.CleanupDirs) == 0 {
+		return observed, nil
+	}
+	if !e.CleanupStarted {
+		e.CleanupStarted = true
+		if err := writeJournal(state, j); err != nil {
+			return fingerprint{}, err
+		}
+	}
+	for _, dir := range slices.Backward(e.CleanupDirs) {
+		if err := removeCreatedConfigDir(e.Path, dir); err != nil {
+			return fingerprint{}, err
+		}
+	}
+	current, err := readConfig(e.Path)
+	if err != nil {
+		return fingerprint{}, err
+	}
+	now := stamp(current)
+	if !e.matchesAfter(now) {
+		return fingerprint{}, errors.New("configuration changed during directory cleanup")
+	}
+	return now, nil
 }

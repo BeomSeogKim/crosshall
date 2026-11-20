@@ -382,7 +382,7 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 		assertSetupFile(t, path, installed[adapter], true)
 	}
 	assertSetupFile(t, journalPath, journal, true)
-	f.apply("yes\n", "uninstall")
+	f.apply("", "uninstall", "--apply")
 	for adapter, path := range f.paths {
 		assertSetupFile(t, path, originals[adapter], false)
 	}
@@ -413,7 +413,7 @@ func TestAdapterUninstallWithoutHooksDoesNotWritePolicy(t *testing.T) {
 		t.Fatalf("uninstall wrote %d policies: %v", count, err)
 	}
 	f.apply("", "owner", "adapter", "set", "claude", "--enabled", "on")
-	out := f.apply("yes\n", "uninstall")
+	out := f.apply("", "uninstall", "--apply")
 	if out.obj["applied"] != true {
 		t.Fatalf("uninstall failed to disable a saved policy: %s", out.stdout)
 	}
@@ -473,7 +473,7 @@ func TestAdapterUninstallLeavesEditedEntry(t *testing.T) {
 	}) {
 		t.Errorf("doctor omitted the vendor version and edited hook drift: %s", doctor.stdout)
 	}
-	result := f.apply("yes\n", "uninstall")
+	result := f.apply("", "uninstall", "--apply")
 	if !strings.Contains(result.stdout, `"kept":[{"event":"SessionStart"`) {
 		t.Fatalf("uninstall did not report the edited entry: %s", result.stdout)
 	}

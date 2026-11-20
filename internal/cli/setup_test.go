@@ -38,6 +38,8 @@ func TestSetupFormsReachTheServiceAsParsed(t *testing.T) {
 		{[]string{"setup", "--offer"}, true, SetupRequest{Action: "setup", Offer: true, Terminal: true}},
 		{[]string{"uninstall"}, false, SetupRequest{Action: "uninstall"}},
 		{[]string{"uninstall", "codex", "--dry-run"}, false, SetupRequest{Action: "uninstall", DryRun: true, Adapters: []string{"codex"}}},
+		{[]string{"uninstall", "--apply"}, false, SetupRequest{Action: "uninstall", Apply: true}},
+		{[]string{"uninstall", "--apply", "claude"}, false, SetupRequest{Action: "uninstall", Apply: true, Adapters: []string{"claude"}}},
 	} {
 		var got []SetupRequest
 		_, stderr, code := run(t, setupEnv(tc.terminal, &got), tc.args...)
@@ -63,7 +65,7 @@ func TestSetupRejectsMalformedForms(t *testing.T) {
 		{"setup", "status", "claude"},
 		{"setup", "--offer", "claude"},
 		{"setup", "--offer", "--apply"},
-		{"uninstall", "--apply", "claude"},
+		{"uninstall", "--apply", "claude", "--dry-run"},
 		{"uninstall", "off"},
 		{"setup", "claude", "--bogus"},
 	} {

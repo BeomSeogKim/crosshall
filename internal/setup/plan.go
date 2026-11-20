@@ -91,8 +91,18 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 	if err != nil {
 		return target, err
 	}
-	if _, err := entryMatches(current.Bytes, wanted); err != nil {
+	matches, err := entryMatches(current.Bytes, wanted)
+	if err != nil {
 		return target, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
+	}
+	if spec.Adapter == "agy" {
+		doc, err := configDocument(current.Bytes)
+		if err != nil {
+			return target, err
+		}
+		if count := recognizableAgyHooks(doc, spec); count > matches[0] {
+			return target, errors.New("Antigravity configuration has an existing crosshall hook group or conflicting hook; inspect it before setup")
+		}
 	}
 	target.Current, target.Build, target.Wanted = current, b, wanted
 	return target, nil
@@ -162,7 +172,7 @@ func makeInstall(j journal, targets []installTarget, read, send bool) (operation
 		}
 		if len(restore) > 0 {
 			record.Undo, record.Entries = nil, nil
-		} else if known {
+		} else if known && adapter != "agy" {
 			entries, err := checkHookRelocation(target, record.Entries)
 			if err != nil {
 				return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
@@ -274,7 +284,7 @@ func checkHookRelocation(target installTarget, owned []Entry) ([]Entry, error) {
 			for _, handler := range handlers {
 				command, _ := handler.field("command").stringValue()
 				if spec.Adapter == "codex" {
-					_, command, _ = splitCodexStatePin(strings.TrimSpace(command))
+					_, command, _ = splitHookStatePin(strings.TrimSpace(command))
 					if strings.HasPrefix(command, shellQuote(old)) {
 						return nil, errors.New("hooks still use a previous Crosshall executable; run crosshall uninstall and resolve any retained hooks before setup")
 					}
@@ -357,6 +367,9 @@ func planRemoval(spec hook.InstallSpec, record ownedFile) (edit, error) {
 		e.Remove, e.Restore = record.Entries, record.Undo
 		e.After.Exists, e.After.Mode = record.Original.Exists, record.Original.Mode
 		e.After.Hash, e.After.File = record.Original.Hash, ""
+		if spec.Adapter == "agy" && !e.After.Exists {
+			e.CleanupDirs = record.Dirs
+		}
 		return e, nil
 	}
 	updated, kept, err := removeEntries(current.Bytes, record.Entries)
@@ -379,7 +392,7 @@ func remainingEntries(entries, kept []Entry) []Entry {
 	var removed []Entry
 	for _, e := range entries {
 		if !slices.ContainsFunc(kept, func(k Entry) bool {
-			return k.Event == e.Event && string(k.Value) == string(e.Value)
+			return k.Event == e.Event && k.Group == e.Group && string(k.Value) == string(e.Value)
 		}) {
 			removed = append(removed, e)
 		}

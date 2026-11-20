@@ -13,7 +13,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex> [--enabled on|off] [--reminder on|off] [--publish on|off|default]"
+const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex|agy> [--enabled on|off] [--reminder on|off] [--publish on|off|default]"
 
 func runAdapterPolicy(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}

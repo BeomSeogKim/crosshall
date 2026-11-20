@@ -1,0 +1,16 @@
+{
+  "adapter": "agy",
+  "revision": "agy-1",
+  "event_field": "hookEventName",
+  "session_field": "conversationId",
+  "session_env": "ANTIGRAVITY_CONVERSATION_ID",
+  "install": {
+    "file": "hooks.json",
+    "encoding": "shell",
+    "timeout_s": 1,
+    "events": ["SessionStart"]
+  },
+  "events": {
+    "SessionStart": {"enroll": true, "output": "inject_steps"}
+  }
+}

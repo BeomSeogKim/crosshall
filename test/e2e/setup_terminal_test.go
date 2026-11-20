@@ -37,32 +37,89 @@ func (f *setupWorld) inTerminal(env []string, answers string, pipe []string, arg
 	return 0, string(out)
 }
 
-func TestSetupAsksPerVendorInATerminal(t *testing.T) {
+func TestSetupAsksForOneConsentInATerminal(t *testing.T) {
 	f := newSetupWorld(t)
-	codexBefore := readSetupFile(t, f.paths["codex"])
-	// Claude yes with read rules only; Codex no.
-	code, out := f.inTerminal(f.env, "y\ny\nn\nn\n", nil, "setup")
+	code, out := f.inTerminal(f.env, "y\n", nil, "setup")
 	if code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	for _, want := range []string{
-		"Install Claude Code hooks in " + f.paths["claude"] + " (from CLAUDE_CONFIG_DIR)? [y/N]",
-		"Add Claude Code read-command allow rules? [y/N]",
-		"Install Codex hooks in " + f.paths["codex"] + " (from CODEX_HOME)? [y/N]",
-		"claude: installed", "codex: declined",
+		"Claude Code hooks in " + f.paths["claude"] + " (from CLAUDE_CONFIG_DIR)",
+		"Codex hooks in " + f.paths["codex"] + " (from CODEX_HOME)",
+		"Install the listed hooks? [y/N]",
+		"claude: installed", "codex: installed",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
+	if strings.Count(out, "[y/N]") != 1 {
+		t.Fatalf("expected one consent:\n%s", out)
+	}
 	claude := readSetupFile(t, f.paths["claude"]).bytes
-	if !bytes.Contains(claude, []byte("Bash(crosshall read")) || bytes.Contains(claude, []byte("Bash(crosshall note")) {
+	if !bytes.Contains(claude, []byte(`"permissions": {"allow":["Bash(existing)"]}`)) ||
+		bytes.Contains(claude, []byte("Bash(crosshall")) {
 		t.Fatalf("claude settings: %s", claude)
 	}
-	assertSetupFile(t, f.paths["codex"], codexBefore, true)
+	if codex := readSetupFile(t, f.paths["codex"]).bytes; !bytes.Contains(codex, []byte("hook codex SessionStart")) {
+		t.Fatalf("codex settings: %s", codex)
+	}
 	offers, err := os.ReadFile(filepath.Join(f.state, "setup-offers.json"))
-	if err != nil || !bytes.Contains(offers, []byte(`"codex":{"answer":"no"`)) || bytes.Contains(offers, []byte(`"claude":{"answer":"no"`)) {
+	if err != nil || !bytes.Contains(offers, []byte(`"codex":{"answer":"yes"`)) || !bytes.Contains(offers, []byte(`"claude":{"answer":"yes"`)) {
 		t.Fatalf("remembered offers %s: %v", offers, err)
+	}
+}
+
+func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, receipt string
+	}{
+		{"accept", "y\n", "yes\n"},
+		{"decline", "n\n", "no\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSetupWorld(t)
+			before := readSetupFile(t, f.paths["claude"])
+			receipt := filepath.Join(f.home, "path-consent")
+			wrapper := filepath.Join(f.home, "offer")
+			program := "#!/bin/sh\nexec 3>\"$CROSSHALL_TEST_PATH_RECEIPT\"\nexec \"$CROSSHALL_TEST_BINARY\" \"$@\"\n"
+			if err := os.WriteFile(wrapper, []byte(program), 0700); err != nil {
+				t.Fatal(err)
+			}
+			env := append(slices.Clone(f.env), "CROSSHALL_INSTALL_PATH_CONSENT=1", "CROSSHALL_TEST_PATH_RECEIPT="+receipt, "CROSSHALL_TEST_BINARY="+f.executable)
+			f.executable = wrapper
+			code, out := f.inTerminal(env, tc.input, nil, "setup", "--offer")
+			if code != 0 || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Apply the shown PATH change and install the listed hooks? [y/N]") {
+				t.Fatalf("offer exit %d:\n%s", code, out)
+			}
+			if data, err := os.ReadFile(receipt); err != nil || string(data) != tc.receipt {
+				t.Fatalf("PATH consent receipt %q: %v", data, err)
+			}
+			if tc.receipt == "yes\n" {
+				if !strings.Contains(out, "claude: installed") || !strings.Contains(out, "codex: installed") {
+					t.Fatalf("accepted offer did not install hooks:\n%s", out)
+				}
+			} else {
+				assertSetupFile(t, f.paths["claude"], before, true)
+			}
+		})
+	}
+}
+
+func TestManualSetupDeclineKeepsTheInstallerOffer(t *testing.T) {
+	f := newSetupWorld(t)
+	before := readSetupFile(t, f.paths["claude"])
+	code, out := f.inTerminal(f.env, "n\n", nil, "setup")
+	if code != 0 || !strings.Contains(out, "claude: declined") || !strings.Contains(out, "codex: declined") {
+		t.Fatalf("manual setup exit %d:\n%s", code, out)
+	}
+	assertSetupFile(t, f.paths["claude"], before, true)
+	if _, err := os.Stat(f.state); !os.IsNotExist(err) {
+		t.Fatalf("manual decline created setup state: %v", err)
+	}
+	if code, out := f.inTerminal(f.env, "\n", nil, "setup", "--offer"); code != 0 ||
+		strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the listed hooks?") {
+		t.Fatalf("installer offer after manual decline exited %d:\n%s", code, out)
 	}
 }
 

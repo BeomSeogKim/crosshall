@@ -55,7 +55,7 @@ Owner commands (from a separate owner terminal):
   setup <vendor> [--apply]                           Set up a vendor, or apply without prompting
   setup status                                      Inspect installed hooks and adapter policy
   setup off                                         Disable adapter effects
-  uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
+  uninstall [--dry-run|--apply] [names]             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
   owner channel create <name> [--topic "..."] [--pool <n>]

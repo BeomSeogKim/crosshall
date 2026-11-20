@@ -18,6 +18,15 @@ func TestResolveConfigPathUsesDefaultOnlyForAnAbsentOverride(t *testing.T) {
 	home := fixture.Home
 	for _, spec := range hook.InstallSpecs() {
 		t.Run(spec.Adapter, func(t *testing.T) {
+			if spec.Adapter == "agy" {
+				if spec.HomeEnv != "" {
+					t.Fatalf("Antigravity has an undocumented configuration override %q", spec.HomeEnv)
+				}
+				assertConfigTarget(t, spec, configTarget{
+					Home: home, Path: filepath.Join(home, ".gemini", "config", "hooks.json"), Source: "default",
+				})
+				return
+			}
 			unsetSetupVariable(t, spec.HomeEnv)
 			defaultPath := filepath.Join(home, "."+spec.Adapter, spec.File)
 			assertConfigTarget(t, spec, configTarget{Home: home, Path: defaultPath, Source: "default"})

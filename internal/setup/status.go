@@ -56,7 +56,7 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 		executable, _ = filepath.EvalSymlinks(executable)
 	}
 	specs := hook.InstallSpecs()
-	statuses := make([]AdapterStatus, 0, len(specs)+1)
+	statuses := make([]AdapterStatus, 0, len(specs))
 	for _, spec := range specs {
 		status := AdapterStatus{
 			Adapter: spec.Adapter, Name: statusAdapterName(spec.Adapter), HookAdapter: true,
@@ -110,10 +110,6 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 		}
 		statuses = append(statuses, status)
 	}
-	statuses = append(statuses, AdapterStatus{
-		Adapter: "antigravity", Name: "Antigravity", CLI: "unsupported",
-		Install: "none", Policy: unknown, Footprint: "none",
-	})
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -180,6 +176,8 @@ func statusAdapterName(adapter string) string {
 		return "Claude Code"
 	case "codex":
 		return "Codex"
+	case "agy":
+		return "Antigravity"
 	default:
 		return adapter
 	}

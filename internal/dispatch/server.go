@@ -664,6 +664,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		// Acknowledge the request only after retiring readiness. The
 		// owner waits separately for the state lock to be released.
 		s.cancel()
+		s.withdrawPolicy()
 		s.withdrawReady()
 	}
 	return result, nil

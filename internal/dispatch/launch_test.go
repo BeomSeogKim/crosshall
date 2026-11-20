@@ -1,11 +1,13 @@
 package dispatch
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -100,5 +102,22 @@ func TestMemberStartWithRestrictedLiveness(t *testing.T) {
 				t.Fatalf("spawned=%t, start attempt wanted=%t, error=%v", spawned, tc.wantStart, err)
 			}
 		})
+	}
+}
+
+// A child that exits before it is ready ends the wait at once instead of
+// after the startup timeout.
+func TestStartEndsWhenTheDispatcherExitsBeforeItIsReady(t *testing.T) {
+	root := t.TempDir()
+	cfg := LaunchConfig{Version: "test", StateRoot: filepath.Join(root, "state"), Rendezvous: filepath.Join(root, "rendezvous"),
+		DefaultStateRoot: filepath.Join(root, "default"), Owner: true}
+	// The child cannot make its rendezvous where a file already is.
+	if err := os.WriteFile(cfg.Rendezvous, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	spawned, err := cfg.Start(t.Context())
+	if took := time.Since(began); !spawned || !errors.Is(err, errExitedBeforeReady) || took >= startupTimeout/2 {
+		t.Fatalf("spawned %v, error %v, after %v", spawned, err, took)
 	}
 }

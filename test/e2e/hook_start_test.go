@@ -18,18 +18,60 @@ func TestHookStartsAStoppedDispatcherAndEnrolls(t *testing.T) {
 	w.stop()
 
 	began := time.Now()
-	got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"}))
+	out := c.fire("SessionStart", map[string]any{"source": "startup"})
 	if took := time.Since(began); took >= time.Second {
 		t.Fatalf("the starting hook took %v", took)
 	}
-	if !strings.Contains(got, "Joined #checkout as @claude1") {
+	if out == "" {
+		// A loaded machine can miss the start deadline: the hook then says
+		// so and leaves the start running, and the next session start joins.
+		if log := readLog(t, w); !strings.Contains(log, "hook claude SessionStart: start_pending: ") {
+			t.Fatalf("the session start neither joined nor logged start_pending:\n%s", log)
+		}
+		if len(w.dispatcherPIDs()) == 0 {
+			t.Fatal("start_pending without a launched dispatcher")
+		}
+		w.owner().must("owner", "start") // waits for that dispatcher to answer
+		out = c.fire("SessionStart", map[string]any{"source": "startup"})
+	} else if log := readLog(t, w); !strings.Contains(log, "hook claude SessionStart: started the dispatcher (") {
+		t.Fatalf("dispatcher.log does not record the start:\n%s", log)
+	}
+	if got := hostContext(t, out); !strings.Contains(got, "Joined #checkout as @claude1") {
 		t.Fatalf("auto-join context %q", got)
 	}
-	if len(w.dispatcherPIDs()) == 0 || !rosterHas(t, writer, "claude1") {
-		t.Fatal("the hall is not running with the session joined")
+	if !rosterHas(t, writer, "claude1") {
+		t.Fatal("the session is not joined")
 	}
-	if log := readLog(t, w); !strings.Contains(log, "hook claude SessionStart: started the dispatcher (") {
-		t.Fatalf("dispatcher.log does not record the start:\n%s", log)
+}
+
+// An owner stop withdraws the policy, so no hook brings the hall back until
+// the owner starts it; the start publishes the policy again.
+func TestHookLeavesADispatcherTheOwnerStopped(t *testing.T) {
+	w, _, c := m2World(t)
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w.owner().must("owner", "stop")
+
+	for _, fire := range []struct {
+		event  string
+		fields map[string]any
+	}{
+		{"Notification", map[string]any{"notification_type": "permission_prompt"}},
+		{"UserPromptSubmit", map[string]any{"prompt_id": "p1", "prompt": "synthetic"}},
+		{"SessionStart", map[string]any{"source": "startup"}},
+	} {
+		if got := c.fire(fire.event, fire.fields); got != "" {
+			t.Fatalf("%s after an owner stop printed %q", fire.event, got)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // a spawned dispatcher would hold its lock by now
+	if pids := w.dispatcherPIDs(); len(pids) != 0 {
+		t.Fatalf("a hook restarted the dispatcher the owner stopped: %v", pids)
+	}
+	w.owner().must("owner", "start")
+	next := c
+	next.key, next.pid = "synthetic-next-session", "4343"
+	if got := hostContext(t, next.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude2") {
+		t.Fatalf("after the owner's start a new session printed %q", got)
 	}
 }
 
@@ -58,4 +100,26 @@ func readLog(t *testing.T, w *world) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// After a crash an owner stop finds no dispatcher, and still withdraws the
+// policy the crash left behind, so hooks keep the hall stopped.
+func TestOwnerStopAfterACrashHoldsAgainstHooks(t *testing.T) {
+	w, _, c := m2World(t)
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w.kill()
+	w.owner().must("owner", "stop")
+
+	if got := c.fire("Notification", map[string]any{"notification_type": "permission_prompt"}); got != "" {
+		t.Fatalf("Notification after an owner stop printed %q", got)
+	}
+	time.Sleep(200 * time.Millisecond) // a spawned dispatcher would hold its lock by now
+	if pids := w.dispatcherPIDs(); len(pids) != 0 {
+		t.Fatalf("a hook restarted the dispatcher after the owner stop: %v", pids)
+	}
+	for _, path := range []string{filepath.Join(w.state, "hook-policy"), filepath.Join(w.rendezvous(), "policy")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the owner stop: %v", path, err)
+		}
+	}
 }

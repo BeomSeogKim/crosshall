@@ -96,6 +96,7 @@ type event struct {
 	receipt        string
 	stopActive     string
 	name           string
+	startupRepo    *string
 }
 
 const stopActiveField = "stop_hook_active"

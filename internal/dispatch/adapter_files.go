@@ -243,6 +243,23 @@ func (s *server) invalidateAdapterFile(verb string) error {
 	return nil
 }
 
+// withdrawPolicy removes both policy copies on an owner stop, so hooks read
+// every adapter as off and start nothing until the next start publishes
+// them again. A crash or a reboot leaves the copies for the hooks.
+func (s *server) withdrawPolicy() {
+	root, err := spool.OpenServerRoot(s.cfg.Rendezvous)
+	if err == nil {
+		defer root.Close()
+		err = root.Remove(adapterPolicyName)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logFailure(err)
+	}
+	if err := s.state.Remove(hook.StatePolicyName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logFailure(err)
+	}
+}
+
 // publishAdapterFiles writes the committed snapshots after a policy or
 // repository change and before a new dispatcher advertises readiness.
 func (s *server) publishAdapterFiles(ctx context.Context) error {

@@ -58,7 +58,12 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 	if err != nil {
 		return false, err
 	}
-	defer process.Release()
+	// Waiting also reaps the child if it exits while this process lives on.
+	exited := make(chan struct{})
+	go func() {
+		_, _ = process.Wait()
+		close(exited)
+	}()
 
 	wait, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
@@ -72,10 +77,19 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 		select {
 		case <-wait.Done():
 			return true, startupError(wait.Err())
+		case <-exited:
+			exited = nil
+			// A child gives way to a dispatcher that already holds the
+			// lock; that one may still become ready. Otherwise none will.
+			if held, err := lockState(state); err != nil || !held {
+				return true, startupError(errExitedBeforeReady)
+			}
 		case <-ticker.C:
 		}
 	}
 }
+
+var errExitedBeforeReady = errors.New("the dispatcher exited before it was ready")
 
 func (cfg LaunchConfig) openStartState(ctx context.Context) (*os.Root, error) {
 	if err := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot); err != nil {

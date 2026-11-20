@@ -471,16 +471,29 @@ apply_path() {
   done
 }
 
+print_next() {
+  if [[ $on_path == true ]]; then
+    printf 'Next (in a plain terminal): crosshall owner start\n'
+  else
+    printf 'Next (in a plain terminal): %q owner start\n' "$target"
+  fi
+}
+
+offer_setup() {
+  # Keep both streams attached to the terminal for the consent prompt.
+  if ! CROSSHALL_INSTALL_PATH_CONSENT="$1" CROSSHALL_INSTALL_READY_RECEIPT=1 \
+      "$target" setup --offer 3> "$stage/path-choice" 4> "$stage/setup-ready"; then
+    printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
+  fi
+}
+
 printf 'Installed crosshall %s at %s\n' "$version" "$target"
 on_path=false
-if [[ $(command -v crosshall) -ef $target ]]; then
-  on_path=true
-  printf 'Next (in a plain terminal): crosshall owner start\n'
-else
-  printf 'Next (in a plain terminal): %q owner start\n' "$target"
+if [[ $(command -v crosshall) -ef $target ]]; then on_path=true; fi
+if ! owner_terminal; then
+  print_next
+  exit 0
 fi
-
-owner_terminal || exit 0
 if [[ $default_destination == true && $on_path == false && $HOME == /* && $HOME != *:* ]]; then
   plan_path
 fi
@@ -490,16 +503,16 @@ if [[ ${path_profiles[0]+planned} ]]; then
     printf '\n  %q\n' "${path_profiles[i]}"
     path_block "${path_modes[i]}"
   done
-  # FD 3 carries only the decision. Both streams stay attached to the terminal.
-  if ! CROSSHALL_INSTALL_PATH_CONSENT=1 "$target" setup --offer 3> "$stage/path-choice"; then
-    printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
-  fi
+  offer_setup 1
   answer=$(cat "$stage/path-choice")
   if [[ -z $answer ]]; then
     printf 'Apply the PATH changes shown? [y/N] '
     read -r answer || answer=
   fi
   case $answer in [yY]|[yY][eE][sS]) apply_path ;; esac
-elif ! CROSSHALL_INSTALL_PATH_CONSENT=0 "$target" setup --offer; then
-  printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2
+else
+  offer_setup 0
+fi
+if ! grep -qsFx ready "$stage/setup-ready"; then
+  print_next
 fi

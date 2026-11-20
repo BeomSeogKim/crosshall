@@ -169,13 +169,18 @@ esac
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := setuptest.New(t).Home
-			t.Setenv("PATH", f.Bin+":/usr/bin:/bin")
+			installedDir := filepath.Join(home, ".local", "bin")
+			t.Setenv("PATH", f.Bin+":"+installedDir+":/usr/bin:/bin")
 			t.Setenv("BASH_ENV", "")
 			zhome := filepath.Join(home, "zsh config")
 			if err := os.Mkdir(zhome, 0700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("ZDOTDIR", zhome)
+			t.Setenv("CROSSHALL_TEST_SHADOW_DIR", f.Bin)
+			const reorder = "export PATH=\"$CROSSHALL_TEST_SHADOW_DIR:$HOME/.local/bin:$PATH\"\n"
+			write(filepath.Join(zhome, ".zprofile"), reorder)
+			write(filepath.Join(zhome, ".zshrc"), reorder)
 			t.Setenv("OFFER_LOG", filepath.Join(home, "offer"))
 			t.Setenv("OFFER_EXIT", "0")
 			t.Setenv("OFFER_CONFIRM_PATH", "")
@@ -183,8 +188,12 @@ esac
 				t.Setenv("OFFER_CONFIRM_PATH", "1")
 			}
 			login := filepath.Join(home, ".bash_profile")
+			posix := filepath.Join(home, ".profile")
+			bashrc := filepath.Join(home, ".bashrc")
 			const existing = "export CROSSHALL_TEST_PROFILE=preserved\n"
+			const noFinalNewline = "export CROSSHALL_TEST_OTHER_PROFILE=preserved"
 			write(login, existing)
+			write(posix, noFinalNewline)
 			run := func() string {
 				args := []string{"-B", terminal, "--answers", tc.answer}
 				if tc.piped {
@@ -208,20 +217,28 @@ esac
 				t.Fatalf("login profile: %q, %v", profile, err)
 			}
 			if !tc.changed {
-				for _, path := range []string{filepath.Join(home, ".profile"), filepath.Join(home, ".bashrc"), filepath.Join(zhome, ".zshenv")} {
+				if got, err := os.ReadFile(posix); err != nil || string(got) != noFinalNewline {
+					t.Fatalf("profile changed without consent: %q, %v", got, err)
+				}
+				for _, path := range []string{bashrc, filepath.Join(zhome, ".zshenv"), filepath.Join(zhome, ".zlogin")} {
 					if _, err := os.Stat(path); !os.IsNotExist(err) {
 						t.Fatalf("profile appeared without consent: %s (%v)", path, err)
 					}
 				}
 				return
 			}
+			shown := strings.ReplaceAll(out, "\r\n", "\n")
+			block := strings.TrimPrefix(string(profile), existing)
+			if got := strings.Index(shown, block); got < 0 || got >= strings.Index(shown, tc.prompt) {
+				t.Fatalf("written PATH block was not shown before confirmation:\n%s", shown)
+			}
 			shells := [][]string{{"bash", "-lc"}, {"bash", "-ic"}, {"sh", "-lc"}}
 			if _, err := exec.LookPath("zsh"); err == nil {
-				shells = append(shells, []string{"zsh", "-c"}, []string{"zsh", "-lic"})
+				shells = append(shells, []string{"zsh", "-c"}, []string{"zsh", "-lc"}, []string{"zsh", "-ic"}, []string{"zsh", "-lic"})
 			}
 			for _, shell := range shells {
-				cmd := exec.Command(shell[0], shell[1], "crosshall version")
-				if version, err := cmd.Output(); err != nil || string(version) != "v0.1.0\n" {
+				cmd := exec.Command(shell[0], shell[1], "command -v crosshall && crosshall version")
+				if version, err := cmd.Output(); err != nil || string(version) != filepath.Join(installedDir, "crosshall")+"\nv0.1.0\n" {
 					t.Fatalf("new %v: %q, %v", shell, version, err)
 				}
 			}
@@ -230,6 +247,49 @@ esac
 			}
 			if again, err := os.ReadFile(login); err != nil || string(again) != string(profile) {
 				t.Fatalf("reinstall changed the managed profile: %q, %v", again, err)
+			}
+			updatedBlock := strings.Replace(string(profile), "case ", "# owner edited the block\ncase ", 1)
+			write(login, updatedBlock)
+			if output, err := exec.Command(script, "--remove-path", login).CombinedOutput(); err == nil ||
+				!strings.Contains(string(output), "Managed PATH block changed") {
+				t.Fatalf("the edited block was not refused: %v\n%s", err, output)
+			}
+			if got, err := os.ReadFile(login); err != nil || string(got) != updatedBlock {
+				t.Fatalf("removal changed the edited block: %q, %v", got, err)
+			}
+			write(login, string(profile))
+			laterPath := login
+			if tc.combined {
+				laterPath = bashrc
+			}
+			const later = "export CROSSHALL_TEST_LATER=preserved"
+			data, err := os.ReadFile(laterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(laterPath, append(data, later...), 0600); err != nil {
+				t.Fatal(err)
+			}
+			zshenv := filepath.Join(zhome, ".zshenv")
+			zlogin := filepath.Join(zhome, ".zlogin")
+			zshrc := filepath.Join(zhome, ".zshrc")
+			if output, err := exec.Command(script, "--remove-path", login, posix, bashrc, zshenv, zlogin, zshrc).CombinedOutput(); err != nil {
+				t.Fatalf("undo PATH: %v\n%s", err, output)
+			}
+			want := map[string]string{login: existing, posix: noFinalNewline, zshrc: reorder}
+			want[laterPath] += later
+			for path, data := range want {
+				if got, err := os.ReadFile(path); err != nil || string(got) != data {
+					t.Errorf("undo %s: got %q, %v; want %q", path, got, err, data)
+				}
+			}
+			for _, path := range []string{bashrc, zshenv, zlogin} {
+				if path == laterPath {
+					continue
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("undo left an unchanged installer-created file: %s (%v)", path, err)
+				}
 			}
 		})
 	}

@@ -3,6 +3,109 @@
 set -euo pipefail
 
 usage='Usage: scripts/install.sh [--force] [--source] [install-directory]  (default: ~/.local/bin)'
+
+profile_writable() {
+  [[ ! -L $1 && -w ${1%/*} && ( ! -e $1 || ( -f $1 && -r $1 && -w $1 ) ) ]]
+}
+
+path_mode() {
+  if [[ ! -e $1 ]]; then
+    printf 'created\n'
+  elif [[ -s $1 ]] && [[ $(tail -c 1 "$1" | wc -l) -eq 0 ]]; then
+    printf 'separator\n'
+  else
+    printf 'existing\n'
+  fi
+}
+
+path_block() {
+  # A separator marker owns the preceding newline when the file lacked one.
+  if [[ $1 == separator ]]; then printf '\n' || return; fi
+  printf '# crosshall: user PATH %s\n' "$1" || return
+  cat <<'PATH_BLOCK'
+case "${PATH-}" in
+  "$HOME/.local/bin"|"$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
+esac
+# crosshall: end user PATH
+PATH_BLOCK
+}
+
+has_path_marker() {
+  [[ -f $1 ]] && grep -Eq '^# crosshall: user PATH( |$)' "$1"
+}
+
+snapshot_path() {
+  ln -P -- "$1" "$2/live" && [[ ! -L $2/live && -f $2/live ]] &&
+    cp -p -- "$2/live" "$2/original"
+}
+
+path_unchanged() {
+  [[ ! -L $1 && $1 -ef $2/live ]] && cmp -s "$1" "$2/original"
+}
+
+remove_path() (
+  local profile=$1 scratch range start mode length size
+  if [[ $profile != /* ]]; then
+    printf 'Use the absolute shell startup path: %q\n' "$profile" >&2
+    return 1
+  fi
+  [[ -e $profile || -L $profile ]] || return 0
+  if ! profile_writable "$profile"; then
+    printf 'Cannot update shell startup file safely: %q\n' "$profile" >&2
+    return 1
+  fi
+  has_path_marker "$profile" || return 0
+  scratch=$(mktemp -d "${profile%/*}/.crosshall-path.XXXXXXXX") || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  snapshot_path "$profile" "$scratch" || return 1
+  if ! range=$(LC_ALL=C awk '
+    /^# crosshall: user PATH( |$)/ { found++; start = offset + 0; mode = $NF }
+    { offset += length($0) + 1 }
+    END {
+      if (found != 1 || (mode != "created" && mode != "existing" && mode != "separator")) exit 1
+      print start, mode
+    }
+  ' "$scratch/original"); then
+    printf 'Unrecognized PATH marker in %q. Review the file before removing it.\n' "$profile" >&2
+    return 1
+  fi
+  read -r start mode <<< "$range"
+  if [[ $mode == separator ]]; then start=$((start - 1)); fi
+  length=$(path_block "$mode" | wc -c)
+  if (( start < 0 )) || ! cmp -s <(path_block "$mode") \
+      <(dd if="$scratch/original" bs=1 skip="$start" count="$length" 2>/dev/null); then
+    printf 'Managed PATH block changed in %q. Review the file before removing it.\n' "$profile" >&2
+    return 1
+  fi
+  size=$(wc -c < "$scratch/original")
+  cp -p -- "$scratch/original" "$scratch/updated" || return 1
+  { (( start == 0 )) || head -c "$start" "$scratch/original"; } > "$scratch/updated" &&
+    tail -c "+$((start + length + 1))" "$scratch/original" >> "$scratch/updated" || return 1
+  if ! path_unchanged "$profile" "$scratch"; then
+    printf 'Shell startup file changed during removal: %q\n' "$profile" >&2
+    return 1
+  fi
+  if [[ $mode == created ]] && (( length == size )) &&
+     [[ $(LC_ALL=C ls -ld -- "$scratch/original") == '-rw-------'* ]]; then
+    rm -- "$profile" || return 1
+  else
+    mv -f -- "$scratch/updated" "$profile" || return 1
+  fi
+  printf 'Removed Crosshall PATH setup from %q\n' "$profile"
+)
+
+if [[ ${1:-} == --remove-path ]]; then
+  shift
+  if (( $# == 0 )); then
+    echo 'Usage: scripts/install.sh --remove-path <absolute-startup-file> ...' >&2
+    exit 2
+  fi
+  result=0
+  for profile in "$@"; do remove_path "$profile" || result=1; done
+  exit "$result"
+fi
+
 force=false
 from_source=false
 dest=
@@ -12,6 +115,7 @@ for arg in "$@"; do
       echo "$usage"
       echo 'Use --force to replace an unrecognized file or a symbolic link itself.'
       echo 'Use --source to skip the release download and build with Go.'
+      echo 'Use --remove-path <absolute-startup-file> ... to remove the installed PATH block.'
       exit 0 ;;
     --force) force=true ;;
     --source) from_source=true ;;
@@ -255,11 +359,8 @@ owner_terminal() {
   done
 }
 
-path_marker='# crosshall: user PATH'
 path_profiles=()
-profile_writable() {
-  [[ ! -L $1 && -w ${1%/*} && ( ! -e $1 || ( -f $1 && -r $1 && -w $1 ) ) ]]
-}
+path_modes=()
 
 plan_path() {
   local profile zhome=${ZDOTDIR:-$HOME}
@@ -273,34 +374,46 @@ plan_path() {
   done
   if [[ $zhome == /* && -d $zhome ]] &&
      { [[ ${SHELL:-} == */zsh ]] || command -v zsh >/dev/null; }; then
-    startup_profiles+=("$zhome/.zshenv")
+    # Login shells can reorder PATH after .zshenv, notably via macOS path_helper.
+    startup_profiles+=("$zhome/.zshenv" "$zhome/.zlogin")
+    if [[ -e $zhome/.zshrc || -L $zhome/.zshrc ]]; then startup_profiles+=("$zhome/.zshrc"); fi
   fi
   for profile in "${startup_profiles[@]}"; do
     if ! profile_writable "$profile"; then
       printf 'Skipping shell startup file that cannot be updated safely: %q\n' "$profile" >&2
-    elif [[ ! -f $profile ]] || ! grep -Fqx -- "$path_marker" "$profile"; then
+    elif ! has_path_marker "$profile"; then
       path_profiles+=("$profile")
+      path_modes+=("$(path_mode "$profile")")
     fi
   done
 }
 
-apply_path() {
-  local profile
-  for profile in "${path_profiles[@]}"; do
-    if ! profile_writable "$profile"; then
-      printf 'Shell startup file changed before it could be updated: %q\n' "$profile" >&2
-    elif [[ -f $profile ]] && grep -Fqx -- "$path_marker" "$profile"; then
-      continue
-    elif (umask 077; cat >> "$profile" <<'PATH_BLOCK'
+write_path_block() (
+  local profile=$1 mode=$2 scratch
+  scratch=$(mktemp -d "${profile%/*}/.crosshall-path.XXXXXXXX") || return 1
+  trap 'rm -rf -- "$scratch"' EXIT
+  if [[ $mode == created ]]; then
+    (umask 077; path_block "$mode" > "$scratch/updated") &&
+      ln -- "$scratch/updated" "$profile"
+  else
+    snapshot_path "$profile" "$scratch" &&
+      [[ $(path_mode "$scratch/original") == "$mode" ]] &&
+      ! has_path_marker "$scratch/original" &&
+      cp -p -- "$scratch/original" "$scratch/updated" &&
+      path_block "$mode" >> "$scratch/updated" &&
+      path_unchanged "$profile" "$scratch" &&
+      mv -f -- "$scratch/updated" "$profile"
+  fi
+)
 
-# crosshall: user PATH
-case ":${PATH-}:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) export PATH="$HOME/.local/bin${PATH:+:$PATH}" ;;
-esac
-# crosshall: end user PATH
-PATH_BLOCK
-    ); then
+apply_path() {
+  local i profile mode
+  for i in "${!path_profiles[@]}"; do
+    profile=${path_profiles[i]}
+    mode=${path_modes[i]}
+    if ! profile_writable "$profile" || [[ $(path_mode "$profile") != "$mode" ]] || has_path_marker "$profile"; then
+      printf 'Shell startup file changed before it could be updated: %q\n' "$profile" >&2
+    elif write_path_block "$profile" "$mode"; then
       printf 'Updated PATH in %q\n' "$profile"
     else
       printf 'Could not update shell startup file: %q\n' "$profile" >&2
@@ -322,8 +435,11 @@ if [[ $default_destination == true && $on_path == false && $HOME == /* && $HOME 
   plan_path
 fi
 if [[ ${path_profiles[0]+planned} ]]; then
-  printf 'Add ~/.local/bin to PATH in these shell startup files:\n'
-  printf '  %q\n' "${path_profiles[@]}"
+  printf 'Add ~/.local/bin first on PATH with the following shell startup changes:\n'
+  for i in "${!path_profiles[@]}"; do
+    printf '\n  %q\n' "${path_profiles[i]}"
+    path_block "${path_modes[i]}"
+  done
   # FD 3 carries only the decision. Both streams stay attached to the terminal.
   if ! CROSSHALL_INSTALL_PATH_CONSENT=1 "$target" setup --offer 3> "$stage/path-choice"; then
     printf 'Optional adapter setup failed. Run %q setup to retry.\n' "$target" >&2

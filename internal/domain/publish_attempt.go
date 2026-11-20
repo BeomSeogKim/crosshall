@@ -36,7 +36,8 @@ func activePublishRoutes(now time.Time) string { return publishRoutes(now, true)
 // publishRoutes selects them with or without the transport's proof of the
 // process that owns the address.
 func publishRoutes(now time.Time, proven bool) string {
-	proof := `JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation`
+	proof := `JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation
+		AND p.activated_at_ms IS NOT NULL`
 	if !proven {
 		proof = ""
 	}
@@ -76,22 +77,54 @@ func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.T
 
 // ConfirmPublishRoute records a transport's positive proof for this
 // generation. The publisher goes through ConfirmPublishProof.
+// It records identity only: a new listener waits for ActivatePublishRoutes,
+// while a new generation on the process that already activated keeps its
+// activation and ordinary backlog.
 func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBinding, queue PublishQueue) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE publish_route AS r SET watermark_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
-		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND r.launch_verified = 1
-			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND
-				(p.generation >= r.generation OR (p.process_pid = ? AND p.process_start_ms = ?)))`,
-		binding.ID, binding.Generation, queue.PID, queue.StartMS); err != nil {
-		return err
-	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO publish_route_proof (binding_id, generation, process_pid, process_start_ms)
 		SELECT binding_id, generation, ?1, ?2 FROM publish_route
 		WHERE binding_id = ?3 AND generation = ?4 AND state = 'active' AND launch_verified = 1
 		ON CONFLICT(binding_id) DO UPDATE SET generation = excluded.generation,
-			process_pid = excluded.process_pid, process_start_ms = excluded.process_start_ms
+			process_pid = excluded.process_pid, process_start_ms = excluded.process_start_ms,
+			activated_at_ms = CASE WHEN publish_route_proof.process_pid = excluded.process_pid
+				AND publish_route_proof.process_start_ms = excluded.process_start_ms
+				THEN publish_route_proof.activated_at_ms END
 		WHERE publish_route_proof.generation < excluded.generation`,
 		queue.PID, queue.StartMS, binding.ID, binding.Generation)
 	return err
+}
+
+// ActivatePublishRoutes activates each proven route at the first moment it
+// is available, the verdict status shows: its watermark becomes the newest
+// message, so only work stored from then on is offered. A route that is
+// off, suspended, capped or held stays unactivated, and status keeps
+// showing that state, so no message stored meanwhile was announced as
+// queued.
+func ActivatePublishRoutes(ctx context.Context, tx store.Tx, now time.Time) error {
+	bindings, err := selectIDs(ctx, tx, `SELECT p.binding_id FROM publish_route_proof p
+		JOIN publish_route r ON r.binding_id = p.binding_id AND r.generation = p.generation
+		WHERE p.activated_at_ms IS NULL ORDER BY p.binding_id`)
+	if err != nil {
+		return err
+	}
+	for _, binding := range bindings {
+		status, _, err := store.ReadPublishState(ctx, tx, binding, now)
+		if err != nil {
+			return err
+		}
+		if status.State != "candidate" || status.Reason != store.PublishNotActivated {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route SET watermark_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
+			WHERE binding_id = ?`, binding); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route_proof SET activated_at_ms = ? WHERE binding_id = ?`,
+			ms(now), binding); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const publishRouteColumns = `r.adapter, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, '')`
@@ -161,19 +194,22 @@ func launchOwns(probe publish.Probe, queue PublishQueue) bool {
 
 // ConfirmPublishProof records a transport's proof for a route only if the
 // proven process is the expected launch and, in this transaction, the
-// route is still unproven and could publish on its first activation: the
-// same generation, launch and resolved address the proof was asked for,
-// with every switch, suspension and profile check in force. A proof that
-// lost the race to a switch or a new launch records nothing, so work that
-// arrives while the route cannot publish is never offered once it can.
-func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, queue PublishQueue, now time.Time) (bool, error) {
+// route is still unproven on the same generation, launch and resolved
+// address the proof was asked for. It records identity only; whether and
+// from which message the route publishes is ActivatePublishRoutes'.
+func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, queue PublishQueue) (bool, error) {
 	if !launchOwns(proof.Probe, queue) {
 		return false, nil
 	}
 	var route publish.Probe
-	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms `+publishRoutes(now, false)+`
-		AND r.binding_id = ? AND r.generation = ? AND NOT EXISTS (SELECT 1 FROM publish_route_proof p
-			WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`, proof.Binding.ID, proof.Binding.Generation).
+	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms FROM publish_route r
+		JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
+			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
+			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
+		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND r.launch_verified = 1
+			AND l.launch_ref = r.launch_ref AND l.verified = 1
+			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`,
+		proof.Binding.ID, proof.Binding.Generation).
 		Scan(&route.Adapter, &route.Route.Mode, &route.Route.SocketPath, &route.Route.ThreadID, &route.LaunchRef, &route.StartedHookAtMS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

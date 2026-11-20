@@ -61,8 +61,8 @@ func newPublishTestFixture(t *testing.T) *publishTestFixture {
 		INSERT INTO publish_route(binding_id, principal_id, generation, adapter, session_ref, launch_ref,
 			launch_verified, policy_epoch, mode, socket_path, watermark_message_id, state, registered_at_ms, updated_at_ms)
 			VALUES (2, 2, 3, 'claude', 'session', 'launch', 1, 1, 'tui', '/unused/claude.sock', 10, 'active', 1, 1);
-		INSERT INTO publish_route_proof(binding_id, generation, process_pid, process_start_ms)
-			VALUES (2, 3, 2345, 1234)`)
+		INSERT INTO publish_route_proof(binding_id, generation, process_pid, process_start_ms, activated_at_ms)
+			VALUES (2, 3, 2345, 1234, 1)`)
 	return f
 }
 
@@ -851,6 +851,8 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 			if n := countPublish(t, f, "publish_attempt"); n != 0 {
 				t.Fatalf("%d attempts before a proof", n)
 			}
+			tickPublisher(t, p, f.now.Add(500*time.Millisecond), true) // activates a recorded proof
+			p.workers.Wait()
 			f.ask(t, 11)
 			tickPublisher(t, p, f.now.Add(time.Second), true)
 			p.workers.Wait()

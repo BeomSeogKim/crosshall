@@ -49,6 +49,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	var queues []domain.HeldPublishQueue
 	var proofs []domain.PublishProof
 	err := p.db.Update(ctx, func(tx store.Tx) error {
+		if err := domain.ActivatePublishRoutes(ctx, tx, now); err != nil {
+			return err
+		}
 		bindings, err := domain.PublishCandidates(ctx, tx, now)
 		if err != nil {
 			return err
@@ -237,7 +240,7 @@ func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
 	}
 	recorded := false
 	err := p.db.Update(call, func(tx store.Tx) (err error) {
-		recorded, err = domain.ConfirmPublishProof(call, tx, proof, got.queue, time.Now())
+		recorded, err = domain.ConfirmPublishProof(call, tx, proof, got.queue)
 		return err
 	})
 	if err == nil && recorded {

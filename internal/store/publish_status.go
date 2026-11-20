@@ -11,6 +11,11 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
+// PublishNotActivated is the candidate reason of a proven route that has
+// not been available since its proof: every other check passes, so the
+// publisher activates it, and sets its watermark, on its next tick.
+const PublishNotActivated = "route not yet activated"
+
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
 const PublishHourlyCap = 30
 
@@ -78,7 +83,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		mode, socketPath, threadID                                         string
 		principal, resumedAfter                                            int64
 		verified, dnd, quiet, enabled, epochOK, current                    bool
-		proven, tested, listed, versionListed                              bool
+		proven, activated, tested, listed, versionListed                   bool
 		owner, vendor, hall                                                sql.NullBool
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
@@ -88,6 +93,8 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			COALESCE(l.launch_ref = r.launch_ref AND l.verified = 1, 0),
 			COALESCE(json_extract(l.profile, '$.vendor_version'), ''),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation),
+			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation
+				AND p.activated_at_ms IS NOT NULL),
 			`+PublishProfileTested+`,
 			EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter AND e.cap = 'publish'),
 			EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter AND e.cap = 'publish'
@@ -99,7 +106,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
 		&principal, &verified, &mode, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
-		&hall, &current, &version, &proven, &tested, &listed, &versionListed)
+		&hall, &current, &version, &proven, &activated, &tested, &listed, &versionListed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
 	}
@@ -202,6 +209,8 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		state.Reason = "profile not tested"
 	case !proven:
 		state.Reason = "route not proven"
+	case !activated:
+		state.Reason = PublishNotActivated
 	default:
 		state.State = "available"
 	}

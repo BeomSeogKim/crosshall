@@ -53,6 +53,13 @@ func (p *publishFixture) proveRoute() {
 	p.t.Helper()
 	p.refreshBinding()
 	p.update(func(ctx context.Context, tx store.Tx) error { return ConfirmPublishRoute(ctx, tx, p.binding, p.queue) })
+	p.activate()
+}
+
+// activate runs the publisher's activation step at p.now.
+func (p *publishFixture) activate() {
+	p.t.Helper()
+	p.update(func(ctx context.Context, tx store.Tx) error { return ActivatePublishRoutes(ctx, tx, p.now) })
 }
 
 func (p *publishFixture) mutate(statement string, args ...any) {
@@ -422,7 +429,7 @@ func (p *publishFixture) confirm(proof PublishProof, queue PublishQueue) bool {
 	p.t.Helper()
 	var recorded bool
 	p.update(func(ctx context.Context, tx store.Tx) (err error) {
-		recorded, err = ConfirmPublishProof(ctx, tx, proof, queue, p.now)
+		recorded, err = ConfirmPublishProof(ctx, tx, proof, queue)
 		return err
 	})
 	return recorded
@@ -451,28 +458,66 @@ func TestAProofMustBeTheExpectedLaunch(t *testing.T) {
 	}
 }
 
-// Astra #433: a proof that returns after the member turned publish off
-// records nothing, so work stored while off is not offered once it is on.
-func TestAProofRechecksFirstActivationWhenItLands(t *testing.T) {
-	p := newPublishFixture(t)
-	proof := p.unproven()
-	p.mutate(`UPDATE binding SET publish_quiet = 1 WHERE id = ?`, p.binding.ID)
-	p.turnEndAsk(p.writer, "reader", "while-off-before-proof")
-	if p.confirm(proof, p.queue) {
-		t.Fatal("recorded a proof for a route that could not publish")
-	}
-	stored := p.turnEndAsk(p.writer, "reader", "while-off-after-proof")
-	p.mutate(`UPDATE binding SET publish_quiet = 0 WHERE id = ?`, p.binding.ID)
-	if !p.confirm(p.unproven(), p.queue) {
-		t.Fatal("no proof once the route could publish")
-	}
-	if id := p.reserve(); id != 0 {
-		t.Fatalf("offered work (up to %d) stored while the route was off", stored)
-	}
-	after := p.turnEndAsk(p.writer, "reader", "after-proof")
-	id := p.reserve()
-	if ids := p.begin(id); len(ids) != 1 || ids[0] != after {
-		t.Fatalf("offered %v, want only %d", ids, after)
+// Astra #433 and #438: the watermark is set at the route's first
+// availability, so work stored while it was off, capped or held (by this
+// binding or by another on the same physical queue) is never offered.
+func TestARouteActivatesAtItsFirstAvailability(t *testing.T) {
+	const attempt = `INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
+		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms)
+		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?)`
+	for _, c := range []struct {
+		name         string
+		block, clear func(p *publishFixture)
+		want         string
+	}{
+		{"off", func(p *publishFixture) {
+			p.mutate(`UPDATE binding SET publish_quiet = 1 WHERE id = ?`, p.binding.ID)
+		}, func(p *publishFixture) {
+			p.mutate(`UPDATE binding SET publish_quiet = 0 WHERE id = ?`, p.binding.ID)
+		}, "off"},
+		{"capped", func(p *publishFixture) {
+			at := p.now.UnixMilli()
+			for i := int64(0); i < store.PublishHourlyCap; i++ {
+				p.mutate(attempt, p.binding.ID, p.principalOf(p.reader), 1000+i, 1, at, at, at)
+			}
+		}, func(p *publishFixture) { p.now = p.now.Add(time.Hour + time.Second) }, "capped"},
+		{"held by another binding on the queue", func(p *publishFixture) {
+			at := p.now.UnixMilli()
+			p.mutate(attempt, bindingIDOf(t, p.fixture, p.principalOf(p.writer)), p.principalOf(p.writer),
+				p.queue.PID, p.queue.StartMS, at, at, nil)
+		}, func(p *publishFixture) {
+			p.mutate(`UPDATE publish_attempt SET observed_at_ms = ? WHERE observed_at_ms IS NULL`, p.now.UnixMilli())
+		}, "held"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPublishFixture(t)
+			probe := p.unproven() // the proof is asked for, then the route stops
+			c.block(p)
+			if !p.confirm(probe, p.queue) {
+				t.Fatal("the listener's identity was not recorded")
+			}
+			p.activate()
+			if state := p.publishState().State; state != c.want {
+				t.Fatalf("state %q, want %q", state, c.want)
+			}
+			p.turnEndAsk(p.writer, "reader", "while-"+c.name)
+			p.activate()
+			c.clear(p)
+			if got := p.publishState(); got.State != "candidate" || got.Reason != store.PublishNotActivated {
+				t.Fatalf("before activation: %+v", got)
+			}
+			p.activate()
+			if state := p.publishState().State; state != "available" {
+				t.Fatalf("after activation: %q", state)
+			}
+			if id := p.reserve(); id != 0 {
+				t.Fatalf("offered work stored while the route was %s", c.name)
+			}
+			after := p.turnEndAsk(p.writer, "reader", "after-activation")
+			if ids := p.begin(p.reserve()); len(ids) != 1 || ids[0] != after {
+				t.Fatalf("offered %v, want only %d", ids, after)
+			}
+		})
 	}
 }
 

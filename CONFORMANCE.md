@@ -52,6 +52,17 @@ Every invocation makes a fresh home, state directory, dispatcher and Writer. Onl
 
 To publish a run, append its receipt to `test/conformance/member-runs.jsonl`. Render the table with `python3 scripts/protocol-conformance.py table`, copy it into the marked block above and verify it with `python3 scripts/protocol-conformance.py table --check`. Each pass is derived from that rule's expected evidence. An unexpected evidence value fails validation.
 
+## Claude Code hook manifest
+
+The hook reads the session's build and mode from the environment Claude Code gives its hooks, and only labels in an observed form count; anything else is `unverified`, and evidence cannot mark an unverified profile tested. Manifest `claude-2` accepts these observations:
+
+| Session | `AI_AGENT` | `CLAUDE_CODE_ENTRYPOINT` | Profile |
+| --- | --- | --- | --- |
+| `claude -p` (2.1.327) | `claude-code_2-1-327_harness` | `sdk-cli` | `2.1.327`, `print` |
+| interactive (2.1.329, macOS) | `claude-code_2-1-329_agent` | `cli` | `2.1.329`, `interactive` |
+
+`claude-1` accepted only the first row, so an interactive session was unverified. The profile carries no permission mode: tested evidence for an interactive build covers its permission modes except bypass, whose sessions never receive notices.
+
 ## Hall-level checks
 
 The following tests use disposable state to exercise hall behavior that applies across Readers. The member table reports the observed member scenario only.

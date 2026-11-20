@@ -40,7 +40,7 @@ func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 func (c *conformance) importTurnEnd(version, level, check string) string {
 	c.t.Helper()
 	evidence, _ := json.MarshalIndent(map[string]any{"vendor": "claude", "vendor_version": version,
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-1",
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-2",
 		"run_at_ms": time.Now().UnixMilli(), "results": []evidenceResult{{"turn_end", level, check}}}, "", "  ")
 	file := filepath.Join(c.root, fmt.Sprintf("turn-end-%d.json", time.Now().UnixNano()))
 	if err := os.WriteFile(file, append(evidence, '\n'), 0600); err != nil {
@@ -200,7 +200,7 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		t.Fatalf("CROSSHALL_CONFORMANCE_OUT: %v", err)
 	}
 	evidence, _ := json.MarshalIndent(map[string]any{"vendor": "claude", "vendor_version": version,
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-1",
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-2",
 		"run_at_ms": time.Now().UnixMilli(), "results": []evidenceResult{{"turn_end", "tested",
 			"an unread request stored during the turn continues it once with the pending line; no evidence, a note or a read request does not"}}}, "", "  ")
 	file := filepath.Join(dir, fmt.Sprintf("claude-%s-%s-%s-print-turn-end.json", version, runtime.GOOS, runtime.GOARCH))

@@ -68,8 +68,11 @@ func TestClaudeLaunchVersionAndModeComeFromTheHookEnvironment(t *testing.T) {
 		agent, entry, version, mode string
 	}{
 		{"claude-code_2-1-327_harness", "sdk-cli", "2.1.327", "print"},
-		{"claude-code_2-1-400_harness", "cli", "2.1.400", "unverified"},
-		{"claude-code_2-1-400", "cli", "unverified", "unverified"}, // an unobserved label form
+		{"claude-code_2-1-329_agent", "cli", "2.1.329", "interactive"}, // observed in an interactive session
+		{"claude-code_2-1-400_harness", "cli", "2.1.400", "interactive"},
+		{"claude-code_2-1-329_agent", "sdk-cli", "2.1.329", "print"},
+		{"claude-code_2-1-400", "cli", "unverified", "interactive"},      // an unobserved label form
+		{"claude-code_2-1-329_agent", "vscode", "2.1.329", "unverified"}, // an unmapped entrypoint
 		{"claude-code_latest", "sdk-cli", "unverified", "print"},
 		{"claude-code_2-1-327-rc1_harness", "sdk-cli", "unverified", "print"}, // not the observed grammar
 		{"claude-code_2-1-327_other", "sdk-cli", "unverified", "print"},

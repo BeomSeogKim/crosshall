@@ -1,6 +1,6 @@
 {
   "adapter": "claude",
-  "revision": "claude-1",
+  "revision": "claude-2",
   "event_field": "hook_event_name",
   "session_field": "session_id",
   "session_env": "CLAUDE_CODE_SESSION_ID",
@@ -8,10 +8,10 @@
   "socket_env": "CLAUDE_CODE_MESSAGING_SOCKET",
   "turn_field": "prompt_id",
   "version_env": "AI_AGENT",
-  "version_pattern": "^claude-code_([0-9]+-[0-9]+-[0-9]+)_harness$",
+  "version_pattern": "^claude-code_([0-9]+-[0-9]+-[0-9]+)_(?:harness|agent)$",
   "mode_env": "CLAUDE_CODE_ENTRYPOINT",
   "mode_field": "permission_mode",
-  "modes": {"sdk-cli": "print"},
+  "modes": {"sdk-cli": "print", "cli": "interactive"},
   "caps_ms": {"prompt_submitted": 1800000, "turn_finishing": 7200000, "approval_requested": 1800000},
   "install": {
     "home_env": "CLAUDE_CONFIG_DIR",

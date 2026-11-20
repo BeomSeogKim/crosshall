@@ -359,10 +359,10 @@ func TestScopedPlanEvidenceMatchesVendorBuildAndMode(t *testing.T) {
 	if err := db.Update(ctx, func(tx store.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
 			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
-			('claude', '2.1.327', ?1, 'print', 'claude-1', 'reminder', 'candidate', 'matching', 1),
+			('claude', '2.1.327', ?1, 'print', 'claude-2', 'reminder', 'candidate', 'matching', 1),
 			('claude', '2.1.327', ?1, 'print', 'other-rev', 'reminder', 'unavailable', 'revision', 1),
-			('claude', '2.1.327', 'other-platform', 'print', 'claude-1', 'reminder', 'unavailable', 'platform', 1),
-			('claude', '1.0.0', ?1, 'print', 'claude-1', 'reminder', 'unavailable', 'build', 1),
+			('claude', '2.1.327', 'other-platform', 'print', 'claude-2', 'reminder', 'unavailable', 'platform', 1),
+			('claude', '1.0.0', ?1, 'print', 'claude-2', 'reminder', 'unavailable', 'build', 1),
 			('codex', '0.170.0', ?1, 'exec', 'codex-1', 'boundary', 'tested', 'vendor', 1)`, platform)
 		return err
 	}); err != nil {

@@ -108,6 +108,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			if err != nil {
 				return err
 			}
+			dispatcherReady := false
 			service := setup.Service{StateRoot: paths.state, Executable: executable,
 				SetPolicy: func(ctx context.Context, adapter string, enabled bool) error {
 					// Give each policy update its own budget after the interactive plan.
@@ -126,12 +127,17 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 						_ = json.Unmarshal(result.Data, &detail)
 						return fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
 					}
+					dispatcherReady = true
 					return nil
 				}}
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
 				req.PathConsent = writeInstallerPathConsent
 			}
-			return service.Run(context.Background(), setup.Request(req))
+			runErr := service.Run(context.Background(), setup.Request(req))
+			if dispatcherReady && req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_READY_RECEIPT") == "1" {
+				return errors.Join(runErr, writeInstallerReceipt(4, "ready"))
+			}
+			return runErr
 		}
 	} else {
 		env.Unavailable = pathErr.Error()
@@ -140,15 +146,19 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 }
 
 func writeInstallerPathConsent(accepted bool) error {
-	receipt := os.NewFile(3, "installer PATH consent")
-	if receipt == nil {
-		return errors.New("installer PATH consent descriptor is missing")
-	}
 	answer := "no"
 	if accepted {
 		answer = "yes"
 	}
-	_, err := fmt.Fprintln(receipt, answer)
+	return writeInstallerReceipt(3, answer)
+}
+
+func writeInstallerReceipt(fd uintptr, value string) error {
+	receipt := os.NewFile(fd, "installer receipt")
+	if receipt == nil {
+		return fmt.Errorf("installer receipt descriptor %d is missing", fd)
+	}
+	_, err := fmt.Fprintln(receipt, value)
 	return errors.Join(err, receipt.Close())
 }
 

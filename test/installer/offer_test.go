@@ -71,6 +71,9 @@ if [ "${CROSSHALL_INSTALL_PATH_CONSENT:-}" = 1 ] && [ "${OFFER_CONFIRM_PATH:-}" 
     *) printf 'no\n' >&3 ;;
   esac
 fi
+if [ "${CROSSHALL_INSTALL_READY_RECEIPT:-}" = 1 ] && [ "${OFFER_READY:-}" = 1 ]; then
+  printf 'ready\n' >&4
+fi
 exit "$OFFER_EXIT"
 `)
 	write(filepath.Join(f.Bin, "crosshall"), "#!/bin/sh\necho PATH-decoy >> \"$OFFER_LOG\"\nexit 1\n")
@@ -120,8 +123,9 @@ esac
 		}
 		lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(output), "\r\n", "\n")), "\n")
 		start := "Next (in a plain terminal): " + strings.ReplaceAll(target, " ", `\ `) + " owner start"
-		if len(lines) < 2 || lines[0] != "Installed crosshall v0.1.0 at "+target || lines[1] != start ||
-			(!failSetup && len(lines) != 2) {
+		ready := os.Getenv("OFFER_READY") == "1"
+		if lines[0] != "Installed crosshall v0.1.0 at "+target ||
+			(ready && strings.Contains(string(output), start)) || (!ready && lines[len(lines)-1] != start) {
 			t.Fatalf("unexpected install output: %q", output)
 		}
 		if failSetup && (!strings.Contains(string(output), "Optional adapter setup failed") || !strings.Contains(string(output), "setup to retry")) {
@@ -144,9 +148,18 @@ esac
 		}
 	}
 
+	t.Setenv("OFFER_READY", "")
 	t.Run("fresh owner terminal", func(t *testing.T) { check(t, true, false) })
 	t.Run("upgrade reaches footprint check", func(t *testing.T) { check(t, true, false) })
 	t.Run("optional setup failure keeps binary", func(t *testing.T) { check(t, true, true) })
+	t.Run("setup readied the dispatcher", func(t *testing.T) {
+		t.Setenv("OFFER_READY", "1")
+		check(t, true, false)
+	})
+	t.Run("partial setup readied the dispatcher", func(t *testing.T) {
+		t.Setenv("OFFER_READY", "1")
+		check(t, true, true)
+	})
 	t.Run("piped input", func(t *testing.T) { check(t, false, false, "--pipe-in") })
 	t.Run("piped output", func(t *testing.T) { check(t, false, false, "--pipe-out") })
 	t.Run("both piped", func(t *testing.T) { check(t, false, false, "--pipe-in", "--pipe-out") })

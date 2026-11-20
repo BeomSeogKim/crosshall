@@ -43,7 +43,7 @@ cd crosshall
 ./scripts/install.sh
 ```
 
-The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. If the current shell cannot find `crosshall`, the installer prints the full path you can use right away:
+The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. When hook setup leaves starting the dispatcher to you, the installer prints the start command. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text

@@ -81,12 +81,14 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 			f := newSetupWorld(t)
 			before := readSetupFile(t, f.paths["claude"])
 			receipt := filepath.Join(f.home, "path-consent")
+			ready := filepath.Join(f.home, "dispatcher-ready")
 			wrapper := filepath.Join(f.home, "offer")
-			program := "#!/bin/sh\nexec 3>\"$CROSSHALL_TEST_PATH_RECEIPT\"\nexec \"$CROSSHALL_TEST_BINARY\" \"$@\"\n"
+			program := "#!/bin/sh\nexec 3>\"$CROSSHALL_TEST_PATH_RECEIPT\" 4>\"$CROSSHALL_TEST_READY_RECEIPT\"\nexec \"$CROSSHALL_TEST_BINARY\" \"$@\"\n"
 			if err := os.WriteFile(wrapper, []byte(program), 0700); err != nil {
 				t.Fatal(err)
 			}
-			env := append(slices.Clone(f.env), "CROSSHALL_INSTALL_PATH_CONSENT=1", "CROSSHALL_TEST_PATH_RECEIPT="+receipt, "CROSSHALL_TEST_BINARY="+f.executable)
+			env := append(slices.Clone(f.env), "CROSSHALL_INSTALL_PATH_CONSENT=1", "CROSSHALL_INSTALL_READY_RECEIPT=1",
+				"CROSSHALL_TEST_PATH_RECEIPT="+receipt, "CROSSHALL_TEST_READY_RECEIPT="+ready, "CROSSHALL_TEST_BINARY="+f.executable)
 			f.executable = wrapper
 			code, out := f.inTerminal(env, tc.input, nil, "setup", "--offer")
 			if code != 0 || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Apply the shown PATH change and install the listed hooks? [y/N]") {
@@ -95,12 +97,17 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 			if data, err := os.ReadFile(receipt); err != nil || string(data) != tc.receipt {
 				t.Fatalf("PATH consent receipt %q: %v", data, err)
 			}
+			wantReady := ""
 			if tc.receipt == "yes\n" {
+				wantReady = "ready\n"
 				if !strings.Contains(out, "claude: installed") || !strings.Contains(out, "codex: installed") {
 					t.Fatalf("accepted offer did not install hooks:\n%s", out)
 				}
 			} else {
 				assertSetupFile(t, f.paths["claude"], before, true)
+			}
+			if data, err := os.ReadFile(ready); err != nil || string(data) != wantReady {
+				t.Fatalf("dispatcher readiness receipt %q: %v; want %q", data, err, wantReady)
 			}
 		})
 	}

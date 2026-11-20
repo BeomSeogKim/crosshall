@@ -45,8 +45,9 @@ type HookEventArgs struct {
 	HookAtMS       int64       `json:"hook_at_ms"`
 	WantOutput     bool        `json:"want_output"`
 	Epoch          uint64      `json:"epoch"`
-	Receipt        string      `json:"receipt,omitempty"`
-	ToolCallID     string      `json:"tool_call_id,omitempty"`
+	// Receipt records an observed publish notice as "publish:" followed by its IDs.
+	Receipt    string `json:"receipt,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ContinuationActive reports that a vendor Stop hook is already continuing the turn.
 	ContinuationActive bool `json:"continuation_active,omitempty"`
 }

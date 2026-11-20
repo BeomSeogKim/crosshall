@@ -138,6 +138,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[Cancel](args)
 	case VerbBudgetGrant:
 		return decodeLedgerCommand[BudgetGrant](args)
+	case VerbBudgetPolicy:
+		return decodeLedgerCommand[BudgetPolicy](args)
 	// end read-ledger
 	case VerbCreateChannel:
 		var c CreateChannel

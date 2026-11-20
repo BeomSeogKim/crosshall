@@ -78,8 +78,8 @@ func (c claudeSession) waitForConsumption() {
 	}
 }
 
-// fireAndRecord establishes the original observation before it can be used
-// as a replay baseline. A clean hook means publication, not admission.
+// fireAndRecord waits for a new committed observation. A one-way packet can
+// expire before admission, so retry after it leaves the queue if nothing committed.
 func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
@@ -88,27 +88,29 @@ func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) 
 		ref = prompt + ":" + event
 	}
 	db := c.w.db()
+	count := func() int {
+		c.w.t.Helper()
+		var recorded int
+		err := db.QueryRow(`SELECT COUNT(*) FROM observation o JOIN leaf l ON l.principal_id = o.principal_id
+			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.event_ref = ?)`,
+			digest, fact, ref, ref).Scan(&recorded)
+		if err != nil {
+			c.w.t.Fatal(err)
+		}
+		return recorded
+	}
+	before := count()
 	deadline := time.Now().Add(3 * time.Second)
-	published := false
 	for {
 		if out := c.fire(event, fields); out != "" {
 			c.w.t.Fatalf("quiet %s printed %q", event, out)
 		}
-		published = published || c.lastCounter() == event+" clean"
 		c.waitForConsumption()
-		var recorded bool
-		err := db.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM observation o JOIN leaf l ON l.principal_id = o.principal_id
-			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.event_ref = ?)
-		)`, digest, fact, ref, ref).Scan(&recorded)
-		if err != nil {
-			c.w.t.Fatal(err)
-		}
-		if published && recorded {
+		if count() > before {
 			return
 		}
 		if time.Now().After(deadline) {
-			c.w.t.Fatalf("quiet %s (%q): published=%t recorded=%t, last counter %q", event, ref, published, recorded, c.lastCounter())
+			c.w.t.Fatalf("quiet %s (%q): still at %d observations, last counter %q", event, ref, before, c.lastCounter())
 		}
 	}
 }
@@ -403,10 +405,7 @@ func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
 			}
 			end := func(s claudeSession) {
 				before := tableCounts(t, w)["observation"]
-				if got := s.fire("SessionEnd", map[string]any{"reason": "other"}); got != "" {
-					t.Fatalf("SessionEnd returned %q", got)
-				}
-				s.waitForConsumption()
+				s.fireAndRecord("SessionEnd", wire.HookSessionEnded, map[string]any{"reason": "other"})
 				if got := tableCounts(t, w)["observation"]; got != before+1 {
 					t.Fatalf("SessionEnd observation count %d, want %d", got, before+1)
 				}

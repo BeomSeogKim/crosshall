@@ -219,8 +219,9 @@ Tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follo
 | Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | not measured | SessionStart | unavailable | 1.5.11 as the agent reported it, macOS |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
 
-- **Standing by:** crosshall does not wake an idle session. An agent waiting for work runs one bounded wait, `crosshall wait --existing --work-only --timeout 9m`, whose result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
+- **Standing by:** in this release crosshall does not wake an idle session (see notices below). An agent waiting for work runs one bounded wait, `crosshall wait --existing --work-only --timeout 9m`, whose result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
 - **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel and show a pending line at each prompt. See [adapters](docs/adapters.md).
+- **Notices:** the hall can write one line, `[crosshall] pending: <ids>. … Run crosshall read.`, to a Claude Code session's own message route, which starts a turn in an idle session. It does so only for an agent version, platform and mode that a conformance run has tested, and this release lists none: every session stays on pull, and `crosshall who` shows `publish: candidate`. The owner can switch notices off for the hall, an agent kind or one member, and a member for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
 - **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): each agent version completed an exercise of all six member rules on v0.1.0-rc.13. Those runs were assisted: the commands were scripted and the agent could see the driver. They show that a version can follow the rules, not that it will on its own. The join hint's rule 4 line and the budget refusal's wording changed after them, in v0.1.0.
 
 The member rules are in [PROTOCOL.md](PROTOCOL.md).
@@ -229,7 +230,7 @@ The member rules are in [PROTOCOL.md](PROTOCOL.md).
 
 Words used here: the **hall** is everything crosshall keeps on your machine; a **channel** is a named group in it with one shared history; a **member** is a session joined to a channel under an `@alias`; the **owner** is you, in a terminal that is not a member. A **request** (`ask`) asks for an answer and is **owed** by each recipient until answered, declined or cancelled; a **note** only informs; a **reply** answers a request. The **ledger** is the record of all of this, which `crosshall waiting`, `crosshall status` and `crosshall log` show.
 
-A dispatcher, a background process of your own user, keeps the hall in an SQLite database in your state directory. An ordinary crosshall command starts it when it is not running; `crosshall wait` and `crosshall owner doctor` do not. Every command hands its request to the dispatcher through files in private directories and reads the answer the same way; nothing listens on a network port. A member is identified by the session ID its agent exports, or by the identity `crosshall run` gives a shell. The owner is the person in a plain terminal. Messages are stored and wait: an agent sees them when it next runs a crosshall command.
+A dispatcher, a background process of your own user, keeps the hall in an SQLite database in your state directory. An ordinary crosshall command starts it when it is not running; `crosshall wait` and `crosshall owner doctor` do not. Every command hands its request to the dispatcher through files in private directories and reads the answer the same way; nothing listens on a network port. A member is identified by the session ID its agent exports, or by the identity `crosshall run` gives a shell. The owner is the person in a plain terminal. Messages are stored and wait: an agent sees them when it next runs a crosshall command, or when a notice reaches it where a publish route is available.
 
 ## On your machine
 
@@ -262,7 +263,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 ## Limits
 
-- No automatic wake. A session that has ended its turn sees new requests at its next crosshall command (or, with an adapter, its next prompt).
+- No automatic wake in this release. A session that has ended its turn sees new requests at its next crosshall command (or, with an adapter, its next prompt). The notice sender for Claude Code is built, but no agent version is listed as tested for it yet.
 - The turn-end check runs only for Claude Code in print mode, after the owner imports conformance evidence. It is unavailable in interactive Claude Code and on stock Codex.
 - One machine and one user.
 - One channel per session.

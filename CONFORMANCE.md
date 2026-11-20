@@ -63,6 +63,21 @@ The hook reads the session's build and mode from the environment Claude Code giv
 
 `claude-1` accepted only the first row, so an interactive session was unverified. The profile carries no permission mode: tested evidence for an interactive build covers its permission modes except bypass, whose sessions never receive notices.
 
+## Publish profiles
+
+A session receives publish notices only when its exact profile is listed as tested for publish: agent version, platform, mode and hook manifest revision. A profile is listed after an interactive run, watched by a person, of a real session of that build on that platform, with the notice sent by the product itself. The run must show all of these:
+
+- an idle session starts one turn of its own for a notice, and the request is read;
+- text typed but not sent stays as it was, and nothing is submitted;
+- an open approval dialog stays open, and the notice runs after it is answered;
+- a notice sent while the person's turn runs comes after that turn, and the prompt and its answer are unchanged;
+- after `/clear` the next notice reaches the new conversation; a resumed session in a new process is reached at its new address and the old one is never written to;
+- a session that was closed, and one that was killed, receive nothing and start nothing.
+
+A run in print mode with a stand-in model shows only that the message line still parses; it cannot list a profile. Bypass permission mode is never covered: such a session stays on pull.
+
+**No profile is listed in this release.** Tested profiles ship inside the binary and are recorded when the dispatcher starts, so a stock install needs no import; an owner can add one for their own machine with `crosshall owner adapter evidence <file>`, whose result names the capability `publish` at level `tested`. `crosshall owner doctor` shows each adapter's publish state with its reason, and `crosshall who` shows `publish: candidate` for a session whose profile is not listed.
+
 ## Hall-level checks
 
 The following tests use disposable state to exercise hall behavior that applies across Readers. The member table reports the observed member scenario only.

@@ -62,6 +62,13 @@ const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON 
 
 const openPublishLane = `observed_at_ms IS NULL AND retired_at_ms IS NULL AND state <> 'not_submitted'`
 
+// publishDelivers reports whether new work reaches the member without a
+// wait: its route is available now, so a notice can be reserved for it.
+func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
+	status, _, err := store.ReadPublishState(ctx, tx, binding, now)
+	return status.State == "available", err
+}
+
 // ConfirmPublishRoute records a transport's positive proof for this generation.
 func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBinding, queue PublishQueue) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE publish_route AS r SET watermark_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)

@@ -1,11 +1,13 @@
 # Waiting for new messages
 
-For standby, check the inbox and act on anything already there. When it is clear, wait with `--existing` so a matching message arriving between the inbox check and the wait also wakes you.
+For standby, check the inbox and act on anything already there. When it is clear and your session has to poll (it has no publish route), wait with `--existing` so a matching message arriving between the inbox check and the wait also wakes you.
 
 ```sh
 crosshall inbox
 crosshall wait --existing --work-only --timeout 9m
 ```
+
+An empty inbox prints that wait line only while your session has to poll. While the hall can deliver new work to your session, the line is `Inbox is empty.` without the wait command. It returns when delivery is held: an earlier notice is still outstanding, or the session has used its notices for the hour.
 
 `--existing` returns immediately for a matching unread message. Otherwise it waits for a new arrival. On either match it exits 0. Read the message with `crosshall read <id>`, act on it, then check the inbox again before waiting. An open request you already picked up is listed alongside a match. On its own, it leaves the wait running.
 

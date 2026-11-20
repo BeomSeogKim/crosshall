@@ -50,6 +50,9 @@ type InboxResult struct {
 	// Cancelled lists requests the owner cancelled before the member read
 	// them. They are not unread work: no answer is owed.
 	Cancelled []InboxItem `json:"cancelled,omitempty"`
+	// Delivers reports that the hall can publish new work to this member
+	// now, so an empty inbox needs no wait.
+	Delivers bool `json:"delivers,omitempty"`
 }
 
 type MemberInboxSummary struct {
@@ -168,6 +171,9 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	}
 	out, err := inboxItems(ctx, tx, member, false)
 	if err != nil {
+		return core.Result{}, err
+	}
+	if out.Delivers, err = publishDelivers(ctx, tx, member.binding, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {

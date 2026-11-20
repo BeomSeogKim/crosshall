@@ -225,7 +225,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintln(w, "Arrived during the wait")
 		}
 		if len(r.Unread) == 0 && len(r.Owed) == 0 && len(r.Cancelled) == 0 {
-			fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.")
+			if r.Delivers {
+				fmt.Fprintln(w, "Inbox is empty.")
+			} else {
+				fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.")
+			}
 		}
 		printInboxItems(w, "Unread", r.Unread, false)
 		printInboxItems(w, "Cancelled by the owner (no answer owed)", r.Cancelled, false)

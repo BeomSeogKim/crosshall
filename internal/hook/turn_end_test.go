@@ -81,7 +81,7 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !tc.unlisted {
-				listed := "claude 2.1.327 " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-1\n"
+				listed := "claude 2.1.327 " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-2\n"
 				if err := os.WriteFile(filepath.Join(dir, "turn_end"), []byte(listed), 0600); err != nil {
 					t.Fatal(err)
 				}

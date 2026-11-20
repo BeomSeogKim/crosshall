@@ -35,9 +35,9 @@ To make the check available for Claude Code in print mode (`claude -p`), work fr
 3. Import the file it writes to `"$out"` with `crosshall owner adapter evidence <file>`.
 4. Turn the adapter on with `crosshall owner adapter set claude --enabled on`.
 
-`crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations.
+`crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations. Evidence belongs to one hook manifest revision: after an upgrade that changes it (`claude-2` in this release), run the conformance test again and import the new file.
 
-Interactive Claude Code sessions do not report a verified mode, and stock Codex sessions cannot be verified. For both, the check stays unavailable.
+Interactive Claude Code sessions report a verified build and the mode `interactive`, but no conformance run has tested the check there, so it stays unavailable. Stock Codex sessions cannot be verified, so the check stays unavailable for them too.
 
 ## The prompt line
 

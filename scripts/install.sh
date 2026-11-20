@@ -44,8 +44,38 @@ path_unchanged() {
   [[ ! -L $1 && $1 -ef $2/live ]] && cmp -s "$1" "$2/original"
 }
 
+path_receipt() {
+  local identity
+  [[ ${HOME:-} == /* ]] || return 1
+  case $(uname -s) in
+    Darwin) identity=$(stat -f '%d-%i-%B' "$1") || return 1 ;;
+    Linux) identity=$(stat -c '%d-%i-%W' "$1") || return 1 ;;
+    *) return 1 ;;
+  esac
+  [[ $identity =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] || return 1
+  printf '%s/.local/bin/.crosshall-path-owners/%s\n' "$HOME" "$identity"
+}
+
+store_path_receipt() (
+  local profile=$1 mode=$2 receipt=$3 dir=${3%/*}
+  [[ -n $receipt && ! -L $dir ]] || return 1
+  umask 077
+  mkdir -p -- "$dir" && [[ ! -L $dir && -O $dir ]] || return 1
+  set -C
+  printf '%s\n%s' "$mode" "$profile" > "$receipt"
+)
+
+read_path_receipt() {
+  local profile=$1 mode=$2 receipt dir
+  receipt=$(path_receipt "$3") || return 1
+  dir=${receipt%/*}
+  [[ -d $dir && ! -L $dir && -O $dir && -f $receipt && ! -L $receipt && -O $receipt ]] &&
+    cmp -s "$receipt" <(printf '%s\n%s' "$mode" "$profile") || return 1
+  printf '%s\n' "$receipt"
+}
+
 remove_path() (
-  local profile=$1 scratch range start mode length size
+  local profile=$1 scratch range start mode length size receipt=
   if [[ $profile != /* ]]; then
     printf 'Use the absolute shell startup path: %q\n' "$profile" >&2
     return 1
@@ -79,6 +109,14 @@ remove_path() (
     return 1
   fi
   size=$(wc -c < "$scratch/original")
+  if [[ $mode == created || $mode == separator ]]; then
+    receipt=$(read_path_receipt "$profile" "$mode" "$scratch/live") || receipt=
+  fi
+  # If the user added a suffix, it still needs its own line.
+  if [[ $mode == separator ]] && { [[ -z $receipt ]] || (( start + length < size )); }; then
+    start=$((start + 1))
+    length=$((length - 1))
+  fi
   cp -p -- "$scratch/original" "$scratch/updated" || return 1
   { (( start == 0 )) || head -c "$start" "$scratch/original"; } > "$scratch/updated" &&
     tail -c "+$((start + length + 1))" "$scratch/original" >> "$scratch/updated" || return 1
@@ -86,11 +124,14 @@ remove_path() (
     printf 'Shell startup file changed during removal: %q\n' "$profile" >&2
     return 1
   fi
-  if [[ $mode == created ]] && (( length == size )) &&
+  if [[ $mode == created && -n $receipt ]] && (( length == size )) &&
      [[ $(LC_ALL=C ls -ld -- "$scratch/original") == '-rw-------'* ]]; then
     rm -- "$profile" || return 1
   else
     mv -f -- "$scratch/updated" "$profile" || return 1
+  fi
+  if [[ -n $receipt ]] && rm -- "$receipt"; then
+    rmdir -- "${receipt%/*}" 2>/dev/null || true
   fi
   printf 'Removed Crosshall PATH setup from %q\n' "$profile"
 )
@@ -389,20 +430,29 @@ plan_path() {
 }
 
 write_path_block() (
-  local profile=$1 mode=$2 scratch
+  local profile=$1 mode=$2 scratch receipt=
   scratch=$(mktemp -d "${profile%/*}/.crosshall-path.XXXXXXXX") || return 1
   trap 'rm -rf -- "$scratch"' EXIT
   if [[ $mode == created ]]; then
-    (umask 077; path_block "$mode" > "$scratch/updated") &&
-      ln -- "$scratch/updated" "$profile"
+    (umask 077; path_block "$mode" > "$scratch/updated") || return 1
   else
     snapshot_path "$profile" "$scratch" &&
       [[ $(path_mode "$scratch/original") == "$mode" ]] &&
       ! has_path_marker "$scratch/original" &&
       cp -p -- "$scratch/original" "$scratch/updated" &&
-      path_block "$mode" >> "$scratch/updated" &&
-      path_unchanged "$profile" "$scratch" &&
-      mv -f -- "$scratch/updated" "$profile"
+      path_block "$mode" >> "$scratch/updated" || return 1
+  fi
+  if [[ $mode == created || $mode == separator ]]; then
+    receipt=$(path_receipt "$scratch/updated") || receipt=
+  fi
+  if [[ $mode == created ]]; then
+    ln -- "$scratch/updated" "$profile" || return 1
+  else
+    path_unchanged "$profile" "$scratch" &&
+      mv -f -- "$scratch/updated" "$profile" || return 1
+  fi
+  if [[ $mode == created || $mode == separator ]] && ! store_path_receipt "$profile" "$mode" "$receipt"; then
+    printf 'Could not record PATH setup ownership for %q. Removal will keep the file and any uncertain separator.\n' "$profile" >&2
   fi
 )
 

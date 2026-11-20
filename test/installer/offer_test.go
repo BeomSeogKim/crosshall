@@ -158,14 +158,16 @@ esac
 	}
 
 	for _, tc := range []struct {
-		name, answer, prompt string
-		combined, piped      bool
-		changed              bool
+		name, answer, prompt     string
+		combined, piped, changed bool
+		suffix, forge            bool
 	}{
 		{name: "path only", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true},
 		{name: "shared yes", answer: "y\n", prompt: "Apply the PATH and hook changes shown?", combined: true, changed: true},
 		{name: "shared no", answer: "n\n", prompt: "Apply the PATH and hook changes shown?", combined: true},
 		{name: "piped", answer: "y\n", piped: true},
+		{name: "suffix undo", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true, suffix: true},
+		{name: "forged ownership", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true, forge: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := setuptest.New(t).Home
@@ -191,9 +193,17 @@ esac
 			posix := filepath.Join(home, ".profile")
 			bashrc := filepath.Join(home, ".bashrc")
 			const existing = "export CROSSHALL_TEST_PROFILE=preserved\n"
-			const noFinalNewline = "export CROSSHALL_TEST_OTHER_PROFILE=preserved"
+			noFinalNewline := "export CROSSHALL_TEST_OTHER_PROFILE=preserved"
+			if tc.suffix {
+				noFinalNewline = "# An unterminated user comment"
+			}
 			write(login, existing)
 			write(posix, noFinalNewline)
+			if tc.forge {
+				if err := os.WriteFile(bashrc, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			run := func() string {
 				args := []string{"-B", terminal, "--answers", tc.answer}
 				if tc.piped {
@@ -262,6 +272,9 @@ esac
 			if tc.combined {
 				laterPath = bashrc
 			}
+			if tc.suffix {
+				laterPath = posix
+			}
 			const later = "export CROSSHALL_TEST_LATER=preserved"
 			data, err := os.ReadFile(laterPath)
 			if err != nil {
@@ -270,6 +283,16 @@ esac
 			if err := os.WriteFile(laterPath, append(data, later...), 0600); err != nil {
 				t.Fatal(err)
 			}
+			if tc.forge {
+				profile, err := os.ReadFile(bashrc)
+				if err != nil || !strings.Contains(string(profile), "# crosshall: user PATH existing\n") {
+					t.Fatalf("existing empty profile: %q, %v", profile, err)
+				}
+				changedMarker := strings.Replace(string(profile), "# crosshall: user PATH existing\n", "# crosshall: user PATH created\n", 1)
+				if err := os.WriteFile(bashrc, []byte(changedMarker), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			zshenv := filepath.Join(zhome, ".zshenv")
 			zlogin := filepath.Join(zhome, ".zlogin")
 			zshrc := filepath.Join(zhome, ".zshrc")
@@ -277,19 +300,34 @@ esac
 				t.Fatalf("undo PATH: %v\n%s", err, output)
 			}
 			want := map[string]string{login: existing, posix: noFinalNewline, zshrc: reorder}
+			if tc.suffix {
+				want[posix] += "\n"
+			}
 			want[laterPath] += later
+			if tc.forge {
+				want[bashrc] = ""
+			}
 			for path, data := range want {
 				if got, err := os.ReadFile(path); err != nil || string(got) != data {
 					t.Errorf("undo %s: got %q, %v; want %q", path, got, err, data)
 				}
 			}
 			for _, path := range []string{bashrc, zshenv, zlogin} {
-				if path == laterPath {
+				if _, keep := want[path]; keep {
 					continue
 				}
 				if _, err := os.Stat(path); !os.IsNotExist(err) {
 					t.Errorf("undo left an unchanged installer-created file: %s (%v)", path, err)
 				}
+			}
+			if tc.suffix {
+				cmd := exec.Command("/bin/sh", "-c", `. "$1"; printf '%s' "$CROSSHALL_TEST_LATER"`, "sh", posix)
+				if got, err := cmd.Output(); err != nil || string(got) != "preserved" {
+					t.Errorf("profile assignment after undo: %q, %v", got, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(installedDir, ".crosshall-path-owners")); !os.IsNotExist(err) {
+				t.Errorf("undo left ownership records: %v", err)
 			}
 		})
 	}

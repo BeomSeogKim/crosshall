@@ -500,7 +500,7 @@ func TestManualLeaveIsNotRestoredByAHook(t *testing.T) {
 	t0 := f.now.UnixMilli()
 	f.hook(s, start("pid-1", "startup", t0))
 	wantOK(t, f.run(s, Leave{}, "leave"))
-	if got := f.hook(s, start("pid-2", "startup", t0+1_000)); got.Enrollment != "none" {
+	if got := f.hook(s, start("pid-2", "startup", t0+1_000)); got.Enrollment != "none" || got.Hint != "" {
 		t.Fatalf("a member who left was restored: %+v", got)
 	}
 }
@@ -516,8 +516,8 @@ func TestRestoreComesBeforeTheRepositoryDefault(t *testing.T) {
 		t.Fatalf("manual member outside a default repository: %+v", got)
 	}
 	newcomer := f.newSession("claude")
-	if got := f.hook(newcomer, cmd); got.Enrollment != "none" {
-		t.Fatalf("a new session joined without a default: %+v", got)
+	if got := f.hook(newcomer, cmd); got.Enrollment != "none" || !strings.Contains(got.Hint, "crosshall join <channel>") {
+		t.Fatalf("missing join guidance for an unmapped session: %+v", got)
 	}
 	if f.caller(newcomer).Role != core.RoleUnenrolled {
 		t.Fatal("a session without a default was enrolled")

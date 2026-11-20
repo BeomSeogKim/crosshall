@@ -48,7 +48,13 @@ func readLedgerOwner(ctx context.Context, env Env, opts options, args []string, 
 	if err != nil {
 		return o.usage(err.Error())
 	}
-	if _, ok := call.Command.(domain.OwnerStatus); !ok {
+	switch cmd := call.Command.(type) {
+	case domain.OwnerStatus:
+	case domain.BudgetPolicy:
+		if cmd.Refill != nil || cmd.Ceiling != nil {
+			call.OpKey = opKey(env, opts)
+		}
+	default:
 		call.OpKey = opKey(env, opts)
 	}
 	if env.Start != nil {
@@ -99,6 +105,14 @@ func ledgerOwnerCall(args []string) (Call, error) {
 		}
 		return Call{}, fmt.Errorf("usage: crosshall owner cancel <channel>/<request-id>")
 	case "budget":
+		if len(args) >= 2 && args[1] == "policy" {
+			cmd, err := parseBudgetPolicy(args[2:])
+			if err != nil {
+				return Call{}, err
+			}
+			call.Command = cmd
+			return call, nil
+		}
 		if len(args) >= 4 && args[1] == "grant" {
 			ch, target, ok := ledgerTarget(args[2])
 			if ok && len(args) == 4 && strings.HasPrefix(target, "x") {
@@ -129,6 +143,47 @@ func ledgerOwnerCall(args []string) (Call, error) {
 		return Call{}, fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> <units> | <channel>/@<alias> --roots <count> | <channel> --pool <count>")
 	}
 	return Call{}, fmt.Errorf("unknown owner command %q", args[0])
+}
+
+func parseBudgetPolicy(args []string) (domain.BudgetPolicy, error) {
+	usage := fmt.Errorf("usage: crosshall owner budget policy <channel>[/@<alias>] [--refill <N/h|0>] [--ceiling <N>]")
+	var cmd domain.BudgetPolicy
+	if len(args) == 0 {
+		return cmd, usage
+	}
+	channel, target, member := strings.Cut(strings.TrimPrefix(args[0], "#"), "/")
+	if !domain.ValidName(channel) {
+		return cmd, usage
+	}
+	cmd.Channel = channel
+	if member {
+		alias, ok := strings.CutPrefix(target, "@")
+		if !ok || !domain.ValidName(alias) {
+			return cmd, usage
+		}
+		cmd.Alias = alias
+	}
+	for i := 1; i < len(args); i++ {
+		if value, last, found, err := flagValue(args, i, "--refill"); found {
+			rate, hourly := strings.CutSuffix(value, "/h")
+			n, parseErr := strconv.ParseInt(rate, 10, 64)
+			if err != nil || parseErr != nil || n < 0 || (!hourly && value != "0") || cmd.Refill != nil {
+				return cmd, usage
+			}
+			cmd.Refill, i = &n, last
+			continue
+		}
+		if value, last, found, err := flagValue(args, i, "--ceiling"); found {
+			n, parseErr := strconv.ParseInt(value, 10, 64)
+			if err != nil || parseErr != nil || n < 0 || cmd.Ceiling != nil {
+				return cmd, usage
+			}
+			cmd.Ceiling, i = &n, last
+			continue
+		}
+		return cmd, usage
+	}
+	return cmd, nil
 }
 
 func ledgerTarget(arg string) (string, string, bool) {
@@ -230,6 +285,9 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				taking = strings.Join(parts, ", ")
 			}
 			fmt.Fprintf(w, "You (@%s): %d root token(s) to open a new exchange; taking part in %s.\n", s.Alias, s.RootTokens, taking)
+			if s.NextRootTokenAtMS > 0 {
+				fmt.Fprintf(w, "Next root token at %s.\n", ledgerTime(s.NextRootTokenAtMS))
+			}
 		}
 	case domain.Cancel:
 		var r domain.CancelResult
@@ -257,6 +315,16 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		} else {
 			fmt.Fprintf(w, "#%s/@%s: added %d root token(s), %d available.\n", r.Channel, r.Alias, r.Roots, r.RootTokens)
 		}
+	case domain.BudgetPolicy:
+		var r domain.BudgetPolicyResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		target := "#" + r.Channel
+		if r.Alias != "" {
+			target += "/@" + r.Alias
+		}
+		fmt.Fprintf(w, "%s: root token refill %d/h, automatic ceiling %d.\n", target, r.Refill, r.Ceiling)
 	default:
 		return fmt.Errorf("no plain form for %T", cmd)
 	}
@@ -337,6 +405,12 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 		}
 		if at := recipient.MoreTimeAtMS; at != nil {
 			fmt.Fprintf(w, ", more time requested at %s", ledgerTime(*at))
+		}
+		if n := recipient.Notice; n != nil {
+			fmt.Fprintf(w, "; %s", noticeText("notice", *n))
+		}
+		if n := recipient.ReplyNotice; n != nil {
+			fmt.Fprintf(w, "; %s", noticeText("reply notice", *n))
 		}
 		if o := recipient.Observed; o != nil && nowMS != 0 {
 			seen := o.At(nowMS)

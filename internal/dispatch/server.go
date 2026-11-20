@@ -136,7 +136,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	publish := &publisher{db: db, transport: cfg.Publish}
+	publish := &publisher{db: db, transport: cfg.Publish, profiles: domain.TestedPublishProfiles}
 	if err := publish.recover(ctx, time.Now()); err != nil {
 		return err
 	}
@@ -601,11 +601,15 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		request.Adapter = hook
 		switch request.Command.Verb() {
 		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
-			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart:
+			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbPublish, domain.VerbOwnerPublish:
 			if req.OpKey == "" {
 				result = commandError(core.ExitUsage, "", "an operation key is required for this command")
 				return errRefusalRollback
 			}
+		}
+		if policy, ok := request.Command.(domain.BudgetPolicy); ok && (policy.Refill != nil || policy.Ceiling != nil) && req.OpKey == "" {
+			result = commandError(core.ExitUsage, "", "an operation key is required for this command")
+			return errRefusalRollback
 		}
 		result, err = s.cfg.Handle.Handle(ctx, tx, resolved.Caller, request)
 		if err != nil {

@@ -3,14 +3,17 @@ package cli
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 )
 
 func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
+	disabled, rate, ceiling := int64(0), int64(7), int64(5)
 	for _, tc := range []struct {
 		args []string
 		call Call
@@ -22,6 +25,11 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 		{[]string{"owner", "status", "--all"}, Call{Owner: true, Command: domain.OwnerStatus{}}},
 		{[]string{"owner", "status", "--channel=checkout"}, Call{Owner: true, Command: domain.OwnerStatus{Channel: "checkout"}}},
 		{[]string{"owner", "cancel", "checkout/#7"}, Call{Owner: true, Command: domain.Cancel{Channel: "checkout", ID: 7}, OpKey: "test-key"}},
+		{[]string{"owner", "budget", "policy", "#checkout"}, Call{Owner: true, Command: domain.BudgetPolicy{Channel: "checkout"}}},
+		{[]string{"owner", "budget", "policy", "checkout/@tax"}, Call{Owner: true, Command: domain.BudgetPolicy{Channel: "checkout", Alias: "tax"}}},
+		{[]string{"owner", "budget", "policy", "checkout", "--refill", "0"}, Call{Owner: true, Command: domain.BudgetPolicy{Channel: "checkout", Refill: &disabled}, OpKey: "test-key"}},
+		{[]string{"owner", "budget", "policy", "checkout/@tax", "--ceiling", "0"}, Call{Owner: true, Command: domain.BudgetPolicy{Channel: "checkout", Alias: "tax", Ceiling: &disabled}, OpKey: "test-key"}},
+		{[]string{"owner", "budget", "policy", "checkout/@tax", "--ceiling=5", "--refill", "7/h"}, Call{Owner: true, Command: domain.BudgetPolicy{Channel: "checkout", Alias: "tax", Refill: &rate, Ceiling: &ceiling}, OpKey: "test-key"}},
 		{[]string{"owner", "budget", "grant", "checkout/x3", "2"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", ExchangeID: 3, Units: 2}, OpKey: "test-key"}},
 		{[]string{"owner", "budget", "grant", "checkout/@tax", "--roots", "1"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", Alias: "tax", Roots: 1}, OpKey: "test-key"}},
 		{[]string{"owner", "budget", "grant", "checkout", "--pool", "3"}, Call{Owner: true, Command: domain.BudgetGrant{Channel: "checkout", Pool: 3}, OpKey: "test-key"}},
@@ -33,6 +41,85 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 				t.Fatalf("exit=%d, stderr=%q, calls=%+v", code, stderr, ft.calls)
 			}
 		})
+	}
+}
+
+func TestBudgetPolicyRejectsInvalidArgumentsLocally(t *testing.T) {
+	for _, args := range [][]string{
+		{},
+		{"checkout/"},
+		{"checkout/x1"},
+		{"checkout/@tax/other"},
+		{"checkout", "--refill", "3"},
+		{"checkout", "--refill", "-1/h"},
+		{"checkout", "--refill", "1.5/h"},
+		{"checkout", "--refill"},
+		{"checkout", "--refill", "0", "--refill", "3/h"},
+		{"checkout", "--ceiling", "-1"},
+		{"checkout", "--ceiling", "5", "--ceiling", "6"},
+		{"checkout", "--ceiling", "9223372036854775808"},
+		{"checkout", "--pool", "5"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			ft := &fakeTransport{}
+			command := append([]string{"owner", "budget", "policy"}, args...)
+			_, stderr, code := run(t, Env{Transport: ft}, command...)
+			if code != core.ExitUsage || !strings.Contains(stderr, "usage: crosshall owner budget policy") || len(ft.calls) != 0 {
+				t.Fatalf("exit=%d stderr=%q calls=%+v", code, stderr, ft.calls)
+			}
+		})
+	}
+}
+
+func TestBudgetPolicyPrintsEffectiveSettings(t *testing.T) {
+	for _, tc := range []struct {
+		target, alias string
+		refill        int64
+		want          string
+	}{
+		{"checkout", "", 3, "#checkout: root token refill 3/h, automatic ceiling 5.\n"},
+		{"checkout/@tax", "tax", 0, "#checkout/@tax: root token refill 0/h, automatic ceiling 5.\n"},
+	} {
+		ft := &fakeTransport{result: okResult(t, domain.BudgetPolicyResult{
+			Channel: "checkout", Alias: tc.alias, Refill: tc.refill, Ceiling: 5,
+		})}
+		out, stderr, code := run(t, Env{Transport: ft}, "owner", "budget", "policy", tc.target)
+		if code != core.ExitOK || stderr != "" || out != tc.want {
+			t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", code, out, stderr, tc.want)
+		}
+	}
+}
+
+func TestStatusShowsNextRootTokenWhenScheduled(t *testing.T) {
+	defer func(f func() time.Time) { now = f }(now)
+	base := time.Date(2026, 11, 18, 23, 50, 0, 0, time.Local)
+	now = func() time.Time { return base }
+	for _, tc := range []struct {
+		next int64
+		want string
+	}{
+		{0, ""},
+		{base.Add(20 * time.Minute).UnixMilli(), "Next root token at Nov 19 00:10.\n"},
+	} {
+		ft := &fakeTransport{result: okResult(t, domain.StatusResult{
+			Self: &domain.StatusSelf{Alias: "tax", NextRootTokenAtMS: tc.next},
+		})}
+		out, stderr, code := run(t, Env{Transport: ft}, "status")
+		want := "No channels.\nYou (@tax): 0 root token(s) to open a new exchange; taking part in no exchange.\n" + tc.want
+		if code != core.ExitOK || stderr != "" || out != want {
+			t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", code, out, stderr, want)
+		}
+		out, stderr, code = run(t, Env{Transport: ft}, "--json", "status")
+		var body struct {
+			Self map[string]json.RawMessage
+		}
+		if err := json.Unmarshal([]byte(out), &body); err != nil || code != core.ExitOK || stderr != "" {
+			t.Fatalf("exit=%d stdout=%q stderr=%q err=%v", code, out, stderr, err)
+		}
+		if next, present := body.Self["next_root_token_at_ms"]; tc.next == 0 && present ||
+			tc.next > 0 && string(next) != strconv.FormatInt(tc.next, 10) {
+			t.Fatalf("wrong next_root_token_at_ms: %s", next)
+		}
 	}
 }
 

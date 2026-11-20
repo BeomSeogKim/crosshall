@@ -161,8 +161,17 @@ func TestMissingLeafStartSkipsLookupWithoutDispatcher(t *testing.T) {
 }
 
 func TestMissingLeafStartOnlyChecksDefaultAfterLookupRefusal(t *testing.T) {
-	for _, code := range []core.Code{core.CodeKeyRetired, core.CodeNotEnrolled} {
-		t.Run(string(code), func(t *testing.T) {
+	for _, tc := range []struct {
+		code            core.Code
+		source, outcome string
+		wantHint        bool
+	}{
+		{core.CodeKeyRetired, "startup", "refused", false},
+		{core.CodeNotEnrolled, "startup", "unmatched", true},
+		{core.CodeNotEnrolled, "compact", "unmatched", false},
+		{core.CodeNotEnrolled, "resume", "unmatched", false},
+	} {
+		t.Run(string(tc.code)+"/"+tc.source, func(t *testing.T) {
 			rv, dir, leaf := runFixture(t)
 			if err := os.RemoveAll(leaf); err != nil {
 				t.Fatal(err)
@@ -171,10 +180,10 @@ func TestMissingLeafStartOnlyChecksDefaultAfterLookupRefusal(t *testing.T) {
 				if intent != "lookup" {
 					t.Fatalf("unmatched or retired key attempted %s", intent)
 				}
-				return "", wire.Response{Result: core.Result{Status: core.ExitNotEnrolled, Code: code}}, nil
+				return "", wire.Response{Result: core.Result{Status: core.ExitNotEnrolled, Code: tc.code}}, nil
 			}}
-			out, result := simulate(t, rv, transport, "SessionStart", map[string]any{"source": "startup", "cwd": dir})
-			if out != "" || (result == "unmatched") != (code == core.CodeNotEnrolled) {
+			out, result := simulate(t, rv, transport, "SessionStart", map[string]any{"source": tc.source, "cwd": dir})
+			if (out != "") != tc.wantHint || result != tc.outcome {
 				t.Fatalf("outcome %q, output %q", result, out)
 			}
 			if _, err := os.Stat(leaf); !errors.Is(err, os.ErrNotExist) {

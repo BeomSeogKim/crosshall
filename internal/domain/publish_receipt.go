@@ -70,7 +70,13 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n == 1 && observation == "own_turn", err
+	if err != nil || n != 1 {
+		return false, err
+	}
+	if observation != "own_turn" {
+		return false, suspendPublish(ctx, tx, id, observation, now)
+	}
+	return true, nil
 }
 
 func rejectPublishReceipt(ctx context.Context, tx store.Tx, binding, principal int64, reason string, now time.Time) error {

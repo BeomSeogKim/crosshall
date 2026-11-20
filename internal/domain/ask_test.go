@@ -12,8 +12,7 @@ import (
 )
 
 // channel3 sets up #checkout with members form (a), tax (b) and a11y (c).
-// Both channels are grant-only (no join pool): every root token in these
-// tests is the owner's grant.
+// Both channels start with an empty join pool.
 func channel3(t *testing.T) (*fixture, session, session, session) {
 	f := newFixture(t)
 	f.owner(CreateChannel{Name: "checkout", Pool: pool(0)}, "")
@@ -67,7 +66,7 @@ func TestNewMemberCannotOpenAnExchange(t *testing.T) {
 	before := f.state()
 	r := f.ask(a, Ask{To: []string{"tax"}, Body: "review?"}, "k")
 	wantCode(t, r, core.ExitRefused, core.CodeNoRootCredit)
-	if hint := decode[Refusal](t, r).Hint; hint != "ask the owner: crosshall owner budget grant checkout/@form --roots 1" {
+	if hint := decode[Refusal](t, r).Hint; hint != "your next root token arrives at "+f.now.Add(20*time.Minute).UTC().Format(time.RFC3339) {
 		t.Fatalf("hint %q", hint)
 	}
 	if f.state() != before {

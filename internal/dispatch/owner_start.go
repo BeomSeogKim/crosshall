@@ -35,7 +35,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 	defer ticker.Stop()
 	var exited <-chan bool
 	var launchFailed bool
-	stage := "preparing startup paths"
+	stage := "checking the dispatcher state lock"
 	for wait.Err() == nil {
 		held, err := lockState(state)
 		if err != nil {

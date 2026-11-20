@@ -7,24 +7,21 @@ import (
 
 const OfferCap = 10
 const PendingPrefix = "[crosshall] pending: "
-const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall inbox."
 const receiptPrefix = "publish:"
 
-func Claude(ids []int64) string {
+// IDList writes message IDs as a notice carries them.
+func IDList(ids []int64) string {
 	parts := make([]string, len(ids))
 	for i, id := range ids {
 		parts[i] = strconv.FormatInt(id, 10)
 	}
-	return PendingPrefix + strings.Join(parts, " ") + claudeSuffix
+	return strings.Join(parts, " ")
 }
 
-func ClaudeReceipt(prompt string) string {
-	body, ok := strings.CutPrefix(prompt, PendingPrefix)
-	if !ok {
-		return ""
-	}
-	ids, ok := strings.CutSuffix(body, claudeSuffix)
-	if !ok || ParseIDs(ids) == nil {
+// Receipt is the receipt for an ID list an adapter recognized in a
+// submitted prompt, or "" when the list is not valid.
+func Receipt(ids string) string {
+	if ParseIDs(ids) == nil {
 		return ""
 	}
 	return receiptPrefix + ids

@@ -4,16 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
-	"slices"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -29,75 +23,19 @@ func (HookRoute) Verb() string { return VerbHookRoute }
 // PublishStatus is a member's publish state in who output.
 type PublishStatus = store.PublishState
 
-func allowedClaudeSocketDirs() []string {
-	uid := os.Getuid()
-	bases := []string{"/tmp"}
-	if runtime.GOOS == "darwin" {
-		bases = append(bases, "/private/tmp")
-	}
-	if tmp := os.TempDir(); tmp != "" && filepath.IsAbs(tmp) {
-		bases = append(bases, filepath.Clean(tmp))
-	}
-	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" && filepath.IsAbs(xdg) {
-		bases = append(bases, filepath.Clean(xdg))
-	}
-	var dirs []string
-	for _, base := range bases {
-		dirs = append(dirs,
-			filepath.Join(base, "cc-socks"),
-			filepath.Join(base, fmt.Sprintf("cc-socks-%d", uid)),
-		)
-	}
-	return dirs
-}
-
-func validClaudeSocketPath(path string) bool {
-	if path == "" || len(path) > 512 || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return false
-	}
-	if ValidText("socket path", path) != "" {
-		return false
-	}
-	if strings.IndexFunc(path, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return false
-	}
-	sock := filepath.Base(path)
-	if sock == ".sock" || !strings.HasSuffix(sock, ".sock") {
-		return false
-	}
-	return slices.Contains(allowedClaudeSocketDirs(), filepath.Dir(path))
-}
-
+// modeEligible keeps an adapter without its own rule eligible.
 func modeEligible(adapter, mode string) bool {
-	if adapter == "claude" && (mode == "bypassPermissions" || mode == "bypass") {
-		return false
-	}
-	return true
-}
-
-func routeComplete(adapter, socketPath, threadID string) (bool, string) {
-	switch adapter {
-	case "claude":
-		if socketPath == "" {
-			return false, "no socket"
-		}
-		return true, ""
-	case "codex":
-		if threadID == "" {
-			return false, "no thread"
-		}
-		return true, ""
-	default:
-		return false, "unsupported adapter"
-	}
+	a, ok := publish.Lookup(adapter)
+	return !ok || a.ModeEligible(mode)
 }
 
 func routeCandidateReason(adapter string, launchVerified bool, mode, socketPath, threadID string) (string, string) {
-	if complete, why := routeComplete(adapter, socketPath, threadID); !complete {
-		return "invalidated", why
+	a, ok := publish.Lookup(adapter)
+	if !ok {
+		return "invalidated", "unsupported adapter"
 	}
-	if !modeEligible(adapter, mode) {
-		return "invalidated", "bypass mode"
+	if _, why := a.Resolve(publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}); why != "" {
+		return "invalidated", why
 	}
 	if !launchVerified {
 		return "active", "unverified launch"
@@ -126,20 +64,16 @@ func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID,
 		return nil
 	}
 	adapter := cmd.Profile.Adapter
-	if adapter != "claude" && adapter != "codex" {
+	a, ok := publish.Lookup(adapter)
+	if !ok {
 		return nil
 	}
 	sessionRef := resolveSessionKey(ctx, tx, sessionKey, principal, adapter)
 	if sessionRef == "" {
 		return nil
 	}
-	var threadID string
-	if adapter == "codex" {
-		threadID = sessionRef
-	}
-	// On Claude SessionStart, hook.enroll carries no socket path; hook.route supplies it.
 	return upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
-		cmd.Epoch, "", "", threadID, cmd.HookAtMS, now)
+		cmd.Epoch, "", "", a.SessionThread(sessionRef), cmd.HookAtMS, now)
 }
 
 func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, adapter, sessionRef, launchRef string,
@@ -246,7 +180,7 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 		cmd.EventRef == "" || !validRef(cmd.EventRef) || !validRef(cmd.PermissionMode) || cmd.HookAtMS <= 0 {
 		return hookUsage("invalid hook.route arguments"), nil
 	}
-	if cmd.SocketPath != "" && (cmd.Adapter != "claude" || !validClaudeSocketPath(cmd.SocketPath)) {
+	if a, ok := publish.Lookup(cmd.Adapter); cmd.SocketPath != "" && (!ok || !a.AcceptsSocket(cmd.SocketPath)) {
 		return Refuse("", "socket path is outside the vendor's socket directory", "use the session's vendor socket path"), nil
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
@@ -336,8 +270,20 @@ func updatePublishRouteMode(ctx context.Context, tx store.Tx, bindingID, binding
 	nowEligible := modeEligible(curAdapter, newMode)
 	nowMS := ms(now)
 	if wasEligible == nowEligible {
-		_, err = tx.ExecContext(ctx, `UPDATE publish_route SET mode = ?, mode_at_ms = ?, updated_at_ms = ? WHERE binding_id = ?`,
-			newMode, hookAtMS, nowMS, bindingID)
+		// A proof is for one address: a mode that resolves another one
+		// starts a new generation, which needs its own proof.
+		next := int64(0)
+		if a, ok := publish.Lookup(curAdapter); ok {
+			route := publish.Route{SocketPath: curSocket.String, ThreadID: curThread.String}
+			route.Mode = curMode
+			before, _ := a.Resolve(route)
+			route.Mode = newMode
+			if after, _ := a.Resolve(route); after != before {
+				next = 1
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE publish_route SET mode = ?, mode_at_ms = ?, generation = generation + ?, updated_at_ms = ?
+			WHERE binding_id = ?`, newMode, hookAtMS, next, nowMS, bindingID)
 		return err
 	}
 	if !nowEligible {

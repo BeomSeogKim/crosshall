@@ -20,6 +20,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -57,7 +58,6 @@ type Services struct {
 type Config struct {
 	LaunchConfig
 	Services
-	Publish PublishTransport
 }
 
 type server struct {
@@ -136,14 +136,15 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	publish := &publisher{db: db, transport: cfg.Publish, profiles: domain.TestedPublishProfiles}
-	if err := publish.recover(ctx, time.Now()); err != nil {
+	pub := &publisher{db: db, profiles: domain.TestedPublishProfiles}
+	sends := len(publish.Adapters().Senders()) > 0
+	if err := pub.recover(ctx, time.Now()); err != nil {
 		return err
 	}
-	if cfg.Publish.Send != nil {
+	if sends {
 		defer func() {
 			cancel()
-			publish.workers.Wait()
+			pub.workers.Wait()
 		}()
 	}
 	stopWatching := s.withdrawReadyOnCancel(ctx)
@@ -151,8 +152,8 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err := s.scan(ctx); err != nil {
 		return err
 	}
-	if cfg.Publish.Send != nil {
-		logPublishFailure(publish.tick(ctx, time.Now(), true))
+	if sends {
+		logPublishFailure(pub.tick(ctx, time.Now(), true))
 	}
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
@@ -177,8 +178,8 @@ func Serve(ctx context.Context, cfg Config) error {
 		if err := s.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logFailure(err)
 		}
-		if publishTick && cfg.Publish.Send != nil {
-			logPublishFailure(publish.tick(ctx, time.Now(), false))
+		if publishTick && sends {
+			logPublishFailure(pub.tick(ctx, time.Now(), false))
 		}
 	}
 }

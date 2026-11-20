@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -291,5 +292,29 @@ func TestTurnEndMirrorListsTestedProfiles(t *testing.T) {
 	}
 	if _, err := root.Stat("turn_end"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("an evidence import left the turn_end mirror in place: %v", err)
+	}
+}
+
+// The hook policy names every adapter the build ships a manifest for, so a
+// new manifest's hook is not off for want of a policy line.
+func TestAdapterPolicyNamesEveryManifest(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	for _, name := range manifests.Names() {
+		s.fixtureSQL(t, `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms)
+			VALUES ('`+name+`', 1, 0, 5, 1)`)
+	}
+	if err := s.publishAdapterFiles(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := root.ReadFile(adapterPolicyName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want strings.Builder
+	for _, name := range manifests.Names() {
+		want.WriteString(name + " 1 0 5\n")
+	}
+	if string(raw) != want.String() {
+		t.Fatalf("policy %q, want %q", raw, want.String())
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -24,6 +25,7 @@ type publishFixture struct {
 
 func newPublishFixture(t *testing.T) *publishFixture {
 	t.Helper()
+	usePublishSender(t)
 	f, writer := adapterChannel(t)
 	reader := f.newSession("claude")
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, "reader-join"))
@@ -51,6 +53,13 @@ func (p *publishFixture) proveRoute() {
 	p.t.Helper()
 	p.refreshBinding()
 	p.update(func(ctx context.Context, tx store.Tx) error { return ConfirmPublishRoute(ctx, tx, p.binding, p.queue) })
+	p.activate()
+}
+
+// activate runs the publisher's activation step at p.now.
+func (p *publishFixture) activate() {
+	p.t.Helper()
+	p.update(func(ctx context.Context, tx store.Tx) error { return ActivatePublishRoutes(ctx, tx, p.now) })
 }
 
 func (p *publishFixture) mutate(statement string, args ...any) {
@@ -373,6 +382,181 @@ func TestPublishCapsAndProvenNonSubmission(t *testing.T) {
 	id = p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), items[:OfferCap]) {
 		t.Fatal("cap did not reset or a newer generation could not recover known non-submission")
+	}
+}
+
+// usePublishSender gives Claude a transport in the effective registry, so
+// its routes can publish; the domain never calls it.
+func usePublishSender(t *testing.T) {
+	t.Helper()
+	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("claude", publish.Transport{
+		Send: func(context.Context, publish.Target, string) publish.Outcome { return publish.NotSubmitted },
+	})))
+}
+
+// The final fence resolves the registered route through its adapter, the
+// same rule selection and status use, mode included: a reserved notice
+// whose route no longer resolves is not submitted.
+func TestTheFinalFenceResolvesTheRouteThroughItsAdapter(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "fence")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("nothing reserved")
+	}
+	p.mutate(`UPDATE publish_route SET mode = 'bypassPermissions' WHERE binding_id = ?`, p.binding.ID)
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted %v to a route its adapter does not resolve", ids)
+	}
+	p.state(id, string(PublishNotSubmitted))
+}
+
+func (p *publishFixture) unproven() PublishProof {
+	p.t.Helper()
+	var proofs []PublishProof
+	p.update(func(ctx context.Context, tx store.Tx) (err error) {
+		proofs, err = UnprovenPublishRoutes(ctx, tx, p.now)
+		return err
+	})
+	if len(proofs) != 1 {
+		p.t.Fatalf("unproven routes %+v, want this one", proofs)
+	}
+	return proofs[0]
+}
+
+func (p *publishFixture) confirm(proof PublishProof, queue PublishQueue) bool {
+	p.t.Helper()
+	var recorded bool
+	p.update(func(ctx context.Context, tx store.Tx) (err error) {
+		recorded, err = ConfirmPublishProof(ctx, tx, proof, queue)
+		return err
+	})
+	return recorded
+}
+
+// A proof counts only for the launch it was asked for: the listener must be
+// the launch's process, started no later than the launch's first hook.
+func TestAProofMustBeTheExpectedLaunch(t *testing.T) {
+	p := newPublishFixture(t)
+	proof := p.unproven()
+	if proof.Probe.LaunchRef != publishTestLaunch || proof.Probe.Address != publishTestSocket ||
+		proof.Probe.Route.SocketPath != publishTestSocket || proof.Probe.StartedHookAtMS != p.now.UnixMilli() {
+		t.Fatalf("probe %+v lacks the registered launch evidence", proof.Probe)
+	}
+	for name, queue := range map[string]PublishQueue{
+		"another process":        {PID: 43, StartMS: p.queue.StartMS},
+		"started after the hook": {PID: 42, StartMS: p.now.UnixMilli() + 1},
+		"no start time":          {PID: 42},
+	} {
+		if p.confirm(proof, queue) {
+			t.Fatalf("%s: recorded %+v for launch %s", name, queue, proof.Probe.LaunchRef)
+		}
+	}
+	if !p.confirm(proof, p.queue) {
+		t.Fatal("the launch's own process was not recorded")
+	}
+}
+
+// Astra #433 and #438: the watermark is set at the route's first
+// availability, so work stored while it was off, capped or held (by this
+// binding or by another on the same physical queue) is never offered.
+func TestARouteActivatesAtItsFirstAvailability(t *testing.T) {
+	const attempt = `INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
+		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms)
+		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?)`
+	for _, c := range []struct {
+		name         string
+		block, clear func(p *publishFixture)
+		want         string
+	}{
+		{"off", func(p *publishFixture) {
+			p.mutate(`UPDATE binding SET publish_quiet = 1 WHERE id = ?`, p.binding.ID)
+		}, func(p *publishFixture) {
+			p.mutate(`UPDATE binding SET publish_quiet = 0 WHERE id = ?`, p.binding.ID)
+		}, "off"},
+		{"capped", func(p *publishFixture) {
+			at := p.now.UnixMilli()
+			for i := int64(0); i < store.PublishHourlyCap; i++ {
+				p.mutate(attempt, p.binding.ID, p.principalOf(p.reader), 1000+i, 1, at, at, at)
+			}
+		}, func(p *publishFixture) { p.now = p.now.Add(time.Hour + time.Second) }, "capped"},
+		{"held by another binding on the queue", func(p *publishFixture) {
+			at := p.now.UnixMilli()
+			p.mutate(attempt, bindingIDOf(t, p.fixture, p.principalOf(p.writer)), p.principalOf(p.writer),
+				p.queue.PID, p.queue.StartMS, at, at, nil)
+		}, func(p *publishFixture) {
+			p.mutate(`UPDATE publish_attempt SET observed_at_ms = ? WHERE observed_at_ms IS NULL`, p.now.UnixMilli())
+		}, "held"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newPublishFixture(t)
+			probe := p.unproven() // the proof is asked for, then the route stops
+			c.block(p)
+			if !p.confirm(probe, p.queue) {
+				t.Fatal("the listener's identity was not recorded")
+			}
+			p.activate()
+			if state := p.publishState().State; state != c.want {
+				t.Fatalf("state %q, want %q", state, c.want)
+			}
+			p.turnEndAsk(p.writer, "reader", "while-"+c.name)
+			p.activate()
+			c.clear(p)
+			if got := p.publishState(); got.State != "candidate" || got.Reason != store.PublishNotActivated {
+				t.Fatalf("before activation: %+v", got)
+			}
+			p.activate()
+			if state := p.publishState().State; state != "available" {
+				t.Fatalf("after activation: %q", state)
+			}
+			if id := p.reserve(); id != 0 {
+				t.Fatalf("offered work stored while the route was %s", c.name)
+			}
+			after := p.turnEndAsk(p.writer, "reader", "after-activation")
+			if ids := p.begin(p.reserve()); len(ids) != 1 || ids[0] != after {
+				t.Fatalf("offered %v, want only %d", ids, after)
+			}
+		})
+	}
+}
+
+// modeAddress resolves a different address in every permission mode.
+type modeAddress struct{ publish.Adapter }
+
+func (m modeAddress) Resolve(r publish.Route) (string, string) {
+	address, why := m.Adapter.Resolve(r)
+	if why != "" {
+		return "", why
+	}
+	return address + "#" + r.Mode, ""
+}
+
+// Astra #433: a proof is for one address, so a mode change that resolves a
+// new one needs a new proof before anything is sent there.
+func TestAModeThatMovesTheAddressNeedsANewProof(t *testing.T) {
+	p := newPublishFixture(t)
+	claude, _ := publish.Lookup("claude")
+	t.Cleanup(publish.Swap(publish.Adapters().With("claude", modeAddress{claude})))
+	p.proveRoute()
+	before := p.binding.Generation
+	r := p.exec(p.caller(p.reader), Request{
+		Command:    claudeRoute(publishTestLaunch, "mode-move", "", "acceptEdits", p.now.UnixMilli()+1_000, 1),
+		Vendor:     p.reader.vendor,
+		SessionKey: p.reader.key,
+		OpKey:      "hook:claude:" + publishTestLaunch + ":mode-move",
+	})
+	wantOK(t, r)
+	p.refreshBinding()
+	if p.binding.Generation != before+1 {
+		t.Fatalf("generation %d after the address moved, want %d", p.binding.Generation, before+1)
+	}
+	p.turnEndAsk(p.writer, "reader", "after-move")
+	if id := p.reserve(); id != 0 {
+		t.Fatal("reserved on the old proof for a new address")
+	}
+	if got := p.unproven().Probe.Address; got != publishTestSocket+"#acceptEdits" {
+		t.Fatalf("new proof asked for %q", got)
 	}
 }
 

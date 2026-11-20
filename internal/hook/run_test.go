@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -382,5 +383,32 @@ func TestDisabledAndMissingPolicySkipInputAndTransport(t *testing.T) {
 				t.Fatalf("outcome %s, output %q", outcome, out.String())
 			}
 		})
+	}
+}
+
+// Every shipped manifest's hook passes the policy gate when the dispatcher
+// lists its adapter as enabled; no adapter is named here.
+func TestEveryManifestHookEntersWhenItsPolicyIsOn(t *testing.T) {
+	var policy strings.Builder
+	for _, name := range manifests.Names() {
+		policy.WriteString(name + " 1 0 7\n")
+	}
+	for _, name := range manifests.Names() {
+		m, ok := loadManifest(name)
+		if !ok {
+			t.Fatalf("manifest %s does not load", name)
+		}
+		for event := range m.Events {
+			rv, dir, _ := runFixture(t)
+			if err := os.WriteFile(filepath.Join(dir, "policy"), []byte(policy.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var out strings.Builder
+			outcome := dispatchEvent(t.Context(), time.Now(), rv, recordedTransport{}, []string{name, event}, strings.NewReader("{}"), &out, nil)
+			if outcome == "off" { // past the gate the empty input is refused
+				t.Fatalf("%s %s: hook outcome %s with its policy on", name, event, outcome)
+			}
+			break
+		}
 	}
 }

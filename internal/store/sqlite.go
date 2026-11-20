@@ -44,10 +44,13 @@ var rootRefillSchema string
 //go:embed migrations/010_publish_switches.sql
 var publishSwitchesSchema string
 
+//go:embed migrations/011_publish_activation.sql
+var publishActivationSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
-	publishSwitchesSchema,
+	publishSwitchesSchema, publishActivationSchema,
 }
 
 // Store owns the dispatcher's single SQLite connection.

@@ -35,7 +35,7 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 		adapter, launch, event, epoch = args.Adapter, args.LaunchRef, args.EventRef, args.Epoch
 	}
 	if arrival.Owner || r.Caller.Role == core.RoleOwner || r.Vendor != adapter ||
-		(adapter != "claude" && adapter != "codex") {
+		!domain.ValidAdapterName(adapter) {
 		return nil, commandError(core.ExitRefused, "", "hook identity does not match the member exchange"), nil
 	}
 	if (req.Verb == wire.VerbHookEvent || req.Verb == wire.VerbHookRoute) && r.Caller.Role != core.RoleMember {

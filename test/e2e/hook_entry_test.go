@@ -335,8 +335,16 @@ func TestHookEntryStartLooksUpBeforeDefault(t *testing.T) {
 	if err := json.Unmarshal(packet, &hello); err != nil || hello.Intent != "lookup" || hello.Vendor != "codex" || hello.Key != hookSession {
 		t.Fatalf("unexpected first contact: %s, %v", packet, err)
 	}
-	if out != "" {
-		t.Fatalf("unmatched start emitted %q", out)
+	var payload struct {
+		HookSpecificOutput struct{ HookEventName, AdditionalContext string }
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatal(err)
+	}
+	hint := payload.HookSpecificOutput.AdditionalContext
+	if payload.HookSpecificOutput.HookEventName != "SessionStart" || strings.Contains(hint, "\n") ||
+		!strings.Contains(hint, "No channel is set for this project") || !strings.Contains(hint, "crosshall join <channel>") {
+		t.Fatalf("unexpected startup guidance: %q", out)
 	}
 	if _, err := os.Stat(h.leaf); !os.IsNotExist(err) {
 		t.Fatalf("unmatched start created a member leaf: %v", err)

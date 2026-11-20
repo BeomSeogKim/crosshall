@@ -39,10 +39,9 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 			writeJSON(stdout, fields)
 		} else {
 			fmt.Fprintf(stderr, "crosshall: %s\n", refusal.Message)
-			_, inbox := cmd.(domain.Inbox)
-			waits := trailer.OwedCount != nil && (len(trailer.Pending) > 0 || *trailer.OwedCount > 0)
-			inboxInTrailer := !inbox && waits && refusal.Hint == "crosshall inbox"
-			if refusal.Hint != "" && !inboxInTrailer {
+			// The status line names the pickup itself when something is unread.
+			readInTrailer := trailer.OwedCount != nil && len(trailer.Pending) > 0 && refusal.Hint == "crosshall read"
+			if refusal.Hint != "" && !readInTrailer {
 				fmt.Fprintf(stderr, "next: %s\n", refusal.Hint)
 			}
 			printLedgerTrailer(stderr, cmd, trailer, false)

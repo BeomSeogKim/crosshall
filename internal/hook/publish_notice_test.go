@@ -10,7 +10,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall inbox."
+const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 
 func TestPublishNoticeReceipt(t *testing.T) {
 	notice := func(ids string) string { return "[crosshall] pending: " + ids + fixtureNoticeSuffix }

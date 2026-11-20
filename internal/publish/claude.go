@@ -50,7 +50,7 @@ func (claude) AcceptsSocket(path string) bool {
 // SessionThread is empty: SessionStart's hook.route supplies the socket.
 func (claude) SessionThread(string) string { return "" }
 
-const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall inbox."
+const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 
 func (claude) Notice(ids []int64) (string, bool) {
 	return notice.PendingPrefix + notice.IDList(ids) + claudeSuffix, true

@@ -21,13 +21,13 @@ func TestRepeatedJoinShowsTheHintAgain(t *testing.T) {
 	repeated := form.mustPlain("join", "checkout")
 	if !strings.Contains(repeated, "[crosshall] Already in #checkout as @form.") ||
 		!strings.Contains(repeated, "`crosshall join checkout --rules` prints them again.") ||
-		strings.Contains(repeated, "run `crosshall inbox`") || len(repeated) > 200 {
+		strings.Contains(repeated, "Later arrivals belong to the next turn.") || len(repeated) > 200 {
 		t.Errorf("repeated join:\n%s", repeated)
 	}
 	again := form.mustPlain("join", "checkout", "--rules")
 	for _, want := range []string{
 		"[crosshall] Already in #checkout as @form.",
-		"Before voluntarily ending any turn while joined, run `crosshall inbox`",
+		"Before voluntarily ending any turn while joined, leave no request addressed to you unread",
 		"--more-time",
 	} {
 		if !strings.Contains(again, want) {

@@ -91,7 +91,7 @@ func TestHintCarriesTheSpecificationRules(t *testing.T) {
 	if !strings.Contains(section[start:end], delayRule) {
 		t.Error("rule 2 lacks the agreed deadline wording")
 	}
-	for _, also := range []string{delayRule, "Later arrivals belong to the next turn.", "nowhere else", "If the deadline passed while your session was stopped, respond on your next turn.", "Omit notes sent solely as acknowledgments or thanks.", "Never loop on `inbox`.", "crosshall wait --existing --work-only --timeout 9m"} {
+	for _, also := range []string{delayRule, "Later arrivals belong to the next turn.", "nowhere else", "If the deadline passed while your session was stopped, respond on your next turn.", "Omit notes sent solely as acknowledgments or thanks.", "Never loop on `inbox` or `read`.", "If no command of this turn printed that line, run `crosshall read` once.", "crosshall wait --existing --work-only --timeout 9m"} {
 		if !strings.Contains(hint, also) {
 			t.Errorf("hint lacks %q", also)
 		}

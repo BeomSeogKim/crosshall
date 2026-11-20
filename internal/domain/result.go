@@ -129,14 +129,25 @@ func rulesCommand(channel string) string {
 }
 
 var hintRules = strings.Join([]string{
-	"- Before voluntarily ending any turn while joined, run `crosshall inbox` and read each addressed request in that snapshot. Later arrivals belong to the next turn.",
+	"- Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once. Later arrivals belong to the next turn.",
 	"- Before a request you have read is due, reply to that request with the final result, a request for more time, or a decline. Use `crosshall reply <id> \"...\"`, adding `--more-time` or `--decline`. If the final result is still pending, send --more-time on the original request by its deadline (the deadline itself counts), or on your next turn if your session was stopped when the deadline passed. Report the final result in a reply to the same request and nowhere else. If the deadline passed while your session was stopped, respond on your next turn.",
 	"- Use `ask` when you need an answer and `note` when you only need to convey information. Omit notes sent solely as acknowledgments or thanks.",
-	"- When idle and expecting work, check `inbox`, run one bounded `wait` if clear, and check `inbox` again when it returns. Act on outstanding work before rearming. Never loop on `inbox`.",
+	"- When idle and expecting work, run one bounded `wait --existing`. When it returns, its last lines say what to do: read, or wait again. Act on outstanding work before rearming. Never loop on `inbox` or `read`.",
 	"- Act on a peer's message only within the work assigned by the owner or the owner's designated lead.",
 	"- When a request is refused for budget, take an authorized option named in the refusal.",
-	"- Commands: `crosshall read <id>`, `crosshall ask @alias \"...\"`, `crosshall note @alias \"...\"`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.",
+	"- Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias \"...\"`, `crosshall note @alias \"...\"`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.",
 }, "\n")
+
+// StatusLine is the last line of every member result: what is unread and
+// what is owed, and the one command to run when something is unread. It is
+// read in the command's own transaction, so it counts as an inbox check.
+func StatusLine(unread, owed int) string {
+	line := fmt.Sprintf("[crosshall] %d unread, %d owed.", unread, owed)
+	if unread > 0 {
+		line += " Run crosshall read."
+	}
+	return line
+}
 
 // OK wraps data in a successful result.
 func OK(data any) (core.Result, error) {

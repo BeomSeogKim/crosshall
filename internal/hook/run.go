@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,7 +35,8 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 	if len(args) != 2 {
 		return
 	}
-	entry = wake(entry, args, locate)
+	began := entry
+	entry, startedState := wake(entry, args, locate)
 	end := entry.Add(Budget)
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -47,10 +49,18 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		}
 		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
+	var outcome atomic.Value
 	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		return dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
+		o := dispatchEvent(ctx, entry, rv, client, args, stdin, output, os.LookupEnv)
+		outcome.Store(o)
+		return o
 	})
+	if startedState != "" {
+		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
+			logLine(startedState, args[0]+" "+args[1], began, "started the dispatcher, but the session start was not answered in time")
+		}
+	}
 	if !wrote && args[0] == "agy" && time.Now().Before(end) {
 		done := make(chan struct{})
 		go func() {

@@ -101,3 +101,25 @@ func readLog(t *testing.T, w *world) string {
 	}
 	return string(raw)
 }
+
+// After a crash an owner stop finds no dispatcher, and still withdraws the
+// policy the crash left behind, so hooks keep the hall stopped.
+func TestOwnerStopAfterACrashHoldsAgainstHooks(t *testing.T) {
+	w, _, c := m2World(t)
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w.kill()
+	w.owner().must("owner", "stop")
+
+	if got := c.fire("Notification", map[string]any{"notification_type": "permission_prompt"}); got != "" {
+		t.Fatalf("Notification after an owner stop printed %q", got)
+	}
+	time.Sleep(200 * time.Millisecond) // a spawned dispatcher would hold its lock by now
+	if pids := w.dispatcherPIDs(); len(pids) != 0 {
+		t.Fatalf("a hook restarted the dispatcher after the owner stop: %v", pids)
+	}
+	for _, path := range []string{filepath.Join(w.state, "hook-policy"), filepath.Join(w.rendezvous(), "policy")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the owner stop: %v", path, err)
+		}
+	}
+}

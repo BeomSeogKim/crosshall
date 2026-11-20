@@ -96,3 +96,26 @@ func TestASessionStartWaitsOnlyUntilTheStartDeadline(t *testing.T) {
 		t.Fatalf("a start not ready in time opened the retry gap: %v", err)
 	}
 }
+
+// A start that succeeds but leaves the session start unanswered says so.
+func TestAStartedDispatcherThatDoesNotAnswerIsLogged(t *testing.T) {
+	state := t.TempDir()
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, StatePolicyName), []byte("claude 1 0 3\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	locate := func() (Paths, error) {
+		// The start reports ready, but no rendezvous ever answers.
+		return Paths{State: state, Rendezvous: filepath.Join(state, "no-rendezvous"),
+			Start: func(context.Context) (bool, error) { return true, nil }}, nil
+	}
+	var out bytes.Buffer
+	Run(time.Now(), []string{"claude", "SessionStart"}, strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}`), &out, locate)
+	log, _ := os.ReadFile(filepath.Join(state, "dispatcher.log"))
+	if out.Len() != 0 || !strings.Contains(string(log), "hook claude SessionStart: started the dispatcher (") ||
+		!strings.Contains(string(log), "hook claude SessionStart: started the dispatcher, but the session start was not answered in time (") {
+		t.Fatalf("printed %q, dispatcher.log %q", out.String(), log)
+	}
+}

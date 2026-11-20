@@ -1,16 +1,18 @@
-# Claude Code and Codex CLI adapters
+# Claude Code, Codex CLI and Antigravity CLI adapters
 
 Adapters are optional hooks. crosshall works without them: a member that runs the commands itself follows the same rules.
 
 ## Setting up
 
-In your own terminal, run `crosshall setup status` to check whether the Claude Code and Codex CLIs are on PATH. It shows each adapter's configuration path, hook installation state and policy, and reports any drift or pending recovery. Add `--json` before `setup` for machine-readable status. Antigravity supports session identity and has no hook adapter.
+In your own terminal, run `crosshall setup status` to check whether Claude Code, Codex or Antigravity CLI is on PATH. It shows each adapter's configuration path, hook installation state and policy, and reports any drift or pending recovery. Add `--json` before `setup` for machine-readable status.
 
 `crosshall setup codex` pins the selected crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
 
-`crosshall setup` shows each vendor's plan and asks separately. The question shows the absolute settings path and how it was chosen. Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. To select another directory, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute path. An empty or invalid override produces an error for that vendor. Claude offers separate read-command and send-command allow rules. In Codex, review and trust the installed hooks in the hook review screen.
+`crosshall setup` shows the detected vendors and their plans, including each absolute settings path. It asks once before installing the listed base hooks. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup keeps your existing command approvals and hook trust settings. In Codex, review and trust the installed hooks in the hook review screen.
 
-To revisit one vendor, run `crosshall setup claude` or `crosshall setup codex`. An owner-run script can preview and apply the named vendors in two commands.
+Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. Set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute directory to select another location. Antigravity uses the shared `$HOME/.gemini/config/hooks.json`, where Crosshall owns its named hook group. Codex and Antigravity hook commands pin the Crosshall state directory selected when you install them. [Google's Antigravity hooks documentation](https://antigravity.google/docs/hooks/#managing-hooks-in-antigravity-cli)
+
+To revisit one vendor, run `crosshall setup claude`, `crosshall setup codex` or `crosshall setup antigravity`. An owner-run script can preview and apply the named vendors in two commands.
 
 ```sh
 crosshall setup --dry-run claude codex
@@ -24,6 +26,8 @@ With input or output redirected, `crosshall setup claude` previews the plan, whi
 ## Joining a repository's channel
 
 Hooks run for every session of that agent under your user account, in every repository. Run `crosshall owner channel default demo` in a repository to have new sessions there join the channel `#demo` at startup. If the project has no channel assigned, a new session gets a one-line prompt to join its team's channel with `crosshall join <channel>`. The join output shows its assigned `@alias` and the roster. A session that already joined keeps its channel.
+
+Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
 
 ## The turn-end check
 
@@ -41,11 +45,11 @@ Interactive Claude Code sessions report a verified build and the mode `interacti
 
 ## The prompt line
 
-At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall inbox.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
+At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall read.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 
 ## Turning adapters off and removing them
 
-`crosshall setup off` disables both adapters and leaves the settings in place. Use `crosshall uninstall codex` or `crosshall uninstall claude` to remove one adapter. Bare `crosshall uninstall` covers both. Uninstall removes hooks only, not the binary or the state; see [removing crosshall](operations.md#removing-crosshall) for that. It asks before removing unchanged entries that crosshall added and reports entries it leaves for manual review.
+`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before removing managed entries. With input or output redirected, it previews the removal. Add `--apply` to remove hooks without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
 
 ## What doctor reports
 

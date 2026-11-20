@@ -22,16 +22,17 @@ type Service struct {
 }
 
 type Request struct {
-	Action   string
-	DryRun   bool
-	JSON     bool
-	Input    io.Reader
-	Output   io.Writer
-	Prompt   io.Writer
-	Adapters []string
-	Apply    bool
-	Offer    bool
-	Terminal bool
+	Action      string
+	DryRun      bool
+	JSON        bool
+	Input       io.Reader
+	Output      io.Writer
+	Prompt      io.Writer
+	Adapters    []string
+	Apply       bool
+	Offer       bool
+	Terminal    bool
+	PathConsent func(bool) error
 }
 
 type plan struct {
@@ -69,6 +70,7 @@ type ApprovalOffer struct {
 
 func (s Service) Run(ctx context.Context, req Request) error {
 	if req.Action == "uninstall" {
+		req.DryRun = req.DryRun || !req.Terminal && !req.Apply
 		empty, err := s.noUninstallFootprint(ctx, req.Adapters)
 		if err != nil {
 			return err
@@ -156,7 +158,7 @@ func (s Service) Run(ctx context.Context, req Request) error {
 			} else {
 				prompt := fmt.Sprintf("Recover the interrupted %s without overwriting configuration?", j.Pending.Action)
 				if req.Action == "uninstall" {
-					prompt = "Recover the interrupted plan and disable both adapters if a path must be retained?"
+					prompt = "Recover the interrupted plan and disable all adapter hooks if a path must be retained?"
 				}
 				if pathErr != nil {
 					p := displayPlan(req, pendingShutdownPlan(*j.Pending, pathErr), nil, false)
@@ -165,14 +167,16 @@ func (s Service) Run(ctx context.Context, req Request) error {
 						return err
 					}
 				}
-				ok, err := confirm(scanner, prompts, prompt)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					p := displayPlan(req, *j.Pending, nil, false)
-					p.Recovery = true
-					return printCompletion(req, p)
+				if !req.Apply {
+					ok, err := confirm(scanner, prompts, prompt)
+					if err != nil {
+						return err
+					}
+					if !ok {
+						p := displayPlan(req, *j.Pending, nil, false)
+						p.Recovery = true
+						return printCompletion(req, p)
+					}
 				}
 				j, digest, err = s.recoverJournal(ctx, digest, req.Action == "uninstall")
 				if err != nil {
@@ -234,7 +238,7 @@ func (s Service) Run(ctx context.Context, req Request) error {
 	if err := printPlan(prompts, p); err != nil {
 		return err
 	}
-	if !resume {
+	if !resume && !req.Apply {
 		ok, err := confirm(scanner, prompts, "Apply this plan?")
 		if err != nil {
 			return err
@@ -320,7 +324,7 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 		return errors.New("installation changed after planning; rerun to review the new plan")
 	}
 	if op.Action == "uninstall" {
-		// Confirmation covers disabling both adapters even if a configuration
+		// Confirmation covers disabling all adapter hooks even if a configuration
 		// changes after the preview and prevents removal.
 		if err := s.setPolicies(ctx, op.Adapters, false); err != nil {
 			return err
@@ -413,6 +417,9 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 }
 
 func approvalOffers(adapter string) []ApprovalOffer {
+	if adapter != "claude" && adapter != "codex" {
+		return nil
+	}
 	var offers []ApprovalOffer
 	for _, kind := range []string{"read", "send"} {
 		onSend := kind == "send"

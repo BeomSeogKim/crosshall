@@ -41,7 +41,8 @@ func runSetupTest(t *testing.T, service Service, action, input string, dry bool)
 	t.Helper()
 	var out bytes.Buffer
 	err := service.Run(t.Context(), Request{
-		Action: action, DryRun: dry, Input: strings.NewReader(input), Output: &out, Prompt: io.Discard,
+		Action: action, DryRun: dry, Terminal: action == "uninstall",
+		Input: strings.NewReader(input), Output: &out, Prompt: io.Discard,
 	})
 	return out.String(), err
 }
@@ -53,7 +54,7 @@ func TestUninstallWithoutFootprintSkipsPlanAndMutation(t *testing.T) {
 		for _, dry := range []bool{false, true} {
 			var output, prompts bytes.Buffer
 			input := strings.NewReader("yes\n")
-			req := Request{Action: "uninstall", Adapters: adapters, DryRun: dry,
+			req := Request{Action: "uninstall", Adapters: adapters, DryRun: dry, Terminal: true,
 				Input: input, Output: &output, Prompt: &prompts}
 			if err := s.Run(t.Context(), req); err != nil {
 				t.Fatal(err)

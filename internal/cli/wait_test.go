@@ -110,3 +110,31 @@ func TestWaitDeliversPendingWorkAfterDispatcherDowngrade(t *testing.T) {
 		}
 	})
 }
+
+// A wait that times out has just checked the hall, so it names the next
+// step itself: the pickup when a note waits that a work-only wait ignored,
+// the wait again for a member that has to poll, nothing for one the hall
+// delivers to. It never sends the member to the inbox.
+func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
+	for name, c := range map[string]struct {
+		snapshot domain.WaitSnapshot
+		want     string
+	}{
+		"clear, has to poll": {domain.WaitSnapshot{MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{}}},
+			"next: crosshall wait --existing --work-only --timeout 9m\n[crosshall] 0 unread, 0 owed.\n"},
+		"clear, the hall delivers": {domain.WaitSnapshot{InboxResult: domain.InboxResult{Delivers: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{}}},
+			"crosshall: no new messages before the wait timeout\n[crosshall] 0 unread, 0 owed.\n"},
+		"an unread note": {domain.WaitSnapshot{MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}, OwedCount: 1}},
+			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 1 owed. Run crosshall read.\n"},
+	} {
+		synctest.Test(t, func(t *testing.T) {
+			c.snapshot.Cursor = domain.WaitCursor{BindingID: 1, MessageID: 3}
+			transport := waitTestTransport(func(Call) (core.Result, error) { return domain.OK(c.snapshot) })
+			_, stderr, code := run(t, Env{Transport: transport}, "wait", "--existing", "--work-only", "--timeout", "3s")
+			if code != core.ExitWaitTimeout || !strings.HasSuffix(stderr, c.want) || strings.Contains(stderr, "crosshall inbox") {
+				t.Errorf("%s: exit %d, stderr %q", name, code, stderr)
+			}
+		})
+	}
+}

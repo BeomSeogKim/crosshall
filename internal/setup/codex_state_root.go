@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const codexStateAssignment = "CROSSHALL_STATE_DIR="
+const hookStateAssignment = "CROSSHALL_STATE_DIR="
 
 var errCodexLegacyHooks = &refusalWithNext{
 	message: "Codex has legacy or edited Crosshall hooks. From the state directory that installed the hooks, run crosshall uninstall codex and review any retained hooks, or use a separate CODEX_HOME",
@@ -32,7 +32,7 @@ func parseCodexHookCommand(command, event string) (codexHookRoute, bool) {
 		return route, false
 	}
 	var unpinned string
-	route.root, unpinned, ok = splitCodexStatePin(words)
+	route.root, unpinned, ok = splitHookStatePin(words)
 	if !ok {
 		return route, false
 	}
@@ -40,10 +40,8 @@ func parseCodexHookCommand(command, event string) (codexHookRoute, bool) {
 	return route, ok && route.executable != ""
 }
 
-// splitCodexStatePin reads setup's literal assignment without evaluating a
-// shell. Keep the remainder separate when comparing recorded executables.
-func splitCodexStatePin(command string) (root, remaining string, ok bool) {
-	pin, present := strings.CutPrefix(command, codexStateAssignment)
+func splitHookStatePin(command string) (root, remaining string, ok bool) {
+	pin, present := strings.CutPrefix(command, hookStateAssignment)
 	if !present {
 		return "", command, true
 	}
@@ -81,7 +79,7 @@ func codexHookRoutes(doc *configNode, executable string, owned []Entry) ([]codex
 			return
 		}
 		route, ok := parseCodexHookCommand(command, event)
-		pinSyntax := strings.HasPrefix(strings.TrimSpace(command), codexStateAssignment) &&
+		pinSyntax := strings.HasPrefix(strings.TrimSpace(command), hookStateAssignment) &&
 			strings.HasSuffix(strings.TrimSpace(command), " hook codex "+event)
 		switch {
 		case ok && (route.root != "" || known[route.executable] || isCrosshallExecutable(route.executable)):
@@ -148,7 +146,7 @@ func codexInstallBase(target installTarget, record ownedFile) ([]byte, bool, err
 		if route.root != target.StateRoot {
 			return nil, false, &refusalWithNext{
 				message: fmt.Sprintf("Codex hooks in this CODEX_HOME already target Crosshall state root %q. Use that root or a separate CODEX_HOME", route.root),
-				next:    codexStateAssignment + shellQuote(route.root) + " crosshall setup codex",
+				next:    hookStateAssignment + shellQuote(route.root) + " crosshall setup codex",
 			}
 		}
 		if expected := wantCommands[route.event]; expected != "" && route.command != expected {

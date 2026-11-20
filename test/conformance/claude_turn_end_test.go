@@ -142,7 +142,7 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		if c.carries(1, id) != 0 || c.carries(2, id) != 1 {
 			t.Fatalf("pending line in requests 1 and 2: %d, %d", c.carries(1, id), c.carries(2, id))
 		}
-		if !strings.Contains(c.model.request(1), "Before voluntarily ending any turn while joined, run `crosshall inbox`") {
+		if !strings.Contains(c.model.request(1), "Before voluntarily ending any turn while joined, leave no request addressed to you unread") {
 			t.Error("the join hint in the session's first request lacks the turn-end rule")
 		}
 		pid := `(SELECT principal_id FROM binding WHERE alias = 'claude1')`

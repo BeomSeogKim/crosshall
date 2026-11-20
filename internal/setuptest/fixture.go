@@ -11,7 +11,7 @@ import (
 
 type Fixture struct {
 	Root, Home, State, Bin string
-	Outside                string // Contains synthetic .claude and .codex settings.
+	Outside                string
 }
 
 // New selects a disposable environment and puts only the requested fake vendor
@@ -27,12 +27,13 @@ func New(t testing.TB, vendors ...string) Fixture {
 		Root: root, Home: filepath.Join(root, "home"), State: filepath.Join(root, "state"),
 		Bin: filepath.Join(root, "bin"), Outside: filepath.Join(parent, "outside"),
 	}
-	for _, dir := range []string{f.Home, f.Bin, filepath.Join(f.Outside, ".claude"), filepath.Join(f.Outside, ".codex")} {
+	for _, dir := range []string{f.Home, f.Bin, filepath.Join(f.Outside, ".claude"),
+		filepath.Join(f.Outside, ".codex"), filepath.Join(f.Outside, ".gemini", "config")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{".claude/settings.json", ".codex/hooks.json"} {
+	for _, name := range []string{".claude/settings.json", ".codex/hooks.json", ".gemini/config/hooks.json"} {
 		path := filepath.Join(f.Outside, name)
 		const marker = "{\"outside_fixture\":true}\n"
 		if err := os.WriteFile(path, []byte(marker), 0600); err != nil {
@@ -71,6 +72,8 @@ func New(t testing.TB, vendors ...string) Fixture {
 			version = "2.1.327 (Claude Code)"
 		case "codex":
 			version = "codex-cli 0.170.0"
+		case "agy":
+			version = "1.5.13"
 		default:
 			t.Fatalf("unknown fixture vendor %q", name)
 		}
@@ -88,7 +91,8 @@ func New(t testing.TB, vendors ...string) Fixture {
 func (f Fixture) CheckTargets(t testing.TB) {
 	t.Helper()
 	home := os.Getenv("HOME")
-	paths := []string{home, os.Getenv("CROSSHALL_STATE_DIR"), os.Getenv("XDG_STATE_HOME")}
+	paths := []string{home, os.Getenv("CROSSHALL_STATE_DIR"), os.Getenv("XDG_STATE_HOME"),
+		filepath.Join(home, ".gemini", "config", "hooks.json")}
 	for _, target := range []struct{ variable, dir, file string }{
 		{"CLAUDE_CONFIG_DIR", ".claude", "settings.json"}, {"CODEX_HOME", ".codex", "hooks.json"},
 	} {

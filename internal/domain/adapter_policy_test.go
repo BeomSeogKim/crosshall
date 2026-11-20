@@ -66,7 +66,10 @@ func TestAdapterPolicyRefusesNonOwnerAndInvalidRequests(t *testing.T) {
 	wantCode(t, f.exec(core.Caller{Role: core.RoleMember}, Request{Command: set, OpKey: "non-owner"}),
 		core.ExitRefused, core.CodeOwnerOnly)
 	wantCode(t, f.owner(set, ""), core.ExitUsage, "")
-	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", Enabled: &on}}, "unknown-adapter"),
+	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "unknown", Enabled: &on}}, "unknown-adapter"),
+		core.ExitUsage, "")
+	publish := "on"
+	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", Publish: &publish}}, "agy-publish"),
 		core.ExitUsage, "")
 	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude"}}, "no-options"), core.ExitUsage, "")
 	if n := f.count(`SELECT count(*) FROM adapter_policy`); n != 0 {
@@ -267,7 +270,7 @@ func TestValidAdapterNamesAreTheHookManifests(t *testing.T) {
 			t.Errorf("%s has a manifest but is not a valid adapter", name)
 		}
 	}
-	for _, name := range []string{"", "agy", "claude.json", "../claude"} {
+	for _, name := range []string{"", "unknown", "claude.json", "../claude"} {
 		if ValidAdapterName(name) {
 			t.Errorf("%q is valid without a manifest", name)
 		}

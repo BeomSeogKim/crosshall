@@ -32,7 +32,10 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 	}
 	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil && cmd.Publish == nil ||
 		cmd.Publish != nil && *cmd.Publish != "on" && *cmd.Publish != "off" && *cmd.Publish != "default" {
-		return Fail(core.ExitUsage, "", "choose claude or codex and at least one policy switch", "crosshall owner adapter set claude --enabled on"), nil
+		return Fail(core.ExitUsage, "", "choose a supported adapter and at least one valid policy switch", "crosshall owner adapter set claude --enabled on"), nil
+	}
+	if cmd.Adapter == "agy" && cmd.Publish != nil && *cmd.Publish == "on" {
+		return Fail(core.ExitUsage, "", "Antigravity has no publish adapter", "crosshall setup status"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {

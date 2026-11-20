@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/BeomSeogKim/crosshall/internal/wire"
+	"golang.org/x/sys/unix"
 )
 
 type fileSnapshot struct {
@@ -30,9 +32,13 @@ const (
 )
 
 type configLocation struct {
-	dir      *os.Root
-	missing  string
-	parentID string
+	dir            *os.Root
+	missing        string
+	missingParents []string
+}
+
+func (location configLocation) matchesMissingDir(identity string) bool {
+	return slices.Contains(location.missingParents, identity)
 }
 
 func readConfig(path string) (fileSnapshot, error) {
@@ -42,7 +48,7 @@ func readConfig(path string) (fileSnapshot, error) {
 	}
 	defer location.dir.Close()
 	if location.missing != "" {
-		return fileSnapshot{DirIdentity: missingConfigDir + location.parentID}, nil
+		return fileSnapshot{DirIdentity: location.missingParents[len(location.missingParents)-1]}, nil
 	}
 	return readConfigAt(location.dir, filepath.Base(path))
 }
@@ -51,7 +57,7 @@ func replaceConfig(path string, before fileSnapshot, data []byte, mode os.FileMo
 	return replaceConfigJournaled(path, before, data, mode, remove, nil)
 }
 
-func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode os.FileMode, remove bool, beforeWrite func(string, string, string) error) error {
+func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode os.FileMode, remove bool, beforeWrite func(string, string, string) error, afterMkdir ...func(createdConfigDir) error) error {
 	if mode != mode.Perm() || mode&0022 != 0 || len(data) > maxConfigBytes {
 		return errors.New("invalid configuration replacement mode or size")
 	}
@@ -61,24 +67,32 @@ func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode 
 	}
 	defer func() { location.dir.Close() }()
 	if location.missing != "" {
-		if before.Exists || before.DirIdentity != missingConfigDir+location.parentID {
+		if before.Exists || !location.matchesMissingDir(before.DirIdentity) {
 			return errors.New("configuration directory changed after planning")
 		}
 		if remove {
 			return nil
 		}
-		if err := location.dir.Mkdir(location.missing, 0700); err != nil {
-			return err
+		for name := range strings.SplitSeq(location.missing, "/") {
+			if err := location.dir.Mkdir(name, 0700); err != nil {
+				return err
+			}
+			if err := syncConfigDir(location.dir); err != nil {
+				return err
+			}
+			created, err := openConfigChild(location.dir, name, true)
+			if err != nil {
+				return err
+			}
+			if len(afterMkdir) != 0 {
+				if err := recordCreatedConfigDir(location.dir, created, name, afterMkdir[0]); err != nil {
+					created.Close()
+					return err
+				}
+			}
+			location.dir.Close()
+			location.dir = created
 		}
-		if err := syncConfigDir(location.dir); err != nil {
-			return err
-		}
-		created, err := openConfigChild(location.dir, location.missing, true)
-		if err != nil {
-			return err
-		}
-		location.dir.Close()
-		location.dir = created
 	}
 
 	// Separate Crosshall journals can refer to the same vendor configuration.
@@ -97,8 +111,7 @@ func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode 
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(before.DirIdentity, missingConfigDir) && !before.Exists && !current.Exists &&
-		before.DirIdentity == missingConfigDir+location.parentID {
+	if !before.Exists && !current.Exists && location.matchesMissingDir(before.DirIdentity) {
 		if err := checkNewConfigDir(location.dir); err != nil {
 			return err
 		}
@@ -148,6 +161,92 @@ func replaceConfigJournaled(path string, before fileSnapshot, data []byte, mode 
 		err = location.dir.Rename(stage, name)
 	}
 	if err != nil {
+		return err
+	}
+	return syncConfigDir(location.dir)
+}
+
+func recordCreatedConfigDir(parent, child *os.Root, name string, record func(createdConfigDir) error) error {
+	parentInfo, err := parent.Stat(".")
+	if err != nil {
+		return err
+	}
+	childInfo, err := child.Stat(".")
+	if err != nil {
+		return err
+	}
+	return record(createdConfigDir{Name: name, Identity: configIdentity(childInfo), Parent: configIdentity(parentInfo)})
+}
+
+func removeCreatedConfigDir(path string, owned createdConfigDir) error {
+	config := filepath.Dir(path)
+	gemini := filepath.Dir(config)
+	if filepath.Base(path) != "hooks.json" || filepath.Base(config) != "config" || filepath.Base(gemini) != ".gemini" {
+		return errors.New("invalid Antigravity configuration path")
+	}
+	parent := gemini
+	switch owned.Name {
+	case ".gemini":
+		parent = filepath.Dir(gemini)
+	case "config":
+	default:
+		return errors.New("invalid Antigravity configuration directory record")
+	}
+	location, err := openConfigParent(path, parent)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer location.dir.Close()
+	if location.missing != "" {
+		return nil
+	}
+	parentFile, err := location.dir.Open(".")
+	if err != nil {
+		return err
+	}
+	defer parentFile.Close()
+	parentInfo, err := parentFile.Stat()
+	if err != nil || configIdentity(parentInfo) != owned.Parent {
+		return err
+	}
+	info, err := location.dir.Lstat(owned.Name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !safeConfigDirectory(info, true) || info.Mode().Perm() != 0700 || configIdentity(info) != owned.Identity {
+		return err
+	}
+	child, err := openConfigChild(location.dir, owned.Name, true)
+	if err != nil {
+		return err
+	}
+	defer child.Close()
+	lock, err := child.Open(".")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil
+		}
+		return err
+	}
+	info, err = location.dir.Lstat(owned.Name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !safeConfigDirectory(info, true) || info.Mode().Perm() != 0700 || configIdentity(info) != owned.Identity {
+		return err
+	}
+	err = unix.Unlinkat(int(parentFile.Fd()), owned.Name, unix.AT_REMOVEDIR)
+	switch {
+	case errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, syscall.EEXIST), errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
 		return err
 	}
 	return syncConfigDir(location.dir)
@@ -203,9 +302,12 @@ func unlinkConfigStage(dir *os.Root, name, identity string) error {
 	return syncConfigDir(dir)
 }
 
-// openConfigLocation pins the directory while checking every component for
-// symlinks and repository markers. Only the final directory may be absent.
+// openConfigLocation pins the directory and checks each component before use.
 func openConfigLocation(path string) (location configLocation, err error) {
+	return openConfigParent(path, filepath.Dir(path))
+}
+
+func openConfigParent(path, parent string) (location configLocation, err error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Dir(path) == "/" {
 		return location, errors.New("configuration file requires an absolute, clean path under a user directory")
 	}
@@ -219,7 +321,9 @@ func openConfigLocation(path string) (location configLocation, err error) {
 	if err := guard.checkPath(path); err != nil {
 		return location, err
 	}
-	parent := systemConfigDirectory(filepath.Dir(path))
+	configParent := parent == filepath.Dir(path)
+	parent = systemConfigDirectory(parent)
+	agyConfig := configParent && filepath.Base(path) == "hooks.json" && strings.HasSuffix(parent, "/.gemini/config")
 	parts := strings.Split(strings.TrimPrefix(parent, "/"), "/")
 	location.dir, err = os.OpenRoot("/")
 	if err != nil {
@@ -235,16 +339,21 @@ func openConfigLocation(path string) (location configLocation, err error) {
 			return location, err
 		}
 		final := i == len(parts)-1
-		if final {
+		mayBeMissing := final || agyConfig && i == len(parts)-2
+		if mayBeMissing {
 			info, statErr := location.dir.Stat(".")
 			if statErr != nil {
 				return location, statErr
 			}
-			location.parentID = configIdentity(info)
+			identity := missingConfigDir + configIdentity(info)
+			if !final {
+				identity += "/.gemini/config"
+			}
+			location.missingParents = append(location.missingParents, identity)
 		}
-		child, openErr := openConfigChild(location.dir, name, final)
-		if final && errors.Is(openErr, os.ErrNotExist) {
-			location.missing = name
+		child, openErr := openConfigChild(location.dir, name, final && configParent)
+		if mayBeMissing && errors.Is(openErr, os.ErrNotExist) {
+			location.missing = strings.Join(parts[i:], "/")
 			return location, nil
 		}
 		if openErr != nil {

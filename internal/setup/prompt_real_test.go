@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 )
@@ -35,31 +36,37 @@ func realRun(t *testing.T, s Service, f setuptest.Fixture, req Request, input st
 	return out.String(), err
 }
 
-func TestTheTerminalFlowInstallsOnlyWhatWasAccepted(t *testing.T) {
+func TestTheTerminalFlowInstallsBaseHooksWithOneConsent(t *testing.T) {
 	s, f, policies := realSetup(t)
 	claude := filepath.Join(f.Home, ".claude", "settings.json")
 	codex := filepath.Join(f.Home, ".codex", "hooks.json")
-	// Claude yes, read rules yes, send rules no; Codex no.
-	out, err := realRun(t, s, f, Request{Terminal: true}, "y\ny\nn\nn\n")
+	if err := os.Mkdir(filepath.Dir(claude), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const approvals = `"permissions": {"allow":["Bash(existing)"], "deny":["Bash(blocked)"]}`
+	if err := os.WriteFile(claude, []byte("{"+approvals+"}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := realRun(t, s, f, Request{Terminal: true}, "y\n")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "Install Claude Code hooks in "+claude+" (default under HOME)?") ||
-		!strings.Contains(out, "Install Codex hooks in "+codex+" (default under HOME)?") {
+	if strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Claude Code hooks in "+claude+" (default under HOME)") ||
+		!strings.Contains(out, "Codex hooks in "+codex+" (default under HOME)") {
 		t.Fatalf("questions:\n%s", out)
 	}
 	settings, err := os.ReadFile(claude)
-	if err != nil || !bytes.Contains(settings, []byte("SessionStart")) || !bytes.Contains(settings, []byte("Bash(crosshall read")) ||
-		bytes.Contains(settings, []byte("Bash(crosshall note")) {
+	if err != nil || !bytes.Contains(settings, []byte("SessionStart")) || !bytes.Contains(settings, []byte(approvals)) ||
+		bytes.Contains(settings, []byte("Bash(crosshall")) {
 		t.Fatalf("claude settings %s: %v", settings, err)
 	}
-	if _, err := os.Lstat(codex); !os.IsNotExist(err) {
-		t.Fatalf("declined codex was written: %v", err)
+	if settings, err := os.ReadFile(codex); err != nil || !bytes.Contains(settings, []byte("SessionStart")) {
+		t.Fatalf("codex settings %s: %v", settings, err)
 	}
-	if !policies["claude"] || policies["codex"] {
+	if !policies["claude"] || !policies["codex"] {
 		t.Fatalf("policies %v", policies)
 	}
-	if d, err := s.declinedOffers(); err != nil || !d["codex"] || d["claude"] {
+	if d, err := s.declinedOffers(); err != nil || d["codex"] || d["claude"] {
 		t.Fatalf("declined %v, %v", d, err)
 	}
 }
@@ -67,17 +74,18 @@ func TestTheTerminalFlowInstallsOnlyWhatWasAccepted(t *testing.T) {
 func TestTheInstallerOfferOverTheRealStatus(t *testing.T) {
 	s, f, _ := realSetup(t)
 	offer := Request{Offer: true, Terminal: true}
-	// Fresh: both asked. Enter for Claude, no for Codex: nothing installed.
-	out, err := realRun(t, s, f, offer, "\nn\n")
-	if err != nil || !strings.Contains(out, "Install Claude Code hooks") || !strings.Contains(out, "Install Codex hooks") {
+	out, err := realRun(t, s, f, offer, "\n")
+	if err != nil || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Claude Code hooks in") || !strings.Contains(out, "Codex hooks in") {
 		t.Fatalf("first offer: %v\n%s", err, out)
 	}
 	if _, err := os.Lstat(filepath.Join(f.Home, ".claude")); !os.IsNotExist(err) {
 		t.Fatalf("a skipped offer wrote settings: %v", err)
 	}
-	// A repeated install: Codex was declined and is not asked; Claude is.
-	out, err = realRun(t, s, f, offer, "y\nn\nn\n")
-	if err != nil || strings.Contains(out, "Install Codex hooks") || !strings.Contains(out, "claude: installed") {
+	if err := s.rememberAnswers(map[string]answer{"codex": answerNo}, snap(t, s), time.UnixMilli(1)); err != nil {
+		t.Fatal(err)
+	}
+	out, err = realRun(t, s, f, offer, "y\n")
+	if err != nil || strings.Contains(out, "Codex hooks in") || !strings.Contains(out, "claude: installed") {
 		t.Fatalf("second offer: %v\n%s", err, out)
 	}
 	// Claude now has a footprint, so the installer asks nothing at all.
@@ -94,10 +102,10 @@ func TestAnInvalidOverrideStopsOnlyThatVendor(t *testing.T) {
 	t.Setenv("CODEX_HOME", "relative/codex")
 	var buf bytes.Buffer
 	err := s.prompts(context.Background(), Request{Action: "setup", Terminal: true, Output: &buf, Prompt: &buf,
-		Input: strings.NewReader("y\nn\nn\ny\n")}, s)
+		Input: strings.NewReader("y\n")}, s)
 	out := buf.String()
 	if err == nil || !strings.Contains(out, "claude: installed") || !strings.Contains(out, "codex: failed") ||
-		strings.Contains(out, "Install Codex hooks") {
+		strings.Contains(out, "Codex hooks in") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }

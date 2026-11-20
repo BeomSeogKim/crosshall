@@ -21,7 +21,7 @@ Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
                                                     --rules prints the member rules again
   who                                               List the members of your channel
-  read [<id>...]                                    Read messages
+  read [<id>...]                                    Read the oldest unread messages, or the given ones
   inbox                                             List unread messages and open obligations
   wait [--any | --work-only] [--existing] [--timeout <duration>]
                                                     Wait for messages (timeout exits 6)
@@ -55,7 +55,7 @@ Owner commands (from a separate owner terminal):
   setup <vendor> [--apply]                           Set up a vendor, or apply without prompting
   setup status                                      Inspect installed hooks and adapter policy
   setup off                                         Disable adapter effects
-  uninstall [--dry-run]                             Preview or remove hooks installed by Crosshall
+  uninstall [--dry-run|--apply] [names]             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
   owner channel create <name> [--topic "..."] [--pool <n>]

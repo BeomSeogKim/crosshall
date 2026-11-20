@@ -54,9 +54,9 @@ mkdir -m 700 -- "$CROSSHALL_TEST_VENDOR_SENTINEL"
 # Record names only. The sentinel never opens the caller's configuration.
 {
   if [[ ${HOME:-} = /* ]]; then
-    printf '%s\n' "$HOME/.claude" "$HOME/.codex"
+    printf '%s\n' "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini/config"
     if physical_home=$(cd -- "$HOME" && pwd -P); then
-      printf '%s\n' "$physical_home/.claude" "$physical_home/.codex"
+      printf '%s\n' "$physical_home/.claude" "$physical_home/.codex" "$physical_home/.gemini/config"
     fi
   fi
   for dir in "${CLAUDE_CONFIG_DIR:-}" "${CODEX_HOME:-}"; do

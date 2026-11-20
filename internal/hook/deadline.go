@@ -20,6 +20,7 @@ type hookOutput struct {
 const (
 	outputIdle uint32 = iota
 	outputWriting
+	outputWritten
 	outputSealed
 )
 
@@ -27,11 +28,11 @@ func (o *hookOutput) Write(p []byte) (int, error) {
 	if !o.state.CompareAndSwap(outputIdle, outputWriting) {
 		return 0, context.DeadlineExceeded
 	}
-	defer o.state.CompareAndSwap(outputWriting, outputIdle)
+	defer o.state.CompareAndSwap(outputWriting, outputWritten)
 	return o.dst.Write(p)
 }
 
-func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) {
+func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
 	output := &hookOutput{dst: stdout}
 	end := entry.Add(Budget)
 	workEnd := end.Add(-counterAllowance)
@@ -72,7 +73,7 @@ func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hook
 		select {
 		case counter = <-ready:
 		default:
-			return
+			return output.state.Swap(outputSealed) != outputIdle
 		}
 	}
 	outcome := "deadline"
@@ -83,21 +84,21 @@ func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hook
 		}
 	}
 	cancel()
-	finishCounter(entry, outcome, counter, output)
+	return finishCounter(entry, outcome, counter, output)
 }
 
 // A late wake can report the missed deadline only on a pre-opened file.
 // An append started on time still shares the original absolute deadline.
-func finishCounter(entry time.Time, outcome string, counter *hookCounter, output *hookOutput) {
-	inFlight := output.state.Swap(outputSealed) == outputWriting
+func finishCounter(entry time.Time, outcome string, counter *hookCounter, output *hookOutput) bool {
+	state := output.state.Swap(outputSealed)
 	if counter == nil {
-		return
+		return state != outputIdle
 	}
-	if inFlight {
+	if state == outputWriting {
 		// The outstanding write cannot be recalled. Return to the vendor
 		// immediately instead of keeping the process alive for accounting.
 		go counter.file.Close()
-		return
+		return true
 	}
 	now := time.Now()
 	end := entry.Add(Budget)
@@ -121,6 +122,7 @@ func finishCounter(entry time.Time, outcome string, counter *hookCounter, output
 	case <-written:
 	case <-timer.C:
 	}
+	return state != outputIdle
 }
 
 func hookExpired(ctx context.Context) bool {

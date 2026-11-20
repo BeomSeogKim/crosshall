@@ -72,9 +72,13 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 		t.Fatalf("setup omitted the availability or cost: %s", installed)
 	}
 	for _, status := range Inspect(service.StateRoot) {
-		if want, ok := reminders[status.Adapter]; !ok || !reflect.DeepEqual(status.Reminder, want) {
+		if want, ok := reminders[status.Adapter]; ok && !reflect.DeepEqual(status.Reminder, want) {
 			t.Errorf("%s doctor reminder = %+v, setup = %+v", status.Adapter, status.Reminder, want)
 		}
+		delete(reminders, status.Adapter)
+	}
+	if len(reminders) != 0 {
+		t.Fatalf("missing doctor reminder statuses: %+v", reminders)
 	}
 	for _, path := range []string{claudePath, filepath.Join(codexHome, "hooks.json")} {
 		contents, err := os.ReadFile(path)

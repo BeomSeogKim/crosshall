@@ -534,11 +534,11 @@ func TestCompactOffersOnlyWhatTheSessionWasNotOffered(t *testing.T) {
 	f.noteTo(writer, "claude1", 2)
 	f.hook(s, prompt("pid-1", "t1", t0+1_000))
 	compact := func(at int64) wire.HookResult { return f.hook(s, start("pid-1", "compact", at)) }
-	if got := compact(t0 + 2_000); got.PendingLine != "" || got.Hint != "" || got.Cue != "[crosshall] 2 unread, 0 owed. Run crosshall inbox." {
+	if got := compact(t0 + 2_000); got.PendingLine != "" || got.Hint != "" || got.Cue != "[crosshall] 2 unread, 0 owed. Run crosshall read." {
 		t.Fatalf("compact with offered notes unread: %+v", got)
 	}
 	later := f.noteTo(writer, "claude1", 1)
-	if got := compact(t0 + 3_000); got.PendingLine != pendingLine(later...) || got.Cue != "[crosshall] 3 unread, 0 owed. Run crosshall inbox." {
+	if got := compact(t0 + 3_000); got.PendingLine != pendingLine(later...) || got.Cue != "[crosshall] 3 unread, 0 owed. Run crosshall read." {
 		t.Fatalf("compact with a new note: %+v", got)
 	}
 }
@@ -565,7 +565,7 @@ func TestContextResetGivesOneCueInsteadOfRepeats(t *testing.T) {
 		t.Fatalf("clear that offers everything unread: %+v", got)
 	}
 	wantOK(t, f.run(s, Read{IDs: []int64{ask}}, "read"))
-	const count = "[crosshall] 1 unread, 1 owed. Run crosshall inbox."
+	const count = "[crosshall] 1 unread, 1 owed. Run crosshall read."
 	if got := f.hook(s, start("pid-1", "clear", t0+2_000)); got.PendingLine != "" || got.Cue != pointer+"\n"+count {
 		t.Fatalf("clear with offered and owed work: %+v", got)
 	}

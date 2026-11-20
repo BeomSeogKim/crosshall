@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -24,11 +25,15 @@ func InstallSpecs() []InstallSpec {
 	var specs []InstallSpec
 	for _, file := range files {
 		m, ok := loadManifest(strings.TrimSuffix(file.Name(), ".json"))
-		if !ok || m.Install.HomeEnv == "" || m.Install.File == "" || len(m.Install.Events) == 0 {
+		if !ok || m.Install.File == "" || len(m.Install.Events) == 0 {
 			continue
 		}
 		m.Install.Adapter, m.Install.Revision = m.Adapter, m.Revision
 		specs = append(specs, m.Install)
+	}
+	if agy := slices.IndexFunc(specs, func(spec InstallSpec) bool { return spec.Adapter == "agy" }); agy >= 0 {
+		spec := specs[agy]
+		specs = append(slices.Delete(specs, agy, agy+1), spec)
 	}
 	return specs
 }

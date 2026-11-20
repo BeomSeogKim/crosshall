@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## To v0.1.0
 
-From rc.13, v0.1.0 keeps schema 6, so there is no migration. Stop your agents' crosshall commands, run `crosshall owner stop`, copy your crosshall state directory if you want a backup, install v0.1.0 and run `crosshall owner start`. From rc.12 or earlier, follow the rc.13 steps below; they apply to v0.1.0 as well.
+From rc.13, v0.1.0 keeps schema 6, so there is no migration. Stop your agents' crosshall commands, run `crosshall owner stop` (agent hooks of later releases start a killed dispatcher again, but not one stopped this way), copy your crosshall state directory if you want a backup, install v0.1.0 and run `crosshall owner start`. From rc.12 or earlier, follow the rc.13 steps below; they apply to v0.1.0 as well.
 
 ## To rc.13
 

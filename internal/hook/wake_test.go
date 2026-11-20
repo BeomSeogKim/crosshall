@@ -57,6 +57,11 @@ func TestAHookStartsOnlyForAnEnabledAdapterAndLogsAFailure(t *testing.T) {
 		if failed != (c.starts == 1) {
 			t.Errorf("%s: dispatcher.log %q", name, log)
 		}
+		// Within the retry gap the next session start does not try again.
+		Run(time.Now(), []string{"claude", "SessionStart"}, strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}`), &out, locate)
+		if starts.Load() != c.starts {
+			t.Errorf("%s: %d starts after a second session start", name, starts.Load())
+		}
 	}
 }
 
@@ -80,11 +85,14 @@ func TestASessionStartWaitsOnlyUntilTheStartDeadline(t *testing.T) {
 	var out bytes.Buffer
 	began := time.Now()
 	Run(began, []string{"claude", "SessionStart"}, strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}`), &out, locate)
-	if took := time.Since(began); took < startWait || took >= startDeadline+logAllowance+50*time.Millisecond {
+	if took := time.Since(began); took < startWait || took >= startDeadline+150*time.Millisecond {
 		t.Fatalf("the session start returned after %v", took)
 	}
 	log, _ := os.ReadFile(filepath.Join(state, "dispatcher.log"))
 	if out.Len() != 0 || !strings.Contains(string(log), "hook claude SessionStart: start_pending: ") {
 		t.Fatalf("printed %q, dispatcher.log %q", out.String(), log)
+	}
+	if _, err := os.Lstat(filepath.Join(state, startFailedName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a start not ready in time opened the retry gap: %v", err)
 	}
 }

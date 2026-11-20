@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 
 const setupClaudeOriginal = "{\n  \"z-user\": 7,\n  \"hooks\": {\"SessionStart\": [{\"hooks\":[{\"type\":\"command\",\"command\":\"claude-user-hook\"}]}]},\n  \"permissions\": {\"allow\":[\"Bash(existing)\"]},\n  \"a-user\": false\n}\n"
 const setupCodexOriginal = "{\n \"z-user\": 8,\n \"hooks\": {\"SessionStart\": [{\"hooks\":[{\"type\":\"command\",\"command\":\"codex-user-hook\"}]}]},\n \"a-user\": true\n}\n"
+const setupSessionPrefix = "synthetic-setup-"
 
 type setupWorld struct {
 	*world
@@ -169,7 +172,7 @@ func (f *setupWorld) invokeHook(repo, adapter, event, fields string) string {
 	if hook.Timeout != 1 {
 		f.t.Errorf("%s %s timeout = %d", adapter, event, hook.Timeout)
 	}
-	payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, "synthetic-setup-"+adapter, repo, fields)
+	payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, setupSessionPrefix+adapter, repo, fields)
 	cmd.Dir, cmd.Env, cmd.Stdin = repo, f.env, strings.NewReader(payload)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -177,6 +180,86 @@ func (f *setupWorld) invokeHook(repo, adapter, event, fields string) string {
 		f.t.Fatalf("invoke installed %s %s: %v, stderr %q", adapter, event, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+func (f *setupWorld) enrollmentRepo() string {
+	f.t.Helper()
+	owner := f.owner()
+	owner.must("owner", "channel", "create", "setup-check")
+	repo := filepath.Join(f.home, "project")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	owner.must("owner", "channel", "default", "setup-check", "--repo", repo)
+	return repo
+}
+
+func (f *setupWorld) enrollmentEvidence(adapter string) string {
+	var stage string
+	err := f.db().QueryRow(`SELECT CASE
+		WHEN l.principal_id IS NULL THEN 'provisional leaf without principal'
+		WHEN EXISTS (SELECT 1 FROM binding b WHERE b.principal_id = l.principal_id AND b.state = 'live') THEN 'live binding'
+		ELSE 'linked leaf without live binding'
+		END FROM leaf l WHERE l.vendor = ? AND l.key = ?`, adapter, setupSessionPrefix+adapter).Scan(&stage)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		stage = "no registered leaf"
+	case err != nil:
+		stage = err.Error()
+	}
+	return fmt.Sprintf("SessionStart counter %q, enrollment stage %q", f.enrollmentCounter(adapter), stage)
+}
+
+func (f *setupWorld) enrollmentCounter(adapter string) string {
+	directory := filepath.Join(f.rendezvous(), "hooks")
+	days, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return "no counter record"
+	}
+	if err != nil {
+		return err.Error()
+	}
+	for _, day := range slices.Backward(days) {
+		data, err := os.ReadFile(filepath.Join(directory, day.Name()))
+		if err != nil {
+			return err.Error()
+		}
+		for _, line := range slices.Backward(strings.Split(string(data), "\n")) {
+			if fields := strings.Fields(line); len(fields) == 4 && fields[0] == adapter && fields[1] == "SessionStart" {
+				return line
+			}
+		}
+	}
+	return "no counter record"
+}
+
+func TestAdapterSetupReportsStalledEnrollment(t *testing.T) {
+	f := newSetupWorld(t)
+	f.apply("", "setup", "codex", "--apply")
+	repo := f.enrollmentRepo()
+	pids := f.dispatcherPIDs()
+	if len(pids) != 1 {
+		t.Fatalf("want one fixture dispatcher, got %v", pids)
+	}
+	dispatcher, err := os.FindProcess(pids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseFixtureProcess(t, dispatcher)
+	out := f.invokeHook(repo, "codex", "SessionStart", `"source":"startup"`)
+	evidence := f.enrollmentEvidence("codex")
+	resumeFixtureProcess(t, dispatcher)
+	t.Log(evidence)
+	if out != "" || !strings.Contains(evidence, `enrollment stage "no registered leaf"`) {
+		t.Fatalf("stalled SessionStart returned %q with %s", out, evidence)
+	}
+	if !strings.Contains(evidence, `counter "codex SessionStart deadline `) &&
+		!strings.Contains(evidence, `counter "no counter record"`) {
+		t.Fatalf("unexpected hook counter for a timed-out enrollment: %s", evidence)
+	}
 }
 
 func TestAdapterSetupLifecycle(t *testing.T) {
@@ -259,23 +342,15 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	}
 	assertSetupFile(t, journalPath, journal, true)
 
-	owner := f.owner()
-	owner.must("owner", "channel", "create", "setup-check")
-	repo := filepath.Join(f.home, "project")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	owner.must("owner", "channel", "default", "setup-check", "--repo", repo)
+	repo := f.enrollmentRepo()
 	writer := f.member()
 	writer.must("join", "setup-check", "--as", "writer")
 	for _, adapter := range []string{"claude", "codex"} {
 		alias := adapter + "1"
 		out := f.invokeHook(repo, adapter, "SessionStart", `"source":"startup"`)
 		if !strings.Contains(hostContext(t, out), "Joined #setup-check as @"+alias) {
-			t.Fatalf("wrong installed %s enrollment output: %q", adapter, out)
+			f.logDispatcher()
+			t.Fatalf("wrong installed %s enrollment output: %q, %s", adapter, out, f.enrollmentEvidence(adapter))
 		}
 		ids := notes(t, writer, alias, 1)
 		prompt := f.invokeHook(repo, adapter, "UserPromptSubmit", `"prompt_id":"turn-on","turn_id":"turn-on"`)

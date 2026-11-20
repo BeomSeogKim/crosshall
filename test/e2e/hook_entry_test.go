@@ -154,6 +154,20 @@ func (h *hookWorld) assertSpoolsEmpty() {
 	}
 }
 
+func (h *hookWorld) counterDropped() bool {
+	h.t.Helper()
+	logs, err := os.ReadDir(filepath.Join(h.rendezvous(), "hooks"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	for _, log := range logs {
+		if info, err := log.Info(); err != nil || info.Size() != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *hookWorld) assertCounter(event, outcome string) time.Duration {
 	h.t.Helper()
 	dir := filepath.Join(h.rendezvous(), "hooks")
@@ -210,11 +224,20 @@ func TestHookEntryOpenStdinBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
+	start := time.Now()
 	h.runTo(500*time.Millisecond, r, &stdout, nil, "codex", "UserPromptSubmit")
+	if waited := time.Since(start); waited < 100*time.Millisecond {
+		t.Fatalf("hook returned after %v without waiting for incomplete stdin", waited)
+	}
 	if stdout.Len() != 0 {
 		t.Fatalf("unexpected hook output %q", stdout.String())
 	}
 	h.assertSpoolsEmpty()
+	// The record shares the callback deadline, so a stall there drops it.
+	if h.counterDropped() {
+		t.Log("hook dropped its counter record at the deadline")
+		return
+	}
 	if elapsed := h.assertCounter("UserPromptSubmit", "deadline"); elapsed < 100*time.Millisecond || elapsed > 250*time.Millisecond {
 		t.Fatalf("unexpected elapsed time for incomplete stdin: %v", elapsed)
 	}

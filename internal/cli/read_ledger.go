@@ -465,22 +465,24 @@ func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, 
 			fmt.Fprintf(w, "[crosshall] @%s %s (%s, %s)\n", m.Alias, m.Change, m.Vendor, focus)
 		}
 	}
-	_, inbox := cmd.(domain.Inbox)
-	if !inbox && trailer.OwedCount != nil {
+	if trailer.OwedCount != nil {
 		_, left := cmd.(domain.Leave)
 		_ = PrintInboxPointer(w, len(trailer.Pending), *trailer.OwedCount, left && success)
 	}
 }
 
-// PrintInboxPointer is shared with whoami, which renders its own identity result.
+// PrintInboxPointer prints the status line that ends every member result;
+// see domain.StatusLine. It is shared with whoami, which renders its own
+// identity result. A member that left has no turn-end rule: it is told
+// only what waits for its return.
 func PrintInboxPointer(w io.Writer, unread, owed int, left bool) error {
-	if unread == 0 && owed == 0 {
-		return nil // nothing waits: no pointer
-	}
 	if left {
+		if unread == 0 && owed == 0 {
+			return nil
+		}
 		_, err := fmt.Fprintf(w, "[crosshall] %d unread, %d owed. After rejoining, run crosshall inbox.\n", unread, owed)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "[crosshall] %d unread, %d owed. Run crosshall inbox.\n", unread, owed)
+	_, err := fmt.Fprintln(w, domain.StatusLine(unread, owed))
 	return err
 }

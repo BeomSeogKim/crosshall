@@ -239,8 +239,7 @@ func resetCue(ctx context.Context, tx store.Tx, principal int64, b hookBinding, 
 		}
 		shown := len(strings.Fields(strings.TrimPrefix(offered, "[crosshall] pending: ")))
 		if len(summary.Pending) > shown || summary.OwedCount > 0 {
-			lines = append(lines, "[crosshall] "+strconv.Itoa(len(summary.Pending))+" unread, "+strconv.Itoa(summary.OwedCount)+
-				" owed. Run crosshall inbox.")
+			lines = append(lines, StatusLine(len(summary.Pending), summary.OwedCount))
 		}
 	}
 	return strings.Join(lines, "\n"), nil

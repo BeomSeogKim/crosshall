@@ -45,7 +45,7 @@ Interactive Claude Code sessions report a verified build and the mode `interacti
 
 ## The prompt line
 
-At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall inbox.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
+At a prompt, a joined session can see a `[crosshall] pending:` line with unread message IDs. Each ID is listed once: a prompt does not repeat what an earlier line, the turn-end check or a crosshall notice the session received already announced. After a compaction or `/clear`, work the session was already told about comes back as one count, `[crosshall] 2 unread, 0 owed. Run crosshall read.`, and after `/clear` the session is also told its alias and the command that prints the member rules. `crosshall who` shows the last observed event and its age. Codex observations carry the label `unverified` because the hook cannot verify the running version and mode. Nothing wakes an idle session.
 
 ## Turning adapters off and removing them
 

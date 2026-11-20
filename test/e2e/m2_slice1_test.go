@@ -267,7 +267,7 @@ func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	grantRoots(t, w, "writer", 1)
 	id := num(t, writer.must("ask", "@claude1", "a request stays unread"), "id")
 	pending := pendingContext([]string{strconv.FormatInt(id, 10)})
-	notice := pending + ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall inbox."
+	notice := pending + ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 	fields := map[string]any{"prompt_id": "typed-notice", "prompt": notice}
 	if got := hostContext(t, c.fire("UserPromptSubmit", fields)); got != pending {
 		t.Fatalf("typed notice changed ordinary prompt context: %q", got)
@@ -470,7 +470,7 @@ func TestM2ContextResetGetsACueNotARepeat(t *testing.T) {
 	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "before-reset", "prompt": "go on"})); got != pending {
 		t.Fatalf("prompt offer %q", got)
 	}
-	const count = "[crosshall] 1 unread, 0 owed. Run crosshall inbox."
+	const count = "[crosshall] 1 unread, 0 owed. Run crosshall read."
 	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "compact"})); got != count {
 		t.Fatalf("compact with an offered ask unread: %q", got)
 	}

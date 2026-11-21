@@ -92,6 +92,9 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	if err != nil || n != 1 {
 		return false, err
 	}
+	if err := recordPublishProbation(ctx, tx, id, observation, now); err != nil {
+		return false, err
+	}
 	if observation != "own_turn" {
 		return false, suspendPublish(ctx, tx, id, observation, now)
 	}

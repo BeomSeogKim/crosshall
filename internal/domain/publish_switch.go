@@ -40,13 +40,14 @@ func (OwnerPublish) Verb() string { return VerbOwnerPublish }
 // PublishSwitchResult reports a switch change and, for a member, the
 // publish state that follows from every switch.
 type PublishSwitchResult struct {
-	Hall      bool           `json:"hall,omitempty"`
-	BindingID int64          `json:"binding_id,omitempty"`
-	Channel   string         `json:"channel,omitempty"`
-	Alias     string         `json:"alias,omitempty"`
-	Switch    string         `json:"switch"`
-	Changed   bool           `json:"changed"`
-	Publish   *PublishStatus `json:"publish,omitempty"`
+	Hall            bool           `json:"hall,omitempty"`
+	BindingID       int64          `json:"binding_id,omitempty"`
+	Channel         string         `json:"channel,omitempty"`
+	Alias           string         `json:"alias,omitempty"`
+	Switch          string         `json:"switch"`
+	Changed         bool           `json:"changed"`
+	BuildStopLifted bool           `json:"build_stop_lifted,omitempty"`
+	Publish         *PublishStatus `json:"publish,omitempty"`
 }
 
 func (s *Service) publish(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Publish, now time.Time) (core.Result, error) {
@@ -144,6 +145,11 @@ func (s *Service) ownerPublish(ctx context.Context, tx store.Tx, caller core.Cal
 	}
 	if out.Changed, err = changedOne(res); err != nil {
 		return core.Result{}, err
+	}
+	if cmd.Switch == "resume" {
+		if out.BuildStopLifted, err = liftPublishBuildForBinding(ctx, tx, cmd.BindingID, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	if out.Changed {
 		if err := audit(ctx, tx, "publish_switch", scope, owner, map[string]string{"by": "owner", "switch": cmd.Switch}, now); err != nil {

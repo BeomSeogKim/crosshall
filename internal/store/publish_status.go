@@ -19,23 +19,13 @@ const PublishNotActivated = "route not yet activated"
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
 const PublishHourlyCap = 30
 
-// Publish eligibility shared by the publisher and the status views. Each
-// fragment reads the route r, its binding b, the adapter policy policy and
-// the member's current launch l.
-const (
-	// PublishSwitchesOn: the adapter is enabled, the narrowest owner switch
-	// set (member, then adapter, then hall) is on or none is set, and the
-	// member has not turned publish off for itself.
-	PublishSwitchesOn = `policy.enabled = 1 AND b.publish_quiet = 0
-		AND COALESCE(b.publish_owner, policy.publish, (SELECT h.enabled FROM hall_publish h WHERE h.id = 1), 1) = 1`
-	// PublishProfileTested: the profile list holds the launch's exact
-	// profile as tested for publish.
-	PublishProfileTested = `EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter
-		AND e.cap = 'publish' AND e.level = 'tested'
-		AND e.vendor_version = json_extract(l.profile, '$.vendor_version')
-		AND e.platform = json_extract(l.profile, '$.platform') AND e.mode = json_extract(l.profile, '$.mode')
-		AND e.manifest_rev = json_extract(l.profile, '$.manifest_rev'))`
-)
+// PublishSwitchesOn: the adapter is enabled, the narrowest owner switch
+// set (member, then adapter, then hall) is on or none is set, and the
+// member has not turned publish off for itself.
+const PublishSwitchesOn = `policy.enabled = 1 AND b.publish_quiet = 0
+	AND COALESCE(b.publish_owner, policy.publish, (SELECT h.enabled FROM hall_publish h WHERE h.id = 1), 1) = 1`
+
+var PublishProfileCovered = CapabilityCovered("r.adapter", "l.profile", "'publish'")
 
 // PublishAdapterSends holds when the route's adapter can publish: it has a
 // notice format and a transport that sends. Whether the route itself names
@@ -79,11 +69,11 @@ type PublishState struct {
 // binding without a route has none, and found is false.
 func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time) (state PublishState, found bool, err error) {
 	var (
-		routeState, routeReason, adapter, launchRef, bindingState, version string
+		routeState, routeReason, adapter, launchRef, bindingState, profile string
 		mode, socketPath, threadID                                         string
 		principal, resumedAfter                                            int64
 		verified, dnd, quiet, enabled, epochOK, current                    bool
-		proven, activated, tested, listed, versionListed                   bool
+		proven, activated                                                  bool
 		owner, vendor, hall                                                sql.NullBool
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
@@ -91,14 +81,10 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
 			COALESCE(l.launch_ref = r.launch_ref AND l.verified = 1, 0),
-			COALESCE(json_extract(l.profile, '$.vendor_version'), ''),
+			COALESCE(l.profile, '{}'),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation
-				AND p.activated_at_ms IS NOT NULL),
-			`+PublishProfileTested+`,
-			EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter AND e.cap = 'publish'),
-			EXISTS (SELECT 1 FROM capability_evidence e WHERE e.vendor = r.adapter AND e.cap = 'publish'
-				AND e.vendor_version = json_extract(l.profile, '$.vendor_version'))
+				AND p.activated_at_ms IS NOT NULL)
 		FROM publish_route r JOIN binding b ON b.id = r.binding_id
 		LEFT JOIN adapter_policy policy ON policy.adapter = r.adapter
 		LEFT JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
@@ -106,7 +92,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
 		&principal, &verified, &mode, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
-		&hall, &current, &version, &proven, &activated, &tested, &listed, &versionListed)
+		&hall, &current, &profile, &proven, &activated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
 	}
@@ -137,6 +123,19 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	case routeState != "active":
 		return off(routeReason)
 	}
+	var build capabilityBuildEvidence
+	if verified && current {
+		build, err = readCapabilityBuild(ctx, tx, adapter, profile, "publish")
+		if err != nil {
+			return PublishState{}, false, err
+		}
+		if build.Stopped {
+			state.State, state.Notice, state.AtMS = "suspended", build.Notice, build.StoppedAtMS
+			state.Reason = fmt.Sprintf("version %s stopped after notice %d (%s)", build.Version, build.Notice, build.StopReason)
+			state.Lift = fmt.Sprintf("lifts with crosshall owner publish resume %d or tested evidence for this version", bindingID)
+			return state, true, nil
+		}
+	}
 	var reason string
 	var notice, at int64
 	var until sql.NullInt64
@@ -159,11 +158,6 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, err
-	}
-	if current && listed && !versionListed {
-		state.State, state.Reason, state.Lift = "suspended", fmt.Sprintf("version %q not in the profile list", version),
-			"lifts when the launch ends, or when the profile list holds the version (crosshall owner adapter evidence <file>); resume does not lift it"
-		return state, true, nil
 	}
 	var reserved int
 	var oldest sql.NullInt64
@@ -205,16 +199,34 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		state.Reason = "adapter policy changed"
 	case why != "":
 		state.Reason = why
-	case !tested:
-		state.Reason = "profile not tested"
+	case !build.Covered:
+		state.Reason = build.candidateReason()
 	case !proven:
 		state.Reason = "route not proven"
 	case !activated:
 		state.Reason = PublishNotActivated
 	default:
 		state.State = "available"
+		if build.ExactLevel != "tested" {
+			if build.Confirmed == PublishBuildConfirmations {
+				state.Reason = fmt.Sprintf("version %s seen", build.Version)
+			} else {
+				state.Reason = fmt.Sprintf("version %s trusted from %s evidence, %d of %d first notices observed",
+					build.Version, build.ManifestRev, build.Confirmed, PublishBuildConfirmations)
+			}
+		}
 	}
 	return state, true, nil
+}
+
+func (build capabilityBuildEvidence) candidateReason() string {
+	if build.Version == "unverified" || build.Mode == "unverified" {
+		return "unverified profile"
+	}
+	if build.ExactLevel != "" && build.ExactLevel != "tested" {
+		return fmt.Sprintf("version %s exact evidence is %s", build.Version, build.ExactLevel)
+	}
+	return fmt.Sprintf("no tested evidence for %s on %s %s", build.ManifestRev, build.Platform, build.Mode)
 }
 
 func switchWord(value sql.NullBool) string {

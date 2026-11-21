@@ -75,20 +75,26 @@ The last part of `AI_AGENT` is not the mode: both forms were seen in interactive
 - A notice the hall publishes while a turn is with the model does not take that shape: it runs after the turn's `Stop` as a turn of its own, with its own prompt ID.
 - With tested evidence for the build, a request stored during a turn continues that turn once with the pending line, as in print mode, also when the turn's prompt was typed ahead.
 
+## Tested capability evidence
+
+Tested evidence covers sessions with the same vendor, platform, mode, capability and hook manifest revision. Evidence for the exact running version takes precedence. An unverified version or mode stays ineligible. For Claude Code, `claude-2` identifies the vendor's hook callback format and profile labels. A manifest revision change needs evidence for the new revision.
+
+The binary ships `turn_end` evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The corresponding native conformance tests use a local stand-in for the model. They verify that an unread request continues an eligible turn once with the pending line.
+
 ## Publish profiles
 
-A session receives publish notices only when its exact profile is listed as tested for publish: agent version, platform, mode and hook manifest revision. A profile is listed after an interactive run, watched by a person, of a real session of that build on that platform, with the notice sent by the product itself. The run must show all of these:
+The binary ships `publish` evidence for Claude Code 2.1.330 on macOS arm64 in interactive mode with manifest `claude-2`. The evidence comes from a witnessed run on `c1db3a4` that sent notices through the product. The run exercised all of these:
 
 - an idle session starts one turn of its own for a notice, and the request is read;
 - text typed but not sent stays as it was, and nothing is submitted;
-- an open approval dialog stays open, and the notice runs after it is answered;
+- an open approval dialog stays open, and the notice runs after it is answered, with approval and denial both exercised;
 - a notice sent while the person's turn runs comes after that turn, and the prompt and its answer are unchanged;
 - after `/clear` the next notice reaches the new conversation; a resumed session in a new process is reached at its new address and the old one is never written to;
 - a session that was closed, and one that was killed, receive nothing and start nothing.
 
 A run in print mode with a stand-in model shows only that the message line still parses; it cannot list a profile. Bypass permission mode is never covered: such a session stays on pull.
 
-**No profile is listed in this release.** Tested profiles ship inside the binary and are recorded when the dispatcher starts, so a stock install needs no import; an owner can add one for their own machine with `crosshall owner adapter evidence <file>`, whose result names the capability `publish` at level `tested`. `crosshall owner doctor` shows each adapter's publish state with its reason, and `crosshall who` shows `publish: candidate` for a session whose profile is not listed.
+For a version covered by another version's evidence, the first three publish notices observed as their own turns confirm that build on the machine. An absorbed or unknown notice during that period stops publish for the build. Later failures suspend the current launch. The owner can lift a build stop with `crosshall owner publish resume <binding-id>` or with newer tested evidence for that exact version. `crosshall owner doctor` reports this state, and uncovered sessions show `publish: candidate` in `crosshall who`.
 
 ## Hall-level checks
 

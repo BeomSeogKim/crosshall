@@ -51,7 +51,7 @@ func publishRoutes(now time.Time, proven bool) string {
 	WHERE ` + store.PublishAdapterSends() + ` AND r.state = 'active'
 		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
 		AND b.state = 'live' AND b.dnd = 0
-		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileTested
+		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileCovered
 }
 
 const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id

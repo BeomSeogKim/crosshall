@@ -25,7 +25,12 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 				"evidence":[{"version":"2.1.327","platform":"darwin-arm64","mode":"print",
 				"manifest_rev":"claude-1","capability":"enroll","level":"tested"}],
 				"turn_end_notice":{"available":true,"date":"20261119","committed_claims":2,
-					"extra_model_requests_per_continuation":1},
+					"extra_model_requests_per_continuation":1,"trusted_from":"2.1.330"},
+				"publish":{"builds":[
+					{"version":"2.1.330","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"tested"},
+					{"version":"2.1.331","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"trusted","confirmed":1},
+					{"version":"2.1.332","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"seen"},
+					{"version":"2.1.333","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"stopped","stopped_at_ms":60000,"notice":41,"reason":"absorbed"}]},
 				"unverified_launches":2,
 				"hooks":{"date":"20261119","p95_ms":150,"counts":{"clean":2,"deadline":2,"rpc":1},
 					"recorded_starts":5,"helper_timeouts":2,"missed_deadlines":1,"vendor_timeouts":null}},
@@ -46,8 +51,12 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		`reply reminder evidence candidate for "9.1.42" "darwin-arm64" "print" "claude-1" — The native tool-call ID was observed.`,
 		"reply reminder evidence unknown\n",
 		"extra model requests per reminder 1 — Fixed crosshall text sent to the model.",
-		"turn-end notice available, committed claims 2 on 20261119 UTC, 1 extra model request per continuation",
+		"turn-end notice available (trusted from 2.1.330 evidence), committed claims 2 on 20261119 UTC, 1 extra model request per continuation",
 		"turn-end notice unavailable, committed claims 0 on 20261119 UTC, 1 extra model request per continuation",
+		"publish build 2.1.330 (darwin-arm64 interactive claude-2): tested",
+		"publish build 2.1.331 (darwin-arm64 interactive claude-2): trusted 1 of 3",
+		"publish build 2.1.332 (darwin-arm64 interactive claude-2): seen",
+		"publish build 2.1.333 (darwin-arm64 interactive claude-2): stopped at " + clock(60000) + " (notice 41, absorbed)",
 		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode",
 		"p95 150 ms", "clean=2 deadline=2 rpc=1",
 		"recorded starts 5, helper timeouts 2, missed deadlines 1, vendor timeouts unknown", "hook counters unknown"} {
@@ -63,8 +72,9 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 			TurnEndNotice *struct {
 				Available                         bool
 				Date                              string
-				CommittedClaims                   int `json:"committed_claims"`
-				ExtraModelRequestsPerContinuation int `json:"extra_model_requests_per_continuation"`
+				TrustedFrom                       string `json:"trusted_from"`
+				CommittedClaims                   int    `json:"committed_claims"`
+				ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
 			} `json:"turn_end_notice"`
 			Reminder *struct {
 				Available          *bool
@@ -100,7 +110,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	for i, wantClaims := range []int{2, 0} {
 		a := data.Adapters[i]
 		if n := a.TurnEndNotice; n == nil || n.Date != "20261119" || n.ExtraModelRequestsPerContinuation != 1 ||
-			n.Available != (i == 0) || n.CommittedClaims != wantClaims {
+			n.Available != (i == 0) || n.CommittedClaims != wantClaims || (i == 0 && n.TrustedFrom != "2.1.330") {
 			t.Errorf("%s turn-end notice: %+v", a.Adapter, n)
 		}
 	}

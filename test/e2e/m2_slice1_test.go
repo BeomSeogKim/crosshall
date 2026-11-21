@@ -100,16 +100,15 @@ func (c claudeSession) startWithContext(source string) string {
 func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
-	var ref string
-	if prompt, _ := fields["prompt_id"].(string); prompt != "" {
-		ref = prompt + ":" + event
-	}
+	// A prompt's event reference also carries its hook's entry time (#163):
+	// match the turn and the kind.
+	ref, _ := fields["prompt_id"].(string)
 	db := c.w.db()
 	count := func() int {
 		c.w.t.Helper()
 		var recorded int
 		err := db.QueryRow(`SELECT COUNT(*) FROM observation o JOIN leaf l ON l.principal_id = o.principal_id
-			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.event_ref = ?)`,
+			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.turn_ref = ?)`,
 			digest, fact, ref, ref).Scan(&recorded)
 		if err != nil {
 			c.w.t.Fatal(err)
@@ -299,8 +298,10 @@ func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
 	assertWorkUnread(t, db, id)
 	var observations int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE event_ref = ? AND kind = ?`,
-		"typed-notice:UserPromptSubmit", wire.HookPromptSubmitted).Scan(&observations); err != nil || observations != 1 {
+	// A second callback with the same prompt id is a prompt typed while the
+	// turn ran (#163): it is observed too, and repeats no ID.
+	if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE turn_ref = ? AND kind = ?`,
+		"typed-notice", wire.HookPromptSubmitted).Scan(&observations); err != nil || observations != 2 {
 		t.Fatalf("typed notice observations = %d, error %v", observations, err)
 	}
 }

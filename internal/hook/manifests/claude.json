@@ -7,6 +7,7 @@
   "launch_env": "CLAUDE_PID",
   "socket_env": "CLAUDE_CODE_MESSAGING_SOCKET",
   "turn_field": "prompt_id",
+  "prompt_entry_ref": true,
   "version_env": "AI_AGENT",
   "version_pattern": "^claude-code_([0-9]+-[0-9]+-[0-9]+)_(?:harness|agent)$",
   "mode_env": "CLAUDE_CODE_ENTRYPOINT",

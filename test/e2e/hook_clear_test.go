@@ -41,7 +41,7 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 				(&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key, "CLAUDE_PID=" + c.pid}}).must("join", "checkout", "--as", alias)
 				c.fireAndRecord("UserPromptSubmit", "prompt_submitted", map[string]any{"prompt_id": "after-join"})
 				var launch string
-				if err := w.db().QueryRow(`SELECT launch_ref FROM observation WHERE event_ref = 'after-join:UserPromptSubmit'`).Scan(&launch); err != nil ||
+				if err := w.db().QueryRow(`SELECT launch_ref FROM observation WHERE turn_ref = 'after-join' AND kind = 'prompt_submitted'`).Scan(&launch); err != nil ||
 					!strings.HasPrefix(launch, "pid-"+c.pid+"-") {
 					t.Fatalf("the prompt after the join reported launch %q (%v), want the joined process", launch, err)
 				}

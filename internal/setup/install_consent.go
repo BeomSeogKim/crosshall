@@ -19,7 +19,7 @@ const installConsentHeading = "Saying yes turns these on for the listed agents:"
 
 type installDisclosure struct {
 	store.InstallConsent
-	known, claude, prompt bool
+	known, claude, prompt, unknownBuild bool
 }
 
 func (s Service) attachInstallDisclosure(ctx context.Context, targets []installTarget) {
@@ -30,8 +30,9 @@ func (s Service) attachInstallDisclosure(ctx context.Context, targets []installT
 		if target.Spec.Adapter == "claude" {
 			b := target.Build
 			profile = wire.HookProfile{Adapter: "claude", VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
-			if b.Version == unknown {
+			if b.Version == "" || b.Version == unknown {
 				profile.VendorVersion = "unverified"
+				targets[i].disclosure.unknownBuild = true
 			}
 		}
 	}
@@ -80,30 +81,30 @@ func (d installDisclosure) write(out io.Writer) error {
 	if d.prompt {
 		fmt.Fprintln(&text, "- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
 	}
+	pickup := "its next crosshall read."
+	if d.prompt {
+		pickup = "its next prompt or " + pickup
+	}
 	switch {
 	case !d.known:
 		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
-	case !d.claude || !d.PublishCovered && !d.PublishStopped && !d.TurnEndCovered:
-		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read.")
+	case !d.claude || !d.unknownBuild && !d.PublishCovered && !d.PublishStopped && !d.TurnEndInteractive && !d.TurnEndPrint:
+		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup)
 	default:
-		fmt.Fprintln(&text, d.notices())
-		if d.TurnEndCovered {
-			fmt.Fprintln(&text, "- Turn-end check (Claude Code). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off")
-		} else {
-			fmt.Fprintln(&text, "- Turn-end check. Not available for these builds.")
-		}
+		fmt.Fprintln(&text, d.notices(pickup))
+		fmt.Fprintln(&text, d.turnEnd())
 	}
 	_, err := io.WriteString(out, text.String())
 	return err
 }
 
-func (d installDisclosure) notices() string {
+func (d installDisclosure) notices(pickup string) string {
 	const prefix = "- Notices (Claude Code, interactive sessions). "
 	switch {
 	case d.PublishStopped:
 		return prefix + "Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."
-	case !d.PublishCovered:
-		return "- Notices. Not available for these builds: a session sees new work at its next prompt or its next crosshall read."
+	case !d.PublishCovered && !d.unknownBuild:
+		return "- Notices. Not available for these builds: a session sees new work at " + pickup
 	case d.PublishSwitch == "hall_off":
 		return prefix + "Off by your setting; installing does not change it. On: crosshall owner publish hall on"
 	case d.PublishSwitch == "adapter_off":
@@ -113,9 +114,31 @@ func (d installDisclosure) notices() string {
 	if d.PublishSwitch == "adapter_on" {
 		off = "crosshall owner adapter set claude --publish off"
 	}
+	if d.unknownBuild {
+		return prefix + "crosshall could not read this Claude Code's version, so it cannot say here whether notices are available for it. If they are, the hall starts a turn in an idle session when work arrives, and each notice costs that session one model turn. Off: " + off
+	}
 	line := prefix + "When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: " + off
 	if d.PublishProbation {
 		line += " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
 	}
 	return line
+}
+
+func (d installDisclosure) turnEnd() string {
+	const off = "Off: only with the adapter, crosshall owner adapter set claude --enabled off"
+	if d.unknownBuild {
+		return "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. " + off
+	}
+	var mode string
+	switch {
+	case d.TurnEndInteractive && d.TurnEndPrint:
+		mode = "interactive sessions and print mode"
+	case d.TurnEndInteractive:
+		mode = "interactive sessions"
+	case d.TurnEndPrint:
+		mode = "print mode"
+	default:
+		return "- Turn-end check. Not available for these builds."
+	}
+	return "- Turn-end check (Claude Code, " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
 }

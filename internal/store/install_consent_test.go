@@ -29,7 +29,7 @@ func TestInstallConsentReadsLegacyOwnerChoicesWithoutMigrating(t *testing.T) {
 	profile := wire.HookProfile{Adapter: "fixture", VendorVersion: "2", Platform: "darwin-arm64", ManifestRev: "fixture-1"}
 	consent, err := InspectInstallConsent(ctx, os.DirFS(root), profile,
 		[]BuiltinEvidence{{Vendor: "fixture", Version: "2", Platform: "darwin-arm64", Mode: "print", ManifestRev: "fixture-1", Capability: "turn_end"}})
-	if err != nil || !consent.AutoJoinOff || consent.TurnEndCovered {
+	if err != nil || !consent.AutoJoinOff || consent.TurnEndInteractive || consent.TurnEndPrint {
 		t.Fatalf("consent %+v, %v", consent, err)
 	}
 	var version int

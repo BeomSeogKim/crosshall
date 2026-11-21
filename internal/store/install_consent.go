@@ -12,12 +12,13 @@ import (
 )
 
 type InstallConsent struct {
-	AutoJoinOff      bool
-	PublishCovered   bool
-	PublishSwitch    string
-	PublishStopped   bool
-	PublishProbation bool
-	TurnEndCovered   bool
+	AutoJoinOff        bool
+	PublishCovered     bool
+	PublishSwitch      string
+	PublishStopped     bool
+	PublishProbation   bool
+	TurnEndInteractive bool
+	TurnEndPrint       bool
 }
 
 // InspectInstallConsent previews the settings and evidence after the new
@@ -110,8 +111,8 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 				AND e.vendor_version = `+profileField("?2", "vendor_version")+`)
 			AND COALESCE((SELECT cb.confirmed FROM capability_build cb WHERE `+capabilityProfileMatch("cb", "?1", "?2", "'publish'")+`
 				AND cb.vendor_version = `+profileField("?2", "vendor_version")+`), 0) < ?4,
-			(`+CapabilityCovered("?1", "?2", "'turn_end'")+` OR `+CapabilityCovered("?1", printProfile, "'turn_end'")+`)`,
+			`+CapabilityCovered("?1", "?2", "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'"),
 		vendor, profile, builtin, PublishBuildConfirmations).
 		Scan(&consent.AutoJoinOff, &consent.PublishCovered, &consent.PublishSwitch, &consent.PublishStopped,
-			&consent.PublishProbation, &consent.TurnEndCovered)
+			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint)
 }

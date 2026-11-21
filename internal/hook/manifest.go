@@ -28,16 +28,20 @@ var (
 )
 
 type manifest struct {
-	Install      InstallSpec          `json:"install"`
-	Adapter      string               `json:"adapter"`
-	Revision     string               `json:"revision"`
-	EventField   string               `json:"event_field"`
-	SessionField string               `json:"session_field"`
-	SessionEnv   string               `json:"session_env"`
-	LaunchEnv    string               `json:"launch_env"`
-	SocketEnv    string               `json:"socket_env"`
-	TurnField    string               `json:"turn_field"`
-	Events       map[string]eventSpec `json:"events"`
+	Install      InstallSpec `json:"install"`
+	Adapter      string      `json:"adapter"`
+	Revision     string      `json:"revision"`
+	EventField   string      `json:"event_field"`
+	SessionField string      `json:"session_field"`
+	SessionEnv   string      `json:"session_env"`
+	LaunchEnv    string      `json:"launch_env"`
+	SocketEnv    string      `json:"socket_env"`
+	TurnField    string      `json:"turn_field"`
+	// PromptEntryRef adds the hook's entry time to a prompt's reference:
+	// Claude Code reports the running turn's id for a prompt typed ahead
+	// (#163), so the id alone does not tell the two callbacks apart.
+	PromptEntryRef bool                 `json:"prompt_entry_ref"`
+	Events         map[string]eventSpec `json:"events"`
 	// The launch's own vendor build and mode, when the running agent names
 	// them in its hooks' environment: VersionEnv must match VersionPattern
 	// (the observed label grammar), whose first group is the version with

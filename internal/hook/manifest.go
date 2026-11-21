@@ -93,6 +93,7 @@ type event struct {
 	LaunchRef      string
 	LaunchVerified bool
 	LaunchHosted   bool
+	PIDNamespace   string
 	TurnRef        string
 	EventRef       string
 	Fact           string

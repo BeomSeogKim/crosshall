@@ -187,14 +187,16 @@ func serve(paths statePaths, pathErr error) int {
 			Resolve: func(ctx context.Context, tx store.Tx, a dispatch.Arrival, req wire.Request) (dispatch.Resolution, error) {
 				r, err := resolver.Resolve(ctx, tx,
 					ident.Ingress{Path: a.Path, Owner: a.Owner, Dir: a.Dir},
-					ident.Proof{Generation: req.Generation, KeyDigest: req.KeyDigest, VendorVersion: req.VendorVersion})
+					ident.Proof{Generation: req.Generation, KeyDigest: req.KeyDigest, VendorVersion: req.VendorVersion,
+						Join: req.Verb == domain.VerbJoin})
 				if refusal, ok := identityRefusal(err); ok {
 					return dispatch.Resolution{Refusal: &refusal}, nil
 				}
 				if err != nil {
 					return dispatch.Resolution{}, err
 				}
-				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, SessionKey: r.Key, Enroll: r.Enroll}, nil
+				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, SessionKey: r.Key, Enroll: r.Enroll,
+					AfterCommit: r.AfterCommit}, nil
 			},
 			Decode: func(req wire.Request, r dispatch.Resolution) (domain.Request, error) {
 				cmd, err := domain.Decode(req.Verb, req.Args)

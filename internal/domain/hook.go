@@ -510,6 +510,14 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		return okOrErr(out, err)
 	}
 	if recoverEnrollment {
+		// A process whose member left by hand or was departed by the owner
+		// joins nobody until an explicit join, also after a /clear.
+		if cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
+			launch, found, err := s.processLaunchAt(ctx, tx, req.Vendor, cmd.LaunchRef, cmd.HookAtMS)
+			if err != nil || (found && launch.away) {
+				return okOrErr(out, err)
+			}
+		}
 		profile := cmd.Profile
 		profile.Mode = "unverified"
 		enroll := HookEnroll{wire.HookEnrollArgs{

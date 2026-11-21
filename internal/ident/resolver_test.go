@@ -71,10 +71,14 @@ func sqliteFixture(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
-	// Identity reads the tables of the first migration and the retirement
-	// reason a /clear records.
-	for _, name := range []string{"001_init.sql", "013_cleared_keys.sql"} {
-		schema, err := os.ReadFile("../store/migrations/" + name)
+	// Identity reads tables of several migrations: apply them all, in order.
+	names, err := filepath.Glob("../store/migrations/*.sql")
+	if err != nil || len(names) == 0 {
+		t.Fatalf("migrations: %v", err)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		schema, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}

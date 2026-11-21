@@ -22,42 +22,14 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 		req.Enroll == nil || s.LaunchProcess == nil || s.LaunchAlive == nil {
 		return 0, false, nil
 	}
-	own, ok := s.LaunchProcess(cmd.LaunchRef)
-	if !ok {
-		return 0, false, nil
-	}
-	// The process's latest launch decides, whatever its member did since.
-	var began int64
-	var ref string
-	err = tx.QueryRowContext(ctx, `SELECT l.principal_id, l.launch_ref, l.started_hook_at_ms
-		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
-		WHERE p.kind = 'session' AND p.vendor = ? AND (l.launch_ref = ? OR l.launch_ref LIKE ? || '-%')
-			AND l.started_hook_at_ms < ?
-		ORDER BY l.started_hook_at_ms DESC, l.rowid DESC LIMIT 1`,
-		req.Vendor, own, own, cmd.HookAtMS).Scan(&principal, &ref, &began)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
+	launch, found, err := s.processLaunchAt(ctx, tx, req.Vendor, cmd.LaunchRef, cmd.HookAtMS)
+	if err != nil || !found {
 		return 0, false, err
 	}
-	// The same PID in a process born after that launch is another program.
-	if process, ok := s.LaunchProcess(ref); !ok || process != own || !s.LaunchAlive(ref, began) {
-		return 0, false, nil
-	}
-	var state string
-	var byHook, fenced bool
-	err = tx.QueryRowContext(ctx, `SELECT state, departed_by_hook, COALESCE(owner_hook_fence_ms >= ?, 0)
-		FROM binding WHERE principal_id = ? ORDER BY id LIMIT 1`, cmd.HookAtMS, principal).Scan(&state, &byHook, &fenced)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	if fenced || (state != "live" && !byHook) {
+	if launch.away {
 		return 0, true, nil
 	}
+	principal = launch.principal
 	// The replaced conversation's keys retire first, so that only the new
 	// key is live for the principal once it is enrolled.
 	if _, err := tx.ExecContext(ctx, `UPDATE principal_key SET state = 'retired', retired_at_ms = ?, retired_by = 'clear'
@@ -78,8 +50,8 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 // bindJoinLaunch binds the launch a hand join names, so that the session's
 // hooks and a later /clear can tell its process: the reference has a start
 // digest, its adapter is the session's, its time is the join's, its process
-// runs and started before it, and no member of that adapter has a launch
-// open on the process (a start already bound one). It returns the bound
+// runs and started before it, and no present member of that adapter has a
+// launch open on the process (a start already bound one). It returns the bound
 // launch, or nil.
 func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int64, l JoinLaunch, now time.Time) (*JoinLaunch, error) {
 	if s.LaunchProcess == nil || s.LaunchAlive == nil || !validProfile(l.Profile) || !validRef(l.Ref) ||
@@ -91,12 +63,15 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 		return nil, nil
 	}
 	// One process runs one conversation: no member of the adapter may have a
-	// launch open on it.
+	// launch open on it, unless that member left by hand or was departed by
+	// the owner; then this join is the explicit one that ends its absence.
 	var free bool
 	if err := tx.QueryRowContext(ctx, `SELECT vendor = ?2 AND NOT EXISTS(SELECT 1 FROM adapter_launch l
 		JOIN principal o ON o.id = l.principal_id AND o.vendor = ?2
-		WHERE l.ended_hook_at_ms IS NULL AND (l.launch_ref = ?3 OR l.launch_ref LIKE ?3 || '-%'))
-		FROM principal WHERE id = ?1`, principal, l.Profile.Adapter, own).Scan(&free); err != nil || !free {
+		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
+		WHERE l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND (l.launch_ref = ?3 OR l.launch_ref LIKE ?3 || '-%')
+			AND (b.state = 'live' OR b.departed_by_hook = 1) AND COALESCE(b.owner_hook_fence_ms < ?4, 1))
+		FROM principal WHERE id = ?1`, principal, l.Profile.Adapter, own, l.AtMS).Scan(&free); err != nil || !free {
 		return nil, err
 	}
 	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.AtMS); err != nil {
@@ -111,3 +86,49 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 // joinLaunchAgeMS bounds how old a join's launch time may be when the
 // dispatcher sees it: one command's budget, with room for a slow start.
 const joinLaunchAgeMS = 30_000
+
+// processLaunch is the latest launch a process ran for a member.
+type processLaunch struct {
+	principal int64
+	// away says its member left by hand or was departed by the owner, so
+	// nothing in that process joins until an explicit join.
+	away bool
+}
+
+// processLaunchAt finds the latest launch the process of launchRef ran
+// before at, among members of vendor, if that process still runs (a reused
+// PID is a process born after the launch). A launch an owner restore fenced
+// belongs to no one.
+func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, launchRef string, at int64) (processLaunch, bool, error) {
+	var none processLaunch
+	if s.LaunchProcess == nil || s.LaunchAlive == nil {
+		return none, false, nil
+	}
+	own, ok := s.LaunchProcess(launchRef)
+	if !ok {
+		return none, false, nil
+	}
+	var l processLaunch
+	var ref, state string
+	var began int64
+	var byHook, fenced bool
+	err := tx.QueryRowContext(ctx, `SELECT l.principal_id, l.launch_ref, l.started_hook_at_ms,
+			b.state, b.departed_by_hook, COALESCE(b.owner_hook_fence_ms >= ?4, 0)
+		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
+		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
+		WHERE p.kind = 'session' AND p.vendor = ?1 AND l.fenced = 0
+			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?3 || '-%') AND l.started_hook_at_ms < ?4
+		ORDER BY l.started_hook_at_ms DESC, l.rowid DESC LIMIT 1`,
+		vendor, own, own, at).Scan(&l.principal, &ref, &began, &state, &byHook, &fenced)
+	if errors.Is(err, sql.ErrNoRows) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	if process, ok := s.LaunchProcess(ref); !ok || process != own || !s.LaunchAlive(ref, began) {
+		return none, false, nil
+	}
+	l.away = fenced || (state != "live" && !byHook)
+	return l, true, nil
+}

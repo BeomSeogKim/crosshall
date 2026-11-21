@@ -4,9 +4,12 @@ package e2e
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 // Issue #156: /clear in Claude Code starts a new session ID in the same
@@ -72,7 +75,33 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 				!strings.Contains(refused.stdout+refused.stderr, "crosshall join") {
 				t.Fatalf("the cleared conversation's inbox: exit %d\n%s%s", refused.exit, refused.stdout, refused.stderr)
 			}
+			// The conversation's own hooks, also from a first contact after its
+			// directory is gone, keep it cleared (Astra #674).
+			leafDir := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
+			if err := os.RemoveAll(leafDir); err != nil {
+				t.Fatal(err)
+			}
+			if out := c.fire("SessionStart", map[string]any{"source": "resume"}); out != "" {
+				t.Fatalf("the cleared conversation's resume printed %q", out)
+			}
+			c.fire("UserPromptSubmit", map[string]any{"prompt_id": "after-clear"})
+			// A failed join keeps the cleared state and its guidance (Astra #672).
+			if o := before.run("join", "no-such-channel"); o.exit == 0 {
+				t.Fatal("a join to a missing channel succeeded")
+			}
+			if again := before.run("inbox"); !strings.Contains(again.stdout+again.stderr, "cleared into @"+alias) {
+				t.Fatalf("a failed join released the cleared conversation:\n%s%s", again.stdout, again.stderr)
+			}
+			// The member's roster cursor does not follow the conversation into
+			// its new membership (Astra #674): plant one far ahead.
+			ack := filepath.Join(leafDir, "ack")
+			if err := os.WriteFile(ack, []byte("999999\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			joined := before.must("join", "checkout")
+			if raw, err := os.ReadFile(ack); err == nil && strings.TrimSpace(string(raw)) == "999999" {
+				t.Fatal("the cleared member's roster cursor survived the new join")
+			}
 			if got := joined.obj["alias"]; got == alias || got == "" || got == nil {
 				t.Fatalf("the cleared conversation joined as %v, want a new member", got)
 			}

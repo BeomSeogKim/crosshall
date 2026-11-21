@@ -66,6 +66,12 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if err := retirePublishRoute(ctx, tx, cmd.BindingID, "binding restored", now); err != nil {
 		return core.Result{}, err
 	}
+	// The old conversation's processes are no longer the member's: a /clear
+	// there must not take it back from the new key.
+	if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET fenced = 1,
+		ended_hook_at_ms = COALESCE(ended_hook_at_ms, ?) WHERE principal_id = ?`, ms(now), principal); err != nil {
+		return core.Result{}, err
+	}
 	out := RestoreResult{BindingID: cmd.BindingID}
 	if err := audit(ctx, tx, "binding_restored", fmt.Sprintf("binding:%d", cmd.BindingID), owner, out, now); err != nil {
 		return core.Result{}, err

@@ -93,6 +93,11 @@ func (r SQLResolver) Resolve(ctx context.Context, tx store.Tx, ingress Ingress, 
 		return Resolution{}, leafMismatch()
 	}
 	if keyState.String == "retired" {
+		if proof.Join && state == "fenced" && generation == proof.Generation && bound.Valid {
+			if res, ok, err := r.clearedJoin(ctx, tx, root, id, proof, fileID, bound.Int64); ok || err != nil {
+				return res, err
+			}
+		}
 		return Resolution{}, retiredKey(ctx, tx, id, "session identity is retired")
 	}
 	if state != "live" || generation != proof.Generation || (bound.Valid && bound != principal) {

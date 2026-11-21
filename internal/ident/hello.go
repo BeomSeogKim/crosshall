@@ -38,15 +38,18 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return reg, err
 	}
+	// A conversation a /clear retired may register its directory for a join;
+	// the join itself releases the key, in its own transaction.
+	clearedJoin := false
 	if keyState == "retired" {
-		cleared, err := rejoinCleared(ctx, tx, id, hello.Intent, now)
+		cleared, err := isCleared(ctx, tx, id)
 		if err != nil {
 			return reg, err
 		}
-		if !cleared {
+		if !cleared || hello.Intent != "join" {
 			return reg, retiredKey(ctx, tx, id, "session key has been retired")
 		}
-		principal, keyState = sql.NullInt64{}, ""
+		clearedJoin = true
 	}
 	if !principal.Valid && hello.Intent != "join" {
 		return reg, &EnvironmentError{core.CodeNotEnrolled, "this session is not in a channel"}
@@ -61,7 +64,7 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return reg, err
 	}
-	if (storedDigest != "" && storedDigest != reg.digest) || state == "fenced" {
+	if (storedDigest != "" && storedDigest != reg.digest) || (state == "fenced" && !clearedJoin) {
 		return reg, &EnvironmentError{core.CodeLeafMismatch, "member directory registration conflicts"}
 	}
 	members, err := openMembers(rendezvous)

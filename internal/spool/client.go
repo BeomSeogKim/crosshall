@@ -95,7 +95,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	} else if err != nil {
 		return c.failure(req, core.CodeUnsent, err)
 	}
-	defer func() { leaf.Close() }()
+	defer leaf.Close()
 
 	req.VendorVersion = id.Version
 	req.KeyDigest, req.Generation = digest, generation
@@ -106,25 +106,6 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	resp, code, err := exchange(ctx, leaf, req.Attempt, req)
 	if err != nil {
 		return c.failure(req, code, err)
-	}
-	// A conversation a /clear retired joins as a new member: first contact
-	// with the join intent releases its key, then the join runs again.
-	if req.Verb == "join" && resp.Code == core.CodeKeyCleared {
-		hello, sendErr := firstContact(ctx, rv, id, "join")
-		if sendErr != nil {
-			return c.failure(req, core.CodeUnsent, sendErr)
-		}
-		if hello.Status != core.ExitOK {
-			return Reply{Response: hello, OpKey: req.OpKey}, nil
-		}
-		leaf.Close()
-		if leaf, generation, err = openLeaf(rv, digest); err != nil {
-			return c.failure(req, core.CodeUnsent, err)
-		}
-		req.Generation, req.Attempt = generation, wire.NewID()
-		if resp, code, err = exchange(ctx, leaf, req.Attempt, req); err != nil {
-			return c.failure(req, code, err)
-		}
 	}
 	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
 	var trailer struct {
@@ -243,8 +224,10 @@ func (r Reply) Acknowledge() error {
 		return err
 	}
 	defer leaf.Close()
+	// A new generation starts without a cursor: the reply registered the
+	// directory again (a cleared conversation joining as a new member).
 	if generation != r.generation {
-		return fmt.Errorf("exchange generation changed before acknowledgement")
+		return nil
 	}
 	// Lock the directory inode, which remains stable across atomic ack replacements.
 	lock, err := leaf.Open(".")

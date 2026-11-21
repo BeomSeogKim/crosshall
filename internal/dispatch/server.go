@@ -44,6 +44,8 @@ type Resolution struct {
 	SessionKey string
 	Enroll     func(context.Context, store.Tx, int64) error
 	Refusal    *core.Result
+	// AfterCommit, when set, runs once the request's transaction committed.
+	AfterCommit func() error
 }
 
 // Services connects the dispatcher to identity and domain handlers.
@@ -562,11 +564,13 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var result core.Result
 	var enrolledSession ident.Identity
 	var channelCreated bool
+	var afterCommit func() error
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
 			return err
 		}
+		afterCommit = resolved.AfterCommit
 		if resolved.Refusal != nil {
 			result = *resolved.Refusal
 			return errRefusalRollback
@@ -677,6 +681,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return unknownOutcome("commit outcome unknown", req.OpKey), nil
 		}
 		return commandError(core.ExitError, "", "command failed; see dispatcher.log"), nil
+	}
+	if afterCommit != nil {
+		s.logFailure(afterCommit())
 	}
 	if enrolledSession.Key != "" {
 		s.logFailure(hook.RemoveStartupRepo(s.state, enrolledSession))

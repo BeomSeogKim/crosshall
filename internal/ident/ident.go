@@ -22,6 +22,9 @@ type Proof struct {
 	Generation    string
 	KeyDigest     string
 	VendorVersion string // diagnostic metadata only
+	// Join says the request is a join, which a conversation a /clear
+	// retired may make as a new member.
+	Join bool
 }
 
 // Resolution gives handlers the caller and a transaction-bound link for a first join.
@@ -30,6 +33,8 @@ type Resolution struct {
 	Vendor string
 	Key    string
 	Enroll func(context.Context, store.Tx, int64) error
+	// AfterCommit, when set, runs once the request's transaction committed.
+	AfterCommit func() error
 }
 
 // Resolver checks ingress evidence and resolves the caller within the transaction.

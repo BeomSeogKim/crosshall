@@ -1,10 +1,14 @@
 package domain
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 // clearFixture joins a hooked Claude member in process pid-7 and gives it
@@ -262,5 +266,68 @@ func TestAJoinDoesNotBindAProcessAnotherMemberRuns(t *testing.T) {
 				t.Fatalf("a second member bound the process: %+v", r.Launch)
 			}
 		})
+	}
+}
+
+// recoveryPrompt is the first prompt of a session no start enrolled, which
+// may join the repository's channel.
+func recoveryPrompt(launch, turn string, at int64) HookEvent {
+	cmd := event(launch, FactPromptSubmitted, turn+":UserPromptSubmit", turn, at, true)
+	cmd.EnrollRepoRoot = testRepo
+	return cmd
+}
+
+// Astra #668: after a hand leave and a clear, the new conversation's first
+// prompt stays out too, until it joins explicitly; then a later clear
+// continues the member it joined as.
+func TestAfterAHandLeaveTheProcessJoinsOnlyExplicitly(t *testing.T) {
+	f, _, first, _, _ := clearFixture(t, true)
+	wantOK(t, f.run(first, Leave{}, ""))
+	members := f.count(`SELECT COUNT(*) FROM binding`)
+	cleared := f.newSession("claude")
+	f.hook(cleared, start("pid-7-b", "clear", f.now.UnixMilli()+20))
+	f.hook(cleared, recoveryPrompt("pid-7-b", "first", f.now.UnixMilli()+30))
+	if n := f.count(`SELECT COUNT(*) FROM binding`); n != members {
+		t.Fatalf("the cleared conversation's prompt joined a member: %d bindings, want %d", n, members)
+	}
+	r := decode[JoinResult](t, f.join(cleared, Join{Channel: "checkout", Alias: "again",
+		Launch: joinLaunch("pid-7-join", f.now.UnixMilli()+40)}, ""))
+	if r.Launch == nil {
+		t.Fatal("the explicit join did not bind the process its absent member left")
+	}
+	next := f.newSession("claude")
+	if got := f.hook(next, start("pid-7-c", "clear", f.now.UnixMilli()+50)); got.Enrollment != "restored" || got.Alias != "again" {
+		t.Fatalf("a later clear: %+v, want @again continued", got)
+	}
+}
+
+// Astra #670: an owner restore moves the member to a new key; a /clear in
+// the old conversation's process does not take it back.
+func TestAClearAfterAnOwnerRestoreDoesNotTakeTheMemberBack(t *testing.T) {
+	f, _, old, _, _ := clearFixture(t, true)
+	f.svc.RestoreKey = func(ctx context.Context, tx store.Tx, principal int64, vendor, key string, now time.Time) (bool, error) {
+		if _, err := tx.ExecContext(ctx, `UPDATE principal_key SET state = 'retired', retired_at_ms = ? WHERE principal_id = ?`,
+			now.UnixMilli(), principal); err != nil {
+			return false, err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO principal_key (vendor, key, principal_id, created_at_ms) VALUES (?, ?, ?, 0)`,
+			vendor, key, principal)
+		return err == nil, err
+	}
+	principal := *f.caller(old).PrincipalID
+	binding := int64(f.count(`SELECT id FROM binding WHERE principal_id = ?`, principal))
+	replacement := f.newSession("claude")
+	wantOK(t, f.owner(Restore{BindingID: binding, Vendor: replacement.vendor, Key: replacement.key}, "restore"))
+	cleared := f.newSession("claude")
+	f.hook(cleared, start("pid-7-b", "clear", f.now.UnixMilli()+20))
+	if f.keyState(replacement) != "live" {
+		t.Fatal("a clear in the old process retired the restored key")
+	}
+	var got int64
+	if err := f.db.QueryRow(`SELECT principal_id FROM principal_key WHERE key = ?`, cleared.key).Scan(&got); err != nil && err != sql.ErrNoRows {
+		t.Fatal(err)
+	}
+	if got == principal {
+		t.Fatal("a clear in the old process took the restored member back")
 	}
 }

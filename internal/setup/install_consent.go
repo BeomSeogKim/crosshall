@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -18,19 +19,20 @@ const installConsentHeading = "Saying yes turns these on for the listed agents:"
 
 type installDisclosure struct {
 	store.InstallConsent
-	known, claude bool
+	known, claude, prompt bool
 }
 
 func (s Service) attachInstallDisclosure(ctx context.Context, targets []installTarget) {
 	var profile wire.HookProfile
-	for _, target := range targets {
+	for i, target := range targets {
+		targets[i].disclosure.claude = target.Spec.Adapter == "claude"
+		targets[i].disclosure.prompt = hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)
 		if target.Spec.Adapter == "claude" {
 			b := target.Build
 			profile = wire.HookProfile{Adapter: "claude", VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
 			if b.Version == unknown {
 				profile.VendorVersion = "unverified"
 			}
-			break
 		}
 	}
 	var files fs.FS
@@ -43,18 +45,25 @@ func (s Service) attachInstallDisclosure(ctx context.Context, targets []installT
 	}
 	consent, err := store.InspectInstallConsent(ctx, files, profile, domain.BuiltinCapabilityEvidence)
 	for i := range targets {
-		targets[i].disclosure = installDisclosure{InstallConsent: consent, known: err == nil, claude: targets[i].Spec.Adapter == "claude"}
+		targets[i].disclosure.InstallConsent = consent
+		targets[i].disclosure.known = err == nil
 	}
 }
 
 func groupInstallDisclosure(plans []VendorPlan) installDisclosure {
-	disclosure := plans[0].disclosure
+	var disclosure installDisclosure
 	for _, plan := range plans {
-		if plan.disclosure.claude {
-			return plan.disclosure
-		}
+		disclosure.include(plan.disclosure)
 	}
 	return disclosure
+}
+
+func (d *installDisclosure) include(other installDisclosure) {
+	prompt := d.prompt || other.prompt
+	if other.claude || !d.claude && !d.known {
+		*d = other
+	}
+	d.prompt = prompt
 }
 
 func (d installDisclosure) write(out io.Writer) error {
@@ -68,16 +77,18 @@ func (d installDisclosure) write(out io.Writer) error {
 	default:
 		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.")
 	}
-	fmt.Fprintln(&text, "- Prompt line. A joined session sees one line with the numbers of its unread messages at its next prompt. It costs no model request.")
+	if d.prompt {
+		fmt.Fprintln(&text, "- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
+	}
 	switch {
 	case !d.known:
 		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
 	case !d.claude || !d.PublishCovered && !d.PublishStopped && !d.TurnEndCovered:
-		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt.")
+		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read.")
 	default:
 		fmt.Fprintln(&text, d.notices())
 		if d.TurnEndCovered {
-			fmt.Fprintln(&text, "- Turn-end check (Claude Code). A turn that ends while a request is unread continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off")
+			fmt.Fprintln(&text, "- Turn-end check (Claude Code). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off")
 		} else {
 			fmt.Fprintln(&text, "- Turn-end check. Not available for these builds.")
 		}
@@ -92,7 +103,7 @@ func (d installDisclosure) notices() string {
 	case d.PublishStopped:
 		return prefix + "Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."
 	case !d.PublishCovered:
-		return "- Notices. Not available for these builds: a session sees new work at its next prompt."
+		return "- Notices. Not available for these builds: a session sees new work at its next prompt or its next crosshall read."
 	case d.PublishSwitch == "hall_off":
 		return prefix + "Off by your setting; installing does not change it. On: crosshall owner publish hall on"
 	case d.PublishSwitch == "adapter_off":

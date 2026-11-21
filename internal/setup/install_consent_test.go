@@ -9,14 +9,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
+
+func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
+	for _, tc := range []struct {
+		adapter string
+		prompt  bool
+	}{{"codex", true}, {"agy", false}} {
+		t.Run(tc.adapter, func(t *testing.T) {
+			f := setuptest.New(t, tc.adapter)
+			out, err := realRun(t, scopedService(f), f, Request{Offer: true, Terminal: true}, "\n")
+			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI).") != tc.prompt ||
+				!strings.Contains(out, "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read.") {
+				t.Fatalf("offer: %v\n%s", err, out)
+			}
+		})
+	}
+}
 
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 	const noticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
 	const probation = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
-	const turnEndOn = "- Turn-end check (Claude Code). A turn that ends while a request is unread continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off"
-	const unavailable = "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt."
+	const turnEndOn = "- Turn-end check (Claude Code). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off"
+	const unavailable = "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read."
 	for _, tc := range []struct {
 		name, version, publishLevel, turnEndLevel, settings, notice, turnEnd string
 	}{
@@ -43,7 +60,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			notice: "- Notices (Claude Code, interactive sessions). Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."},
 		{name: "exact candidate", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "candidate", notice: unavailable},
 		{name: "publish unavailable", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "tested", turnEnd: turnEndOn,
-			notice: "- Notices. Not available for these builds: a session sees new work at its next prompt."},
+			notice: "- Notices. Not available for these builds: a session sees new work at its next prompt or its next crosshall read."},
 		{name: "cold"},
 		{name: "unreadable", notice: "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it."},
 	} {
@@ -108,7 +125,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			} else if tc.name == "unreadable" {
 				joining = "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off)."
 			}
-			want := joining + "\n- Prompt line. A joined session sees one line with the numbers of its unread messages at its next prompt. It costs no model request.\n" + notice + "\n"
+			want := joining + "\n- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
 			if turnEnd != "" {
 				want += turnEnd + "\n"
 			}

@@ -380,9 +380,7 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 	p := plan{Version: 1, OK: true, Kind: req.Action, DryRun: req.DryRun, Resume: resume,
 		Adapters: append([]string{}, op.Adapters...), Files: []PlanFile{}, Retained: op.Retained}
 	for _, target := range targets {
-		if target.disclosure.claude || !p.disclosure.known {
-			p.disclosure = target.disclosure
-		}
+		p.disclosure.include(target.disclosure)
 	}
 	if req.Action == "off" {
 		p.Kind = "setup off"

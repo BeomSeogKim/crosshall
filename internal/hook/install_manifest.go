@@ -5,7 +5,25 @@ import (
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
+
+// HasPromptLine reports whether this revision installs a hook that can
+// offer pending work in a user prompt.
+func HasPromptLine(adapter, revision string) bool {
+	m, ok := loadManifest(adapter)
+	if !ok || m.Revision != revision {
+		return false
+	}
+	for _, name := range m.Install.Events {
+		event := m.Events[name]
+		if event.Fact == wire.HookPromptSubmitted && event.Notice &&
+			(event.Output == "context" || event.Output == "inject_steps") {
+			return true
+		}
+	}
+	return false
+}
 
 // InstallSpec describes a vendor's user-level hook file.
 type InstallSpec struct {

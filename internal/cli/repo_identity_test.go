@@ -93,6 +93,50 @@ func TestRepoIdentityIsOneForEveryCheckoutOfARepository(t *testing.T) {
 			t.Errorf("WorkTree(%s) = %q, want %q", path, got, want)
 		}
 	}
+	// A Git directory nested in a checkout ends the search, whoever it
+	// belongs to: a bare backup, or another checkout's separate Git directory.
+	nested := filepath.Join(main, "backup.git")
+	foreign := filepath.Join(main, "foreign.git")
+	for _, dir := range []string{nested, foreign} {
+		write(filepath.Join(dir, "HEAD"), "ref: refs/heads/main\n")
+		for _, name := range []string{"objects", "refs"} {
+			if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	elsewhere := filepath.Join(base, "elsewhere")
+	write(filepath.Join(elsewhere, ".git"), "gitdir: "+foreign+"\n")
+	// Files named like a Git directory's do not make one.
+	lookalike := filepath.Join(main, "notes")
+	write(filepath.Join(lookalike, "HEAD"), "a heading\n")
+	for _, name := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(lookalike, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, want := range map[string]string{
+		nested: "", filepath.Join(nested, "objects"): "",
+		foreign: "", filepath.Join(foreign, "objects"): "",
+		elsewhere: elsewhere,
+		lookalike: main, filepath.Join(lookalike, "objects"): main,
+	} {
+		if got := WorkTree(path); got != want {
+			t.Errorf("WorkTree(%s) = %q, want %q", path, got, want)
+		}
+	}
+	// A linked worktree whose common directory cannot be read has no known
+	// repository: its own Git directory must not be taken for one.
+	commondir := filepath.Join(main, ".git", "worktrees", "linked", "commondir")
+	if err := os.Chmod(commondir, 0); err != nil {
+		t.Fatal(err)
+	}
+	if identity, isLinked := RepoIdentity(linked); os.Getuid() != 0 && (identity != linked || isLinked) {
+		t.Errorf("RepoIdentity with an unreadable commondir = %s, %v", identity, isLinked)
+	}
+	if err := os.Chmod(commondir, 0600); err != nil {
+		t.Fatal(err)
+	}
 	// Git accepts a repository only with its objects and refs.
 	if HasObjectStore(main) || HasObjectStore(base) {
 		t.Error("a Git directory with only a HEAD passed as a repository")

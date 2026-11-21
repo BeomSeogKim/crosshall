@@ -6,3 +6,7 @@ CREATE TABLE hall_auto_join (
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     changed_at_ms INTEGER NOT NULL
 );
+
+-- A default the owner set is theirs; one that came with a channel crosshall
+-- created for a repository is automatic and never replaces the owner's.
+ALTER TABLE repo_default ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK (automatic IN (0, 1));

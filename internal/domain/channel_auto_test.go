@@ -57,6 +57,15 @@ func TestHookEnrolmentResolvesItsChannelInTheTransaction(t *testing.T) {
 	if got := enrol("/work/shop-other", true); got.Enrollment != "joined" || got.Channel != "shop" || got.ChannelCreated || channels() != 2 {
 		t.Fatalf("another worktree of the repository: %+v, %d channels", got, channels())
 	}
+	// The created channel's default is automatic until the owner names it.
+	automatic := func() int { return f.count(`SELECT automatic FROM repo_default WHERE repo_root = ?`, repository) }
+	if automatic() != 1 {
+		t.Fatal("a created channel's default is not marked automatic")
+	}
+	wantOK(t, f.owner(ChannelDefault{Channel: "shop", RepoRoot: repository}, "own"))
+	if automatic() != 0 {
+		t.Fatal("the owner's command left the default automatic")
+	}
 	// With the switch off the repository's channel stays its default.
 	wantOK(t, f.owner(ChannelAuto{On: false}, "off"))
 	if got := enrol("/work/shop-third", false); got.Enrollment != "joined" || got.Channel != "shop" {

@@ -61,9 +61,11 @@ func (s *Service) channelDefault(ctx context.Context, tx store.Tx, caller core.C
 	if channel.state != "active" {
 		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", channel.name), "choose an active channel: crosshall owner status --all"), nil
 	}
+	// The owner's command makes the default theirs, also when it names the
+	// channel that was created for the repository.
 	write, err := tx.ExecContext(ctx, `INSERT INTO repo_default(repo_root, channel_id) VALUES (?, ?)
-		ON CONFLICT(repo_root) DO UPDATE SET channel_id = excluded.channel_id
-		WHERE repo_default.channel_id <> excluded.channel_id`, cmd.RepoRoot, channel.id)
+		ON CONFLICT(repo_root) DO UPDATE SET channel_id = excluded.channel_id, automatic = 0
+		WHERE repo_default.channel_id <> excluded.channel_id OR repo_default.automatic <> 0`, cmd.RepoRoot, channel.id)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -118,4 +120,48 @@ func replayRepoJoin(ctx context.Context, tx store.Tx, principal int64, key, scop
 		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "the owner can list the active channels (crosshall owner status --all); a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>"), true, nil
 	}
 	return r, true, nil
+}
+
+// AdoptRepoDefault moves the default kept under a main checkout's path to
+// its repository's identity, where defaults are kept now. The owner's own
+// default always wins over one crosshall created: it replaces an automatic
+// default at the identity. Only a default the owner set at the identity
+// itself, which is the later command, stays in place of the older one.
+func AdoptRepoDefault(ctx context.Context, tx store.Tx, root, identity string, now time.Time) error {
+	var old, current int64
+	var oldAutomatic, automatic bool
+	err := tx.QueryRowContext(ctx, `SELECT channel_id, automatic FROM repo_default WHERE repo_root = ?`, root).Scan(&old, &oldAutomatic)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	outcome := "moved"
+	err = tx.QueryRowContext(ctx, `SELECT channel_id, automatic FROM repo_default WHERE repo_root = ?`, identity).Scan(&current, &automatic)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.ExecContext(ctx, `UPDATE repo_default SET repo_root = ? WHERE repo_root = ?`, identity, root)
+	case err != nil:
+	case automatic && !oldAutomatic:
+		outcome = "replaced_automatic"
+		if _, err = tx.ExecContext(ctx, `UPDATE repo_default SET channel_id = ?, automatic = 0 WHERE repo_root = ?`, old, identity); err == nil {
+			_, err = tx.ExecContext(ctx, `DELETE FROM repo_default WHERE repo_root = ?`, root)
+		}
+	default:
+		outcome = "superseded"
+		_, err = tx.ExecContext(ctx, `DELETE FROM repo_default WHERE repo_root = ?`, root)
+	}
+	if err != nil {
+		return err
+	}
+	owner, err := ownerPrincipal(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	detail := map[string]any{"from": root, "outcome": outcome, "channel_id": old}
+	if outcome != "moved" {
+		detail["identity_channel_id"] = current
+	}
+	return audit(ctx, tx, "channel_default_adopted", "repo:"+identity, owner, detail, now)
 }

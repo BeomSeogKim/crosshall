@@ -219,10 +219,10 @@ func (f *setupWorld) enrollmentEvidence(adapter string) string {
 	case err != nil:
 		stage = err.Error()
 	}
-	return fmt.Sprintf("SessionStart counter %q, enrollment stage %q", f.enrollmentCounter(adapter), stage)
+	return fmt.Sprintf("SessionStart counter %q, enrollment stage %q", f.hookCounter(adapter, "SessionStart"), stage)
 }
 
-func (f *setupWorld) enrollmentCounter(adapter string) string {
+func (f *setupWorld) hookCounter(adapter, event string) string {
 	directory := filepath.Join(f.rendezvous(), "hooks")
 	days, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
@@ -237,7 +237,7 @@ func (f *setupWorld) enrollmentCounter(adapter string) string {
 			return err.Error()
 		}
 		for _, line := range slices.Backward(strings.Split(string(data), "\n")) {
-			if fields := strings.Fields(line); len(fields) == 4 && fields[0] == adapter && fields[1] == "SessionStart" {
+			if fields := strings.Fields(line); len(fields) == 4 && fields[0] == adapter && fields[1] == event {
 				return line
 			}
 		}

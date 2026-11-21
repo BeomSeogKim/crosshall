@@ -26,6 +26,8 @@ type SetupRequest struct {
 	// Terminal reports that standard input and output are a terminal.
 	Terminal    bool
 	PathConsent func(bool) error
+	// Installed is told that at least one agent's hooks were installed.
+	Installed func()
 }
 
 const setupUsage = "usage: setup [--dry-run] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run|--apply] [names]"

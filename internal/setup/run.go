@@ -33,6 +33,8 @@ type Request struct {
 	Offer       bool
 	Terminal    bool
 	PathConsent func(bool) error
+	// Installed is told that at least one agent's hooks were installed.
+	Installed func()
 }
 
 type plan struct {

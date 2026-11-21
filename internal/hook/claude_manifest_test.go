@@ -108,3 +108,61 @@ func TestClaudeLaunchVersionAndModeComeFromTheHookEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// #163: two UserPromptSubmit callbacks of one turn id (a prompt typed while
+// the turn runs) are two requests; a retry of one hook is the same request,
+// and a reference too long for the dispatcher is replaced by its digest.
+func TestPromptRequestsCarryTheHookEntryTime(t *testing.T) {
+	m, _ := loadManifest("claude")
+	spec, _ := m.event("UserPromptSubmit")
+	request := func(turn string, at int64) (string, string) {
+		t.Helper()
+		input := `{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt_id":"` + turn + `"}`
+		e, err := parseEvent(strings.NewReader(input), m, spec, func(name string) (string, bool) {
+			return "s", name == "CLAUDE_CODE_SESSION_ID"
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := makeRequest(time.UnixMilli(at), m, spec, e, enrolment{}, true, 1)
+		var args struct {
+			EventRef string `json:"event_ref"`
+		}
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			t.Fatal(err)
+		}
+		return req.OpKey, args.EventRef
+	}
+	firstKey, firstRef := request("turn-a", 1000)
+	retryKey, retryRef := request("turn-a", 1000)
+	queuedKey, queuedRef := request("turn-a", 1700)
+	if firstKey != retryKey || firstRef != retryRef {
+		t.Fatalf("a retry changed the request: %q %q, %q %q", firstKey, firstRef, retryKey, retryRef)
+	}
+	if queuedKey == firstKey || queuedRef == firstRef {
+		t.Fatalf("a second callback of the turn repeats the first: %q %q", queuedKey, queuedRef)
+	}
+	if _, ref := request(strings.Repeat("x", 111), 1000); len(ref) > 128 {
+		t.Fatalf("event ref of %d bytes", len(ref))
+	}
+}
+
+// Only a manifest that asks for it adds the entry time; Codex
+// prompts keep their native reference, so a repeat stays a replay.
+func TestOnlyClaudePromptsCarryTheEntryTime(t *testing.T) {
+	m, _ := loadManifest("codex")
+	spec, ok := m.event("UserPromptSubmit")
+	if !ok {
+		t.Skip("no codex prompt event")
+	}
+	input := `{"hook_event_name":"UserPromptSubmit","session_id":"s","turn_id":"turn-a"}`
+	e, err := parseEvent(strings.NewReader(input), m, spec, func(name string) (string, bool) { return "s", name == "CODEX_THREAD_ID" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
+	second := makeRequest(time.UnixMilli(1700), m, spec, e, enrolment{}, true, 1)
+	if first.OpKey != second.OpKey {
+		t.Fatalf("codex prompt keys differ by entry time: %q %q", first.OpKey, second.OpKey)
+	}
+}

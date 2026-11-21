@@ -16,37 +16,39 @@ import (
 // launch. The new key joins that principal, so the binding, its open
 // requests and its owed replies stay; the old keys retire as cleared. It
 // returns the principal, or 0 with quiet set when the process's member left
-// by hand or was departed by the owner: such a clear joins nobody.
-func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, now time.Time) (principal int64, quiet bool, err error) {
+// by hand or was departed by the owner: such a clear joins nobody. It also
+// returns the receipts the replaced conversation recorded and has not sent,
+// for the caller to apply once the binding is live again.
+func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, now time.Time) (principal int64, quiet bool, receipts clearedReceipts, err error) {
 	if cmd.Source != "clear" || !cmd.LaunchVerified || !cmd.LaunchHosted || cmd.LaunchRef == SessionLaunch ||
 		req.Enroll == nil || s.LaunchProcess == nil || s.LaunchAlive == nil {
-		return 0, false, nil
+		return 0, false, receipts, nil
 	}
 	launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
 	if err != nil || !found {
-		return 0, false, err
+		return 0, false, receipts, err
 	}
 	if launch.away || launch.stale {
-		return 0, true, nil
+		return 0, true, receipts, nil
 	}
 	principal = launch.principal
-	if err := s.applyClearedReceipts(ctx, tx, principal); err != nil {
-		return 0, false, err
+	if receipts, err = s.readClearedReceipts(ctx, tx, principal); err != nil {
+		return 0, false, receipts, err
 	}
 	// The replaced conversation's keys retire first, so that only the new
 	// key is live for the principal once it is enrolled.
 	if _, err := tx.ExecContext(ctx, `UPDATE principal_key SET state = 'retired', retired_at_ms = ?, retired_by = 'clear'
 		WHERE principal_id = ? AND state = 'live'`, ms(now), principal); err != nil {
-		return 0, false, err
+		return 0, false, receipts, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE leaf SET state = 'fenced' WHERE state = 'live' AND (vendor, key) IN
 		(SELECT vendor, key FROM principal_key WHERE principal_id = ? AND state = 'retired')`, principal); err != nil {
-		return 0, false, err
+		return 0, false, receipts, err
 	}
 	if err := req.Enroll(ctx, tx, principal); err != nil {
-		return 0, false, err
+		return 0, false, receipts, err
 	}
-	return principal, false, audit(ctx, tx, "session_cleared", "principal:"+strconv.FormatInt(principal, 10), principal,
+	return principal, false, receipts, audit(ctx, tx, "session_cleared", "principal:"+strconv.FormatInt(principal, 10), principal,
 		map[string]string{"launch": cmd.LaunchRef}, now)
 }
 
@@ -169,44 +171,47 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, adapter, lau
 	return l, true, nil
 }
 
-// applyClearedReceipts applies what the replaced conversation's directories
-// recorded and have not sent yet: the member stays, so the rules it was given
-// and the roster it saw stay given and seen. A /clear right after a command
-// would otherwise repeat them.
-func (s *Service) applyClearedReceipts(ctx context.Context, tx store.Tx, principal int64) error {
+// clearedReceipts are the roster receipts the replaced conversation's
+// directories recorded and have not sent yet: the member stays, so the rules
+// it was given and the roster it saw stay given and seen. A /clear right
+// after a command would otherwise repeat them.
+type clearedReceipts struct{ cursor, rules uint64 }
+
+// readClearedReceipts reads them while the replaced keys are still live.
+func (s *Service) readClearedReceipts(ctx context.Context, tx store.Tx, principal int64) (clearedReceipts, error) {
+	var r clearedReceipts
 	if s.LeafReceipts == nil {
-		return nil
+		return r, nil
 	}
-	var binding int64
-	err := tx.QueryRowContext(ctx, `SELECT id FROM binding WHERE principal_id = ? AND state = 'live'`, principal).Scan(&binding)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
+	rows, err := tx.QueryContext(ctx, `SELECT k.vendor, k.key, l.file_identity, l.generation
+		FROM principal_key k JOIN leaf l ON l.vendor = k.vendor AND l.key = k.key AND l.state = 'live'
+		WHERE k.principal_id = ? AND k.state = 'live'`, principal)
 	if err != nil {
-		return err
+		return r, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT vendor, key FROM principal_key WHERE principal_id = ? AND state = 'live'`, principal)
-	if err != nil {
-		return err
-	}
-	type key struct{ vendor, key string }
+	type key struct{ vendor, key, fileID, generation string }
 	var keys []key
 	for rows.Next() {
 		var k key
-		if err := rows.Scan(&k.vendor, &k.key); err != nil {
+		if err := rows.Scan(&k.vendor, &k.key, &k.fileID, &k.generation); err != nil {
 			rows.Close()
-			return err
+			return r, err
 		}
 		keys = append(keys, k)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
+		return r, err
 	}
 	for _, k := range keys {
-		cursor, rules := s.LeafReceipts(k.vendor, k.key)
-		if _, _, err := AcknowledgeRoster(ctx, tx, &binding, cursor, rules); err != nil {
-			return err
-		}
+		cursor, rules := s.LeafReceipts(k.vendor, k.key, k.fileID, k.generation)
+		r.cursor, r.rules = max(r.cursor, cursor), max(r.rules, rules)
 	}
-	return nil
+	return r, nil
+}
+
+// apply records them on the member's binding, which must be live: after a
+// SessionEnd of the clear, only once the start restored it.
+func (r clearedReceipts) apply(ctx context.Context, tx store.Tx, binding int64) error {
+	_, _, err := AcknowledgeRoster(ctx, tx, &binding, r.cursor, r.rules)
+	return err
 }

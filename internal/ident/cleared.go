@@ -170,8 +170,10 @@ func publishGeneration(leaf *os.Root, generation string, wait bool) error {
 
 // LeafReceipts reads the roster receipts in the member directory of a session
 // key under rendezvous: the acknowledged cursor and the one with the rules.
-// A missing or unreadable receipt reads as 0.
-func LeafReceipts(rendezvous string, id Identity) (cursor, rules uint64) {
+// It reads them only from the registered directory (fileID) carrying the
+// committed generation; otherwise, and for a missing or unreadable receipt,
+// it reads 0.
+func LeafReceipts(rendezvous string, id Identity, fileID, generation string) (cursor, rules uint64) {
 	members, err := openMembers(rendezvous)
 	if err != nil {
 		return 0, 0
@@ -182,6 +184,12 @@ func LeafReceipts(rendezvous string, id Identity) (cursor, rules uint64) {
 		return 0, 0
 	}
 	defer leaf.Close()
+	if identity, err := FileIdentity(leaf); err != nil || identity != fileID {
+		return 0, 0
+	}
+	if gen, err := ReadPrivateFile(leaf, "gen", 4096); err != nil || strings.TrimSpace(string(gen)) != generation {
+		return 0, 0
+	}
 	read := func(name string) uint64 {
 		data, err := ReadPrivateFile(leaf, name, 32)
 		if err != nil {

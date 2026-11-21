@@ -414,34 +414,52 @@ func TestAFencedLaunchCountsAfterACrossVendorRestore(t *testing.T) {
 	}
 }
 
-// Astra #735: the replaced conversation's directory recorded that it printed
-// the rules and saw the roster, and sent nothing since; the member keeps
-// that through the takeover.
+// Astra #735, #745: the replaced conversation's directory recorded that it
+// printed the rules and saw the roster, and sent nothing since; the member
+// keeps that through the takeover, whether the clear's end or start comes
+// first.
 func TestAClearKeepsTheReceiptsTheReplacedConversationRecorded(t *testing.T) {
-	f, _, old, _, _ := clearFixture(t, true)
-	if _, err := f.db.Exec(`UPDATE binding SET hint_acked = 0, roster_ack_seq = 0, roster_baseline_seq = 0 WHERE alias = 'claude1'`); err != nil {
-		t.Fatal(err)
-	}
-	var latest uint64
-	if err := f.db.QueryRow(`SELECT COALESCE(max(seq), 0) FROM roster_change`).Scan(&latest); err != nil || latest == 0 {
-		t.Fatalf("no roster to acknowledge: %d %v", latest, err)
-	}
-	f.svc.LeafReceipts = func(vendor, key string) (uint64, uint64) {
-		if vendor == old.vendor && key == old.key {
-			return latest, latest
-		}
-		return 0, 0
-	}
-	cleared := f.newSession("claude")
-	if r := f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+30)); r.Enrollment != "restored" {
-		t.Fatalf("clear: %+v", r)
-	}
-	var acked bool
-	var seen uint64
-	if err := f.db.QueryRow(`SELECT hint_acked, roster_ack_seq FROM binding WHERE alias = 'claude1' AND state = 'live'`).Scan(&acked, &seen); err != nil {
-		t.Fatal(err)
-	}
-	if !acked || seen != latest {
-		t.Fatalf("after the clear hint_acked=%v roster_ack_seq=%d, want true and %d", acked, seen, latest)
+	for _, endFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "start first", true: "end first"}[endFirst], func(t *testing.T) {
+			f, _, old, _, _ := clearFixture(t, true)
+			if _, err := f.db.Exec(`UPDATE binding SET hint_acked = 0, roster_ack_seq = 0, roster_baseline_seq = 0 WHERE alias = 'claude1'`); err != nil {
+				t.Fatal(err)
+			}
+			// A peer joins, and the old conversation saw it before the clear.
+			f.join(f.newSession("claude"), Join{Channel: "checkout", Alias: "latepeer"}, "")
+			var latest uint64
+			if err := f.db.QueryRow(`SELECT COALESCE(max(seq), 0) FROM roster_change`).Scan(&latest); err != nil || latest == 0 {
+				t.Fatalf("no roster to acknowledge: %d %v", latest, err)
+			}
+			var fileID, generation string
+			if err := f.db.QueryRow(`SELECT file_identity, generation FROM leaf WHERE vendor = ? AND key = ?`, old.vendor, old.key).Scan(&fileID, &generation); err != nil {
+				t.Fatal(err)
+			}
+			f.svc.LeafReceipts = func(vendor, key, gotFile, gotGen string) (uint64, uint64) {
+				if vendor == old.vendor && key == old.key && gotFile == fileID && gotGen == generation {
+					return latest, latest
+				}
+				return 0, 0
+			}
+			if endFirst {
+				f.hook(old, ended("pid-7-a", f.now.UnixMilli()+10))
+			}
+			cleared := f.newSession("claude")
+			r := f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+30))
+			if r.Enrollment != "restored" {
+				t.Fatalf("clear: %+v", r)
+			}
+			var acked bool
+			var seen uint64
+			if err := f.db.QueryRow(`SELECT hint_acked, roster_ack_seq FROM binding WHERE alias = 'claude1' AND state = 'live'`).Scan(&acked, &seen); err != nil {
+				t.Fatal(err)
+			}
+			if !acked || seen < latest {
+				t.Fatalf("after the clear hint_acked=%v roster_ack_seq=%d, want true and at least %d", acked, seen, latest)
+			}
+			if strings.Contains(r.Cue+r.PendingLine, "latepeer") {
+				t.Fatalf("the clear announced @latepeer again: %q", r.Cue+r.PendingLine)
+			}
+		})
 	}
 }

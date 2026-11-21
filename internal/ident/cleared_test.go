@@ -114,3 +114,37 @@ func TestHelloPublicationDropsTheOldCursors(t *testing.T) {
 		t.Fatalf("gen %q (%v)", gen, err)
 	}
 }
+
+// Astra #747: receipts are imported only from the registered directory with
+// the committed generation.
+func TestLeafReceiptsOnlyFromTheCommittedGeneration(t *testing.T) {
+	root := privateTempDir(t)
+	id := Identity{Vendor: "claude", Key: "old"}
+	dir := filepath.Join(root, "m", id.Digest()[:16])
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"gen": "committed\n", "ack": "7\n", "rules": "6\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leaf, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileID, err := FileIdentity(leaf)
+	leaf.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, r := LeafReceipts(root, id, fileID, "committed"); c != 7 || r != 6 {
+		t.Fatalf("receipts %d %d, want 7 6", c, r)
+	}
+	if c, r := LeafReceipts(root, id, fileID, "other"); c != 0 || r != 0 {
+		t.Fatalf("receipts of another generation imported: %d %d", c, r)
+	}
+	if c, r := LeafReceipts(root, id, "another-directory", "committed"); c != 0 || r != 0 {
+		t.Fatalf("receipts of another directory imported: %d %d", c, r)
+	}
+}

@@ -144,8 +144,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return OK(out)
 	}
 	tookOver := false
+	var clearedReceipts clearedReceipts
 	if caller.PrincipalID == nil {
-		cleared, quiet, err := s.takeOverCleared(ctx, tx, req, cmd, now)
+		cleared, quiet, receipts, err := s.takeOverCleared(ctx, tx, req, cmd, now)
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -156,7 +157,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		if cleared == 0 {
 			return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
 		}
-		caller.PrincipalID, tookOver = &cleared, true
+		caller.PrincipalID, tookOver, clearedReceipts = &cleared, true, receipts
 	}
 	principal := *caller.PrincipalID
 	b, found, err := bindingOf(ctx, tx, principal)
@@ -206,6 +207,16 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 			return OK(out)
 		}
 		if b.alias, err = rejoin(ctx, tx, b, principal, req.Vendor, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	// The binding is live again, whichever of the clear's end and start came
+	// first: the replaced conversation's receipts apply now.
+	if tookOver && found {
+		if err := clearedReceipts.apply(ctx, tx, b.id); err != nil {
+			return core.Result{}, err
+		}
+		if b, _, err = bindingOf(ctx, tx, principal); err != nil {
 			return core.Result{}, err
 		}
 	}

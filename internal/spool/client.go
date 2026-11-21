@@ -45,6 +45,9 @@ type Reply struct {
 	generation string
 	cursor     uint64
 	rules      bool // the reply carries the member rules
+	// rotated says the request registered the directory again; the
+	// dispatcher may publish the new generation just after its reply.
+	rotated bool
 }
 
 // RulesReceipt names the file in a member's directory that holds the roster
@@ -122,7 +125,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	}
 	if err := json.Unmarshal(resp.Data, &trailer); err == nil && trailer.Cursor > 0 {
 		if trailer.Generation != "" {
-			generation = trailer.Generation
+			generation, reply.rotated = trailer.Generation, true
 		}
 		reply.cursor, reply.rendezvous, reply.digest, reply.generation = trailer.Cursor, c.Rendezvous, digest, generation
 		reply.rules = trailer.Rules
@@ -237,35 +240,54 @@ func (r Reply) Acknowledge() error {
 		return err
 	}
 	defer leaf.Close()
+	// Another renderer, or the dispatcher publishing a generation, may hold
+	// the directory for a moment; a reply that registered the directory
+	// again waits for its generation to be published.
+	deadline := time.Now().Add(acknowledgeWait)
+	for {
+		recorded, err := r.record(leaf)
+		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) || recorded || time.Now().After(deadline) {
+			return err
+		}
+		if err == nil && !r.rotated {
+			return nil // a reply of an older generation has nothing to record
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// acknowledgeWait bounds how long rendering waits to record its receipts.
+const acknowledgeWait = 3 * time.Second
+
+// record writes the reply's receipts under the directory lock if the
+// directory carries the reply's generation, and says whether it did.
+func (r Reply) record(leaf *os.Root) (bool, error) {
 	// Lock the directory inode, which remains stable across atomic ack
-	// replacements; the dispatcher takes it to rotate the generation.
+	// replacements; the dispatcher takes it to publish a generation.
 	lock, err := leaf.Open(".")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return err
+		return false, err
 	}
-	// Under the lock, a reply of another generation has nothing to record:
-	// the directory was registered again (a cleared conversation joining as
-	// a new member), or is about to be.
 	generation, err := ident.ReadPrivateFile(leaf, "gen", 1024)
 	if err != nil || strings.TrimSpace(string(generation)) != r.generation {
-		return err
+		return false, err
 	}
 	if r.rules {
 		// Before the cursor, which an older version may already have set as far.
 		record := []byte(strconv.FormatUint(r.cursor, 10) + "\n")
 		if err := publishFile(context.Background(), leaf, wire.NewID()+".part", RulesReceipt, record); err != nil {
-			return err
+			return false, err
 		}
 	}
 	last, err := readSequence(leaf, "ack")
 	if err != nil || last >= r.cursor {
-		return err
+		return err == nil, err
 	}
-	return publishFile(context.Background(), leaf, wire.NewID()+".part", "ack", []byte(strconv.FormatUint(r.cursor, 10)+"\n"))
+	return true, publishFile(context.Background(), leaf, wire.NewID()+".part", "ack", []byte(strconv.FormatUint(r.cursor, 10)+"\n"))
 }
 
 func exchange(ctx context.Context, dir *os.Root, attempt string, packet any) (wire.Response, core.Code, error) {

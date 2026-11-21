@@ -85,21 +85,24 @@ func TestASessionStartWaitsOnlyUntilTheStartDeadline(t *testing.T) {
 				return true, fmt.Errorf("dispatcher did not become ready: %w", ctx.Err())
 			}}, nil
 	}
+	var out bytes.Buffer
 	synctest.Test(t, func(t *testing.T) {
-		var out bytes.Buffer
 		began := time.Now()
 		Run(began, []string{"claude", "SessionStart"}, strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}`), &out, locate)
 		if took := time.Since(began); took < startWait || took >= startDeadline+150*time.Millisecond {
 			t.Fatalf("the session start returned after %v", took)
 		}
-		log, _ := os.ReadFile(filepath.Join(state, "dispatcher.log"))
-		if out.Len() != 0 || !strings.Contains(string(log), "hook claude SessionStart: start_pending: ") {
-			t.Fatalf("printed %q, dispatcher.log %q", out.String(), log)
-		}
-		if _, err := os.Lstat(filepath.Join(state, startFailedName)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("a start not ready in time opened the retry gap: %v", err)
-		}
 	})
+	log, err := os.ReadFile(filepath.Join(state, "dispatcher.log"))
+	if err != nil {
+		t.Fatalf("read dispatcher log after the starter finished: %v", err)
+	}
+	if out.Len() != 0 || !strings.Contains(string(log), "hook claude SessionStart: start_pending: ") {
+		t.Fatalf("printed %q, dispatcher.log %q", out.String(), log)
+	}
+	if _, err := os.Lstat(filepath.Join(state, startFailedName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a start not ready in time opened the retry gap: %v", err)
+	}
 }
 
 // A start that succeeds but leaves the session start unanswered says so.

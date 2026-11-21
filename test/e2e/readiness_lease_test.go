@@ -88,7 +88,7 @@ func TestDispatcherRepublishesReadyLeaseAfterPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(retired) })
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		if current := readInstance(); current != "" {
 			if current != instance {

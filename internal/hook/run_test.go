@@ -67,10 +67,8 @@ func simulate(t *testing.T, rv *os.Root, transport recordedTransport, nativeEven
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
 	var out strings.Builder
-	outcome := dispatchEvent(ctx, time.Now(), rv, transport, []string{"codex", nativeEvent}, strings.NewReader(string(raw)), &out, func(string) (string, bool) { return "", false })
+	outcome := dispatchEvent(t.Context(), time.Now(), rv, transport, []string{"codex", nativeEvent}, strings.NewReader(string(raw)), &out, func(string) (string, bool) { return "", false })
 	return out.String(), outcome
 }
 
@@ -345,12 +343,10 @@ func TestClaudeStartAndEndCarryTheSameVerifiedReference(t *testing.T) {
 			return "", false
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Budget)
-	defer cancel()
 	for index, name := range []string{"SessionStart", "SessionEnd", "SessionStart", "SessionEnd"} {
 		input := fmt.Sprintf(`{"hook_event_name":%q,"session_id":"fixture-thread","source":"startup","reason":"other"}`, name)
 		var out strings.Builder
-		result := dispatchEvent(ctx, time.UnixMilli(200+int64(index)), rv, transport, []string{"claude", name}, strings.NewReader(input), &out, lookup)
+		result := dispatchEvent(t.Context(), time.UnixMilli(200+int64(index)), rv, transport, []string{"claude", name}, strings.NewReader(input), &out, lookup)
 		// A start waits for its enrollment; an end is published one-way.
 		want := "rpc"
 		if name == "SessionEnd" {

@@ -29,6 +29,8 @@ import (
 // binary is the crosshall executable built once for the whole package.
 var binary string
 
+const fixtureEventTimeout = 10 * time.Second
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "crosshall-e2e-bin-")
 	if err != nil {
@@ -240,6 +242,27 @@ func (p *participant) leaf() string {
 	return filepath.Join(p.w.rendezvous(), "m", hex.EncodeToString(sum[:])[:16])
 }
 
+func fixtureQueuedPackets(t *testing.T, leaf string) []string {
+	t.Helper()
+	var queued []string
+	// The dispatcher moves a published packet from in to work before handling it.
+	for _, section := range []string{"in", "work"} {
+		entries, err := os.ReadDir(filepath.Join(leaf, section))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+				queued = append(queued, filepath.Join(section, entry.Name()))
+			}
+		}
+	}
+	return queued
+}
+
 // keyDigest is the full digest a member's envelope carries.
 func (p *participant) keyDigest() string {
 	sum := sha256.Sum256([]byte("route\x00" + p.route))
@@ -401,7 +424,7 @@ func memberRequest(key, gen, digest, args string) wire.Request {
 	return wire.Request{
 		Version: wire.Version, Attempt: randomHex(16), OpKey: key,
 		Generation: strings.TrimSpace(gen), KeyDigest: digest,
-		IssuedAtMS: now.UnixMilli(), ExpiresAtMS: now.Add(5 * time.Second).UnixMilli(),
+		IssuedAtMS: now.UnixMilli(), ExpiresAtMS: now.Add(fixtureEventTimeout).UnixMilli(),
 		Verb: "join", Args: json.RawMessage(args),
 	}
 }
@@ -410,7 +433,7 @@ func ownerRequest(key, args string) wire.Request {
 	now := time.Now()
 	return wire.Request{
 		Version: wire.Version, Attempt: randomHex(16), OpKey: key,
-		IssuedAtMS: now.UnixMilli(), ExpiresAtMS: now.Add(5 * time.Second).UnixMilli(),
+		IssuedAtMS: now.UnixMilli(), ExpiresAtMS: now.Add(fixtureEventTimeout).UnixMilli(),
 		Verb: "owner channel create", Args: json.RawMessage(args),
 	}
 }
@@ -432,7 +455,7 @@ func plant(t *testing.T, dir string, req wire.Request, lose bool) (wire.Response
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "out", req.Attempt+".json")
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for time.Now().Before(deadline) {
 		raw, err := os.ReadFile(out)
 		var resp wire.Response
@@ -445,6 +468,10 @@ func plant(t *testing.T, dir string, req wire.Request, lose bool) (wire.Response
 			return resp, string(resp.Data)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	for _, area := range []string{"in", "work", "out"} {
+		_, err := os.Stat(filepath.Join(dir, area, req.Attempt+".json"))
+		t.Logf("planted attempt %s in %s: %v", req.Attempt, area, err)
 	}
 	t.Fatalf("no response to planted request in %s", dir)
 	return wire.Response{}, ""

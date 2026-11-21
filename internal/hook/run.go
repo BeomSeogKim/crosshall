@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -152,6 +154,12 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if spec.Enroll && e.LaunchVerified {
 		markLaunch(rv, pid)
+		// Only a /clear may continue the process's member; it must come from
+		// that process, not from a session nested under it.
+		if e.Source == "clear" {
+			n, _ := strconv.Atoi(pid)
+			e.LaunchHosted = proc.HostedBy(n)
+		}
 	}
 	notice := spec.Enroll || spec.Notice
 	// The continuation needs a concrete profile. Unknown builds still
@@ -467,7 +475,7 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 	if spec.Enroll {
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
-			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
+			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, LaunchHosted: e.LaunchHosted, EventRef: ref,
 			Source: e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
 			HookAtMS: entry.UnixMilli(), Epoch: epoch,
 		})

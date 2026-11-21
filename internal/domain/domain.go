@@ -82,6 +82,13 @@ type Join struct {
 	Launch *JoinLaunch `json:"launch,omitempty"`
 }
 
+// The proposed launch is new on every call; a retried join with the same key
+// is the same join, and replays the launch the first call bound.
+func (j Join) normalized() Command {
+	j.Launch = nil
+	return j
+}
+
 // JoinLaunch is a launch reference a join proposes, as a start would bind it.
 type JoinLaunch struct {
 	Ref     string           `json:"ref"`

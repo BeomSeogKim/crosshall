@@ -71,12 +71,16 @@ func sqliteFixture(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
-	schema, err := os.ReadFile("../store/migrations/001_init.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON;" + string(schema)); err != nil {
-		t.Fatal(err)
+	// Identity reads the tables of the first migration and the retirement
+	// reason a /clear records.
+	for _, name := range []string{"001_init.sql", "013_cleared_keys.sql"} {
+		schema, err := os.ReadFile("../store/migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("PRAGMA foreign_keys=ON;" + string(schema)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return db
 }

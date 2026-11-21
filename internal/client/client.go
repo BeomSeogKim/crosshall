@@ -132,12 +132,11 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 		}
 		t.pending = reply
 		if launch != nil {
-			var bound struct {
-				Launch string `json:"launch"`
-			}
-			// Without the record the hooks keep the session's unbound launch.
-			if json.Unmarshal(result.Data, &bound) == nil && bound.Launch == launch.Ref {
-				_ = t.bindLaunch(id, *launch)
+			var bound domain.JoinResult
+			// A replayed join returns the launch its first call bound. Without
+			// the record the hooks keep the session's unbound launch.
+			if json.Unmarshal(result.Data, &bound) == nil && bound.Launch != nil && sameProcess(bound.Launch.Ref, launch.Ref) {
+				_ = t.bindLaunch(id, *bound.Launch)
 			}
 		}
 	}
@@ -363,4 +362,12 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 	}
 	result["warnings"], _ = json.Marshal(details.Warnings)
 	return json.Marshal(result)
+}
+
+// sameProcess compares the process part of two "pid-<pid>-<digest>" launch
+// references.
+func sameProcess(a, b string) bool {
+	pa, _, okA := strings.Cut(strings.TrimPrefix(a, "pid-"), "-")
+	pb, _, okB := strings.Cut(strings.TrimPrefix(b, "pid-"), "-")
+	return okA && okB && strings.HasPrefix(a, "pid-") && pa == pb
 }

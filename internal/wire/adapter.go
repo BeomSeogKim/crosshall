@@ -30,9 +30,12 @@ type HookEnrollArgs struct {
 	Profile        HookProfile `json:"profile"`
 	LaunchRef      string      `json:"launch_ref"`
 	LaunchVerified bool        `json:"launch_verified"`
-	EventRef       string      `json:"event_ref"`
-	Source         string      `json:"source"`
-	RepoRoot       string      `json:"repo_root"`
+	// LaunchHosted says the hook's nearest non-shell ancestor is the launch's
+	// process, so the start is that process's own and not a nested session's.
+	LaunchHosted bool   `json:"launch_hosted,omitempty"`
+	EventRef     string `json:"event_ref"`
+	Source       string `json:"source"`
+	RepoRoot     string `json:"repo_root"`
 	// Repository names the whole repository of RepoRoot's worktree, and
 	// CreateChannel says the hook found a real work tree there, so the
 	// repository may get its own channel. The dispatcher resolves the

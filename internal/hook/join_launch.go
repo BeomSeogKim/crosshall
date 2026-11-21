@@ -13,6 +13,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -27,7 +28,8 @@ func JoinLaunch(id ident.Identity, lookup func(string) (string, bool), at time.T
 	}
 	value, present := lookup(m.LaunchEnv)
 	pid, err := strconv.ParseUint(value, 10, 32)
-	if !present || err != nil || pid == 0 {
+	// The join must run under that process, not in a session nested under it.
+	if !present || err != nil || pid == 0 || !proc.HostedBy(int(pid)) {
 		return nil
 	}
 	version, mode := launchBuild(m, lookup)

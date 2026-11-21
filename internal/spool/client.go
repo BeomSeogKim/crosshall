@@ -95,7 +95,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	} else if err != nil {
 		return c.failure(req, core.CodeUnsent, err)
 	}
-	defer leaf.Close()
+	defer func() { leaf.Close() }()
 
 	req.VendorVersion = id.Version
 	req.KeyDigest, req.Generation = digest, generation
@@ -106,6 +106,25 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	resp, code, err := exchange(ctx, leaf, req.Attempt, req)
 	if err != nil {
 		return c.failure(req, code, err)
+	}
+	// A conversation a /clear retired joins as a new member: first contact
+	// with the join intent releases its key, then the join runs again.
+	if req.Verb == "join" && resp.Code == core.CodeKeyCleared {
+		hello, sendErr := firstContact(ctx, rv, id, "join")
+		if sendErr != nil {
+			return c.failure(req, core.CodeUnsent, sendErr)
+		}
+		if hello.Status != core.ExitOK {
+			return Reply{Response: hello, OpKey: req.OpKey}, nil
+		}
+		leaf.Close()
+		if leaf, generation, err = openLeaf(rv, digest); err != nil {
+			return c.failure(req, core.CodeUnsent, err)
+		}
+		req.Generation, req.Attempt = generation, wire.NewID()
+		if resp, code, err = exchange(ctx, leaf, req.Attempt, req); err != nil {
+			return c.failure(req, code, err)
+		}
 	}
 	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
 	var trailer struct {

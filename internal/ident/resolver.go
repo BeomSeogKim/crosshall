@@ -93,7 +93,7 @@ func (r SQLResolver) Resolve(ctx context.Context, tx store.Tx, ingress Ingress, 
 		return Resolution{}, leafMismatch()
 	}
 	if keyState.String == "retired" {
-		return Resolution{}, &EnvironmentError{core.CodeKeyRetired, "session identity is retired"}
+		return Resolution{}, retiredKey(ctx, tx, id, "session identity is retired")
 	}
 	if state != "live" || generation != proof.Generation || (bound.Valid && bound != principal) {
 		return Resolution{}, leafMismatch()

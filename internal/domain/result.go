@@ -54,8 +54,8 @@ type JoinResult struct {
 	Changes []Member `json:"roster_changes,omitempty"`
 	// RosterSeq is the cursor the client acknowledges after rendering.
 	RosterSeq uint64 `json:"roster_seq"`
-	// Launch is the launch reference the join bound, for the hooks to use.
-	Launch string `json:"launch,omitempty"`
+	// Launch is the launch the join bound, for the hooks to use.
+	Launch *JoinLaunch `json:"launch,omitempty"`
 }
 
 // WhoResult is the data of a roster listing.

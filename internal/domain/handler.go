@@ -508,7 +508,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 	}
 
-	var bound string
+	var bound *JoinLaunch
 	if cmd.Launch != nil {
 		if bound, err = s.bindJoinLaunch(ctx, tx, principal, *cmd.Launch, now); err != nil {
 			return core.Result{}, err

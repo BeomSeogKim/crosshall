@@ -39,7 +39,14 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 		return reg, err
 	}
 	if keyState == "retired" {
-		return reg, &EnvironmentError{core.CodeKeyRetired, "session key has been retired"}
+		cleared, err := rejoinCleared(ctx, tx, id, hello.Intent, now)
+		if err != nil {
+			return reg, err
+		}
+		if !cleared {
+			return reg, retiredKey(ctx, tx, id, "session key has been retired")
+		}
+		principal, keyState = sql.NullInt64{}, ""
 	}
 	if !principal.Valid && hello.Intent != "join" {
 		return reg, &EnvironmentError{core.CodeNotEnrolled, "this session is not in a channel"}

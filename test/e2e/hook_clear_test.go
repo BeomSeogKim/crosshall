@@ -63,6 +63,22 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 			if err := w.db().QueryRow(`SELECT COUNT(*) FROM binding WHERE state = 'live'`).Scan(&live); err != nil || live != 2 {
 				t.Fatalf("live bindings %d (%v), want the writer and the one member", live, err)
 			}
+
+			// The cleared conversation is told where its member went, and may
+			// join as a new member (lead decision O1).
+			before := &participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key}}
+			refused := before.run("inbox")
+			if refused.exit == 0 || !strings.Contains(refused.stdout+refused.stderr, "cleared into @"+alias+" in #checkout") ||
+				!strings.Contains(refused.stdout+refused.stderr, "crosshall join") {
+				t.Fatalf("the cleared conversation's inbox: exit %d\n%s%s", refused.exit, refused.stdout, refused.stderr)
+			}
+			joined := before.must("join", "checkout")
+			if got := joined.obj["alias"]; got == alias || got == "" || got == nil {
+				t.Fatalf("the cleared conversation joined as %v, want a new member", got)
+			}
+			if !rosterHas(t, writer, alias) {
+				t.Fatalf("the new member took @%s away", alias)
+			}
 		})
 	}
 }

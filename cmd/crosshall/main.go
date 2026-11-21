@@ -239,8 +239,11 @@ func identityRefusal(err error) (core.Result, bool) {
 		status = core.ExitRefused
 	}
 	hint := "crosshall join <channel>"
-	if e.Code == core.CodeKeyRetired {
+	switch e.Code {
+	case core.CodeKeyRetired:
 		hint = "ask the owner to restore this session"
+	case core.CodeKeyCleared:
+		hint = "crosshall join <channel> makes this conversation a new member"
 	}
 	return domain.Fail(status, e.Code, e.Message, hint), true
 }

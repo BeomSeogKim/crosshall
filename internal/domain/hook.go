@@ -143,15 +143,20 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if cmd.HookAtMS > ms(now)+futureSlackMS {
 		return OK(out)
 	}
+	tookOver := false
 	if caller.PrincipalID == nil {
-		cleared, err := s.takeOverCleared(ctx, tx, req, cmd, now)
+		cleared, quiet, err := s.takeOverCleared(ctx, tx, req, cmd, now)
 		if err != nil {
 			return core.Result{}, err
+		}
+		if quiet {
+			out.Enrollment = "none"
+			return OK(out)
 		}
 		if cleared == 0 {
 			return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
 		}
-		caller.PrincipalID = &cleared
+		caller.PrincipalID, tookOver = &cleared, true
 	}
 	principal := *caller.PrincipalID
 	b, found, err := bindingOf(ctx, tx, principal)
@@ -194,7 +199,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		}
 		// A member who left by hand is not brought back by a hook, and a
 		// compaction or any start older than the clean end is a stale callback.
-		if !b.byHook || cmd.Source == "compact" || (lastEnd.Valid && cmd.HookAtMS <= lastEnd.Int64) {
+		// A /clear takeover is not: its process still runs, and the end it
+		// may trail is the cleared conversation's.
+		if !b.byHook || cmd.Source == "compact" || (!tookOver && lastEnd.Valid && cmd.HookAtMS <= lastEnd.Int64) {
 			out.Enrollment = "none"
 			return OK(out)
 		}

@@ -92,18 +92,18 @@ func TestStartupRepoMarkerSurvivesMissingRendezvousAndDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rv.Close()
-	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: inside, CWD: repo}); got != repo {
-		t.Fatalf("same canonical repository was refused: %q", got)
+	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: inside, CWD: repo}); got.worktree != repo || got.repository != repo || got.create {
+		t.Fatalf("same canonical repository was refused: %+v", got)
 	}
-	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: outside, CWD: repo}); got != "" {
-		t.Fatalf("session opened outside was allowed to recover in %q", got)
+	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: outside, CWD: repo}); !got.none() {
+		t.Fatalf("session opened outside was allowed to recover in %+v", got)
 	}
 	incomplete := ident.Identity{Vendor: "claude", Key: "incomplete"}
 	if err := os.WriteFile(filepath.Join(state, startupRepoDir, incomplete.Digest()), []byte("1"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: incomplete, CWD: repo}); got != "" {
-		t.Fatalf("session with incomplete marker was allowed to recover in %q", got)
+	if got := mappedEnrollmentRoot(t.Context(), rv, state, event{Identity: incomplete, CWD: repo}); !got.none() {
+		t.Fatalf("session with incomplete marker was allowed to recover in %+v", got)
 	}
 	if err := os.Remove(filepath.Join(paths.Rendezvous, "repo-defaults")); err != nil {
 		t.Fatal(err)
@@ -120,5 +120,59 @@ func TestStartupRepoMarkerSurvivesMissingRendezvousAndDuplicates(t *testing.T) {
 	}
 	if attempts.Load() != 0 {
 		t.Fatalf("record removal attempted to start %d dispatchers", attempts.Load())
+	}
+}
+
+// A session joins only where its first start was. A record written before
+// repositories had one identity names the worktree, and still counts there.
+func TestStartRecordNamesTheRepositoryOrALegacyWorktree(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(base, "state")
+	repo, linked, other := filepath.Join(base, "repo"), filepath.Join(base, "linked"), filepath.Join(base, "other")
+	admin := filepath.Join(repo, ".git", "worktrees", "linked")
+	for path, text := range map[string]string{
+		filepath.Join(repo, ".git", "HEAD"):  "ref: refs/heads/main\n",
+		filepath.Join(admin, "HEAD"):         "ref: refs/heads/side\n",
+		filepath.Join(admin, "commondir"):    "../..\n",
+		filepath.Join(linked, ".git"):        "gitdir: " + admin + "\n",
+		filepath.Join(other, ".git", "HEAD"): "ref: refs/heads/main\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(state, startupRepoDir), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		record        string
+		later, prompt bool
+	}{
+		"none":             {"", true, false},
+		"repository":       {repoDigestRecord(repo), true, true},
+		"legacy worktree":  {repoDigestRecord(linked), true, true},
+		"another place":    {repoDigestRecord(other), false, false},
+		"outside Git":      {repoDigestRecord(""), false, false},
+		"incomplete write": {"1", false, false},
+	} {
+		id := ident.Identity{Vendor: "claude", Key: name}
+		if c.record != "" {
+			if err := os.WriteFile(filepath.Join(state, startupRepoDir, id.Digest()), []byte(c.record), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e := event{Identity: id, CWD: linked}
+		if got := startedHere(state, e, false); got != c.later {
+			t.Errorf("%s: a later start in the linked worktree: %v", name, got)
+		}
+		if got := startedHere(state, e, true); got != c.prompt {
+			t.Errorf("%s: a prompt in the linked worktree: %v", name, got)
+		}
 	}
 }

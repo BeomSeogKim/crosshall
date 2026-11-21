@@ -40,49 +40,107 @@ func RepoRoot(path string) (string, error) {
 	return "", fmt.Errorf("no Git worktree encloses %q", root)
 }
 
-// RepoCommonRoot returns the root that names the whole repository of the
-// worktree at root: the main worktree's root for a linked worktree, or the
-// common Git directory when that one is bare. Any other root names itself.
-func RepoCommonRoot(root string) string {
-	marker := filepath.Join(root, ".git")
-	info, err := os.Stat(marker)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
-		return root
-	}
-	data, err := os.ReadFile(marker)
-	if err != nil {
-		return root
-	}
-	gitDir, ok := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), "gitdir: ")
-	if !ok || gitDir == "" {
-		return root
-	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(root, gitDir)
-	}
-	// Only a linked worktree's Git directory names a common directory.
-	data, err = os.ReadFile(filepath.Join(gitDir, "commondir"))
-	if err != nil || len(data) > 8192 {
-		return root
-	}
-	common := strings.TrimRight(string(data), "\r\n")
-	if common == "" {
-		return root
-	}
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(gitDir, common)
-	}
-	common, err = filepath.EvalSymlinks(common)
-	if err != nil {
-		return root
-	}
-	if _, err := os.Stat(filepath.Join(common, "HEAD")); err != nil {
-		return root
+// RepoIdentity names the whole repository of the worktree at root, the same
+// for its main checkout and every linked worktree: the directory that holds
+// the common Git directory when that one is called .git, else the common Git
+// directory itself (a bare repository, or one made with --separate-git-dir).
+// linked reports a worktree added to another checkout's repository.
+func RepoIdentity(root string) (identity string, linked bool) {
+	common, linked, ok := commonGitDir(root)
+	if !ok {
+		return root, false
 	}
 	if filepath.Base(common) == ".git" {
-		return filepath.Dir(common)
+		return filepath.Dir(common), linked
 	}
-	return common
+	return common, linked
+}
+
+// commonGitDir finds the canonical common Git directory of the worktree at root.
+func commonGitDir(root string) (common string, linked, ok bool) {
+	gitDir := filepath.Join(root, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		return "", false, false
+	}
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() || info.Size() > 8192 {
+			return "", false, false
+		}
+		data, err := os.ReadFile(gitDir)
+		if err != nil {
+			return "", false, false
+		}
+		target, found := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), "gitdir: ")
+		if !found || target == "" {
+			return "", false, false
+		}
+		if gitDir = target; !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(root, gitDir)
+		}
+		// Only a linked worktree's Git directory names a common directory.
+		if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil && len(data) <= 8192 {
+			if dir := strings.TrimRight(string(data), "\r\n"); dir != "" {
+				if !filepath.IsAbs(dir) {
+					dir = filepath.Join(gitDir, dir)
+				}
+				gitDir, linked = dir, true
+			}
+		}
+	}
+	gitDir, err = filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		return "", false, false
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "HEAD")); err != nil {
+		return "", false, false
+	}
+	return gitDir, linked, true
+}
+
+// IsWorkTree reports whether path lies in the work tree of a real
+// repository: its common Git directory holds objects and refs, as Git itself
+// requires, and path is not inside the checkout's own .git directory.
+func IsWorkTree(path string) bool {
+	root, err := RepoRoot(path)
+	if err != nil {
+		return false
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	if absolute, err = filepath.EvalSymlinks(absolute); err != nil {
+		return false
+	}
+	admin := filepath.Join(root, ".git")
+	if absolute == admin || strings.HasPrefix(absolute, admin+string(filepath.Separator)) {
+		return false
+	}
+	common, _, ok := commonGitDir(root)
+	if !ok {
+		return false
+	}
+	for _, name := range []string{"objects", "refs"} {
+		if info, err := os.Stat(filepath.Join(common, name)); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// RepoDefaultRoot is the root a repository default is kept under for the
+// worktree enclosing path: the repository for its main checkout, so that
+// linked worktrees follow it, and the worktree itself for a linked one.
+func RepoDefaultRoot(path string) (string, error) {
+	root, err := RepoRoot(path)
+	if err != nil {
+		return "", err
+	}
+	if identity, linked := RepoIdentity(root); !linked {
+		return identity, nil
+	}
+	return root, nil
 }
 
 func worktreeMarker(marker string) (bool, error) {

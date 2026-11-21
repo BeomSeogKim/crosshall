@@ -3,17 +3,23 @@
 package e2e
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// gitRepository lays out the least Git itself accepts as a repository.
 func gitRepository(t *testing.T, dir string) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0700); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(dir, ".git", name), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -108,22 +114,201 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 	}
 }
 
-// startAs starts a session of the adapter in dir and returns the welcome it
-// was given: at the start, or at its first prompt when a loaded machine
-// took the start past its deadline (the welcome stays pending until read).
+// A repository made with git init --separate-git-dir has one identity for
+// its main checkout and its linked worktrees: they share the automatic
+// channel, and the owner's default set in the main checkout.
+func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		f := newSetupWorld(t)
+		f.apply("", "setup", "claude", "codex", "--apply")
+		owner := f.owner()
+		owner.must("owner", "channel", "auto", "on")
+		metadata := filepath.Join(f.home, "metadata")
+		if err := os.MkdirAll(metadata, 0700); err != nil {
+			t.Fatal(err)
+		}
+		main := filepath.Join(f.home, "main")
+		for path, text := range map[string]string{
+			filepath.Join(metadata, "HEAD"):            "ref: refs/heads/main\n",
+			filepath.Join(metadata, "objects", "info"): "",
+			filepath.Join(metadata, "refs", "info"):    "",
+			filepath.Join(main, ".git"):                "gitdir: " + metadata + "\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		admin := filepath.Join(metadata, "worktrees", "linked")
+		linked := filepath.Join(f.home, "linked")
+		for path, text := range map[string]string{
+			filepath.Join(admin, "HEAD"):      "ref: refs/heads/side\n",
+			filepath.Join(admin, "commondir"): "../..\n",
+			filepath.Join(linked, ".git"):     "gitdir: " + admin + "\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := "metadata"
+		if explicit {
+			want = "chosen"
+			owner.must("owner", "channel", "create", "chosen")
+			owner.must("owner", "channel", "default", "chosen", "--repo", main)
+		}
+		if got := startAs(f, "claude", "one", main); !strings.Contains(got, "Joined #"+want+" as @claude1") {
+			t.Fatalf("explicit %v: the main checkout printed %q", explicit, got)
+		}
+		if got := startAs(f, "codex", "two", linked); !strings.Contains(got, "Joined #"+want+" as @codex1") {
+			t.Fatalf("explicit %v: the linked worktree printed %q", explicit, got)
+		}
+		var channels int
+		if err := f.db().QueryRow(`SELECT COUNT(*) FROM channel`).Scan(&channels); err != nil || channels != 1 {
+			t.Fatalf("explicit %v: channels %d (%v)", explicit, channels, err)
+		}
+	}
+}
+
+// An Antigravity conversation keeps its first workspace as well: a later
+// start of the same conversation from another place joins nothing there.
+func TestAutomaticJoiningKeepsAnAntigravityConversationWhereItStarted(t *testing.T) {
+	f := newSetupWorld(t)
+	owner := f.owner()
+	owner.must("owner", "adapter", "set", "agy", "--enabled", "on")
+	first := gitRepository(t, filepath.Join(f.home, "first"))
+	second := gitRepository(t, filepath.Join(f.home, "second"))
+	start := func(conversation, workspace string) {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{
+			"conversationId": conversation,
+			"workspacePaths": []string{workspace},
+			"transcriptPath": filepath.Join(f.home, ".gemini", "antigravity-cli", "brain", conversation,
+				".system_generated", "logs", "transcript_full.jsonl"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), f.executable, "hook", "agy", "SessionStart")
+		cmd.Dir, cmd.Env, cmd.Stdin = workspace, f.env, strings.NewReader(string(payload))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Antigravity start: %v, output %q", err, out)
+		}
+	}
+	state := func() (channels, members int) {
+		t.Helper()
+		if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	const outside, switched = "0a6a3c1e-0000-4000-8000-000000000001", "0a6a3c1e-0000-4000-8000-000000000002"
+	start(switched, first) // the switch is still off: nothing joins, the place is recorded
+	owner.must("owner", "channel", "auto", "on")
+	start(outside, f.home)
+	start(outside, second)
+	start(switched, second)
+	if channels, members := state(); channels != 0 || members != 0 {
+		t.Fatalf("a later start from another place made %d channels and %d members", channels, members)
+	}
+	start(switched, first)
+	if channels, members := state(); channels != 1 || members != 1 {
+		t.Fatalf("a later start in the first workspace made %d channels and %d members", channels, members)
+	}
+}
+
+// Only a real work tree gets a channel of its own: not a directory whose
+// .git holds a HEAD and nothing else, which Git rejects, and not a place
+// inside a repository's own .git directory.
+func TestAutomaticJoiningNeedsARealWorkTree(t *testing.T) {
+	f := newSetupWorld(t)
+	f.apply("", "setup", "claude", "--apply")
+	f.owner().must("owner", "channel", "auto", "on")
+	hollow := filepath.Join(f.home, "hollow")
+	if err := os.MkdirAll(filepath.Join(hollow, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hollow, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	repo := gitRepository(t, filepath.Join(f.home, "real"))
+	for session, dir := range map[string]string{"hollow": hollow, "inside": filepath.Join(repo, ".git", "objects")} {
+		if got := startAs(f, "claude", session, dir); got != "" {
+			t.Errorf("a start in %s printed %q", dir, got)
+		}
+	}
+	var channels, members int
+	if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil ||
+		channels != 0 || members != 0 {
+		t.Fatalf("starts outside a work tree made %d channels and %d members (%v)", channels, members, err)
+	}
+	if got := startAs(f, "claude", "work", repo); !strings.Contains(got, "Joined #real as @claude1") {
+		t.Fatalf("the work tree printed %q", got)
+	}
+}
+
+// A start recorded by a version that named the worktree, not the
+// repository, still lets its session join there after the upgrade.
+func TestAWorktreeStartRecordFromAnOlderVersionStillEnrols(t *testing.T) {
+	f := newSetupWorld(t)
+	f.apply("", "setup", "claude", "--apply")
+	owner := f.owner()
+	repo := gitRepository(t, filepath.Join(f.home, "shop"))
+	linked := linkedWorktree(t, repo, filepath.Join(f.home, "shop-side"))
+	fireHook(f, "claude", "older", linked, "SessionStart", `"source":"startup"`)
+	records, err := filepath.Glob(filepath.Join(f.state, "hook-start-repos", "*"))
+	if err != nil || len(records) != 1 {
+		t.Fatalf("start records %v (%v)", records, err)
+	}
+	canonical, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(records[0], fmt.Appendf(nil, "%x\n", sha256.Sum256([]byte(canonical))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	owner.must("owner", "channel", "create", "side")
+	owner.must("owner", "channel", "default", "side", "--repo", linked)
+	joined := func() (name string) {
+		t.Helper()
+		err := f.db().QueryRow(`SELECT c.name FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.state = 'live'`).Scan(&name)
+		if err != nil && !strings.Contains(err.Error(), "no rows") {
+			t.Fatal(err)
+		}
+		return name
+	}
+	// A prompt that passes its deadline joins nothing; the next one tries again.
+	for turn := 0; turn < 3 && joined() == ""; turn++ {
+		fireHook(f, "claude", "older", linked, "UserPromptSubmit",
+			fmt.Sprintf(`"prompt_id":"p%d","turn_id":"p%d","prompt":"synthetic"`, turn, turn))
+	}
+	if got := joined(); got != "side" {
+		t.Fatalf("the session joined %q", got)
+	}
+}
+
+func fireHook(f *setupWorld, adapter, session, dir, event, fields string) string {
+	f.t.Helper()
+	cmd := f.installedHookCommand(f.t.Context(), dir, adapter, event, fields)
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, session, dir, fields))
+	out, err := cmd.Output()
+	if err != nil {
+		f.t.Fatalf("%s %s of session %s: %v", adapter, event, session, err)
+	}
+	return string(out)
+}
+
+// startAs starts a session of the adapter in dir and returns its welcome,
+// printed at the start or, when the start passed its deadline, at the first
+// prompt.
 func startAs(f *setupWorld, adapter, session, dir string) string {
 	f.t.Helper()
-	fire := func(event, fields string) string {
-		cmd := f.installedHookCommand(f.t.Context(), dir, adapter, event, fields)
-		cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, session, dir, fields))
-		out, err := cmd.Output()
-		if err != nil {
-			f.t.Fatalf("%s %s of session %s: %v", adapter, event, session, err)
-		}
-		return string(out)
-	}
-	if out := fire("SessionStart", `"source":"startup"`); out != "" {
+	if out := fireHook(f, adapter, session, dir, "SessionStart", `"source":"startup"`); out != "" {
 		return out
 	}
-	return fire("UserPromptSubmit", `"prompt_id":"first","turn_id":"first","prompt":"synthetic"`)
+	return fireHook(f, adapter, session, dir, "UserPromptSubmit", `"prompt_id":"first","turn_id":"first","prompt":"synthetic"`)
 }

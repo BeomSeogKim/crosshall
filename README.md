@@ -47,17 +47,18 @@ cd crosshall
 
 The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. In your own terminal it then lists the agents it found, the hook entries and command rules it would add for each, and what a yes turns on, and asks once:
 
-<!-- placeholder: replace with the text of a real install once #195 is merged -->
+<!-- from a real install of main 76091dc with Claude Code 2.1.330 and Codex CLI 0.171.0; the list of entries above it is left out -->
 ```text
 Saying yes turns these on for the listed agents:
 - Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.
 - Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
 - Turn-end check (Claude Code, interactive sessions and print mode). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off
+A no skips future installer offers for the listed agents. Enter skips this offer.
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only: [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only and is remembered: the installer does not offer the hooks for those agents again, and `crosshall setup` installs them whenever you choose. Pressing Enter skips the offer this once. Without the hooks, [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
@@ -85,13 +86,16 @@ On a default install in your own terminal, the installer can add `~/.local/bin` 
 
 **5. See who is reachable.** In a plain terminal, not an agent session:
 
-<!-- placeholder: replace with the output of a real run once #196 is merged -->
+<!-- from the same real run: one Claude Code and one Codex CLI session in one repository -->
 ```text
 $ crosshall owner who --all
 #shop-api
-  @claude1 [binding 1] live, claude, focus unset; the hall starts its turn; ...
-  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; ...
+  @claude1 [binding 1] live, claude, focus unset; the hall starts its turn; publish: available, last evidence: unknown (joined 1s ago); depart token: 9b91d2a1d6ca3f9e0b1aed0a
+  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; publish: candidate (no sender for codex), last evidence: unknown (joined 0s ago); last observed: prompt submitted 0s ago (unverified); depart token: c72075004a3e86a72de918dd
+To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.
 ```
+
+After the focus, each line says how the hall reaches that member: `the hall starts its turn`, `sees work at its next prompt`, or `pull only: sees work when it runs a crosshall command`. The rest is detail: `publish: candidate (no sender for codex)` means crosshall has no notice route for Codex CLI. If notices to a Claude Code version are stopped, a last line says so and gives the command that turns them back on.
 
 To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` removes the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
 

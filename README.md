@@ -20,7 +20,7 @@ What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - A crosshall hook that fails never blocks an agent's turn.
 
 What it does not do:
-- It wakes an idle session only where a notice route is available: today, interactive Claude Code sessions on macOS arm64. Every other session sees new work when it next runs a crosshall command or, with hooks, at its next prompt.
+- It starts a turn in an idle session only where a notice route is available: today, interactive Claude Code sessions on macOS arm64. A Claude Code or Codex CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Any other session, Antigravity CLI included, sees new work when it runs `crosshall read`, or when a `crosshall wait` it started returns.
 - It is not a network service. It runs on one machine for one user, and crosshall itself makes no network calls.
 - It cannot make an agent obey. The member rules are text the agent reads and follows.
 
@@ -51,13 +51,13 @@ The installer downloads the release archive for your machine, checks its SHA-256
 ```text
 Saying yes turns these on for the listed agents:
 - Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.
-- Prompt line. A joined session sees one line with the numbers of its unread messages at its next prompt. It costs no model request.
+- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
-- Turn-end check (Claude Code). A turn that ends while a request is unread continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off
+- Turn-end check (Claude Code). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only; everything below then works by hand ([connect your agents](#connect-your-agents)). Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only: [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
@@ -79,9 +79,9 @@ On a default install in your own terminal, the installer can add `~/.local/bin` 
 
 | Receiver | How it sees new work |
 | --- | --- |
-| Claude Code, interactive session, macOS arm64 | The hall starts a turn in it, also when it is idle. Nobody relays. |
-| Any other session with hooks | One line at its next prompt, `[crosshall] pending: 1`. Say anything to it and it picks the work up. |
-| A session without hooks | When it next runs a crosshall command. Tell it to run `crosshall read`. |
+| A session with an available notice route (today: Claude Code, interactive, macOS arm64) | The hall starts a turn in it, also when it is idle. Nobody relays. |
+| Any other Claude Code or Codex CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. Until that prompt it sees nothing: say anything to it. |
+| Antigravity CLI, and any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
 
 **5. See who is reachable.** In a plain terminal, not an agent session:
 
@@ -266,7 +266,7 @@ With the hooks installed, sessions join by themselves ([quick start](#quick-star
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
 
 - **Standing by** without an available publish route uses one bounded wait, `crosshall wait --existing --work-only --timeout 9m`. Its result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
-- **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel and show a pending line at each prompt. See [adapters](docs/adapters.md).
+- **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel. In Claude Code and Codex CLI they also show a pending line at a prompt when something new is unread; Antigravity CLI's hook runs at session start only. See [adapters](docs/adapters.md).
 - **Notices** can start an idle Claude Code turn by writing a pending-request line to the session's own message route. Built-in evidence covers verified interactive sessions on macOS arm64 with manifest `claude-2`. The hall checks the first three notices that run as their own turns on a version inheriting evidence. The owner can switch notices off for the hall, an agent kind or one member. A member can switch notices off for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
 - **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): each agent version completed an exercise of all six member rules on v0.1.0-rc.13. Those runs were assisted: the commands were scripted and the agent could see the driver. They show that a version can follow the rules, not that it will on its own. The join hint's rule 4 line and the budget refusal's wording changed after them, in v0.1.0.
 
@@ -311,7 +311,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 - An idle session with an available publish route can wake for a notice. Other sessions see new requests at their next crosshall command or adapter prompt.
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
-- A Claude Code version newer than the tested one runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
+- A Claude Code version other than the tested one, on the same platform and mode, runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
 - One machine and one user.
 - One channel per session.
 - Agents keep the rules because they read them. crosshall records what happened, but it cannot make an agent answer.

@@ -45,7 +45,8 @@ type Resolution struct {
 	Enroll     func(context.Context, store.Tx, int64) error
 	Refusal    *core.Result
 	// AfterCommit, when set, runs once the request's transaction committed.
-	AfterCommit func() error
+	// It returns the member directory's new generation when it published one.
+	AfterCommit func() (string, error)
 }
 
 // Services connects the dispatcher to identity and domain handlers.
@@ -213,9 +214,10 @@ func openRendezvous(path string) (*os.Root, error) {
 }
 
 type memberLeaf struct {
-	digest   string
-	identity string
-	fenced   bool
+	digest     string
+	identity   string
+	generation string
+	fenced     bool
 }
 
 // Only startup runs this, while holding the dispatcher lock and before
@@ -436,6 +438,10 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 	}
 	if leaf.fenced {
 		s.logFailure(hook.RetireJoinHintFiles(dir))
+	} else if reap {
+		// A restart between a commit and its publication left the old
+		// generation on disk: the first pass after start publishes it.
+		s.logFailure(ident.RepublishGeneration(dir, leaf.generation))
 	}
 	watched.add(filepath.Join(path, "in"))
 	if reap {
@@ -451,14 +457,14 @@ func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		// A client may still have its old leaf after a key rotation. Drain
 		// that directory so the resolver can return the retirement refusal.
-		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, state = 'fenced' FROM leaf ORDER BY digest")
+		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, generation, state = 'fenced' FROM leaf ORDER BY digest")
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var leaf memberLeaf
-			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.fenced); err != nil {
+			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.generation, &leaf.fenced); err != nil {
 				return err
 			}
 			leaves = append(leaves, leaf)
@@ -564,7 +570,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var result core.Result
 	var enrolledSession ident.Identity
 	var channelCreated bool
-	var afterCommit func() error
+	var afterCommit func() (string, error)
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
@@ -683,7 +689,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		return commandError(core.ExitError, "", "command failed; see dispatcher.log"), nil
 	}
 	if afterCommit != nil {
-		s.logFailure(afterCommit())
+		generation, err := afterCommit()
+		s.logFailure(err)
+		// The reply is acknowledged under the directory's new generation.
+		if generation != "" && err == nil && result.Status == core.ExitOK {
+			result.Data = withGeneration(result.Data, generation)
+		}
 	}
 	if enrolledSession.Key != "" {
 		s.logFailure(hook.RemoveStartupRepo(s.state, enrolledSession))
@@ -753,4 +764,19 @@ func commandError(status core.ExitCode, code core.Code, message string) core.Res
 		Message string `json:"message"`
 	}{message})
 	return core.Result{Status: status, Code: code, Data: data}
+}
+
+// withGeneration adds the member directory's new generation to a reply's
+// data object, for the client to acknowledge the reply under it.
+func withGeneration(data json.RawMessage, generation string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return data
+	}
+	fields["generation"], _ = json.Marshal(generation)
+	patched, err := json.Marshal(fields)
+	if err != nil {
+		return data
+	}
+	return patched
 }

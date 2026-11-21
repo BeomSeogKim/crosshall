@@ -26,7 +26,7 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 	if err != nil || !found {
 		return 0, false, err
 	}
-	if launch.away {
+	if launch.away || launch.stale {
 		return 0, true, nil
 	}
 	principal = launch.principal
@@ -112,12 +112,15 @@ type processLaunch struct {
 	// away says its member left by hand or was departed by the owner, so
 	// nothing in that process joins until an explicit join.
 	away bool
+	// stale says the member started again at or after the event: a delayed
+	// older clear changes nothing.
+	stale bool
 }
 
 // processLaunchAt finds the latest launch the process of launchRef ran
 // before at, among members of vendor, if that process still runs (a reused
-// PID is a process born after the launch). A launch an owner restore fenced
-// belongs to no one.
+// PID is a process born after the launch). When that launch was fenced by an
+// owner restore, the process belongs to no one.
 func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, launchRef string, at int64) (processLaunch, bool, error) {
 	var none processLaunch
 	if s.LaunchProcess == nil || s.LaunchAlive == nil {
@@ -130,23 +133,33 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, laun
 	var l processLaunch
 	var ref, state string
 	var began int64
-	var byHook, fenced bool
-	err := tx.QueryRowContext(ctx, `SELECT l.principal_id, l.launch_ref, l.started_hook_at_ms,
+	var byHook, fenced, restored bool
+	err := tx.QueryRowContext(ctx, `SELECT l.principal_id, l.launch_ref, l.started_hook_at_ms, l.fenced,
 			b.state, b.departed_by_hook, COALESCE(b.owner_hook_fence_ms >= ?4, 0)
 		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
 		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
-		WHERE p.kind = 'session' AND p.vendor = ?1 AND l.fenced = 0
+		WHERE p.kind = 'session' AND p.vendor = ?1
 			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?3 || '-%') AND l.started_hook_at_ms < ?4
 		ORDER BY l.started_hook_at_ms DESC, l.rowid DESC LIMIT 1`,
-		vendor, own, own, at).Scan(&l.principal, &ref, &began, &state, &byHook, &fenced)
+		vendor, own, own, at).Scan(&l.principal, &ref, &began, &restored, &state, &byHook, &fenced)
 	if errors.Is(err, sql.ErrNoRows) {
 		return none, false, nil
 	}
 	if err != nil {
 		return none, false, err
 	}
+	// A launch an owner restore fenced ended that process's ownership.
+	if restored {
+		return none, false, nil
+	}
 	if process, ok := s.LaunchProcess(ref); !ok || process != own || !s.LaunchAlive(ref, began) {
 		return none, false, nil
+	}
+	// A later start of the member already happened: this event is older
+	// than its latest accepted transition.
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ? AND started_hook_at_ms >= ?)`,
+		l.principal, at).Scan(&l.stale); err != nil {
+		return none, false, err
 	}
 	l.away = fenced || (state != "live" && !byHook)
 	return l, true, nil

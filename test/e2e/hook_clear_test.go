@@ -108,6 +108,15 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 			if !rosterHas(t, writer, alias) {
 				t.Fatalf("the new member took @%s away", alias)
 			}
+			// Its join reply was acknowledged under the new generation (Astra
+			// #708): a later member is announced, and a repeat join is short.
+			w.member().must("join", "checkout", "--as", "later")
+			if who := before.mustPlain("who"); !strings.Contains(who, "@later") {
+				t.Fatalf("the new member was not told about @later:\n%s", who)
+			}
+			if again := before.mustPlain("join", "checkout"); !strings.Contains(again, "Already in") {
+				t.Fatalf("a repeat join did not say Already in:\n%s", again)
+			}
 		})
 	}
 }

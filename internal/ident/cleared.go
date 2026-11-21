@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -82,29 +83,40 @@ func (r SQLResolver) clearedJoin(ctx context.Context, tx store.Tx, rendezvous st
 		generation = next
 		return nil
 	}
-	after := func() error {
+	after := func() (string, error) {
 		if generation == "" {
-			return nil
-		}
-		reg := Registration{rendezvous: rendezvous, digest: proof.KeyDigest, fileID: fileID, generation: generation}
-		if err := reg.Publish(); err != nil {
-			return err
+			return "", nil
 		}
 		members, err := openMembers(rendezvous)
 		if err != nil {
-			return err
+			return "", err
 		}
 		defer members.Close()
 		leaf, err := OpenPrivateChild(members, proof.KeyDigest[:16])
 		if err != nil {
-			return err
+			return "", err
 		}
 		defer leaf.Close()
-		if err := leaf.Remove("ack"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		return nil
+		return generation, RepublishGeneration(leaf, generation)
 	}
 	return Resolution{Caller: core.Caller{Role: core.RoleUnenrolled}, Vendor: id.Vendor, Key: id.Key,
 		Enroll: enroll, AfterCommit: after}, true, nil
+}
+
+// RepublishGeneration makes a member directory carry the generation the
+// store committed. A new generation starts without the old roster cursor,
+// which goes first, so an interruption never leaves the old cursor under
+// the new generation. Calling it again changes nothing.
+func RepublishGeneration(leaf *os.Root, generation string) error {
+	current, err := ReadPrivateFile(leaf, "gen", 4096)
+	if err == nil && string(current) == generation {
+		return nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := leaf.Remove("ack"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return publishMetadata(leaf, "gen", generation)
 }

@@ -110,8 +110,14 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
 	var trailer struct {
 		Cursor uint64 `json:"roster_seq"`
+		// Generation is set when the request registered the directory again
+		// (a cleared conversation joining as a new member).
+		Generation string `json:"generation"`
 	}
 	if err := json.Unmarshal(resp.Data, &trailer); err == nil && trailer.Cursor > 0 {
+		if trailer.Generation != "" {
+			generation = trailer.Generation
+		}
 		reply.cursor, reply.rendezvous, reply.digest, reply.generation = trailer.Cursor, c.Rendezvous, digest, generation
 	}
 	return reply, nil

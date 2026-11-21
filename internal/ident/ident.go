@@ -34,7 +34,8 @@ type Resolution struct {
 	Key    string
 	Enroll func(context.Context, store.Tx, int64) error
 	// AfterCommit, when set, runs once the request's transaction committed.
-	AfterCommit func() error
+	// It returns the member directory's new generation when it published one.
+	AfterCommit func() (string, error)
 }
 
 // Resolver checks ingress evidence and resolves the caller within the transaction.

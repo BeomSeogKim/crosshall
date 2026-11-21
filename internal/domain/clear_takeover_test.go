@@ -355,3 +355,39 @@ func TestAJoinBindsAReusedPIDWhoseOldLaunchNeverEnded(t *testing.T) {
 		t.Fatalf("clear in the new process: %+v, want @worker kept", got)
 	}
 }
+
+// Astra #710: two clears in one process arriving out of order; the delayed
+// older one does not take the member back from the newer.
+func TestADelayedOlderClearChangesNothing(t *testing.T) {
+	f, _, _, _, _ := clearFixture(t, true)
+	at := f.now.UnixMilli()
+	newer := f.newSession("claude")
+	if r := f.hook(newer, start("pid-7-c", "clear", at+30)); r.Enrollment != "restored" {
+		t.Fatalf("newer clear: %+v", r)
+	}
+	older := f.newSession("claude")
+	if r := f.hook(older, start("pid-7-b", "clear", at+10)); r.Enrollment != "none" || r.Alias != "" {
+		t.Fatalf("delayed older clear: %+v, want nothing", r)
+	}
+	if f.keyState(newer) != "live" {
+		t.Fatal("the delayed older clear retired the newer conversation")
+	}
+}
+
+// Astra #710: the process's latest launch decides even when an owner restore
+// fenced it; an older member's launch in that process is not taken over.
+func TestAFencedLatestLaunchEndsTheProcessOwnership(t *testing.T) {
+	f, _, first, _, _ := clearFixture(t, true)
+	f.hook(first, ended("pid-7-a", f.now.UnixMilli()+5))
+	second := f.newSession("claude")
+	f.hook(second, start("pid-7-b", "resume", f.now.UnixMilli()+10))
+	if _, err := f.db.Exec(`UPDATE adapter_launch SET fenced = 1, ended_hook_at_ms = ? WHERE launch_ref = 'pid-7-b'`,
+		f.now.UnixMilli()+15); err != nil {
+		t.Fatal(err)
+	}
+	cleared := f.newSession("claude")
+	f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+20))
+	if f.keyState(first) != "live" || f.keyState(second) != "live" {
+		t.Fatal("a clear took over a member of a process whose latest launch was fenced")
+	}
+}

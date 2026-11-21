@@ -3,8 +3,10 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +107,111 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 	var channels int
 	if err := f.db().QueryRow(`SELECT COUNT(*) FROM channel`).Scan(&channels); err != nil || channels != 3 {
 		t.Fatalf("channels %d (%v)", channels, err)
+	}
+}
+
+// A repository made with git init --separate-git-dir has one identity for
+// its main checkout and its linked worktrees: they share the automatic
+// channel, and the owner's default set in the main checkout.
+func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		f := newSetupWorld(t)
+		f.apply("", "setup", "claude", "codex", "--apply")
+		owner := f.owner()
+		owner.must("owner", "channel", "auto", "on")
+		metadata := filepath.Join(f.home, "metadata")
+		if err := os.MkdirAll(metadata, 0700); err != nil {
+			t.Fatal(err)
+		}
+		main := filepath.Join(f.home, "main")
+		for path, text := range map[string]string{
+			filepath.Join(metadata, "HEAD"): "ref: refs/heads/main\n",
+			filepath.Join(main, ".git"):     "gitdir: " + metadata + "\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		admin := filepath.Join(metadata, "worktrees", "linked")
+		linked := filepath.Join(f.home, "linked")
+		for path, text := range map[string]string{
+			filepath.Join(admin, "HEAD"):      "ref: refs/heads/side\n",
+			filepath.Join(admin, "commondir"): "../..\n",
+			filepath.Join(linked, ".git"):     "gitdir: " + admin + "\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := "metadata"
+		if explicit {
+			want = "chosen"
+			owner.must("owner", "channel", "create", "chosen")
+			owner.must("owner", "channel", "default", "chosen", "--repo", main)
+		}
+		if got := startAs(f, "claude", "one", main); !strings.Contains(got, "Joined #"+want+" as @claude1") {
+			t.Fatalf("explicit %v: the main checkout printed %q", explicit, got)
+		}
+		if got := startAs(f, "codex", "two", linked); !strings.Contains(got, "Joined #"+want+" as @codex1") {
+			t.Fatalf("explicit %v: the linked worktree printed %q", explicit, got)
+		}
+		var channels int
+		if err := f.db().QueryRow(`SELECT COUNT(*) FROM channel`).Scan(&channels); err != nil || channels != 1 {
+			t.Fatalf("explicit %v: channels %d (%v)", explicit, channels, err)
+		}
+	}
+}
+
+// An Antigravity conversation keeps its first workspace as well: a later
+// start of the same conversation from another place joins nothing there.
+func TestAutomaticJoiningKeepsAnAntigravityConversationWhereItStarted(t *testing.T) {
+	f := newSetupWorld(t)
+	owner := f.owner()
+	owner.must("owner", "adapter", "set", "agy", "--enabled", "on")
+	first := gitRepository(t, filepath.Join(f.home, "first"))
+	second := gitRepository(t, filepath.Join(f.home, "second"))
+	start := func(conversation, workspace string) {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{
+			"conversationId": conversation,
+			"workspacePaths": []string{workspace},
+			"transcriptPath": filepath.Join(f.home, ".gemini", "antigravity-cli", "brain", conversation,
+				".system_generated", "logs", "transcript_full.jsonl"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), f.executable, "hook", "agy", "SessionStart")
+		cmd.Dir, cmd.Env, cmd.Stdin = workspace, f.env, strings.NewReader(string(payload))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Antigravity start: %v, output %q", err, out)
+		}
+	}
+	state := func() (channels, members int) {
+		t.Helper()
+		if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	const outside, switched = "0a6a3c1e-0000-4000-8000-000000000001", "0a6a3c1e-0000-4000-8000-000000000002"
+	start(switched, first) // the switch is still off: nothing joins, the place is recorded
+	owner.must("owner", "channel", "auto", "on")
+	start(outside, f.home)
+	start(outside, second)
+	start(switched, second)
+	if channels, members := state(); channels != 0 || members != 0 {
+		t.Fatalf("a later start from another place made %d channels and %d members", channels, members)
+	}
+	start(switched, first)
+	if channels, members := state(); channels != 1 || members != 1 {
+		t.Fatalf("a later start in the first workspace made %d channels and %d members", channels, members)
 	}
 }
 

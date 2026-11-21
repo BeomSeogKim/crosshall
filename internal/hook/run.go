@@ -376,7 +376,8 @@ func enrollmentRoot(e event) string {
 	if root == "" {
 		return ""
 	}
-	return cli.RepoCommonRoot(root)
+	identity, _ := cli.RepoIdentity(root)
+	return identity
 }
 
 // enrolTarget is the root whose channel the session joins: the worktree's

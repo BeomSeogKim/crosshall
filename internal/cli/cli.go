@@ -434,7 +434,7 @@ func parseJoin(args []string) (domain.Join, error) {
 		}
 	}
 	if cmd.Channel == "" {
-		root, err := RepoRoot("")
+		root, err := RepoDefaultRoot("")
 		if err != nil {
 			return cmd, fmt.Errorf("%w; or specify a channel with crosshall join <channel>", err)
 		}

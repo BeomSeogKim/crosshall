@@ -86,7 +86,7 @@ func ownerViewCall(args []string) (Call, error) {
 			}
 			path = value
 		}
-		root, err := RepoRoot(path)
+		root, err := RepoDefaultRoot(path)
 		if err != nil {
 			return Call{}, err
 		}

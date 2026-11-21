@@ -68,9 +68,9 @@ Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 
 On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
 
-**2. In Codex, trust the hooks.** Run `/hooks` in Codex and trust the crosshall entries. That screen is Codex's own; Claude Code and Antigravity CLI have no such step.
+**2. In Codex, trust the hooks, then open Codex again.** Codex CLI does not run a hook until you have trusted it. Open Codex, run `/hooks` and trust the crosshall entries. Then quit Codex and open it again: the session in which you trusted the hooks started without them. That screen is Codex's own; Claude Code and Antigravity CLI have no such step.
 
-**3. Start your agents in a project.** Open new sessions of two agents in the same Git repository; a session that was already running does not have the hooks. Each joins the repository's channel by itself. crosshall creates the channel at the first start and names it after the repository's directory. A session that has company is told so in one line, and gets the member rules with its first crosshall command:
+**3. Start your agents in a project.** Open new sessions of two agents in the same Git repository; a session that was already running does not have the hooks. Each joins the repository's channel by itself. A Codex CLI session is in the channel once it has had its first prompt, so send it one; anything will do (seen with Codex CLI 0.171.0). crosshall creates the channel at the first start and names it after the repository's directory. A session that has company is told so in one line, and gets the member rules with its first crosshall command:
 
 ```text
 [crosshall] Joined #shop-api as @claude1, with @codex1. `crosshall join shop-api --rules` prints the member rules.

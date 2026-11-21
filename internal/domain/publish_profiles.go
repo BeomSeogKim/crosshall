@@ -6,11 +6,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-type BuiltinEvidence struct {
-	Vendor, Version, Platform, Mode, ManifestRev string
-	Capability, ResultRef                        string
-	CheckedAtMS                                  int64
-}
+type BuiltinEvidence = store.BuiltinEvidence
 
 var BuiltinCapabilityEvidence = []BuiltinEvidence{
 	{Vendor: "claude", Version: "2.1.330", Platform: "darwin-arm64", Mode: "print", ManifestRev: "claude-2",

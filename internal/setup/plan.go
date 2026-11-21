@@ -25,6 +25,7 @@ type installTarget struct {
 	Wanted       []Entry
 	Evidence     []store.DoctorEvidence
 	CommandRules *commandRuleTarget
+	disclosure   installDisclosure
 }
 
 func verifyHome(home string) error {
@@ -131,6 +132,7 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 	if len(targets) == 0 {
 		return
 	}
+	s.attachInstallDisclosure(ctx, targets)
 	state, err := spool.OpenServerRoot(s.StateRoot)
 	if err != nil {
 		return

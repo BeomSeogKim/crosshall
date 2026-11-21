@@ -78,7 +78,7 @@ func testWaitAcrossStoreRestore(t *testing.T, padding int) {
 			exit.ExitCode() != 3 || failure.Code != "wait_cursor_invalidated" || failure.Hint != "crosshall inbox" {
 			t.Fatalf("wait returned %v, stdout %s, stderr %s", got.err, got.stdout, got.stderr)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureEventTimeout):
 		t.Fatal("wait did not report the restored message history")
 	}
 	if got := ids(form.must("inbox").obj["unread"]); !slices.Equal(got, []int64{message}) {

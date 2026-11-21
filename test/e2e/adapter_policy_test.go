@@ -49,14 +49,14 @@ func TestOwnerPublishesAdapterPolicyAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(purged) })
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		raw, err := os.ReadFile(filepath.Join(w.rendezvous(), "ready"))
 		if err == nil && strings.Contains(string(raw), "instance") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("dispatcher did not restore its rendezvous: %v", err)
+			t.Fatalf("dispatcher did not restore its rendezvous, last ready marker %q: %v", raw, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

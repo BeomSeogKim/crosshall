@@ -76,7 +76,7 @@ func TestDispatcherFollowsFixtureLifetime(t *testing.T) {
 				raw, _ := os.ReadFile(log.Name())
 				t.Fatalf("fixture runner %s: %v\n%s", mode, err, raw)
 			}
-			if err := lockFixtureFileUntil(lock, time.Now().Add(2*time.Second)); err != nil {
+			if err := lockFixtureFileUntil(lock, time.Now().Add(fixtureEventTimeout)); err != nil {
 				t.Fatalf("dispatcher survived fixture runner %s: %v", mode, err)
 			}
 		})

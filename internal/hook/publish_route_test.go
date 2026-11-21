@@ -182,9 +182,7 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 	defer rv.Close()
 
 	var stdout bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	outcome := dispatchEvent(ctx, time.Now(), rv, contendedRouteTransport{
+	outcome := dispatchEvent(t.Context(), time.Now(), rv, contendedRouteTransport{
 		t:      t,
 		stdout: &stdout,
 		reply:  wire.HookResult{Epoch: 1, PendingLine: "[crosshall] pending: 42"},

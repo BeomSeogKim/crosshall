@@ -32,7 +32,7 @@ func awaitWorkWait(t *testing.T, child <-chan waitExit, reason string) waitMail 
 	select {
 	case result := <-child:
 		return readWorkWait(t, result, reason)
-	case <-time.After(6 * time.Second):
+	case <-time.After(fixtureEventTimeout):
 		t.Fatal("wait did not report matching work")
 		return waitMail{}
 	}
@@ -54,7 +54,7 @@ func startWaitProcessAfterInitialQuery(t *testing.T, member *participant, args .
 		t.Fatal(err)
 	}
 	process, child := startWaitProcess(t, member, args...)
-	timer := time.NewTimer(3 * time.Second)
+	timer := time.NewTimer(fixtureEventTimeout)
 	defer timer.Stop()
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
@@ -63,7 +63,7 @@ func startWaitProcessAfterInitialQuery(t *testing.T, member *participant, args .
 		case result := <-child:
 			t.Fatalf("wait exited before its first empty snapshot: %v, stdout %q, stderr %q", result.err, result.stdout, result.stderr)
 		case <-timer.C:
-			t.Fatal("wait never published its first query response")
+			t.Fatalf("wait never published its first query response in %s", path)
 		case <-tick.C:
 			after, err := os.Stat(path)
 			if err != nil {

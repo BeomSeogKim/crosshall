@@ -174,7 +174,7 @@ func checkResumeCleansStage(t *testing.T, named bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, err := makeInstall(j, targets, false, false)
+	op, err := makeInstall(j, targets)
 	if err != nil {
 		t.Fatal(err)
 	}

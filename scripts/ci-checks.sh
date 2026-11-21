@@ -55,8 +55,10 @@ mkdir -m 700 -- "$CROSSHALL_TEST_VENDOR_SENTINEL"
 {
   if [[ ${HOME:-} = /* ]]; then
     printf '%s\n' "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini/config"
+    printf '%s\n' "$HOME/.gemini/antigravity-cli"
     if physical_home=$(cd -- "$HOME" && pwd -P); then
       printf '%s\n' "$physical_home/.claude" "$physical_home/.codex" "$physical_home/.gemini/config"
+      printf '%s\n' "$physical_home/.gemini/antigravity-cli"
     fi
   fi
   for dir in "${CLAUDE_CONFIG_DIR:-}" "${CODEX_HOME:-}"; do

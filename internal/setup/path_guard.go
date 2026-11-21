@@ -130,6 +130,21 @@ func (g setupPathGuard) checkDirectory(dir *os.Root) error {
 	return errSetupRepository
 }
 
+func managedConfigDirectories(path string) []string {
+	dir := filepath.Dir(path)
+	vendorHome := filepath.Dir(dir)
+	name := filepath.Base(path)
+	if name == "crosshall.rules" && filepath.Base(dir) == "rules" && validConfigHome(vendorHome) {
+		return []string{vendorHome, dir}
+	}
+	if filepath.Base(vendorHome) == ".gemini" &&
+		(name == "hooks.json" && filepath.Base(dir) == "config" ||
+			name == "settings.json" && filepath.Base(dir) == "antigravity-cli") {
+		return []string{vendorHome, dir}
+	}
+	return nil
+}
+
 // openSetupState pins the state root and applies the same ancestry guard as
 // vendor files. It may create missing state components, each through its
 // already verified parent.

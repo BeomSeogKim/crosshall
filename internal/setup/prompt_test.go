@@ -378,6 +378,34 @@ func TestAFailedOfferNamesTheRetry(t *testing.T) {
 	}
 }
 
+// #196: the installer prints its reachability line only after an install,
+// so setup reports one only when some agent's hooks were installed.
+func TestTheOfferReportsAnInstallOnlyWhenHooksWereInstalled(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		failing     []string
+		want        int
+	}{
+		{name: "both installed", input: "y\n", want: 2},
+		{name: "partial", input: "y\n", failing: []string{"codex"}, want: 1},
+		{name: "all failed", input: "y\n", failing: []string{"claude", "codex"}},
+		{name: "declined", input: "n\n"},
+		{name: "skipped", input: "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOps()
+			for _, name := range tc.failing {
+				ops.failing[name] = errors.New("cannot lock adapter installation")
+			}
+			var installs int
+			runPrompts(t, ops, Request{Offer: true, Terminal: true, Installed: func() { installs++ }}, tc.input)
+			if installs != tc.want {
+				t.Fatalf("reported %d installs, want %d (installed %v)", installs, tc.want, ops.installed)
+			}
+		})
+	}
+}
+
 func TestInstallerPathConsentPrecedesHookApplication(t *testing.T) {
 	for _, tc := range []struct {
 		name, input string

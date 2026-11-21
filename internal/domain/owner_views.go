@@ -32,7 +32,20 @@ func (OwnerLog) command()     {}
 func (OwnerLog) Verb() string { return VerbOwnerLog }
 
 type OwnerWhoResult struct {
-	Channels []OwnerWhoChannel `json:"channels"`
+	Channels      []OwnerWhoChannel   `json:"channels"`
+	StoppedBuilds []OwnerStoppedBuild `json:"stopped_builds,omitempty"`
+}
+
+type OwnerStoppedBuild struct {
+	Adapter         string `json:"adapter"`
+	Version         string `json:"version"`
+	Platform        string `json:"platform"`
+	Mode            string `json:"mode"`
+	StoppedAtMS     int64  `json:"stopped_at_ms"`
+	Notice          int64  `json:"notice"`
+	Reason          string `json:"reason"`
+	ResumeBindingID int64  `json:"resume_binding_id"`
+	OriginAlias     string `json:"origin_alias,omitempty"`
 }
 
 type OwnerWhoChannel struct {
@@ -44,6 +57,7 @@ type OwnerWhoChannel struct {
 type OwnerMember struct {
 	Member
 	BindingState  string         `json:"binding_state"`
+	Reach         string         `json:"reach,omitempty"`
 	LastEvidence  *OwnerEvidence `json:"last_evidence"`
 	EvidenceStale bool           `json:"evidence_stale"`
 	OpenRequests  []int64        `json:"open_request_ids"`
@@ -62,10 +76,14 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		return Refuse(core.CodeOwnerOnly, "the owner can list bindings across channels", "crosshall who"), nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.name, c.topic, b.id, b.principal_id, b.alias, b.state, b.focus, p.vendor,
-		b.joined_at_ms, cmd.observed_at_ms, cmd.source
+		b.joined_at_ms, cmd.observed_at_ms, cmd.source, ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
 			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
+		LEFT JOIN `+currentBindingLaunch+`
+		LEFT JOIN adapter_policy ap ON ap.adapter = json_extract(l.profile, '$.adapter') AND ap.enabled = 1
+			AND l.fenced = 0 AND b.dnd = 0 AND (b.owner_hook_fence_ms IS NULL OR l.started_hook_at_ms > b.owner_hook_fence_ms)
+			AND b.id = (SELECT MIN(id) FROM binding WHERE principal_id = b.principal_id)
 		ORDER BY c.id, b.id`)
 	if err != nil {
 		return core.Result{}, err
@@ -79,9 +97,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		var channel int64
 		var name, topic string
 		var binding, principal, joined, commandAt sql.NullInt64
-		var alias, bindingState, focus, vendor, commandSource sql.NullString
+		var alias, bindingState, focus, vendor, commandSource, promptAdapter, manifestRev sql.NullString
 		if err := rows.Scan(&channel, &name, &topic, &binding, &principal, &alias, &bindingState, &focus, &vendor,
-			&joined, &commandAt, &commandSource); err != nil {
+			&joined, &commandAt, &commandSource, &promptAdapter, &manifestRev); err != nil {
 			return core.Result{}, err
 		}
 		if len(out.Channels) == 0 || channel != previous {
@@ -108,6 +126,11 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			}
 			if member.BindingState == "departed" {
 				member.Route = "unavailable"
+			} else {
+				member.Reach = "pull"
+				if promptAdapter.Valid && manifestRev.Valid && s.HasPromptLine != nil && s.HasPromptLine(promptAdapter.String, manifestRev.String) {
+					member.Reach = "prompt"
+				}
 			}
 			ch := &out.Channels[len(out.Channels)-1]
 			ch.Members = append(ch.Members, member)
@@ -125,6 +148,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 				return core.Result{}, err
 			}
 			m.Publish = publish
+			if m.BindingState == "live" && publish != nil && PublishReaches(*publish) {
+				m.Reach = "notice"
+			}
 			fact, err := latestFact(ctx, tx, m.principal)
 			if err != nil {
 				return core.Result{}, err
@@ -149,7 +175,36 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			}
 		}
 	}
+	out.StoppedBuilds, err = ownerStoppedBuilds(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
 	return OK(out)
+}
+
+func ownerStoppedBuilds(ctx context.Context, tx store.Tx) ([]OwnerStoppedBuild, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.stopped_at_ms,
+		cb.stop_ref, cb.stop_reason, COALESCE(MAX(pa.binding_id), MIN(b.id)),
+		COALESCE(MAX(CASE WHEN pa.id IS NOT NULL THEN b.alias END), '') FROM binding b JOIN `+currentBindingLaunch+`
+		JOIN capability_build cb ON `+resumableBindingBuild+`
+		LEFT JOIN publish_attempt pa ON pa.id = cb.stop_ref AND pa.binding_id = b.id
+		WHERE cb.cap = 'publish' AND `+store.CapabilityBuildStopped("cb")+`
+		GROUP BY cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.manifest_rev
+		ORDER BY cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.manifest_rev`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var builds []OwnerStoppedBuild
+	for rows.Next() {
+		var b OwnerStoppedBuild
+		if err := rows.Scan(&b.Adapter, &b.Version, &b.Platform, &b.Mode, &b.StoppedAtMS,
+			&b.Notice, &b.Reason, &b.ResumeBindingID, &b.OriginAlias); err != nil {
+			return nil, err
+		}
+		builds = append(builds, b)
+	}
+	return builds, rows.Err()
 }
 
 func ownerOpenRequests(ctx context.Context, tx store.Tx, binding int64) ([]int64, error) {

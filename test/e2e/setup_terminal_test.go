@@ -104,7 +104,9 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 			}
 			wantReady := ""
 			if tc.receipt == "yes\n" {
-				wantReady = "ready\n"
+				// #196: real hooks were installed, which the installer's
+				// reachability line needs besides a ready dispatcher.
+				wantReady = "ready\ninstalled\n"
 				if !strings.Contains(out, "claude: installed") || !strings.Contains(out, "codex: installed") {
 					t.Fatalf("accepted offer did not install hooks:\n%s", out)
 				}

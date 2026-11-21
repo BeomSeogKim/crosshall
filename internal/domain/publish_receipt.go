@@ -52,7 +52,12 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 			AND t.opened_hook_at_ms <= ?4 AND (t.opened_hook_at_ms >= l.started_hook_at_ms
 				OR t.finishing_hook_at_ms BETWEEN l.started_hook_at_ms AND ?4)
 	), last_turn AS (
-		SELECT turn_ref, finishing_hook_at_ms FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
+		-- A last turn with no Stop ended by the time a prompt with another id
+		-- arrives: Claude Code sends no Stop for a turn ended by a denied
+		-- permission dialog (#169), and a prompt typed while a turn runs
+		-- reports that turn's id, which the absorbed rule takes first.
+		SELECT turn_ref, COALESCE(finishing_hook_at_ms, ?4) AS finishing_hook_at_ms
+		FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
 	)
 	SELECT CASE
 		WHEN EXISTS (SELECT 1 FROM previous WHERE turn_ref = ?3) THEN 'absorbed'

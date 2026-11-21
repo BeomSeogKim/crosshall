@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## To v0.2.0-rc.1
 
-From v0.1.0, this release migrates the database from schema 6 to schema 17 (migrations 7 to 17). The first v0.2.0-rc.1 dispatcher start copies the schema 6 database to `store-v6-*.sqlite3` beside `store.sqlite3`; v0.1.0 does not start on schema 17, so keep that copy if you may go back.
+From v0.1.0, this release migrates the database from schema 6 to schema 18 (migrations 7 to 18). The first v0.2.0-rc.1 dispatcher start copies the schema 6 database to `store-v6-*.sqlite3` beside `store.sqlite3`; v0.1.0 does not start on schema 18, so keep that copy if you may go back.
 
 1. Stop your agents' crosshall commands, including a `crosshall wait` running in the background.
 2. Run `crosshall owner stop`. A dispatcher that keeps running is still the old program: on Linux a `crosshall join` typed inside a Claude Code session is then refused with `bad arguments` until the dispatcher is stopped and started again.
@@ -14,7 +14,7 @@ From v0.1.0, this release migrates the database from schema 6 to schema 17 (migr
 
 What changes without a new question, if you had installed agent hooks before:
 
-- **Notices and the turn-end check are on** for Claude Code on macOS arm64 once its adapter is enabled: the hall starts a turn in an idle interactive session when work arrives for it (one model turn for each notice), and when a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once (one model request). `crosshall owner publish hall off` stops notices. The turn-end check has no switch of its own: `crosshall owner adapter set claude --enabled off` stops it together with joining and the prompt line.
+- **Notices and the turn-end check are on** for Claude Code on macOS arm64 once its adapter is enabled: the hall starts a turn in an idle interactive session when work arrives for it (one model turn for each notice), and when a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once (one model request). `crosshall owner publish hall off` stops notices, and `crosshall owner adapter set claude --turn-end off` stops the turn-end check.
 - **Automatic joining stays as it was.** An upgrade alone does not turn it on. Installing an agent's hooks again turns it on unless you already ran `crosshall owner channel auto on` or `off`; the install question says so.
 - **A hook-joined session starts with one line** instead of the full member rules, and gets the rules with its first crosshall command.
 - **Member commands no longer end with `Run crosshall inbox`.** Every member command ends with `[crosshall] N unread, M owed.`, and `crosshall read` with no argument picks up what is unread.

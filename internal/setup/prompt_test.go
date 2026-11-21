@@ -148,6 +148,7 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 		"Codex hooks in /fixture/home/.codex/hooks.json (default under HOME)",
 		"Antigravity hooks in /fixture/home/.gemini/config/hooks.json (default under HOME)",
 		"Review and trust these hooks with Codex /hooks.",
+		"Its sessions then join their repository's channel when they start, unless you turned that off (`crosshall owner channel auto off`).",
 	} {
 		if i := strings.Index(r.out, label); i < 0 || i >= question {
 			t.Errorf("%q missing before consent:\n%s", label, r.out)

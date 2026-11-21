@@ -504,6 +504,7 @@ func printPlan(out io.Writer, p plan) error {
 	if p.Kind == "setup" {
 		for _, adapter := range p.Adapters {
 			fmt.Fprintf(&contents, "Enable %s adapter policy after installation.\n", adapter)
+			fmt.Fprintln(&contents, "  Its sessions then join their repository's channel when they start, unless you turned that off (`crosshall owner channel auto off`).")
 			if adapter == "codex" {
 				fmt.Fprintln(&contents, "Review and trust these hooks with Codex /hooks.")
 			}

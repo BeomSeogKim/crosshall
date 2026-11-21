@@ -143,6 +143,7 @@ func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", "claude", "--apply")
+			f.owner().must("owner", "channel", "auto", "off") // a start with no channel is told how to join
 			mapped := f.enrollmentRepo()
 			other := filepath.Join(f.home, "other")
 			if err := os.MkdirAll(filepath.Join(other, ".git"), 0700); err != nil {
@@ -185,6 +186,7 @@ func TestInstalledHookRecordsOtherStartSources(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", "claude", "--apply")
 			f.owner().must("owner", "channel", "create", "setup-check")
+			f.member().must("join", "setup-check", "--as", "peer")
 			repo := filepath.Join(f.home, "later-mapped")
 			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
 				t.Fatal(err)

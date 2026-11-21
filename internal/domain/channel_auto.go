@@ -20,6 +20,9 @@ const VerbChannelAuto = "owner channel auto"
 // channel, created at that start. Off, only repositories with a default join.
 type ChannelAuto struct {
 	On bool `json:"on"`
+	// Initial sets the switch only if the owner never set it: installing an
+	// agent's hooks turns it on once and never overrides a later choice.
+	Initial bool `json:"initial,omitempty"`
 }
 
 func (ChannelAuto) command()     {}
@@ -50,6 +53,15 @@ func (s *Service) channelAuto(ctx context.Context, tx store.Tx, caller core.Call
 		return core.Result{}, err
 	}
 	out := ChannelAutoResult{On: cmd.On, Changed: was != cmd.On}
+	if cmd.Initial {
+		var set bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM hall_auto_join)`).Scan(&set); err != nil {
+			return core.Result{}, err
+		}
+		if set {
+			out = ChannelAutoResult{On: was}
+		}
+	}
 	if out.Changed {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO hall_auto_join (id, enabled, changed_at_ms) VALUES (1, ?1, ?2)
 			ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, changed_at_ms = excluded.changed_at_ms`,

@@ -66,3 +66,28 @@ func TestHookEnrolmentResolvesItsChannelInTheTransaction(t *testing.T) {
 		t.Fatalf("an unknown repository with the switch off: %+v, %d channels", got, channels())
 	}
 }
+
+// Installing an agent's hooks turns automatic joining on once; it never
+// overrides what the owner chose since.
+func TestInitialAutomaticJoiningYieldsToTheOwnersChoice(t *testing.T) {
+	f := newFixture(t)
+	set := func(cmd ChannelAuto, key string) ChannelAutoResult {
+		t.Helper()
+		r := f.owner(cmd, key)
+		wantOK(t, r)
+		return decode[ChannelAutoResult](t, r)
+	}
+	if got := set(ChannelAuto{On: true, Initial: true}, "first"); !got.On || !got.Changed {
+		t.Fatalf("the first install: %+v", got)
+	}
+	if got := set(ChannelAuto{On: true, Initial: true}, "second"); !got.On || got.Changed {
+		t.Fatalf("a second install: %+v", got)
+	}
+	set(ChannelAuto{On: false}, "off")
+	if got := set(ChannelAuto{On: true, Initial: true}, "third"); got.On || got.Changed {
+		t.Fatalf("an install after the owner turned it off: %+v", got)
+	}
+	if f.count(`SELECT enabled FROM hall_auto_join`) != 0 {
+		t.Fatal("an install overrode the owner's choice")
+	}
+}

@@ -18,53 +18,71 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
-func TestInstalledHookRepeatsUndeliveredJoinGuidance(t *testing.T) {
+// A hook tells a session it enrolled one line: who it is and who is there.
+// The line is offered again until it reached stdout; the member rules come
+// with the member's first command, and once a command gave them the hook has
+// nothing left to say.
+func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 	for _, adapter := range []struct{ name, turn, identity string }{
 		{"claude", "prompt_id", "CLAUDE_CODE_SESSION_ID"},
 		{"codex", "turn_id", "CODEX_THREAD_ID"},
 	} {
-		t.Run(adapter.name, func(t *testing.T) {
+		prompt := func(turn string) string { return fmt.Sprintf(`%q:%q`, adapter.turn, turn) }
+		const rules = "Before voluntarily ending any turn"
+		line := "Joined #setup-check as @" + adapter.name + "1, with @peer."
+		blocked := func(t *testing.T) (*setupWorld, string, *participant) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", adapter.name, "--apply")
 			repo := f.enrollmentRepo()
-			db := f.db()
-			prompt := func(turn string) string { return fmt.Sprintf(`%q:%q`, adapter.turn, turn) }
-
 			f.blockHookOutput(repo, adapter.name, "SessionStart", `"source":"startup"`)
 			if stage := f.enrollmentEvidence(adapter.name); !strings.Contains(stage, "live binding") {
 				t.Fatalf("startup did not commit while stdout blocked: %s", stage)
 			}
 			f.blockHookOutput(repo, adapter.name, "UserPromptSubmit", prompt("blocked-again"))
-			if roster, welcome := hookJoinAcknowledgements(t, db, adapter.name); roster || welcome {
-				t.Fatal("the store acknowledged guidance that never reached stdout")
+			if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); command || hook {
+				t.Fatal("the store acknowledged a start line that never reached stdout")
 			}
-			member := &participant{w: f.world, extra: []string{adapter.identity + "=" + setupSessionPrefix + adapter.name}}
-			firstInbox := member.mustPlain("inbox")
-			secondInbox := member.mustPlain("inbox")
-			if !strings.Contains(firstInbox, "join setup-check --rules") || strings.Contains(secondInbox, "join setup-check --rules") ||
-				strings.Contains(firstInbox+secondInbox, "Before voluntarily ending any turn") {
-				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
-			}
-			if roster, welcome := hookJoinAcknowledgements(t, db, adapter.name); !roster || welcome {
-				t.Fatalf("inbox should confirm only its roster: roster %t, welcome %t", roster, welcome)
-			}
+			return f, repo, &participant{w: f.world, extra: []string{adapter.identity + "=" + setupSessionPrefix + adapter.name}}
+		}
+		t.Run(adapter.name+" hook first", func(t *testing.T) {
+			f, repo, member := blocked(t)
 			out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("delivered"))
-			if out == "" || !strings.Contains(hostContext(t, out), "Joined #setup-check as @"+adapter.name+"1") ||
-				!strings.Contains(out, "Before voluntarily ending any turn") {
-				t.Fatalf("submit hook did not deliver the welcome and rules: %q", out)
+			if out == "" || !strings.Contains(hostContext(t, out), line) || strings.Contains(out, rules) {
+				t.Fatalf("submit hook did not deliver the start line alone: %q", out)
 			}
 			if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-delivery")); got != "" {
-				t.Fatalf("submit hook repeated delivered guidance: %q", got)
+				t.Fatalf("submit hook repeated a delivered start line: %q", got)
 			}
 			deadline := time.Now().Add(time.Second)
 			for {
-				if _, welcome := hookJoinAcknowledgements(t, db, adapter.name); welcome {
+				if _, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); hook {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("the store did not acknowledge delivered guidance")
+					t.Fatal("the store did not acknowledge the delivered start line")
 				}
 				time.Sleep(10 * time.Millisecond)
+			}
+			// The rules come with the first command, once.
+			firstInbox := member.mustPlain("inbox")
+			secondInbox := member.mustPlain("inbox")
+			if !strings.Contains(firstInbox, rules) || strings.Contains(secondInbox, rules) {
+				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
+			}
+		})
+		t.Run(adapter.name+" command first", func(t *testing.T) {
+			f, repo, member := blocked(t)
+			firstInbox := member.mustPlain("inbox")
+			secondInbox := member.mustPlain("inbox")
+			if !strings.Contains(firstInbox, "Joined #setup-check as @"+adapter.name+"1.") || !strings.Contains(firstInbox, rules) ||
+				strings.Contains(secondInbox, rules) {
+				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
+			}
+			if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
+				t.Fatalf("inbox should confirm only its own guidance: command %t, hook %t", command, hook)
+			}
+			if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-command")); got != "" {
+				t.Fatalf("submit hook added a start line after the rules: %q", got)
 			}
 		})
 	}
@@ -124,14 +142,16 @@ func TestHookJoinHintFilesRetireWithTheLeaf(t *testing.T) {
 	}
 }
 
-func hookJoinAcknowledgements(t *testing.T, db *sql.DB, adapter string) (roster, welcome bool) {
+// hookJoinAcknowledgements reports what the store knows reached the session:
+// the rules through a command, and the start line through a hook.
+func hookJoinAcknowledgements(t *testing.T, db *sql.DB, adapter string) (command, hook bool) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT b.hint_acked, b.roster_baseline_seq IS NULL
+	if err := db.QueryRow(`SELECT b.hint_acked, b.start_line_seen
 		FROM binding b JOIN principal_key k ON k.principal_id = b.principal_id
-		WHERE k.vendor = ? AND k.key = ? AND b.state = 'live'`, adapter, setupSessionPrefix+adapter).Scan(&roster, &welcome); err != nil {
+		WHERE k.vendor = ? AND k.key = ? AND b.state = 'live'`, adapter, setupSessionPrefix+adapter).Scan(&command, &hook); err != nil {
 		t.Fatal(err)
 	}
-	return roster, welcome
+	return command, hook
 }
 
 func (f *setupWorld) blockHookOutput(repo, adapter, event, fields string) {

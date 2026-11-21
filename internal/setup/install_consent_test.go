@@ -201,3 +201,43 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 		})
 	}
 }
+
+// #207: before the first dispatcher start there is no store, and the plan
+// lists the built-in evidence the install question already answers from,
+// not "unknown", for the build that evidence names.
+func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
+	s, f, _ := realSetup(t)
+	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.330 (Claude Code)'\n"
+	if err := os.WriteFile(filepath.Join(f.Bin, "claude"), []byte(stub), 0700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := realRun(t, s, f, Request{Offer: true, Terminal: true}, "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(f.State, "store.sqlite3")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the preview created a store: %v", err)
+	}
+	// The Claude Code entry runs from its own line to the next unindented one.
+	_, block, _ := strings.Cut(out, "\nclaude 2.1.330 ")
+	if i := strings.Index(block, "\n"); i >= 0 {
+		block = block[i+1:]
+	}
+	for i, line := range strings.Split(block, "\n") {
+		if !strings.HasPrefix(line, "  ") {
+			block = strings.Join(strings.Split(block, "\n")[:i], "\n") + "\n"
+			break
+		}
+	}
+	listed := strings.Contains(block, "  publish darwin-arm64/interactive tested\n") &&
+		strings.Contains(block, "  turn_end darwin-arm64/interactive tested\n") &&
+		strings.Contains(block, "  turn_end darwin-arm64/print tested\n")
+	unknown := strings.Contains(block, "Capability evidence for this build: unknown")
+	if runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
+		if !listed || unknown || !strings.Contains(out, "When work arrives for an idle session") {
+			t.Fatalf("the listing and the question disagree:\n%s", out)
+		}
+	} else if listed || !unknown {
+		t.Fatalf("listed built-in evidence for another platform:\n%s", out)
+	}
+}

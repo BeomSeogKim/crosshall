@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -133,17 +135,27 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 		return
 	}
 	s.attachInstallDisclosure(ctx, targets)
+	var snapshot store.DoctorSnapshot
 	state, err := spool.OpenServerRoot(s.StateRoot)
-	if err != nil {
-		return
+	if err == nil {
+		defer state.Close()
+		files := spool.ServerFiles{Root: state}
+		_, err = fs.Stat(files, "store.sqlite3")
+		if err == nil {
+			names := make([]string, 0, len(targets))
+			for _, target := range targets {
+				names = append(names, target.Spec.Adapter)
+			}
+			if snapshot, err = store.InspectDoctorStore(ctx, files, names, ""); err != nil {
+				return
+			}
+		}
 	}
-	defer state.Close()
-	names := make([]string, 0, len(targets))
-	for _, target := range targets {
-		names = append(names, target.Spec.Adapter)
-	}
-	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, names, "")
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		// No store yet: list the built-in rows the dispatcher seeds into it,
+		// the evidence the install question already answers from.
+		snapshot = builtinEvidenceSnapshot()
+	} else if err != nil {
 		return
 	}
 	for i := range targets {
@@ -154,6 +166,17 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 			}
 		}
 	}
+}
+
+func builtinEvidenceSnapshot() store.DoctorSnapshot {
+	snapshot := store.DoctorSnapshot{Adapters: map[string]store.DoctorAdapterState{}}
+	for _, row := range domain.BuiltinCapabilityEvidence {
+		state := snapshot.Adapters[row.Vendor]
+		state.Evidence = append(state.Evidence, store.DoctorEvidence{Version: row.Version, Platform: row.Platform,
+			Mode: row.Mode, ManifestRev: row.ManifestRev, Capability: row.Capability, Level: "tested"})
+		snapshot.Adapters[row.Vendor] = state
+	}
+	return snapshot
 }
 
 func makeInstall(j journal, targets []installTarget) (operation, error) {

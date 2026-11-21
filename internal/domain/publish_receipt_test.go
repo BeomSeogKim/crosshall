@@ -405,6 +405,28 @@ func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
 	p.verifyPromptOrigin(cmd, "unknown")
 }
 
+// A prior turn without a Stop is not taken as ended when another turn's
+// activity was observed since it opened: here the next prompt's callback was
+// lost and only its approval arrived, so a receipt with that turn's id
+// stays unknown.
+func TestPublishReceiptAfterAnUnfinishedTurnWithLaterActivityStaysUnknown(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "prior", at+10)) // no Stop
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
+	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt(unrecorded, publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "unknown")
+	p.verifyPromptOrigin(cmd, "unknown")
+}
+
 // Fable: a publish notice the session observed counts as already told for
 // the prompt line, like a turn-end announcement; a notice claimed but not
 // observed does not, since the session may never have seen it.

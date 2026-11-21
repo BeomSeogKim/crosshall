@@ -91,9 +91,10 @@ func (j Join) normalized() Command {
 
 // JoinLaunch is a launch reference a join proposes, as a start would bind it.
 type JoinLaunch struct {
-	Ref     string           `json:"ref"`
-	AtMS    int64            `json:"at_ms"`
-	Profile wire.HookProfile `json:"profile"`
+	Ref          string           `json:"ref"`
+	AtMS         int64            `json:"at_ms"`
+	Profile      wire.HookProfile `json:"profile"`
+	PIDNamespace string           `json:"pid_namespace,omitempty"`
 }
 
 func (Join) command() {}

@@ -54,15 +54,16 @@ type DoctorPublishMember struct {
 }
 
 type DoctorPublishBuild struct {
-	Version     string `json:"version"`
-	Platform    string `json:"platform"`
-	Mode        string `json:"mode"`
-	ManifestRev string `json:"manifest_rev"`
-	State       string `json:"state"`
-	Confirmed   int    `json:"confirmed,omitempty"`
-	StoppedAtMS int64  `json:"stopped_at_ms,omitempty"`
-	Notice      int64  `json:"notice,omitempty"`
-	Reason      string `json:"reason,omitempty"`
+	Version        string `json:"version"`
+	Platform       string `json:"platform"`
+	Mode           string `json:"mode"`
+	ManifestRev    string `json:"manifest_rev"`
+	State          string `json:"state"`
+	Confirmed      int    `json:"confirmed,omitempty"`
+	HeldUnobserved *int   `json:"held_unobserved,omitempty"`
+	StoppedAtMS    int64  `json:"stopped_at_ms,omitempty"`
+	Notice         int64  `json:"notice,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 type DoctorEvidence struct {
@@ -279,7 +280,22 @@ func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAda
 		if err != nil {
 			return err
 		}
-		out.Publish.Builds = append(out.Publish.Builds, doctorPublishBuild(publish))
+		build := doctorPublishBuild(publish)
+		if build.State == "trusted" {
+			var held int
+			err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM publish_attempt a
+				JOIN adapter_launch l ON l.principal_id = a.principal_id AND l.launch_ref = a.launch_ref
+				WHERE a.adapter = ? AND a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL
+					AND a.state <> 'not_submitted' AND a.state <> 'reserved'
+					AND (json_extract(l.profile, '$.vendor_version'), json_extract(l.profile, '$.platform'),
+						json_extract(l.profile, '$.mode'), json_extract(l.profile, '$.manifest_rev')) = (?, ?, ?, ?)`,
+				adapter, build.Version, build.Platform, build.Mode, build.ManifestRev).Scan(&held)
+			if err != nil {
+				return err
+			}
+			build.HeldUnobserved = &held
+		}
+		out.Publish.Builds = append(out.Publish.Builds, build)
 	}
 	if exactTurnEnd {
 		out.TurnEndNotice.TrustedFrom = ""

@@ -32,17 +32,22 @@ var binary string
 const fixtureEventTimeout = 10 * time.Second
 
 func TestMain(m *testing.M) {
+	os.Exit(runSuite(m))
+}
+
+func runSuite(m *testing.M) int {
 	dir, err := os.MkdirTemp("", "crosshall-e2e-bin-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	defer os.RemoveAll(dir)
 	binary = filepath.Join(dir, "crosshall")
 	build := exec.Command("go", "build", "-tags=testvendorhome", "-o", binary, "../../cmd/crosshall")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build failed:", err)
-		os.Exit(1)
+		return 1
 	}
 	// The first launch of a fresh build pays a one-time start cost (#95);
 	// pay it here so timed hook tests measure only the per-launch cost.
@@ -50,11 +55,9 @@ func TestMain(m *testing.M) {
 	warm.Env = []string{}
 	if out, err := warm.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warm-up failed: %v: %s\n", err, out)
-		os.Exit(1)
+		return 1
 	}
-	code := m.Run()
-	os.RemoveAll(dir)
-	os.Exit(code)
+	return m.Run()
 }
 
 // world is one isolated installation: a home, a state root that does not

@@ -30,6 +30,8 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 	apart := func(name string) (checkout, metadata string) {
 		checkout, metadata = filepath.Join(base, name), filepath.Join(base, name+"-metadata")
 		write(filepath.Join(metadata, "HEAD"), "ref: refs/heads/main\n")
+		write(filepath.Join(metadata, "objects", "info"), "")
+		write(filepath.Join(metadata, "refs", "info"), "")
 		write(filepath.Join(checkout, ".git"), "gitdir: "+metadata+"\n")
 		return checkout, metadata
 	}
@@ -37,10 +39,24 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 	kept, keptAt := apart("kept")
 	plain := filepath.Join(base, "plain")
 	write(filepath.Join(plain, ".git", "HEAD"), "ref: refs/heads/main\n")
-	linked := filepath.Join(base, "linked")
-	admin := filepath.Join(movedTo, "worktrees", "linked")
-	write(filepath.Join(admin, "commondir"), "../..\n")
-	write(filepath.Join(linked, ".git"), "gitdir: "+admin+"\n")
+	link := func(name string) (worktree, admin string) {
+		worktree, admin = filepath.Join(base, name), filepath.Join(movedTo, "worktrees", name)
+		write(filepath.Join(admin, "HEAD"), "ref: refs/heads/side\n")
+		write(filepath.Join(admin, "commondir"), "../..\n")
+		write(filepath.Join(worktree, ".git"), "gitdir: "+admin+"\n")
+		return worktree, admin
+	}
+	linked, _ := link("linked")
+	// A linked worktree whose common directory cannot be read, or is lost,
+	// must keep its own default: its repository is not known.
+	locked, lockedAdmin := link("locked")
+	if err := os.Chmod(filepath.Join(lockedAdmin, "commondir"), 0); err != nil {
+		t.Fatal(err)
+	}
+	broken, brokenAdmin := link("broken")
+	if err := os.Remove(filepath.Join(brokenAdmin, "commondir")); err != nil {
+		t.Fatal(err)
+	}
 	gone := filepath.Join(base, "gone")
 
 	ctx := t.Context()
@@ -49,7 +65,7 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 			VALUES (1, 'old', 'active', 1), (2, 'new', 'active', 1)`); err != nil {
 			return err
 		}
-		for root, channel := range map[string]int{moved: 1, kept: 1, keptAt: 2, plain: 1, linked: 2, gone: 1} {
+		for root, channel := range map[string]int{moved: 1, kept: 1, keptAt: 2, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1} {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO repo_default (repo_root, channel_id) VALUES (?, ?)`, root, channel); err != nil {
 				return err
 			}
@@ -82,7 +98,7 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{movedTo: 1, keptAt: 2, plain: 1, linked: 2, gone: 1}
+	want := map[string]int{movedTo: 1, keptAt: 2, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1}
 	if len(got) != len(want) {
 		t.Fatalf("defaults %v, want %v", got, want)
 	}

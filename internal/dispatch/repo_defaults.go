@@ -33,7 +33,10 @@ func (s *server) adoptRepoDefaults(ctx context.Context) error {
 	}
 	moves := map[string]string{}
 	for _, root := range roots {
-		if identity, linked := cli.RepoIdentity(root); !linked && identity != root {
+		// A move needs the repository known for certain: its Git directory
+		// read without error and holding the objects. Anything else keeps
+		// the row for a later start.
+		if identity, linked := cli.RepoIdentity(root); !linked && identity != root && cli.HasObjectStore(root) {
 			moves[root] = identity
 		}
 	}

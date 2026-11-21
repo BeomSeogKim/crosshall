@@ -295,8 +295,36 @@ func TestAutomaticJoiningNeedsARealWorkTree(t *testing.T) {
 		t.Errorf("a start inside .git of a repository with a channel printed %q", got)
 	}
 	startAntigravity(f, late, objects)
+	// Nor is a Git directory nested in the checkout, whoever it belongs to: a
+	// bare backup, or the separate Git directory of another checkout.
+	const nested = "0a6a3c1e-0000-4000-8000-00000000000c"
+	for name, dir := range map[string]string{"backup": filepath.Join(repo, "backup.git"), "foreign": filepath.Join(repo, "foreign.git")} {
+		for path, text := range map[string]string{
+			filepath.Join(dir, "HEAD"):            "ref: refs/heads/main\n",
+			filepath.Join(dir, "objects", "info"): "",
+			filepath.Join(dir, "refs", "info"):    "",
+		} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := startAs(f, "claude", name, filepath.Join(dir, "objects")); got != "" {
+			t.Errorf("a start inside %s printed %q", dir, got)
+		}
+		startAntigravity(f, nested+name[:1], filepath.Join(dir, "objects"))
+	}
+	elsewhere := filepath.Join(f.home, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, ".git"), []byte("gitdir: "+filepath.Join(repo, "foreign.git")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if channels, members := state(); channels != 1 || members != 1 {
-		t.Fatalf("starts inside .git left %d channels and %d members", channels, members)
+		t.Fatalf("starts inside Git directories left %d channels and %d members", channels, members)
 	}
 }
 

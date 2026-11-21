@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strconv"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -122,12 +123,10 @@ func assignTurns(facts []turnFact) ([]assignedTurn, map[string]int) {
 // by delivery. A fact stamped beyond the dispatcher's clock slack is left
 // out until the clock reaches it.
 func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch string, nowMS int64) ([]turnFact, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT o.kind = ?4, o.turn_ref, o.hook_at_ms, o.event_ref FROM observation o
-		WHERE o.principal_id = ?1 AND o.launch_ref = ?2 AND o.kind IN (?4, ?5) AND o.turn_ref IS NOT NULL AND o.hook_at_ms <= ?3
-		ORDER BY o.hook_at_ms, CASE WHEN o.kind = ?4 THEN 1
-			WHEN EXISTS (SELECT 1 FROM observation p WHERE p.principal_id = o.principal_id AND p.launch_ref = o.launch_ref
-				AND p.kind = ?4 AND p.turn_ref = o.turn_ref AND p.hook_at_ms = o.hook_at_ms) THEN 2 ELSE 0 END, o.event_ref`,
-		principal, launch, nowMS+futureSlackMS, FactPromptSubmitted, FactTurnFinishing)
+	rows, err := tx.QueryContext(ctx, `SELECT kind = ?, turn_ref, hook_at_ms, event_ref FROM observation
+		WHERE principal_id = ? AND launch_ref = ? AND kind IN (?, ?) AND turn_ref IS NOT NULL AND hook_at_ms <= ?
+		ORDER BY hook_at_ms, event_ref`,
+		FactPromptSubmitted, principal, launch, FactPromptSubmitted, FactTurnFinishing, nowMS+futureSlackMS)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +139,42 @@ func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch strin
 		}
 		facts = append(facts, f)
 	}
-	return facts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	orderTies(facts)
+	return facts, nil
+}
+
+// orderTies orders the facts of each millisecond: Stops of other turns,
+// then prompts, then Stops of a turn prompted in that millisecond, keeping
+// the event order within each.
+func orderTies(facts []turnFact) {
+	rank := func(f turnFact, prompted map[string]bool) int {
+		switch {
+		case f.prompt:
+			return 1
+		case prompted[f.ref]:
+			return 2
+		}
+		return 0
+	}
+	for start := 0; start < len(facts); {
+		end := start + 1
+		for end < len(facts) && facts[end].at == facts[start].at {
+			end++
+		}
+		if end-start > 1 {
+			prompted := map[string]bool{}
+			for _, f := range facts[start:end] {
+				if f.prompt {
+					prompted[f.ref] = true
+				}
+			}
+			slices.SortStableFunc(facts[start:end], func(a, b turnFact) int { return rank(a, prompted) - rank(b, prompted) })
+		}
+		start = end
+	}
 }
 
 // reconcileTurns makes the launch's turn rows the hook-order assignment of

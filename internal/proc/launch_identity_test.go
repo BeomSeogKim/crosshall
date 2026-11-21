@@ -23,7 +23,7 @@ func startProbeChild(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
-func TestLaunchIdentityAndProcessGone(t *testing.T) {
+func TestProbeLaunchAndProcessGone(t *testing.T) {
 	child := startProbeChild(t)
 	wantPID := int64(child.Process.Pid)
 	process := "pid-" + strconv.FormatInt(wantPID, 10)
@@ -32,19 +32,20 @@ func TestLaunchIdentityAndProcessGone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, identity := LaunchIdentity(ref, start.AtMS)
-	if pid != wantPID || identity <= 0 || identity != start.Identity {
-		t.Fatalf("launch identity = (%d, %d), want (%d, %d)", pid, identity, wantPID, start.Identity)
+	pid, identity, gone := ProbeLaunch(ref, start.AtMS)
+	if pid != wantPID || identity <= 0 || identity != start.Identity || gone {
+		t.Fatalf("live launch probe = (%d, %d, %t), want (%d, %d, false)", pid, identity, gone, wantPID, start.Identity)
 	}
 	for _, invalid := range []string{"", "session", "pid-0-ab", "pid-01-ab", "pid-2147483648-ab", process, process + "-"} {
-		if p, i := LaunchIdentity(invalid, start.AtMS); p != 0 || i != 0 {
-			t.Errorf("invalid launch reference %q returned (%d, %d)", invalid, p, i)
+		if p, i, gone := ProbeLaunch(invalid, start.AtMS); p != 0 || i != 0 || gone {
+			t.Errorf("invalid launch reference %q probed as (%d, %d, %t)", invalid, p, i, gone)
 		}
 	}
-	for _, before := range []int64{0, start.AtMS - 1} {
-		if p, i := LaunchIdentity(ref, before); p != 0 || i != 0 {
-			t.Errorf("launch after hook time %d returned (%d, %d)", before, p, i)
-		}
+	if p, i, gone := ProbeLaunch(ref, 0); p != 0 || i != 0 || gone {
+		t.Errorf("live process with unknown hook time probed as (%d, %d, %t)", p, i, gone)
+	}
+	if p, i, gone := ProbeLaunch(ref, start.AtMS-1); p != pid || i != 0 || !gone {
+		t.Errorf("process born after hook probed as (%d, %d, %t)", p, i, gone)
 	}
 	if ProcessGone(pid, identity) || ProcessGone(pid, 0) || !ProcessGone(pid, identity+1) {
 		t.Fatal("death evidence did not distinguish the live process, a missing identity and a different process")
@@ -61,11 +62,18 @@ func TestLaunchIdentityAndProcessGone(t *testing.T) {
 	if err := child.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("child reaped before checking its zombie state: %v", err)
 	}
-	if p, i := LaunchIdentity(ref, time.Now().UnixMilli()); p != 0 || i != 0 {
-		t.Errorf("a zombie returned a launch identity (%d, %d)", p, i)
+	for _, hookAt := range []int64{0, start.AtMS} {
+		if p, i, gone := ProbeLaunch(ref, hookAt); p != pid || i != 0 || !gone {
+			t.Errorf("a zombie with hook time %d probed as (%d, %d, %t)", hookAt, p, i, gone)
+		}
 	}
 	_ = child.Wait()
 	if !ProcessGone(pid, identity) {
 		t.Fatal("a reaped child was not classified as gone")
+	}
+	for _, hookAt := range []int64{0, start.AtMS} {
+		if p, i, gone := ProbeLaunch(ref, hookAt); p != pid || i != 0 || !gone {
+			t.Errorf("a reaped child with hook time %d probed as (%d, %d, %t)", hookAt, p, i, gone)
+		}
 	}
 }

@@ -103,9 +103,8 @@ func TestClaudeProcessExitKeepsAnUnknownOverlap(t *testing.T) {
 		t.Fatalf("second page: %+v", second)
 	}
 	unknown := second[0]
-	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, Gone: true}) ||
-		applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, PID: 1, StartIdentity: 20}) {
-		t.Fatal("an unbound probe applied death or associated another PID")
+	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, PID: 1, StartIdentity: 20}) {
+		t.Fatal("a probe associated the launch with another PID")
 	}
 	if !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, PID: 2, StartIdentity: 20}) {
 		t.Fatal("a matching positive probe did not pin the identity")
@@ -116,6 +115,61 @@ func TestClaudeProcessExitKeepsAnUnknownOverlap(t *testing.T) {
 	}
 	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'pid-1-a' AND ended_hook_at_ms IS NULL`); n != 1 {
 		t.Fatal("unknown older launch was terminated")
+	}
+}
+
+func TestClaudeProcessExitAppliesUnboundProofWithoutRetiringQueue(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "unbound-exit")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("fixture did not reserve a notice")
+	}
+	p.mutate(`UPDATE adapter_launch SET process_pid = NULL, process_start_identity = NULL WHERE launch_ref = ?`, publishTestLaunch)
+	stale := liveClaudeLaunches(p.fixture, 0, 1)[0]
+	p.mutate(`UPDATE adapter_launch SET pid_namespace = 'pid:[200]' WHERE launch_ref = ?`, publishTestLaunch)
+	if applyClaudeProbes(p.fixture, ClaudeLaunchProbe{ClaudeLaunch: stale, Gone: true}) {
+		t.Fatal("a legacy snapshot crossed the namespace fence")
+	}
+	launch := liveClaudeLaunches(p.fixture, 0, 1)[0]
+	if launch.PIDNamespace != "pid:[200]" || launch.ProcessPID != 0 || launch.ProcessStartIdentity != 0 {
+		t.Fatalf("wrong unbound launch snapshot: %+v", launch)
+	}
+	if !applyClaudeProbes(p.fixture, ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true}) {
+		t.Fatal("a current unbound process exit proof was not applied")
+	}
+	if _, _, _, _, state, _, _ := routeState(t, p.fixture, launch.BindingID); state != "ended" {
+		t.Fatalf("the unbound launch kept its publish route %q", state)
+	}
+	if n := p.count(`SELECT COUNT(*) FROM binding WHERE id = ? AND state = 'departed' AND departed_by_hook = 1`, launch.BindingID); n != 1 {
+		t.Fatal("last unbound launch did not depart by hook")
+	}
+	p.state(id, "reserved")
+	if n := p.count(`SELECT COUNT(*) FROM publish_route_proof WHERE binding_id = ?`, launch.BindingID); n != 1 {
+		t.Fatal("the unbound exit retired a physical publish queue")
+	}
+}
+
+func TestClaudeLaunchPinsItsFirstKnownPIDNamespace(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	at := f.now.UnixMilli()
+	cmd := start("pid-7-a", "startup", at)
+	cmd.PIDNamespace = "pid:[100]"
+	f.hook(s, cmd)
+	launch := liveClaudeLaunches(f, 0, 1)[0]
+	if launch.PIDNamespace != cmd.PIDNamespace || launch.StartedAtMS != at {
+		t.Fatalf("first namespace was not stored: %+v", launch)
+	}
+	conflict := start(launch.LaunchRef, "resume", at+10)
+	conflict.PIDNamespace = "pid:[200]"
+	if r := f.hook(s, conflict); !quiet(r) || liveClaudeLaunches(f, 0, 1)[0] != launch {
+		t.Fatalf("conflicting namespace changed the existing launch: %+v", r)
+	}
+	f.hook(s, start(launch.LaunchRef, "resume", at+20))
+	if got := liveClaudeLaunches(f, 0, 1)[0]; got.PIDNamespace != cmd.PIDNamespace {
+		t.Fatalf("legacy resume cleared the verified namespace: %+v", got)
 	}
 }
 

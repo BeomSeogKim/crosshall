@@ -34,8 +34,8 @@ func TestLaunchProcessMigrationBackfillsOnlyMatchingProof(t *testing.T) {
 	defer upgraded.Close()
 	var matched, untouched int
 	if err := upgraded.db.QueryRowContext(ctx, `SELECT
-		COUNT(*) FILTER (WHERE launch_ref = 'pid-22-current' AND process_pid = 22 AND process_start_identity = 500 AND ended_by_process = 0),
-		COUNT(*) FILTER (WHERE launch_ref IN ('pid-22-overlap', 'pid-33-newer') AND process_pid IS NULL AND process_start_identity IS NULL AND ended_by_process = 0)
+		COUNT(*) FILTER (WHERE launch_ref = 'pid-22-current' AND process_pid = 22 AND process_start_identity = 500 AND ended_by_process = 0 AND pid_namespace = ''),
+		COUNT(*) FILTER (WHERE launch_ref IN ('pid-22-overlap', 'pid-33-newer') AND process_pid IS NULL AND process_start_identity IS NULL AND ended_by_process = 0 AND pid_namespace = '')
 		FROM adapter_launch`).Scan(&matched, &untouched); err != nil || matched != 1 || untouched != 2 {
 		t.Fatalf("backfill matched %d launch and left %d unrelated launches untouched (%v)", matched, untouched, err)
 	}

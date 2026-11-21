@@ -157,7 +157,7 @@ func m2World(t *testing.T) (*world, *participant, claudeSession) {
 	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
 	writer := w.member()
 	writer.must("join", "checkout", "--as", "writer")
-	return w, writer, claudeSession{w: w, key: "synthetic-m2-session", pid: "4242", repo: repo}
+	return w, writer, claudeSession{w: w, key: "synthetic-m2-session", pid: strconv.Itoa(os.Getpid()), repo: repo}
 }
 
 func notes(t *testing.T, from *participant, alias string, n int) []string {
@@ -286,14 +286,14 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	other.key = "synthetic-other"
 	cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"synthetic-m2-session","prompt_id":"x"}`)
-	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID=synthetic-other", "CLAUDE_PID=4242")
+	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID=synthetic-other", "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {
 		t.Fatalf("conflicting identity: %q, %v", out, err)
 	}
 	// Malformed input.
 	cmd = exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"broken"`)
-	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key, "CLAUDE_PID=4242")
+	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key, "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {
 		t.Fatalf("malformed input: %q, %v", out, err)
 	}

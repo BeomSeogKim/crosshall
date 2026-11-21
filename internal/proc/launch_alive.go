@@ -38,22 +38,28 @@ func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	return err == nil && start <= startedHookAtMS
 }
 
-// LaunchIdentity returns a live launch's PID and kernel start identity.
-// The first hook time is an upper bound on the process start.
-func LaunchIdentity(ref string, startedHookAtMS int64) (pid int64, identity int64) {
+// ProbeLaunch reports the identity of a live launch or positive evidence that
+// it has ended. The caller must compare historical PIDs in their original namespace.
+func ProbeLaunch(ref string, startedHookAtMS int64) (pid, identity int64, gone bool) {
 	process, ok := LaunchProcess(ref)
-	if !ok || len(ref) <= len(process)+1 || startedHookAtMS <= 0 {
-		return 0, 0
+	if !ok || len(ref) <= len(process)+1 {
+		return 0, 0, false
 	}
 	pid, err := strconv.ParseInt(strings.TrimPrefix(process, "pid-"), 10, 32)
 	if err != nil {
-		return 0, 0
+		return 0, 0, false
 	}
-	start, err := processStart(int(pid))
-	if err != nil || start.Identity <= 0 || start.AtMS <= 0 || start.AtMS > startedHookAtMS {
-		return 0, 0
+	start, err := probeProcessStart(int(pid))
+	if errors.Is(err, errProcessGone) {
+		return pid, 0, true
 	}
-	return pid, start.Identity
+	if err != nil || start.Identity <= 0 || start.AtMS <= 0 || startedHookAtMS <= 0 {
+		return 0, 0, false
+	}
+	if start.AtMS > startedHookAtMS {
+		return pid, 0, true
+	}
+	return pid, start.Identity, false
 }
 
 // errProcessGone means the PID is absent or names a zombie.
@@ -67,6 +73,6 @@ func ProcessGone(pid, identity int64) bool {
 	if pid <= 0 || pid > math.MaxInt32 || identity <= 0 {
 		return false
 	}
-	start, err := processStart(int(pid))
+	start, err := probeProcessStart(int(pid))
 	return errors.Is(err, errProcessGone) || start.Identity > 0 && start.Identity != identity
 }

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"runtime"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -50,9 +51,13 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 	if len(launches) == launchSweepBatch {
 		result.after = launches[len(launches)-1].RowID
 	}
+	pidNamespace := proc.PIDNamespace()
 	for _, launch := range launches {
 		if err := ctx.Err(); err != nil {
 			return launchSweepResult{after: after, err: err}
+		}
+		if !sameLaunchPIDNamespace(runtime.GOOS, pidNamespace, launch.PIDNamespace) {
+			continue
 		}
 		if launch.ProcessPID != 0 {
 			if proc.ProcessGone(launch.ProcessPID, launch.ProcessStartIdentity) {
@@ -60,11 +65,21 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 			}
 			continue
 		}
-		if pid, identity := proc.LaunchIdentity(launch.LaunchRef, launch.StartedAtMS); identity != 0 {
+		pid, identity, gone := proc.ProbeLaunch(launch.LaunchRef, launch.StartedAtMS)
+		if gone {
+			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true})
+		} else if identity != 0 {
 			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, PID: pid, StartIdentity: identity})
 		}
 	}
 	return result
+}
+
+func sameLaunchPIDNamespace(platform, dispatcher, launch string) bool {
+	if platform == "linux" {
+		return dispatcher != "" && dispatcher == launch
+	}
+	return platform == "darwin" && launch == ""
 }
 
 func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepResult) error {

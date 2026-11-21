@@ -127,6 +127,7 @@ func hookLaunchAfterFence(ctx context.Context, tx store.Tx, principal int64, lau
 
 func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEnroll, now time.Time) (core.Result, error) {
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || !validRef(cmd.EventRef) ||
+		(cmd.PIDNamespace != "" && (!cmd.LaunchVerified || cmd.LaunchRef == SessionLaunch || !validRef(cmd.PIDNamespace))) ||
 		!ValidName(cmd.Source) || cmd.HookAtMS <= 0 || (cmd.RepoRoot != "" && !validRepoRoot(cmd.RepoRoot)) ||
 		(cmd.Repository != "" && (cmd.RepoRoot == "" || !validRepoRoot(cmd.Repository))) {
 		return hookUsage("invalid hook.enroll arguments"), nil
@@ -185,12 +186,14 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	// A repeated start of the same launch at the same time is a replay: no text.
 	var started int64
 	var endedByProcess bool
-	err = tx.QueryRowContext(ctx, `SELECT started_hook_at_ms, ended_by_process FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?`,
-		principal, cmd.LaunchRef).Scan(&started, &endedByProcess)
+	var pidNamespace string
+	err = tx.QueryRowContext(ctx, `SELECT started_hook_at_ms, ended_by_process, pid_namespace
+		FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?`, principal, cmd.LaunchRef).Scan(&started, &endedByProcess, &pidNamespace)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return core.Result{}, err
 	}
-	if err == nil && (started == cmd.HookAtMS || endedByProcess) {
+	if err == nil && (started == cmd.HookAtMS || endedByProcess ||
+		pidNamespace != "" && cmd.PIDNamespace != "" && pidNamespace != cmd.PIDNamespace) {
 		return OK(out)
 	}
 	if b.state != "live" {
@@ -227,7 +230,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err != nil {
 		return core.Result{}, err
 	}
-	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.HookAtMS); err != nil {
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
@@ -391,7 +394,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if prompt != nil {
 		started = 0 // No SessionStart committed for the recovered session.
 	}
-	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, started); err != nil {
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, started); err != nil {
 		return core.Result{}, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
@@ -461,15 +464,17 @@ func okOrErr(out wire.HookResult, err error) (core.Result, error) {
 	return OK(out)
 }
 
-func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, at int64) error {
+func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, pidNamespace string, at int64) error {
 	// A newer start of a known launch (a resumed session-scoped launch)
 	// reactivates it; an older or equal one changes nothing.
-	_, err := tx.ExecContext(ctx, `INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-		VALUES (?, ?, ?, ?, ?) ON CONFLICT(principal_id, launch_ref) DO UPDATE SET
+	_, err := tx.ExecContext(ctx, `INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, pid_namespace, started_hook_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(principal_id, launch_ref) DO UPDATE SET
 		started_hook_at_ms = excluded.started_hook_at_ms, ended_hook_at_ms = NULL,
-		profile = excluded.profile, verified = excluded.verified
-			WHERE adapter_launch.ended_by_process = 0 AND excluded.started_hook_at_ms > adapter_launch.started_hook_at_ms`,
-		principal, launch, profileJSON(p), verified, at)
+		profile = excluded.profile, verified = excluded.verified,
+		pid_namespace = COALESCE(NULLIF(adapter_launch.pid_namespace, ''), excluded.pid_namespace)
+		WHERE adapter_launch.ended_by_process = 0 AND excluded.started_hook_at_ms > adapter_launch.started_hook_at_ms
+		  AND (adapter_launch.pid_namespace = '' OR excluded.pid_namespace = '' OR adapter_launch.pid_namespace = excluded.pid_namespace)`,
+		principal, launch, profileJSON(p), verified, pidNamespace, at)
 	return err
 }
 

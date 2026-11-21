@@ -171,8 +171,9 @@ func TestHookSessionReplay(t *testing.T) {
 		}
 	}
 	join := outputs[0]
-	if join.Enrollment != "joined" || join.Alias != "claude1" || join.Channel != "checkout" || join.Hint == "" ||
-		len(rosterOf(t, join)) != 2 || join.PendingLine != "" || join.Ack == nil || join.Ack.Kind != "notice" {
+	if join.Enrollment != "joined" || join.Alias != "claude1" || join.Channel != "checkout" ||
+		join.Hint != StartLine("claude1", "checkout", []string{"writer"}) ||
+		len(join.Roster) != 0 || join.PendingLine != "" || join.Ack == nil || join.Ack.Kind != "notice" {
 		t.Fatalf("auto-join %+v", join)
 	}
 	if got := outputs[3].PendingLine; got != pendingLine(mail...) || outputs[3].Ack == nil || outputs[3].OfferID == 0 {
@@ -202,32 +203,92 @@ func TestHookSessionReplay(t *testing.T) {
 	}
 }
 
-func TestHookJoinGuidanceIsOfferedUntilAcknowledged(t *testing.T) {
+func TestHookStartLineIsOfferedUntilAcknowledged(t *testing.T) {
 	f, writer := adapterChannel(t)
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
 	first := f.hook(s, start("pid-1", "startup", t0))
-	if first.JoinHintAck == nil || first.JoinHintAck.RosterSeq == 0 || first.Hint == "" {
-		t.Fatalf("start did not offer join guidance and its receipt: %+v", first.JoinHintAck)
+	if first.JoinHintAck == nil || first.JoinHintAck.RosterSeq == 0 ||
+		first.Hint != "[crosshall] Joined #checkout as @claude1, with @writer. `crosshall join checkout --rules` prints the member rules." {
+		t.Fatalf("start did not offer the start line and its receipt: %+v", first)
 	}
-	f.ack(s, first.JoinHintAck.RosterSeq)
 	mail := f.noteTo(writer, first.Alias, 1)
 	later := prompt("pid-1", "turn-1", t0+1000)
 	offered := f.hook(s, later)
 	if offered.Hint != first.Hint || offered.JoinHintAck == nil ||
 		offered.JoinHintAck.BindingID != first.JoinHintAck.BindingID || offered.PendingLine != pendingLine(mail...) {
-		t.Fatalf("prompt did not repeat guidance alongside the pending notice: %+v", offered)
+		t.Fatalf("prompt did not repeat the start line alongside the pending notice: %+v", offered)
 	}
 	if got := f.hook(s, later); !quiet(got) {
 		t.Fatalf("the same prompt replayed output: %+v", got)
 	}
 	if got := f.hook(s, start("pid-1", "clear", t0+2000)); got.Hint != first.Hint || got.Cue == "" || got.JoinHintAck == nil {
-		t.Fatalf("clear did not preserve its reset cue while retrying guidance: %+v", got)
+		t.Fatalf("clear did not preserve its reset cue while retrying the start line: %+v", got)
 	}
 	f.ackHookJoin(s, offered.JoinHintAck.RosterSeq)
 	mail = f.noteTo(writer, first.Alias, 1)
 	if got := f.hook(s, prompt("pid-1", "turn-2", t0+3000)); got.Hint != "" || got.JoinHintAck != nil || got.PendingLine != pendingLine(mail...) {
 		t.Fatalf("delivery confirmation changed later pending output: %+v", got)
+	}
+}
+
+// A member whose first command printed the rules knows who it is: the hook
+// has no start line left to deliver.
+func TestHookStartLineIsDroppedOnceACommandGaveTheRules(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	first := f.hook(s, start("pid-1", "startup", t0))
+	f.ack(s, trailerOf(t, f.run(s, Inbox{}, "")).Seq)
+	if got := f.hook(s, prompt("pid-1", "turn-1", t0+1000)); got.Hint != "" || got.JoinHintAck != nil || first.JoinHintAck == nil {
+		t.Fatalf("a prompt after the first command: %+v", got)
+	}
+}
+
+// A member that is alone at its start is told nothing. Its start line waits
+// until the channel has someone else, and a peer's arrival marks it so that
+// its next prompt asks.
+func TestHookStartLineWaitsForCompany(t *testing.T) {
+	f := newFixture(t)
+	wantOK(t, f.owner(CreateChannel{Name: "checkout"}, "c"))
+	wantOK(t, f.owner(ChannelDefault{Channel: "checkout", RepoRoot: testRepo}, "d"))
+	f.policy("claude", true, 1)
+	f.policy("codex", true, 1)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	alone := f.hook(s, start("pid-1", "startup", t0))
+	if alone.Enrollment != "joined" || alone.Alias != "claude1" || alone.Hint != "" || alone.JoinHintAck != nil || len(alone.Roster) != 0 {
+		t.Fatalf("a start alone: %+v", alone)
+	}
+	if got := f.hook(s, prompt("pid-1", "turn-1", t0+1000)); got.Hint != "" || got.JoinHintAck != nil {
+		t.Fatalf("a prompt alone: %+v", got)
+	}
+	dirty := func() int {
+		return f.count(`SELECT COUNT(*) FROM adapter_dirty WHERE notice = 1 AND principal_id = ?`, f.principalOf(s))
+	}
+	if _, err := f.db.Exec(`DELETE FROM adapter_dirty`); err != nil {
+		t.Fatal(err)
+	}
+	peer := f.newSession("codex")
+	codex := start("pid-9", "startup", t0+2000)
+	codex.Profile.Adapter, codex.Profile.ManifestRev = "codex", "codex-1"
+	if got := f.hook(peer, codex); got.Hint != "[crosshall] Joined #checkout as @codex1, with @claude1. `crosshall join checkout --rules` prints the member rules." {
+		t.Fatalf("the second member's start: %+v", got)
+	}
+	if dirty() != 1 {
+		t.Fatal("a peer's arrival did not mark the waiting member")
+	}
+	told := f.hook(s, prompt("pid-1", "turn-2", t0+3000))
+	if told.Hint != "[crosshall] Joined #checkout as @claude1, with @codex1. `crosshall join checkout --rules` prints the member rules." || told.JoinHintAck == nil {
+		t.Fatalf("the first prompt with company: %+v", told)
+	}
+	f.ackHookJoin(s, told.JoinHintAck.RosterSeq)
+	if _, err := f.db.Exec(`DELETE FROM adapter_dirty`); err != nil {
+		t.Fatal(err)
+	}
+	wantOK(t, f.join(f.newSession("codex"), Join{Channel: "checkout", Alias: "third"}, ""))
+	if dirty() != 0 {
+		t.Fatal("a later arrival marked a member that was already told")
 	}
 }
 
@@ -618,10 +679,9 @@ func TestAutoEnrolledMemberBootstrapsTheRosterOnItsFirstCommand(t *testing.T) {
 	f.hook(s, start("pid-1", "startup", t0))
 	wantOK(t, f.run(writer, Focus{Text: "release notes"}, "focus"))
 
-	// The hook offered the rules: the first command names the member and the
-	// command that prints them, and does not repeat them.
+	// The hook gave one line at most: the first command carries the rules.
 	first := trailerOf(t, f.run(s, Inbox{}, ""))
-	if first.JoinHint != "[crosshall] Joined #checkout as @claude1.\n`crosshall join checkout --rules` prints the member rules." {
+	if first.JoinHint != Hint("claude1", "checkout") {
 		t.Fatalf("first command hint: %+v", first)
 	}
 	if len(first.Changes) != 1 || first.Changes[0].Alias != "writer" || first.Changes[0].Change != "focus" || first.Seq == 0 {
@@ -657,10 +717,10 @@ func (f *fixture) ack(s session, seq uint64) {
 	}
 }
 
+// ackHookJoin records, as the dispatcher does, that the hook delivered the start line.
 func (f *fixture) ackHookJoin(s session, seq uint64) {
 	f.t.Helper()
-	if _, err := f.db.Exec(`UPDATE binding
-		SET roster_ack_seq = MAX(roster_ack_seq, ?), hint_acked = 1, roster_baseline_seq = NULL
+	if _, err := f.db.Exec(`UPDATE binding SET start_line_seen = 1, roster_baseline_seq = ?
 		WHERE principal_id = ? AND state = 'live'`, seq, f.principalOf(s)); err != nil {
 		f.t.Fatal(err)
 	}

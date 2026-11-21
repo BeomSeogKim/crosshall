@@ -36,35 +36,97 @@ func realRun(t *testing.T, s Service, f setuptest.Fixture, req Request, input st
 	return out.String(), err
 }
 
-func TestTheTerminalFlowInstallsBaseHooksWithOneConsent(t *testing.T) {
-	s, f, policies := realSetup(t)
+func TestTheTerminalFlowInstallsHooksAndRulesWithOneConsent(t *testing.T) {
+	f := setuptest.New(t, "claude", "codex", "agy")
+	s := scopedService(f)
+	policies := map[string]bool{}
+	s.SetPolicy = func(_ context.Context, adapter string, on bool) error {
+		policies[adapter] = on
+		return nil
+	}
 	claude := filepath.Join(f.Home, ".claude", "settings.json")
 	codex := filepath.Join(f.Home, ".codex", "hooks.json")
-	if err := os.Mkdir(filepath.Dir(claude), 0700); err != nil {
-		t.Fatal(err)
+	codexRules := filepath.Join(f.Home, ".codex", "rules", "crosshall.rules")
+	agy := filepath.Join(f.Home, ".gemini", "antigravity-cli", "settings.json")
+	agyHooks := filepath.Join(f.Home, ".gemini", "config", "hooks.json")
+	const claudeOriginal = "{\n \"permissions\": {\"allow\":[\"Bash(existing)\"], \"deny\":[\"Bash(blocked)\"]}\n}\n"
+	const agyOriginal = "{\n \"permissions\": {\"allow\": [\"command(existing)\"], \"ask\": [\"command(review)\"]}\n}\n"
+	original := map[string]string{claude: claudeOriginal, agy: agyOriginal, codexRules: ""}
+	for path, contents := range original {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0640); err != nil {
+			t.Fatal(err)
+		}
 	}
-	const approvals = `"permissions": {"allow":["Bash(existing)"], "deny":["Bash(blocked)"]}`
-	if err := os.WriteFile(claude, []byte("{"+approvals+"}"), 0600); err != nil {
-		t.Fatal(err)
+	if out, err := realRun(t, s, f, Request{Terminal: true}, "n\n"); err != nil || strings.Count(out, "[y/N]") != 1 {
+		t.Fatalf("decline: %v\n%s", err, out)
+	}
+	for path, contents := range original {
+		if got := configBytes(t, path); string(got) != contents {
+			t.Fatalf("decline changed %s: %q", path, got)
+		}
+	}
+	for _, path := range []string{codex, agyHooks} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("decline created %s: %v", path, err)
+		}
 	}
 	out, err := realRun(t, s, f, Request{Terminal: true}, "y\n")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Claude Code hooks in "+claude+" (default under HOME)") ||
-		!strings.Contains(out, "Codex hooks in "+codex+" (default under HOME)") {
+	preview, _, hasQuestion := strings.Cut(out, "Install the listed hooks and command rules? [y/N]")
+	if !hasQuestion || strings.Count(out, "[y/N]") != 1 {
 		t.Fatalf("questions:\n%s", out)
 	}
-	settings, err := os.ReadFile(claude)
-	if err != nil || !bytes.Contains(settings, []byte("SessionStart")) || !bytes.Contains(settings, []byte(approvals)) ||
-		bytes.Contains(settings, []byte("Bash(crosshall")) {
-		t.Fatalf("claude settings %s: %v", settings, err)
+	for _, want := range []string{
+		"Claude Code hooks in " + claude + " (default under HOME)",
+		"Codex hooks in " + codex + " (default under HOME)",
+		"Antigravity hooks in " + agyHooks + " (default under HOME)",
+		codexRules, agy,
+		"Rules for the bare command crosshall trust the agent's PATH",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, out)
+		}
 	}
-	if settings, err := os.ReadFile(codex); err != nil || !bytes.Contains(settings, []byte("SessionStart")) {
-		t.Fatalf("codex settings %s: %v", settings, err)
+	for adapter, path := range map[string]string{"claude": claude, "codex": codexRules, "agy": agy} {
+		entries, rules, err := memberCommandRules(adapter, s.Executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		installed := configBytes(t, path)
+		for _, rule := range entries {
+			if !strings.Contains(preview, string(rule.Value)) || !bytes.Contains(installed, rule.Value) {
+				t.Errorf("%s missing preview or installed rule %s", adapter, rule.Value)
+			}
+		}
+		for rule := range strings.SplitSeq(strings.TrimSuffix(string(rules), "\n"), "\n") {
+			if rule != "" && (!strings.Contains(preview, rule) || !bytes.Contains(installed, []byte(rule))) {
+				t.Errorf("%s missing preview or installed rule %s", adapter, rule)
+			}
+		}
+		if !policies[adapter] {
+			t.Errorf("%s policy was not enabled", adapter)
+		}
 	}
-	if !policies["claude"] || !policies["codex"] {
-		t.Fatalf("policies %v", policies)
+	for _, path := range []string{claude, codex, agyHooks} {
+		if settings := configBytes(t, path); !bytes.Contains(settings, []byte("SessionStart")) {
+			t.Fatalf("settings at %s: %s", path, settings)
+		}
+	}
+	if out, err := realRun(t, s, f, Request{Action: "uninstall", Apply: true, Adapters: []string{"claude", "codex", "agy"}}, ""); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, out)
+	}
+	for path, contents := range original {
+		if got := configBytes(t, path); string(got) != contents {
+			t.Errorf("uninstall restored %s to %q, want %q", path, got, contents)
+		}
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0640 {
+			t.Errorf("uninstall changed mode for %s: %v (%v)", path, info, err)
+		}
 	}
 	if d, err := s.declinedOffers(); err != nil || d["codex"] || d["claude"] {
 		t.Fatalf("declined %v, %v", d, err)

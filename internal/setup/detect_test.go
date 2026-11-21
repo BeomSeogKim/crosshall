@@ -49,6 +49,40 @@ func TestResolveConfigPathUsesDefaultOnlyForAnAbsentOverride(t *testing.T) {
 	}
 }
 
+func TestResolveCommandRulePath(t *testing.T) {
+	home := setuptest.New(t).Home
+	paths := map[string]string{
+		"claude": ".claude/settings.json",
+		"codex":  ".codex/rules/crosshall.rules",
+		"agy":    ".gemini/antigravity-cli/settings.json",
+	}
+	for _, spec := range hook.InstallSpecs() {
+		t.Run(spec.Adapter, func(t *testing.T) {
+			assertTarget := func(want configTarget) {
+				t.Helper()
+				if got, err := resolveCommandRulePath(spec); err != nil || got != want {
+					t.Fatalf("command rule target = %+v (%v), want %+v", got, err, want)
+				}
+			}
+			assertTarget(configTarget{Home: home, Path: filepath.Join(home, paths[spec.Adapter]), Source: "default"})
+			if spec.HomeEnv == "" {
+				return
+			}
+			override := filepath.Join(home, "custom vendor home")
+			t.Setenv(spec.HomeEnv, override)
+			name := "settings.json"
+			if spec.Adapter == "codex" {
+				name = "rules/crosshall.rules"
+			}
+			assertTarget(configTarget{Home: home, Path: filepath.Join(override, name), Source: "override"})
+			t.Setenv(spec.HomeEnv, "relative")
+			if _, err := resolveCommandRulePath(spec); err == nil || !strings.Contains(err.Error(), spec.HomeEnv) {
+				t.Fatalf("invalid override error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSetupDefaultsStayInsideTheFixture(t *testing.T) {
 	fixture := setuptest.New(t, "claude", "codex")
 	service := defaultPathService(fixture)

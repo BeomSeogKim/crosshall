@@ -94,13 +94,17 @@ func rememberUnprovenPublication(j *journal, e edit) {
 }
 
 func recordApplied(j *journal, e edit, observed fingerprint) {
+	files := j.Files
+	if e.Rules {
+		files = j.RuleFiles
+	}
 	if e.Record == nil {
-		delete(j.Files, e.Adapter)
+		delete(files, e.Adapter)
 		return
 	}
 	record := *e.Record
 	record.Latest = observed
-	j.Files[e.Adapter] = record
+	files[e.Adapter] = record
 }
 
 func pendingRecoveryPathError(op operation) error {
@@ -143,7 +147,7 @@ func pendingShutdownPlan(op operation, reason error) operation {
 }
 
 func cleanupRecoveredDirectories(state *os.Root, j journal, e *edit) error {
-	if e.Adapter != "agy" {
+	if !e.ownsDirectories() {
 		return nil
 	}
 	unpublishedSetup := e.After.Exists && !e.Before.Exists && strings.HasPrefix(e.Before.Dir, missingConfigDir) &&

@@ -34,7 +34,7 @@ func TestCodexSetupRefusalNamesOriginalState(t *testing.T) {
 				want = "CROSSHALL_STATE_DIR='<original-state-directory>' crosshall uninstall codex"
 			} else {
 				f.CheckTargets(t)
-				if err := original.Install(t.Context(), plan, ClaudeRules{}); err != nil {
+				if err := original.Install(t.Context(), plan); err != nil {
 					t.Fatal(err)
 				}
 			}

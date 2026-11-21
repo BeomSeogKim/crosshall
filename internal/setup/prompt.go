@@ -17,7 +17,7 @@ import (
 type operations interface {
 	Status(context.Context) ([]AdapterStatus, error)
 	PlanInstall(context.Context, []string) ([]VendorPlan, error)
-	Install(context.Context, VendorPlan, ClaudeRules) error
+	Install(context.Context, VendorPlan) error
 	PlanUninstall(context.Context, []string) ([]VendorPlan, error)
 	Uninstall(context.Context, VendorPlan) error
 }
@@ -241,7 +241,6 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 		if _, err := fmt.Fprintf(p.out, "%s hooks in %s (%s)\n", plan.Name, plan.Path, pathSource(plan)); err != nil {
 			return err
 		}
-		plan.Approvals = nil
 		if err := p.printPlan(plan); err != nil {
 			return err
 		}
@@ -255,10 +254,10 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			return err
 		}
 	}
-	label := "Install the listed hooks?"
+	label := "Install the listed hooks and command rules?"
 	pathConsent := p.req.Offer && p.req.PathConsent != nil
 	if pathConsent {
-		label = "Apply the shown PATH change and install the listed hooks?"
+		label = "Apply the shown PATH change and install the listed hooks and command rules?"
 	}
 	a, err := p.question(label)
 	if err != nil {
@@ -302,7 +301,7 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 	if c.plan.Action == "uninstall" {
 		err = p.ops.Uninstall(ctx, c.plan)
 	} else {
-		err = p.ops.Install(ctx, c.plan, ClaudeRules{})
+		err = p.ops.Install(ctx, c.plan)
 	}
 	switch {
 	case err != nil:
@@ -313,7 +312,10 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome = "removed"
 	default:
 		o.Outcome = "installed"
-		if c.plan.resumedLegacyCodex() {
+		if len(c.plan.Retained) > 0 {
+			skipped := c.plan.Retained[0]
+			o.Detail = fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path)
+		} else if c.plan.resumedLegacyCodex() {
 			o.Detail = "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin."
 			o.Retry = "crosshall setup codex"
 		}
@@ -411,7 +413,7 @@ func (p *prompter) printPlan(vp VendorPlan) error {
 	}
 	return printPlan(p.out, plan{Version: 1, OK: true, Kind: vp.Action, DryRun: p.req.DryRun,
 		Resume: vp.Resume, Recovery: vp.Recovery, Adapters: adapters, Files: vp.Files,
-		Approvals: vp.Approvals, Retained: vp.Retained})
+		Retained: vp.Retained})
 }
 
 // finish reports each vendor's outcome and fails when any vendor failed.

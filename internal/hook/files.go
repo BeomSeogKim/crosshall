@@ -179,6 +179,32 @@ func hasSeenNotice(leaf *os.Root, generation string) bool {
 	return err == nil && len(fields) == 3 && fields[1] == generation
 }
 
+const seenJoinHint = "seen-join-hint"
+
+const JoinHintOfferFile = "join-hint-offer"
+
+func ReadJoinHintOffer(leaf *os.Root, generation string) (wire.HookJoinHintAck, bool) {
+	return readJoinHintRecord(leaf, JoinHintOfferFile, generation)
+}
+
+func CurrentJoinHintOffer(leaf *os.Root, ack wire.HookJoinHintAck) bool {
+	offer, ok := ReadJoinHintOffer(leaf, ack.Generation)
+	return ok && offer.SameOffer(ack)
+}
+
+func ReadJoinHintAck(leaf *os.Root, generation string) (wire.HookJoinHintAck, bool) {
+	return readJoinHintRecord(leaf, seenJoinHint, generation)
+}
+
+func readJoinHintRecord(leaf *os.Root, name, generation string) (wire.HookJoinHintAck, bool) {
+	var ack wire.HookJoinHintAck
+	data, err := ident.ReadPrivateFile(leaf, name, 512)
+	if err != nil || json.Unmarshal(data, &ack) != nil {
+		return ack, false
+	}
+	return ack, ack.ValidFor(generation)
+}
+
 func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookAck) error {
 	// Hold the same stable inode across the comparison and atomic publication.
 	// Losing a lock costs a future check; no hook waits on another hook's disk I/O.

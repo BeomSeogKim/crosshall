@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -196,6 +199,111 @@ func TestHookAcknowledgementUsesItsOwnSequenceAndLiveInstance(t *testing.T) {
 	if after := ack("notice", "", nil); after == nil || after.Instance != s.ready.Instance {
 		t.Fatalf("new ack from stale dispatcher: %+v", after)
 	}
+}
+
+func TestHookJoinHintReceiptIsBoundToTheLiveExchange(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	leaf := adapterLeafFixture(t, s, root, true)
+	s.fixtureSQL(t, `INSERT INTO channel (id, name, state, created_at_ms) VALUES (1, 'dev', 'active', 1);
+		INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, roster_baseline_seq, hint_acked, roster_ack_seq)
+		VALUES (2, 1, 1, 'fixture', 1, 2, 1, 2);
+		INSERT INTO roster_change (channel_id, seq, principal_id, field) VALUES (1, 3, 1, 'joined');
+		INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('codex', 1, 0, 1, 1);
+		INSERT INTO adapter_launch (principal_id, launch_ref, started_hook_at_ms, profile, verified)
+		VALUES (1, 'pid-1', 1, '{}', 1);`)
+	principal, binding := int64(1), int64(2)
+	member := core.Caller{Role: core.RoleMember, PrincipalID: &principal, BindingID: &binding}
+	offer := wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 3}
+	if err := publishJoinHintOffer(leaf, &offer); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := offer
+	concurrent.Offer = ""
+	if err := publishJoinHintOffer(leaf, &concurrent); err != nil || !concurrent.SameOffer(offer) {
+		t.Fatalf("concurrent live offer changed its token: %+v (%v)", concurrent, err)
+	}
+	check := func(ack wire.HookJoinHintAck, want bool) {
+		t.Helper()
+		data, err := json.Marshal(ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := leaf.WriteFile("seen-join-hint", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+			if err := acknowledgeHookJoinHint(t.Context(), tx, Arrival{Dir: leaf}, wire.Request{Generation: "test-gen"}, member); err != nil {
+				return err
+			}
+			var got bool
+			var cursor int
+			if err := tx.QueryRowContext(t.Context(), "SELECT roster_baseline_seq IS NULL, roster_ack_seq FROM binding WHERE id = 2").Scan(&got, &cursor); err != nil {
+				return err
+			}
+			if got != want || want && uint64(cursor) != ack.RosterSeq || !want && cursor != 2 {
+				t.Fatalf("receipt %+v changed ack to %t cursor %d, want ack %t", ack, got, cursor, want)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(wire.HookJoinHintAck{Generation: "old-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 3, Offer: offer.Offer}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 1, RouteEpoch: 1, RosterSeq: 3, Offer: offer.Offer}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 2, RosterSeq: 3, Offer: offer.Offer}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 4, Offer: offer.Offer}, false)
+
+	lock, err := spool.OpenServerFile(leaf, "join-hint.lock", os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	profile := wire.HookProfile{Adapter: "codex", ManifestRev: "codex-1", Platform: "darwin-arm64", VendorVersion: "unverified", Mode: "unverified"}
+	now := time.Now().UnixMilli()
+	svc := &domain.Service{}
+	end := domain.HookEvent{HookEventArgs: wire.HookEventArgs{
+		Profile: profile, LaunchRef: "pid-1", LaunchVerified: true, EventRef: "end", Fact: wire.HookSessionEnded, HookAtMS: now - 2, Epoch: 1,
+	}}
+	if err := s.db.Update(ctx, func(tx store.Tx) error {
+		result, err := svc.Handle(ctx, tx, member, domain.Request{Command: end, OpKey: "end", Vendor: "codex"})
+		if err != nil || result.Status != core.ExitOK {
+			t.Fatalf("clean session end: %+v (%v)", result, err)
+		}
+		return s.applyAdapterStamps(ctx, tx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leaf.Lstat(hook.JoinHintOfferFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean departure did not revoke the offer while output held the lock: %v", err)
+	}
+	check(offer, false)
+	resume := domain.HookEnroll{HookEnrollArgs: wire.HookEnrollArgs{
+		Profile: profile, LaunchRef: "pid-2", LaunchVerified: true, EventRef: "resume", Source: "resume", HookAtMS: now - 1, Epoch: 1,
+	}}
+	var after wire.HookResult
+	if err := s.db.Update(ctx, func(tx store.Tx) error {
+		caller := core.Caller{Role: core.RoleUnenrolled, PrincipalID: &principal}
+		result, err := svc.Handle(ctx, tx, caller, domain.Request{Command: resume, OpKey: "resume", Vendor: "codex"})
+		if err != nil || result.Status != core.ExitOK {
+			t.Fatalf("hook resume: %+v (%v)", result, err)
+		}
+		if err := s.addHookAck(ctx, tx, Arrival{Dir: leaf}, wire.Request{Verb: wire.VerbHookEnroll, Generation: offer.Generation}, &result); err != nil {
+			return err
+		}
+		return json.Unmarshal(result.Data, &after)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if after.Enrollment != "restored" || after.JoinHintAck == nil || after.JoinHintAck.RouteEpoch != offer.RouteEpoch ||
+		after.JoinHintAck.Offer == offer.Offer || after.JoinHintAck.Offer == "" {
+		t.Fatalf("hook rejoin did not retain pending guidance with a fresh token: %+v", after.JoinHintAck)
+	}
+	check(offer, false)
+	check(*after.JoinHintAck, true)
 }
 
 func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {

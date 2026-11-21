@@ -213,6 +213,7 @@ func openRendezvous(path string) (*os.Root, error) {
 type memberLeaf struct {
 	digest   string
 	identity string
+	fenced   bool
 }
 
 // Only startup runs this, while holding the dispatcher lock and before
@@ -430,6 +431,9 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 		s.logFailure(fmt.Errorf("registered member directory changed: %s", path))
 		return
 	}
+	if leaf.fenced {
+		s.logFailure(hook.RetireJoinHintFiles(dir))
+	}
 	watched.add(filepath.Join(path, "in"))
 	if reap {
 		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour)))
@@ -444,14 +448,14 @@ func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		// A client may still have its old leaf after a key rotation. Drain
 		// that directory so the resolver can return the retirement refusal.
-		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity FROM leaf ORDER BY digest")
+		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, state = 'fenced' FROM leaf ORDER BY digest")
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var leaf memberLeaf
-			if err := rows.Scan(&leaf.digest, &leaf.identity); err != nil {
+			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.fenced); err != nil {
 				return err
 			}
 			leaves = append(leaves, leaf)
@@ -580,6 +584,13 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result, err = domain.OK(wire.DispatcherInstance{Instance: s.ready.Instance})
 			return err
 		}
+		if req.Verb == wire.VerbHookJoinHintAck {
+			if arrival.Owner || resolved.Caller.Role != core.RoleMember || !oneWayHook || req.OpKey != wire.VerbHookJoinHintAck {
+				result = commandError(core.ExitRefused, "", "hook join acknowledgement requires member ingress")
+				return errRefusalRollback
+			}
+			return acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller)
+		}
 		var hook *domain.AdapterContext
 		if isHook {
 			var refusal core.Result
@@ -591,6 +602,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				result = refusal
 				return errRefusalRollback
 			}
+		}
+		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+			return err
 		}
 		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack)
 		if err != nil {

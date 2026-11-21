@@ -595,6 +595,10 @@ func rosterChange(ctx context.Context, tx store.Tx, channel, principal int64, fi
 		`INSERT INTO roster_change (channel_id, seq, principal_id, field)
 		 VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM roster_change WHERE channel_id = ?), ?, ?)`,
 		channel, channel, principal, field)
+	if err == nil && field == "departed" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO adapter_dirty(principal_id, notice, reminder) VALUES (?, 1, 1)
+			ON CONFLICT(principal_id) DO UPDATE SET notice = 1, reminder = 1`, principal)
+	}
 	return err
 }
 

@@ -3,10 +3,11 @@ package wire
 import "encoding/json"
 
 const (
-	VerbHookEnroll = "hook.enroll"
-	VerbHookEvent  = "hook.event"
-	VerbHookRoute  = "hook.route"
-	VerbAdapterSet = "owner adapter set"
+	VerbHookEnroll      = "hook.enroll"
+	VerbHookEvent       = "hook.event"
+	VerbHookRoute       = "hook.route"
+	VerbAdapterSet      = "owner adapter set"
+	VerbHookJoinHintAck = "hook.join_hint_ack"
 )
 
 const (
@@ -75,19 +76,38 @@ type HookRouteArgs struct {
 // is scoped to one output path and is independent of the roster cursor. Cue is
 // the short text for a restored session whose context was reset.
 type HookResult struct {
-	Enrollment   string          `json:"enrollment,omitempty"`
-	Alias        string          `json:"alias,omitempty"`
-	Channel      string          `json:"channel,omitempty"`
-	Hint         string          `json:"hint,omitempty"`
-	Cue          string          `json:"cue,omitempty"`
-	Roster       json.RawMessage `json:"roster,omitempty"`
-	Omitted      int             `json:"omitted,omitempty"`
-	OfferID      int64           `json:"offer_id,omitempty"`
-	PendingLine  string          `json:"pending_line,omitempty"`
-	TurnEndLine  string          `json:"turn_end_line,omitempty"`
-	ReminderText string          `json:"reminder_text,omitempty"`
-	Ack          *HookAck        `json:"ack,omitempty"`
-	Epoch        uint64          `json:"epoch"`
+	Enrollment   string           `json:"enrollment,omitempty"`
+	Alias        string           `json:"alias,omitempty"`
+	Channel      string           `json:"channel,omitempty"`
+	Hint         string           `json:"hint,omitempty"`
+	Cue          string           `json:"cue,omitempty"`
+	Roster       json.RawMessage  `json:"roster,omitempty"`
+	Omitted      int              `json:"omitted,omitempty"`
+	OfferID      int64            `json:"offer_id,omitempty"`
+	PendingLine  string           `json:"pending_line,omitempty"`
+	TurnEndLine  string           `json:"turn_end_line,omitempty"`
+	ReminderText string           `json:"reminder_text,omitempty"`
+	Ack          *HookAck         `json:"ack,omitempty"`
+	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
+	Epoch        uint64           `json:"epoch"`
+}
+
+type HookJoinHintAck struct {
+	BindingID  int64  `json:"binding_id"`
+	RouteEpoch int64  `json:"route_epoch"`
+	Generation string `json:"gen"`
+	RosterSeq  uint64 `json:"roster_seq"`
+	Offer      string `json:"offer,omitempty"`
+}
+
+func (a HookJoinHintAck) ValidFor(generation string) bool {
+	return generation != "" && a.Generation == generation &&
+		a.BindingID > 0 && a.RouteEpoch > 0 && int64(a.RosterSeq) > 0 && a.Offer != ""
+}
+
+func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
+	return a.Offer != "" && a.Offer == b.Offer && a.BindingID == b.BindingID &&
+		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation
 }
 
 type HookAck struct {
@@ -107,7 +127,7 @@ type AdapterPolicyArgs struct {
 }
 
 func (r Request) IsHook() bool {
-	return r.Verb == VerbHookEnroll || r.Verb == VerbHookEvent || r.Verb == VerbHookRoute
+	return r.Verb == VerbHookEnroll || r.Verb == VerbHookEvent || r.Verb == VerbHookRoute || r.Verb == VerbHookJoinHintAck
 }
 
 // OneWayHook limits the no-reply envelope to an observation without output.
@@ -115,7 +135,7 @@ func (r Request) OneWayHook() bool {
 	if r.Reply == nil || *r.Reply {
 		return false
 	}
-	if r.Verb == VerbHookRoute {
+	if r.Verb == VerbHookRoute || r.Verb == VerbHookJoinHintAck {
 		return true
 	}
 	if r.Verb != VerbHookEvent {

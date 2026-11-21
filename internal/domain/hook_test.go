@@ -54,7 +54,7 @@ func (f *fixture) hook(s session, cmd Command) wire.HookResult {
 // quiet reports whether a hook result has nothing to print and nothing to acknowledge.
 func quiet(r wire.HookResult) bool {
 	return r.Hint == "" && r.PendingLine == "" && len(r.Roster) == 0 && r.ReminderText == "" && r.TurnEndLine == "" && r.Ack == nil &&
-		(r.Enrollment == "" || r.Enrollment == "none")
+		r.JoinHintAck == nil && (r.Enrollment == "" || r.Enrollment == "none")
 }
 
 func rosterOf(t *testing.T, r wire.HookResult) []Member {
@@ -166,6 +166,9 @@ func TestHookSessionReplay(t *testing.T) {
 			mail = f.noteTo(writer, "claude1", 2)
 		}
 		outputs = append(outputs, f.hook(s, cmd))
+		if i == 0 {
+			f.ackHookJoin(s, outputs[0].JoinHintAck.RosterSeq)
+		}
 	}
 	join := outputs[0]
 	if join.Enrollment != "joined" || join.Alias != "claude1" || join.Channel != "checkout" || join.Hint == "" ||
@@ -196,6 +199,35 @@ func TestHookSessionReplay(t *testing.T) {
 	}
 	if after := f.rows(); !reflect.DeepEqual(before, after) {
 		t.Fatalf("replay changed rows:\n before %v\n after  %v", before, after)
+	}
+}
+
+func TestHookJoinGuidanceIsOfferedUntilAcknowledged(t *testing.T) {
+	f, writer := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	first := f.hook(s, start("pid-1", "startup", t0))
+	if first.JoinHintAck == nil || first.JoinHintAck.RosterSeq == 0 || first.Hint == "" {
+		t.Fatalf("start did not offer join guidance and its receipt: %+v", first.JoinHintAck)
+	}
+	f.ack(s, first.JoinHintAck.RosterSeq)
+	mail := f.noteTo(writer, first.Alias, 1)
+	later := prompt("pid-1", "turn-1", t0+1000)
+	offered := f.hook(s, later)
+	if offered.Hint != first.Hint || offered.JoinHintAck == nil ||
+		offered.JoinHintAck.BindingID != first.JoinHintAck.BindingID || offered.PendingLine != pendingLine(mail...) {
+		t.Fatalf("prompt did not repeat guidance alongside the pending notice: %+v", offered)
+	}
+	if got := f.hook(s, later); !quiet(got) {
+		t.Fatalf("the same prompt replayed output: %+v", got)
+	}
+	if got := f.hook(s, start("pid-1", "clear", t0+2000)); got.Hint != first.Hint || got.Cue == "" || got.JoinHintAck == nil {
+		t.Fatalf("clear did not preserve its reset cue while retrying guidance: %+v", got)
+	}
+	f.ackHookJoin(s, offered.JoinHintAck.RosterSeq)
+	mail = f.noteTo(writer, first.Alias, 1)
+	if got := f.hook(s, prompt("pid-1", "turn-2", t0+3000)); got.Hint != "" || got.JoinHintAck != nil || got.PendingLine != pendingLine(mail...) {
+		t.Fatalf("delivery confirmation changed later pending output: %+v", got)
 	}
 }
 
@@ -530,7 +562,8 @@ func TestCompactOffersOnlyWhatTheSessionWasNotOffered(t *testing.T) {
 	f, writer := adapterChannel(t)
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
-	f.hook(s, start("pid-1", "startup", t0))
+	joined := f.hook(s, start("pid-1", "startup", t0))
+	f.ackHookJoin(s, joined.JoinHintAck.RosterSeq)
 	f.noteTo(writer, "claude1", 2)
 	f.hook(s, prompt("pid-1", "t1", t0+1_000))
 	compact := func(at int64) wire.HookResult { return f.hook(s, start("pid-1", "compact", at)) }
@@ -550,7 +583,8 @@ func TestContextResetGivesOneCueInsteadOfRepeats(t *testing.T) {
 	f, writer := adapterChannel(t)
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
-	f.hook(s, start("pid-1", "startup", t0))
+	joined := f.hook(s, start("pid-1", "startup", t0))
+	f.ackHookJoin(s, joined.JoinHintAck.RosterSeq)
 	const pointer = "[crosshall] You are @claude1 in #checkout. `crosshall join checkout --rules` prints the member rules."
 	if got := f.hook(s, start("pid-1", "clear", t0+500)); got.Cue != pointer || got.PendingLine != "" || got.Hint != "" {
 		t.Fatalf("clear with nothing waiting: %+v", got)
@@ -618,6 +652,15 @@ func TestAutoEnrolledMemberBootstrapsTheRosterOnItsFirstCommand(t *testing.T) {
 func (f *fixture) ack(s session, seq uint64) {
 	f.t.Helper()
 	if _, err := f.db.Exec(`UPDATE binding SET roster_ack_seq = MAX(roster_ack_seq, ?), hint_acked = 1
+		WHERE principal_id = ? AND state = 'live'`, seq, f.principalOf(s)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) ackHookJoin(s session, seq uint64) {
+	f.t.Helper()
+	if _, err := f.db.Exec(`UPDATE binding
+		SET roster_ack_seq = MAX(roster_ack_seq, ?), hint_acked = 1, roster_baseline_seq = NULL
 		WHERE principal_id = ? AND state = 'live'`, seq, f.principalOf(s)); err != nil {
 		f.t.Fatal(err)
 	}

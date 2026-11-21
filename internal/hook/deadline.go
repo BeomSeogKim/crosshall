@@ -28,8 +28,11 @@ func (o *hookOutput) Write(p []byte) (int, error) {
 	if !o.state.CompareAndSwap(outputIdle, outputWriting) {
 		return 0, context.DeadlineExceeded
 	}
-	defer o.state.CompareAndSwap(outputWriting, outputWritten)
-	return o.dst.Write(p)
+	n, err := o.dst.Write(p)
+	if !o.state.CompareAndSwap(outputWriting, outputWritten) && err == nil {
+		return n, context.DeadlineExceeded
+	}
+	return n, err
 }
 
 func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {

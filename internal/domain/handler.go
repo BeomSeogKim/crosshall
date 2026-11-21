@@ -508,11 +508,17 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 	}
 
+	var bound string
+	if cmd.Launch != nil {
+		if bound, err = s.bindJoinLaunch(ctx, tx, principal, *cmd.Launch, now); err != nil {
+			return core.Result{}, err
+		}
+	}
 	seq, err := rosterSeq(ctx, tx, ch.id)
 	if err != nil {
 		return core.Result{}, err
 	}
-	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq}
+	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq, Launch: bound}
 	// The hint and the full roster repeat until a later command acknowledges
 	// them; after that a re-join says "Already in", prints the rules only on
 	// request and, of the roster, only what changed since the cursor.

@@ -61,3 +61,36 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 	return principal, audit(ctx, tx, "session_cleared", "principal:"+strconv.FormatInt(principal, 10), principal,
 		map[string]string{"launch": cmd.LaunchRef}, now)
 }
+
+// bindJoinLaunch binds the launch a hand join names, so that the session's
+// hooks and a later /clear can tell its process: the reference has a start
+// digest, its adapter is the session's, its time is the join's, its process
+// runs and started before it, and no launch of that process is open for the
+// principal (a start already bound one). It returns the bound reference, or "".
+func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int64, l JoinLaunch, now time.Time) (string, error) {
+	if s.LaunchProcess == nil || s.LaunchAlive == nil || !validProfile(l.Profile) || !validRef(l.Ref) ||
+		l.AtMS > ms(now)+futureSlackMS || l.AtMS < ms(now)-joinLaunchAgeMS {
+		return "", nil
+	}
+	own, ok := s.LaunchProcess(l.Ref)
+	if !ok || len(l.Ref) <= len(own)+1 || !s.LaunchAlive(l.Ref, l.AtMS) {
+		return "", nil
+	}
+	var free bool
+	if err := tx.QueryRowContext(ctx, `SELECT vendor = ?2 AND NOT EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ?1
+		AND ended_hook_at_ms IS NULL AND (launch_ref = ?3 OR launch_ref LIKE ?3 || '-%'))
+		FROM principal WHERE id = ?1`, principal, l.Profile.Adapter, own).Scan(&free); err != nil || !free {
+		return "", err
+	}
+	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.AtMS); err != nil {
+		return "", err
+	}
+	if _, _, err := s.settleLaunches(ctx, tx, principal, l.Ref, l.AtMS, now); err != nil {
+		return "", err
+	}
+	return l.Ref, refreshMemberAdapterCapabilities(ctx, tx, principal, l.Profile.Adapter)
+}
+
+// joinLaunchAgeMS bounds how old a join's launch time may be when the
+// dispatcher sees it: one command's budget, with room for a slow start.
+const joinLaunchAgeMS = 30_000

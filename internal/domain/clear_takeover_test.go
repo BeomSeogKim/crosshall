@@ -106,3 +106,67 @@ func TestOnlyAClearInTheSameRunningProcessTakesOver(t *testing.T) {
 		})
 	}
 }
+
+func joinLaunch(ref string, at int64) *JoinLaunch {
+	return &JoinLaunch{Ref: ref, AtMS: at, Profile: testProfile}
+}
+
+// #622: a hand join inside a running session binds its process, so its
+// first /clear keeps the member too.
+func TestClearAfterAHandJoinKeepsTheMember(t *testing.T) {
+	f, writer := adapterChannel(t)
+	f.svc.LaunchProcess = testProcess
+	f.svc.LaunchAlive = func(string, int64) bool { return true }
+	old := f.newSession("claude")
+	r := decode[JoinResult](t, f.join(old, Join{Channel: "checkout", Alias: "worker",
+		Launch: joinLaunch("pid-7-join", f.now.UnixMilli())}, ""))
+	if r.Launch != "pid-7-join" {
+		t.Fatalf("the join bound %q, want its launch", r.Launch)
+	}
+	unread := decode[AskResult](t, f.ask(writer, Ask{To: []string{"worker"}, Body: "unread"}, "k1")).ID
+	cleared := f.newSession("claude")
+	got := f.hook(cleared, start("pid-7-b", "clear", f.now.UnixMilli()+20))
+	if got.Enrollment != "restored" || got.Alias != "worker" || f.keyState(old) != "retired" {
+		t.Fatalf("clear after a hand join: %+v", got)
+	}
+	if inbox := decode[InboxResult](t, f.run(cleared, Inbox{}, "")); len(inbox.Unread) != 1 || inbox.Unread[0].ID != unread {
+		t.Fatalf("the cleared session's inbox: %+v", inbox)
+	}
+}
+
+func TestAJoinBindsOnlyARunningProcessNotYetBound(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		alive   bool
+		started bool
+		adapter string
+		at      int64
+	}{
+		{name: "a dead process", alive: false, adapter: "claude"},
+		{name: "a process a start already bound", alive: true, started: true, adapter: "claude"},
+		{name: "another adapter", alive: true, adapter: "codex"},
+		{name: "an old time", alive: true, adapter: "claude", at: -joinLaunchAgeMS - 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, _ := adapterChannel(t)
+			f.svc.LaunchProcess = testProcess
+			f.svc.LaunchAlive = func(string, int64) bool { return c.alive }
+			s := f.newSession("claude")
+			if c.started {
+				f.hook(s, start("pid-7-a", "startup", f.now.UnixMilli()))
+			}
+			l := joinLaunch("pid-7-join", f.now.UnixMilli()+c.at)
+			l.Profile.Adapter = c.adapter
+			alias := "worker"
+			if c.started {
+				alias = "claude1"
+			}
+			res := f.join(s, Join{Channel: "checkout", Alias: alias, Launch: l}, "")
+			wantOK(t, res)
+			r := decode[JoinResult](t, res)
+			if r.Launch != "" || f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'pid-7-join'`) != 0 {
+				t.Fatalf("the join bound %q", r.Launch)
+			}
+		})
+	}
+}

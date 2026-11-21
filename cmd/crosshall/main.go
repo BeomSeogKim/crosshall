@@ -92,6 +92,9 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	if pathErr == nil {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})
 		transport.EnableMemberStart(entry, paths.launch(false).Start)
+		transport.EnableJoinLaunch(hook.JoinLaunch, func(id ident.Identity, l domain.JoinLaunch) error {
+			return hook.BindJoinLaunch(paths.rendezvous, id, l)
+		})
 		env.Transport = transport
 		env.Doctor = paths.launch(false).Doctor
 		env.Whoami = transport.Whoami

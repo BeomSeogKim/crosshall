@@ -248,9 +248,13 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	c.fireAndRecord("UserPromptSubmit", wire.HookPromptSubmitted, map[string]any{"prompt_id": "p5"})
 	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p5", "stop_hook_active": false})
 	// A second replay of every callback that carries a native reference
-	// prints nothing and changes nothing. (Starts and ends carry none: the
-	// hook's own time tells them apart, so a replay of one is a new event.)
+	// prints nothing and changes nothing but the record of the replayed
+	// prompts, whose references carry their own hook time (#174: the turns
+	// are placed from every recorded prompt). (Starts and ends carry none:
+	// the hook's own time tells them apart, so a replay of one is a new
+	// event.)
 	before := tableCounts(t, w)
+	before["observation"] += 5
 	for _, p := range []string{"p1", "p2", "p3", "p4", "p5"} {
 		if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": p}); got != "" {
 			t.Fatalf("replayed prompt %s printed %q", p, got)

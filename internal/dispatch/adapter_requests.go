@@ -11,6 +11,17 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+func hookEnrolled(req wire.Request, caller core.Caller, result core.Result) bool {
+	if req.Verb == wire.VerbHookEnroll && caller.Role == core.RoleMember {
+		return true
+	}
+	if req.Verb != wire.VerbHookEnroll && (req.Verb != wire.VerbHookEvent || caller.Role != core.RoleUnenrolled || req.OneWayHook()) {
+		return false
+	}
+	var output wire.HookResult
+	return json.Unmarshal(result.Data, &output) == nil && (output.Enrollment == "joined" || output.Enrollment == "restored")
+}
+
 func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, r Resolution) (*domain.AdapterContext, core.Result, error) {
 	var adapter, launch, event string
 	var epoch uint64

@@ -20,6 +20,8 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -552,6 +554,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	}
 	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault || req.Verb == domain.VerbAdapterEvidence
 	var result core.Result
+	var enrolledSession ident.Identity
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
@@ -625,6 +628,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			}
 			return nil
 		}
+		if req.Verb == domain.VerbJoin || hookEnrolled(req, resolved.Caller, result) {
+			enrolledSession = ident.Identity{Vendor: resolved.Vendor, Key: resolved.SessionKey}
+		}
 		if refreshFiles {
 			if err := s.invalidateAdapterFile(req.Verb); err != nil {
 				return err
@@ -653,6 +659,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return unknownOutcome("commit outcome unknown", req.OpKey), nil
 		}
 		return commandError(core.ExitError, "", "command failed; see dispatcher.log"), nil
+	}
+	if enrolledSession.Key != "" {
+		s.logFailure(hook.RemoveStartupRepo(s.state, enrolledSession))
 	}
 	if refreshFiles && result.Status == core.ExitOK {
 		if err := s.publishAdapterFiles(ctx); err != nil {

@@ -235,7 +235,7 @@ A dispatcher, a background process of your own user, keeps the hall in an SQLite
 ## On your machine
 
 - **The binary:** `~/.local/bin/crosshall`.
-- **The state directory:** `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`. It holds the database, its upgrade backups, the dispatcher log and the owner's spool.
+- **The state directory:** `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`. It holds the database and upgrade backups, the dispatcher log and owner's spool, setup records, and `hook-policy`, `hook-start-failed` and `hook-start-repos/` for adapter hooks. [State file details](docs/operations.md#state-directory).
 - **A rendezvous directory** under `/tmp`, named `crosshall-<uid>-<hash>`, which holds the members' spool directories.
 - **A background dispatcher** while crosshall is in use.
 - **Adapter hooks,** only if you install them: entries in Claude Code's `settings.json` or Codex's `hooks.json`.

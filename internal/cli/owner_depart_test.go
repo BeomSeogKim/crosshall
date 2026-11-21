@@ -117,22 +117,28 @@ func TestOwnerWhoRendersReachAndStoppedBuild(t *testing.T) {
 			}
 		})
 	}
-	t.Run("stopped", func(t *testing.T) {
-		result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "checkout", Members: []domain.OwnerMember{{
-			Member: domain.Member{BindingID: 3, Alias: "reader", Vendor: "claude", Route: "pull",
-				Publish: &domain.PublishStatus{State: "suspended", Reason: "absorbed"}},
-			Reach: "prompt", BindingState: "live", DepartToken: departureToken,
-		}}}}, StoppedBuilds: []domain.OwnerStoppedBuild{{
-			Adapter: "claude", Version: "2.1.331", Platform: "darwin-arm64", Mode: "interactive",
-			StoppedAtMS: 60_000, Notice: 41, Reason: "absorbed", ResumeBindingID: 3,
-		}}}
-		env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
-		out, stderr, code := run(t, env, "owner", "who", "--all")
-		footer := "Notices to Claude Code 2.1.331 are stopped since " + clock(60_000) +
-			" (notice 41, absorbed). After checking the session, turn them back on with: crosshall owner publish resume 3"
-		if code != core.ExitOK || !strings.Contains(out, "sees work at its next prompt; publish: suspended") ||
-			!strings.Contains(out, footer+"\nTo depart a listed binding") {
-			t.Fatalf("exit %d, stderr %q, stdout %q, want footer %q after the member", code, stderr, out, footer)
-		}
-	})
+	for _, tc := range []struct {
+		name, origin, text string
+	}{
+		{"stopped origin", "reader", " (notice 41 to @reader, absorbed). After checking that session, turn them back on with: "},
+		{"stopped peer", "", " (notice 41, absorbed). The session that received it is gone; turn notices back on with: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "checkout", Members: []domain.OwnerMember{{
+				Member: domain.Member{BindingID: 3, Alias: "reader", Vendor: "claude", Route: "pull",
+					Publish: &domain.PublishStatus{State: "suspended", Reason: "absorbed"}},
+				Reach: "prompt", BindingState: "live", DepartToken: departureToken,
+			}}}}, StoppedBuilds: []domain.OwnerStoppedBuild{{
+				Adapter: "claude", Version: "2.1.331", Platform: "darwin-arm64", Mode: "interactive",
+				StoppedAtMS: 60_000, Notice: 41, Reason: "absorbed", ResumeBindingID: 3, OriginAlias: tc.origin,
+			}}}
+			env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
+			out, stderr, code := run(t, env, "owner", "who", "--all")
+			footer := "Notices to Claude Code 2.1.331 are stopped since " + clock(60_000) + tc.text + "crosshall owner publish resume 3"
+			if code != core.ExitOK || !strings.Contains(out, "sees work at its next prompt; publish: suspended") ||
+				!strings.Contains(out, footer+"\nTo depart a listed binding") {
+				t.Fatalf("exit %d, stderr %q, stdout %q, want footer %q after the member", code, stderr, out, footer)
+			}
+		})
+	}
 }

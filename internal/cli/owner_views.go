@@ -156,8 +156,13 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 			if name == "claude" {
 				name = "Claude Code"
 			}
-			fmt.Fprintf(w, "Notices to %s %s are stopped since %s (notice %d, %s). After checking the session, turn them back on with: crosshall owner publish resume %d\n",
-				name, build.Version, clock(build.StoppedAtMS), build.Notice, build.Reason, build.ResumeBindingID)
+			fmt.Fprintf(w, "Notices to %s %s are stopped since %s (notice %d", name, build.Version, clock(build.StoppedAtMS), build.Notice)
+			if build.OriginAlias != "" {
+				fmt.Fprintf(w, " to @%s, %s). After checking that session, turn them back on with: ", build.OriginAlias, build.Reason)
+			} else {
+				fmt.Fprintf(w, ", %s). The session that received it is gone; turn notices back on with: ", build.Reason)
+			}
+			fmt.Fprintf(w, "crosshall owner publish resume %d\n", build.ResumeBindingID)
 		}
 		if hasToken {
 			fmt.Fprintln(w, "To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.")

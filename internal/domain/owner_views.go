@@ -45,6 +45,7 @@ type OwnerStoppedBuild struct {
 	Notice          int64  `json:"notice"`
 	Reason          string `json:"reason"`
 	ResumeBindingID int64  `json:"resume_binding_id"`
+	OriginAlias     string `json:"origin_alias,omitempty"`
 }
 
 type OwnerWhoChannel struct {
@@ -183,8 +184,10 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 
 func ownerStoppedBuilds(ctx context.Context, tx store.Tx) ([]OwnerStoppedBuild, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.stopped_at_ms,
-		cb.stop_ref, cb.stop_reason, MIN(b.id) FROM binding b JOIN `+currentBindingLaunch+`
+		cb.stop_ref, cb.stop_reason, COALESCE(MAX(pa.binding_id), MIN(b.id)),
+		COALESCE(MAX(CASE WHEN pa.id IS NOT NULL THEN b.alias END), '') FROM binding b JOIN `+currentBindingLaunch+`
 		JOIN capability_build cb ON `+resumableBindingBuild+`
+		LEFT JOIN publish_attempt pa ON pa.id = cb.stop_ref AND pa.binding_id = b.id
 		WHERE cb.cap = 'publish' AND `+store.CapabilityBuildStopped("cb")+`
 		GROUP BY cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.manifest_rev
 		ORDER BY cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.manifest_rev`)
@@ -195,7 +198,8 @@ func ownerStoppedBuilds(ctx context.Context, tx store.Tx) ([]OwnerStoppedBuild, 
 	var builds []OwnerStoppedBuild
 	for rows.Next() {
 		var b OwnerStoppedBuild
-		if err := rows.Scan(&b.Adapter, &b.Version, &b.Platform, &b.Mode, &b.StoppedAtMS, &b.Notice, &b.Reason, &b.ResumeBindingID); err != nil {
+		if err := rows.Scan(&b.Adapter, &b.Version, &b.Platform, &b.Mode, &b.StoppedAtMS,
+			&b.Notice, &b.Reason, &b.ResumeBindingID, &b.OriginAlias); err != nil {
 			return nil, err
 		}
 		builds = append(builds, b)

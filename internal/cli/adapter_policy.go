@@ -13,7 +13,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex|agy> [--enabled on|off] [--reminder on|off] [--publish on|off|default]"
+const adapterPolicyUsage = "usage: crosshall owner adapter set <claude|codex|agy> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]"
 
 func runAdapterPolicy(ctx context.Context, env Env, opts options, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
@@ -38,8 +38,12 @@ func parseAdapterPolicy(args []string) (domain.AdapterSet, error) {
 	cmd.Adapter = args[2]
 	for i := 3; i < len(args); i++ {
 		flag, _, _ := strings.Cut(args[i], "=")
-		if flag == "--publish" {
-			if cmd.Publish != nil {
+		if flag == "--publish" || flag == "--turn-end" {
+			destination := &cmd.Publish
+			if flag == "--turn-end" {
+				destination = &cmd.TurnEnd
+			}
+			if *destination != nil {
 				return cmd, fmt.Errorf("%s was provided more than once", flag)
 			}
 			value, last, _, err := flagValue(args, i, flag)
@@ -49,7 +53,7 @@ func parseAdapterPolicy(args []string) (domain.AdapterSet, error) {
 			if value != "on" && value != "off" && value != "default" {
 				return cmd, fmt.Errorf("%s takes on, off or default", flag)
 			}
-			cmd.Publish = &value
+			*destination = &value
 			i = last
 			continue
 		}
@@ -94,6 +98,9 @@ func renderAdapterPolicy(data []byte, w io.Writer) error {
 	publish := ""
 	if policy.Publish != "" {
 		publish = " publish=" + policy.Publish
+	}
+	if policy.TurnEnd != "" {
+		publish += " turn_end=" + policy.TurnEnd
 	}
 	_, err := fmt.Fprintf(w, "%s adapter enabled=%s reminder=%s%s epoch=%d\n", policy.Adapter, enabled, reminder, publish, policy.Epoch)
 	return err

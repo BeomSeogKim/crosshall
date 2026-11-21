@@ -268,7 +268,7 @@ func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAda
 			out.UnverifiedLaunches += profile.count
 			continue
 		}
-		if out.Policy.Enabled && turnEnd.Covered {
+		if out.Policy.Enabled && out.Policy.TurnEnd != "off" && turnEnd.Covered {
 			out.TurnEndNotice.Available = true
 			if turnEnd.ExactLevel == "tested" {
 				exactTurnEnd = true

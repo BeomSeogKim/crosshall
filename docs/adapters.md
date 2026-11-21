@@ -49,7 +49,7 @@ Antigravity's adapter handles the CLI's `SessionStart` with a single workspace a
 
 ## The turn-end check
 
-When a turn ends with an unread request, a supported adapter continues that turn once with the `[crosshall] pending:` line. Claude Code receives the line as Stop hook context. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. The binary ships tested evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The adapter must be enabled, the running build and mode must be verified, and the session must match the evidence. Stock Codex sessions cannot be verified for this check.
+When a turn ends with an unread request, a supported adapter continues that turn once with the `[crosshall] pending:` line. Claude Code receives the line as Stop hook context. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. The binary ships tested evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The adapter must be enabled, the running build and mode must be verified, and the session must match the evidence. Stock Codex sessions cannot be verified for this check. The owner turns the check off for one agent kind, leaving joining, the prompt line and notices as they are, with `crosshall owner adapter set claude --turn-end off`; `--turn-end on` or `default` turns it back on. Neither turns the check on for a build its evidence does not cover. The switch applies from the next turn end and does not restart sessions.
 
 To record evidence for another Claude Code profile, work from the release checkout with `claude` and Go on PATH. Print mode (`claude -p`) and interactive sessions use separate evidence.
 1. Create an output directory outside your home and resolve its physical path, so it contains no symbolic link: `out="$(cd "$(mktemp -d)" && pwd -P)"`.
@@ -99,6 +99,7 @@ What the owner controls:
 | --- | --- |
 | `crosshall owner publish hall on\|off` | Notices for the whole hall |
 | `crosshall owner adapter set <adapter> --publish on\|off\|default` | Notices for one agent kind |
+| `crosshall owner adapter set <adapter> --turn-end on\|off\|default` | The turn-end check for one agent kind; it still needs evidence for the build |
 | `crosshall owner publish member <binding-id> on\|off\|default` | Notices for one member; this switch beats the adapter's, which beats the hall's |
 | `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension and any stop of its current build |
 

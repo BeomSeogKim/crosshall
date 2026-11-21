@@ -15,6 +15,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -320,15 +321,23 @@ func TestClaudeStartAndEndCarryTheSameVerifiedReference(t *testing.T) {
 	var labels []string
 	transport := recordedTransport{call: func(_ ident.Identity, _ string, req wire.Request, oneWay bool) (spool.Reply, error) {
 		var a struct {
-			Profile  wire.HookProfile `json:"profile"`
-			Launch   string           `json:"launch_ref"`
-			Verified bool             `json:"launch_verified"`
+			Profile      wire.HookProfile `json:"profile"`
+			Launch       string           `json:"launch_ref"`
+			Verified     bool             `json:"launch_verified"`
+			PIDNamespace string           `json:"pid_namespace"`
 		}
 		if err := json.Unmarshal(req.Args, &a); err != nil {
 			t.Fatal(err)
 		}
 		if !a.Verified || a.Launch == "" || a.Launch == "72" || a.Profile.VendorVersion != "unverified" || a.Profile.Mode != "unverified" {
 			t.Fatalf("lost the distinction between launch identity and build evidence: %s", req.Args)
+		}
+		var namespace string
+		if req.Verb == wire.VerbHookEnroll {
+			namespace = proc.PIDNamespace()
+		}
+		if a.PIDNamespace != namespace {
+			t.Fatalf("%s namespace = %q, want %q", req.Verb, a.PIDNamespace, namespace)
 		}
 		labels = append(labels, a.Launch)
 		return spool.Reply{Response: wire.Response{Result: core.Result{Data: json.RawMessage(`{"epoch":7,"enrollment":"restored"}`)}}}, nil

@@ -91,6 +91,16 @@ func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBindin
 				THEN publish_route_proof.activated_at_ms END
 		WHERE publish_route_proof.generation < excluded.generation`,
 		queue.PID, queue.StartMS, binding.ID, binding.Generation)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE adapter_launch AS l SET process_pid = ?1, process_start_identity = ?2
+		WHERE l.process_pid IS NULL AND l.verified = 1 AND l.fenced = 0 AND l.ended_hook_at_ms IS NULL
+		AND (l.launch_ref = 'pid-' || ?1 OR l.launch_ref GLOB 'pid-' || ?1 || '-*')
+		AND EXISTS (SELECT 1 FROM publish_route r JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation
+			WHERE r.binding_id = ?3 AND r.generation = ?4 AND r.state = 'active' AND r.launch_verified = 1
+			AND r.principal_id = l.principal_id AND r.launch_ref = l.launch_ref AND p.process_pid = ?1 AND p.process_start_ms = ?2)`,
+		queue.PID, queue.StartMS, binding.ID, binding.Generation)
 	return err
 }
 
@@ -208,8 +218,9 @@ func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, p
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND r.launch_verified = 1
 			AND l.launch_ref = r.launch_ref AND l.verified = 1
+			AND (l.process_pid IS NULL OR (l.process_pid = ? AND l.process_start_identity = ?))
 			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`,
-		proof.Binding.ID, proof.Binding.Generation).
+		proof.Binding.ID, proof.Binding.Generation, proven.Queue.PID, proven.Queue.StartMS).
 		Scan(&route.Adapter, &route.Route.Mode, &route.Route.SocketPath, &route.Route.ThreadID, &route.LaunchRef, &route.StartedHookAtMS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -450,8 +461,21 @@ func RetirePublishQueue(ctx context.Context, tx store.Tx, queue PublishQueue, no
 		queue.PID, queue.StartMS); err != nil {
 		return err
 	}
-	ids, err := selectIDs(ctx, tx, `SELECT id FROM publish_attempt WHERE process_pid = ? AND process_start_ms = ? AND state = 'reserved'`,
-		queue.PID, queue.StartMS)
+	return retirePublishAttempts(ctx, tx, now, `process_pid = ? AND process_start_ms = ?`, queue.PID, queue.StartMS)
+}
+
+func retireLaunchPublish(ctx context.Context, tx store.Tx, binding, principal int64, launchRef string, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM publish_route_proof WHERE binding_id = ? AND EXISTS (
+		SELECT 1 FROM publish_route r WHERE r.binding_id = publish_route_proof.binding_id
+		  AND r.generation = publish_route_proof.generation AND r.principal_id = ? AND r.launch_ref = ?)`,
+		binding, principal, launchRef); err != nil {
+		return err
+	}
+	return retirePublishAttempts(ctx, tx, now, `binding_id = ? AND principal_id = ? AND launch_ref = ?`, binding, principal, launchRef)
+}
+
+func retirePublishAttempts(ctx context.Context, tx store.Tx, now time.Time, scope string, args ...any) error {
+	ids, err := selectIDs(ctx, tx, `SELECT id FROM publish_attempt WHERE `+scope+` AND state = 'reserved'`, args...)
 	if err != nil {
 		return err
 	}
@@ -460,7 +484,7 @@ func RetirePublishQueue(ctx context.Context, tx store.Tx, queue PublishQueue, no
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE publish_attempt SET retired_at_ms = ? WHERE process_pid = ? AND process_start_ms = ? AND `+
-		openPublishLane, ms(now), queue.PID, queue.StartMS)
+	_, err = tx.ExecContext(ctx, `UPDATE publish_attempt SET retired_at_ms = ? WHERE `+scope+` AND `+
+		openPublishLane, append([]any{ms(now)}, args...)...)
 	return err
 }

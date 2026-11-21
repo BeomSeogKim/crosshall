@@ -621,7 +621,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack, leafRulesReceipt(arrival))
+		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)
+		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID,
+			max(req.Ack, pendingAck), max(leafRulesReceipt(arrival), pendingRules))
 		if err != nil {
 			return err
 		}
@@ -720,6 +722,15 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		s.withdrawReady()
 	}
 	return result, nil
+}
+
+// leafPendingReceipt reads the receipts a renderer left pending for the
+// request's generation, which the resolver checked is the published one.
+func leafPendingReceipt(arrival Arrival, generation string) (cursor, rules uint64) {
+	if arrival.Owner || arrival.Dir == nil {
+		return 0, 0
+	}
+	return ident.PendingReceipt(arrival.Dir, generation)
 }
 
 // leafRulesReceipt reads the roster cursor of the reply with which the CLI

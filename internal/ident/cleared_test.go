@@ -148,3 +148,38 @@ func TestLeafReceiptsOnlyFromTheCommittedGeneration(t *testing.T) {
 		t.Fatalf("receipts of another directory imported: %d %d", c, r)
 	}
 }
+
+// Astra #761: receipts left pending carry their generation; publishing a
+// generation drops the pending receipts of every other one.
+func TestPendingReceiptsFollowTheirGeneration(t *testing.T) {
+	dir := privateTempDir(t)
+	leaf, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	old, next := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	if err := os.WriteFile(filepath.Join(dir, "gen"), []byte(old), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		gen           string
+		cursor, rules uint64
+	}{{old, 4, 4}, {next, 9, 0}, {next, 7, 7}} {
+		if err := LeavePendingReceipt(leaf, r.gen, r.cursor, r.rules); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c, r := PendingReceipt(leaf, next); c != 9 || r != 7 {
+		t.Fatalf("pending for the next generation %d %d, want the larger of each: 9 7", c, r)
+	}
+	if err := RepublishGeneration(leaf, next); err != nil {
+		t.Fatal(err)
+	}
+	if c, r := PendingReceipt(leaf, old); c != 0 || r != 0 {
+		t.Fatalf("the earlier generation's pending receipt survived: %d %d", c, r)
+	}
+	if c, r := PendingReceipt(leaf, next); c != 9 || r != 7 {
+		t.Fatalf("the published generation's pending receipt was dropped: %d %d", c, r)
+	}
+}

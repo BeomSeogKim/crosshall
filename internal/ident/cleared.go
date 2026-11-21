@@ -165,6 +165,9 @@ func publishGeneration(leaf *os.Root, generation string, wait bool) error {
 			return err
 		}
 	}
+	if err := dropPendingReceipts(leaf, generation); err != nil {
+		return err
+	}
 	return publishMetadata(leaf, "gen", generation)
 }
 
@@ -198,5 +201,61 @@ func LeafReceipts(rendezvous string, id Identity, fileID, generation string) (cu
 		n, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 		return n
 	}
-	return read("ack"), read("rules")
+	pendingCursor, pendingRules := PendingReceipt(leaf, generation)
+	return max(read("ack"), pendingCursor), max(read("rules"), pendingRules)
+}
+
+// pendingReceipt names the file holding receipts a renderer could not record
+// under the directory lock in time, for the generation it names; the lock
+// does not guard it, and the dispatcher applies it with the next request.
+func pendingReceipt(generation string) string { return "pending-" + generation }
+
+// PendingReceipt reads the receipts left pending for generation: the roster
+// cursor and the cursor with the rules. A missing or unreadable record reads
+// as 0.
+func PendingReceipt(leaf *os.Root, generation string) (cursor, rules uint64) {
+	if !validRoute(generation) {
+		return 0, 0
+	}
+	data, err := ReadPrivateFile(leaf, pendingReceipt(generation), 64)
+	if err != nil {
+		return 0, 0
+	}
+	c, r, _ := strings.Cut(strings.TrimSpace(string(data)), " ")
+	cursor, _ = strconv.ParseUint(c, 10, 64)
+	rules, _ = strconv.ParseUint(r, 10, 64)
+	return cursor, rules
+}
+
+// LeavePendingReceipt records receipts for generation without the directory
+// lock, keeping the larger of what is there and what is given.
+func LeavePendingReceipt(leaf *os.Root, generation string, cursor, rules uint64) error {
+	if !validRoute(generation) {
+		return fmt.Errorf("invalid generation")
+	}
+	c, r := PendingReceipt(leaf, generation)
+	cursor, rules = max(cursor, c), max(rules, r)
+	return publishMetadata(leaf, pendingReceipt(generation), strconv.FormatUint(cursor, 10)+" "+strconv.FormatUint(rules, 10)+"\n")
+}
+
+// dropPendingReceipts removes the pending receipts of every generation other
+// than generation: they belong to an earlier membership.
+func dropPendingReceipts(leaf *os.Root, generation string) error {
+	dir, err := leaf.Open(".")
+	if err != nil {
+		return err
+	}
+	names, err := dir.Readdirnames(-1)
+	dir.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if strings.HasPrefix(name, "pending-") && name != pendingReceipt(generation) {
+			if err := leaf.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
 }

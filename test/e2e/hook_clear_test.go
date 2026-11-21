@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
@@ -98,7 +100,41 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 			if err := os.WriteFile(ack, []byte("999999\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			// In one case a renderer holds the directory for 4.5 s, past the
+			// CLI's wait (Astra #761): the join's receipt is left pending and
+			// the next request applies it.
+			release := func() {}
+			if how == "auto-joined" {
+				held, err := os.Open(leafDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+					t.Fatal(err)
+				}
+				timer := time.AfterFunc(4500*time.Millisecond, func() { held.Close() })
+				release = func() { timer.Stop(); held.Close() }
+			}
 			joined := before.must("join", "checkout")
+			if how == "auto-joined" {
+				if pending, _ := filepath.Glob(filepath.Join(leafDir, "pending-*")); len(pending) != 1 {
+					t.Fatalf("a join under a held lock left %d pending receipts, want 1", len(pending))
+				}
+			}
+			release()
+			if how == "auto-joined" {
+				// The dispatcher publishes the new generation on its next pass.
+				pending, _ := filepath.Glob(filepath.Join(leafDir, "pending-*"))
+				want := strings.TrimPrefix(filepath.Base(pending[0]), "pending-")
+				for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+					if gen, _ := os.ReadFile(filepath.Join(leafDir, "gen")); strings.TrimSpace(string(gen)) == want {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("the join's generation was not published after the lock was released")
+					}
+				}
+			}
 			if raw, err := os.ReadFile(ack); err == nil && strings.TrimSpace(string(raw)) == "999999" {
 				t.Fatal("the cleared member's roster cursor survived the new join")
 			}

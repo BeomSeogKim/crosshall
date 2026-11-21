@@ -246,8 +246,21 @@ func (r Reply) Acknowledge() error {
 	deadline := time.Now().Add(acknowledgeWait)
 	for {
 		recorded, err := r.record(leaf)
-		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) || recorded || time.Now().After(deadline) {
+		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) || recorded {
 			return err
+		}
+		if time.Now().After(deadline) {
+			// The wait is bounded: what could not be recorded in time is left
+			// for the dispatcher to apply with the next request, once its
+			// generation is the published one.
+			if !errors.Is(err, syscall.EWOULDBLOCK) && !r.rotated {
+				return err
+			}
+			var rules uint64
+			if r.rules {
+				rules = r.cursor
+			}
+			return ident.LeavePendingReceipt(leaf, r.generation, r.cursor, rules)
 		}
 		if err == nil && !r.rotated {
 			return nil // a reply of an older generation has nothing to record

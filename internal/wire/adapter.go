@@ -163,6 +163,8 @@ type AdapterPolicyArgs struct {
 	Reminder *bool  `json:"reminder,omitempty"`
 	// Publish is on, off, or default (the hall switch decides).
 	Publish *string `json:"publish,omitempty"`
+	// TurnEnd is on, off, or default (the build's evidence decides).
+	TurnEnd *string `json:"turn_end,omitempty"`
 }
 
 func (r Request) IsHook() bool {

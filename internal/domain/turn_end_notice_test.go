@@ -6,6 +6,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 func turnEndEvidence(level string) AdapterEvidence {
@@ -276,5 +280,43 @@ func TestPromptDoesNotRepeatATurnEndNotice(t *testing.T) {
 	later := f.noteTo(writer, "reader", 1)
 	if got := f.hook(reader, prompt("launch", "turn-3", at+4)); got.PendingLine != pendingLine(later...) {
 		t.Fatalf("a new note was not offered: %+v", got)
+	}
+}
+
+// #198: the owner's turn-end switch stops the continuation for one agent
+// kind without a new policy epoch, and default lets the evidence decide.
+func TestTurnEndNoticeFollowsTheOwnersSwitch(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	set := func(value, key string) store.AdapterPolicy {
+		t.Helper()
+		r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude", TurnEnd: &value}}, key)
+		wantOK(t, r)
+		return decode[store.AdapterPolicy](t, r)
+	}
+	before := set("default", "turn-end-default-first")
+	off := set("off", "turn-end-off")
+	if off.TurnEnd != "off" || off.Epoch != before.Epoch || !off.Enabled {
+		t.Fatalf("switch off gave %+v after %+v", off, before)
+	}
+	ask := f.turnEndAsk(writer, "reader", "while-off")
+	if r := f.hook(reader, stop("launch", "turn-1", f.now.UnixMilli()+1)); r.TurnEndLine != "" {
+		t.Fatalf("a Stop with the switch off printed %q", r.TurnEndLine)
+	}
+	if again := set("default", "turn-end-default"); again.TurnEnd != "" {
+		t.Fatalf("default stored %q", again.TurnEnd)
+	}
+	f.hook(reader, prompt("launch", "turn-2", f.now.UnixMilli()+1))
+	if r := f.hook(reader, stop("launch", "turn-2", f.now.UnixMilli()+1)); r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", ask) {
+		t.Fatalf("a Stop after default = %+v, want ask %d", r, ask)
+	}
+	if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &[]string{"on"}[0]}}, "agy-on"); r.Status == core.ExitOK {
+		t.Fatal("Antigravity accepted --turn-end on")
+	}
+	// The way back that doctor names after an Antigravity off is accepted.
+	for _, value := range []string{"off", "default"} {
+		if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &value}}, "agy-"+value); r.Status != core.ExitOK {
+			t.Fatalf("Antigravity --turn-end %s: %+v", value, r)
+		}
 	}
 }

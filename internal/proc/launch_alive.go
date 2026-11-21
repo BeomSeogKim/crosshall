@@ -6,7 +6,6 @@ package proc
 import (
 	"errors"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -39,8 +38,25 @@ func LaunchAlive(ref string, startedHookAtMS int64) bool {
 	return err == nil && start <= startedHookAtMS
 }
 
-// errProcessGone is processStart's proof that no process has the PID: it
-// is absent or a zombie.
+// LaunchIdentity returns a live launch's PID and kernel start identity.
+// The first hook time is an upper bound on the process start.
+func LaunchIdentity(ref string, startedHookAtMS int64) (pid int64, identity int64) {
+	process, ok := LaunchProcess(ref)
+	if !ok || len(ref) <= len(process)+1 || startedHookAtMS <= 0 {
+		return 0, 0
+	}
+	pid, err := strconv.ParseInt(strings.TrimPrefix(process, "pid-"), 10, 32)
+	if err != nil {
+		return 0, 0
+	}
+	start, err := processStart(int(pid))
+	if err != nil || start.Identity <= 0 || start.AtMS <= 0 || start.AtMS > startedHookAtMS {
+		return 0, 0
+	}
+	return pid, start.Identity
+}
+
+// errProcessGone means the PID is absent or names a zombie.
 var errProcessGone = errors.New("process gone")
 
 // ProcessGone reports proof that the process with pid and start identity
@@ -48,12 +64,9 @@ var errProcessGone = errors.New("process gone")
 // the PID belongs to a process with another start. An error that proves
 // neither (an unsupported platform, an unreadable process) is not proof.
 func ProcessGone(pid, identity int64) bool {
-	if pid <= 0 || pid > math.MaxInt32 {
+	if pid <= 0 || pid > math.MaxInt32 || identity <= 0 {
 		return false
 	}
 	start, err := processStart(int(pid))
-	if err != nil {
-		return errors.Is(err, errProcessGone) || errors.Is(err, os.ErrNotExist)
-	}
-	return start.Identity != identity
+	return errors.Is(err, errProcessGone) || start.Identity > 0 && start.Identity != identity
 }

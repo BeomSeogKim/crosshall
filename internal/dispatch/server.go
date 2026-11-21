@@ -161,6 +161,8 @@ func Serve(ctx context.Context, cfg Config) error {
 	if sends {
 		logPublishFailure(pub.tick(ctx, time.Now(), true))
 	}
+	var launches launchSweep
+	launches.start(ctx, db, time.Now())
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -168,6 +170,11 @@ func Serve(ctx context.Context, cfg Config) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case result := <-launches.pending:
+			if err := launches.apply(ctx, &s, result); err != nil && !errors.Is(err, context.Canceled) {
+				s.logFailure(fmt.Errorf("reconcile Claude launches: %w", err))
+			}
+			continue
 		case <-tick.C:
 			publishTick = true
 		case _, ok := <-events:
@@ -184,8 +191,12 @@ func Serve(ctx context.Context, cfg Config) error {
 		if err := s.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logFailure(err)
 		}
-		if publishTick && sends {
-			logPublishFailure(pub.tick(ctx, time.Now(), false))
+		if publishTick {
+			now := time.Now()
+			launches.start(ctx, db, now)
+			if sends {
+				logPublishFailure(pub.tick(ctx, now, false))
+			}
 		}
 	}
 }

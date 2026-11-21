@@ -3,10 +3,13 @@
 package proc
 
 import (
+	"errors"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -43,11 +46,25 @@ func bootMS() (int64, error) {
 func processStart(pid int) (Start, error) {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
+		return Start{}, procStatError(pid, err)
+	}
+	start, err := linuxStart(string(raw), 0)
+	if err != nil {
 		return Start{}, err
 	}
 	at, err := bootMS()
 	if err != nil {
-		return Start{}, err
+		// A missing wall-clock estimate does not erase the kernel identity.
+		return Start{Identity: start.Identity}, err
 	}
-	return linuxStart(string(raw), at)
+	start.AtMS += at
+	return start, nil
+}
+
+func procStatError(pid int, err error) error {
+	// A procfs mount can hide a live PID, so confirm absence with the kernel.
+	if pid > 0 && pid <= math.MaxInt32 && errors.Is(err, os.ErrNotExist) && syscall.Kill(pid, 0) == syscall.ESRCH {
+		return errProcessGone
+	}
+	return err
 }

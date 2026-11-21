@@ -327,6 +327,13 @@ func endPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoch i
 	return err
 }
 
+func endLaunchPublishRoutes(ctx context.Context, tx store.Tx, principal int64, launchRef string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE publish_route
+		SET state = 'ended', reason = 'launch ended', generation = generation + 1, updated_at_ms = ?
+		WHERE principal_id = ? AND launch_ref = ? AND state <> 'ended'`, ms(now), principal, launchRef)
+	return err
+}
+
 func retirePublishRoute(ctx context.Context, tx store.Tx, bindingID int64, reason string, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `UPDATE publish_route
 		SET state = 'ended', reason = ?, generation = generation + 1, updated_at_ms = ?

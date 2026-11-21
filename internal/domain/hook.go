@@ -127,7 +127,8 @@ func hookLaunchAfterFence(ctx context.Context, tx store.Tx, principal int64, lau
 
 func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEnroll, now time.Time) (core.Result, error) {
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || !validRef(cmd.EventRef) ||
-		!ValidName(cmd.Source) || cmd.HookAtMS <= 0 || (cmd.RepoRoot != "" && !validRepoRoot(cmd.RepoRoot)) {
+		!ValidName(cmd.Source) || cmd.HookAtMS <= 0 || (cmd.RepoRoot != "" && !validRepoRoot(cmd.RepoRoot)) ||
+		(cmd.Repository != "" && (cmd.RepoRoot == "" || !validRepoRoot(cmd.Repository))) {
 		return hookUsage("invalid hook.enroll arguments"), nil
 	}
 	if caller.Role == core.RoleOwner {
@@ -262,6 +263,18 @@ func UnmappedStart(source string, epoch uint64) wire.HookResult {
 	return out
 }
 
+// hookChannel resolves where a hook enrols a session, inside the enrolment's
+// transaction so that a default the owner just committed counts: the
+// worktree's own active default, else the repository's. An archived default
+// of the repository is not replaced.
+func hookChannel(ctx context.Context, tx store.Tx, cmd HookEnroll) (ch channelRow, found bool, err error) {
+	ch, found, err = defaultChannel(ctx, tx, cmd.RepoRoot)
+	if err != nil || (found && ch.state == "active") || cmd.Repository == "" || cmd.Repository == cmd.RepoRoot {
+		return ch, found, err
+	}
+	return defaultChannel(ctx, tx, cmd.Repository)
+}
+
 // hookAutoJoin joins the repository's default channel: generated alias, zero tokens.
 func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, prompt *HookEvent, now time.Time) (core.Result, error) {
 	auto, err := autoJoinOn(ctx, tx)
@@ -277,8 +290,10 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if cmd.RepoRoot == "" {
 		return OK(unmapped)
 	}
-	ch, found, err := defaultChannel(ctx, tx, cmd.RepoRoot)
-	if err != nil || (found && ch.state != "active") || (!found && !auto) {
+	ch, found, err := hookChannel(ctx, tx, cmd)
+	// The repository gets a channel only where the hook saw a real work tree.
+	create := !found && auto && cmd.CreateChannel && cmd.Repository != ""
+	if err != nil || (found && ch.state != "active") || (!found && !create) {
 		return okOrErr(unmapped, err)
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
@@ -308,7 +323,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		}
 	}
 	if !found {
-		if ch, err = createRepoChannel(ctx, tx, cmd.RepoRoot, principal, now); err != nil {
+		if ch, err = createRepoChannel(ctx, tx, cmd.Repository, principal, now); err != nil {
 			return core.Result{}, err
 		}
 		out.ChannelCreated = true
@@ -467,7 +482,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	}
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || cmd.EventRef == "" ||
 		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 ||
-		(cmd.EnrollRepoRoot != "" && (!cmd.CanRecoverEnrollment() || !validRepoRoot(cmd.EnrollRepoRoot))) {
+		(cmd.EnrollRepoRoot != "" && (!cmd.CanRecoverEnrollment() || !validRepoRoot(cmd.EnrollRepoRoot))) ||
+		(cmd.EnrollRepository != "" && (cmd.EnrollRepoRoot == "" || !validRepoRoot(cmd.EnrollRepository))) {
 		return hookUsage("invalid hook.event arguments"), nil
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
@@ -484,7 +500,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		profile.Mode = "unverified"
 		enroll := HookEnroll{wire.HookEnrollArgs{
 			Profile: profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
-			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
+			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, Repository: cmd.EnrollRepository,
+			CreateChannel: cmd.EnrollCreate, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
 		}}
 		cmd.LaunchRef, cmd.LaunchVerified, cmd.WantOutput = SessionLaunch, false, false
 		return s.hookAutoJoin(ctx, tx, req, enroll, 0, &cmd, now)

@@ -130,7 +130,7 @@ func TestHookDiscardsPrivateFields(t *testing.T) {
 	}
 	m, _ := loadManifest("codex")
 	spec, _ := m.event("UserPromptSubmit")
-	req := makeRequest(time.Now(), m, spec, got, "", true, 1)
+	req := makeRequest(time.Now(), m, spec, got, enrolment{}, true, 1)
 	if strings.Contains(string(req.Args), secret) {
 		t.Fatal("unmapped prompt data survived in the request")
 	}

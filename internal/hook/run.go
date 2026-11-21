@@ -2,7 +2,6 @@ package hook
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -156,7 +155,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, e.VendorVersion, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
-	if spec.RecoverEnroll && !clean && repo == "" && e.CWD != "" && !hasSeenNotice(leaf, gen) {
+	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
 	}
 	want := turnEnd || (notice && !clean)
@@ -293,142 +292,156 @@ func transportOutcome(ctx context.Context, err error) string {
 	return "refused"
 }
 
-func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hookTransport, spec eventSpec, e event) (*os.Root, string, string, string) {
+func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hookTransport, spec eventSpec, e event) (*os.Root, string, enrolment, string) {
 	leaf, gen, err := spool.OpenHookLeaf(rv, e.Identity)
 	if err == nil {
-		var repo string
-		if spec.Enroll {
-			repo = enrolTarget(ctx, rv, e, startRoot(stateRoot, e))
+		var repo enrolment
+		if spec.Enroll && startedHere(stateRoot, e, false) {
+			repo = enrolTarget(ctx, rv, e)
 		}
 		return leaf, gen, repo, ""
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return nil, "", "", "refused"
+		return nil, "", enrolment{}, "refused"
 	}
 	if !spec.Enroll && !spec.RecoverEnroll {
-		return nil, "", "", "unmatched"
+		return nil, "", enrolment{}, "unmatched"
 	}
 	if dispatcherGone(rv) {
-		return nil, "", "", "no_dispatcher"
+		return nil, "", enrolment{}, "no_dispatcher"
 	}
 	if hookExpired(ctx) {
-		return nil, "", "", "deadline"
+		return nil, "", enrolment{}, "deadline"
 	}
 	intent := "lookup"
-	var repo string
+	var repo enrolment
 	if spec.RecoverEnroll {
 		repo = mappedEnrollmentRoot(ctx, rv, stateRoot, e)
 		if hookExpired(ctx) {
-			return nil, "", "", "deadline"
+			return nil, "", enrolment{}, "deadline"
 		}
-		if repo == "" {
-			return nil, "", "", "unmatched"
+		if repo.none() {
+			return nil, "", enrolment{}, "unmatched"
 		}
 		intent = "join"
 	}
 	gen, resp, err := client.HookLookup(ctx, e.Identity, intent)
 	if err != nil {
-		return nil, "", "", transportOutcome(ctx, err)
+		return nil, "", enrolment{}, transportOutcome(ctx, err)
 	}
 	newSession := resp.Status == core.ExitNotEnrolled && resp.Code == core.CodeNotEnrolled
 	if resp.Status != core.ExitOK && !newSession {
-		return nil, "", "", "refused"
+		return nil, "", enrolment{}, "refused"
 	}
-	if spec.Enroll {
-		repo = enrolTarget(ctx, rv, e, startRoot(stateRoot, e))
+	if spec.Enroll && startedHere(stateRoot, e, false) {
+		repo = enrolTarget(ctx, rv, e)
 	}
 	if newSession && spec.Enroll {
-		if repo == "" {
-			return nil, "", "", "unmatched"
+		if repo.none() {
+			return nil, "", enrolment{}, "unmatched"
 		}
 		if hookExpired(ctx) {
-			return nil, "", "", "deadline"
+			return nil, "", enrolment{}, "deadline"
 		}
 		gen, resp, err = client.HookLookup(ctx, e.Identity, "join")
 		if err != nil {
-			return nil, "", "", transportOutcome(ctx, err)
+			return nil, "", enrolment{}, transportOutcome(ctx, err)
 		}
 	}
 	if resp.Status != core.ExitOK {
-		return nil, "", "", "refused"
+		return nil, "", enrolment{}, "refused"
 	}
 	leaf, current, err := spool.OpenHookLeaf(rv, e.Identity)
 	if err != nil {
-		return nil, "", "", transportOutcome(ctx, err)
+		return nil, "", enrolment{}, transportOutcome(ctx, err)
 	}
 	if current != gen {
 		leaf.Close()
-		return nil, "", "", "refused"
+		return nil, "", enrolment{}, "refused"
 	}
 	return leaf, gen, repo, ""
 }
 
-// enrollmentRoot names the repository the event's directory belongs to: the
-// same root for every linked worktree of one repository.
+// enrolment names where a session may be enrolled: its worktree, its
+// repository, and whether the repository may get a channel of its own. The
+// dispatcher takes the worktree's default, else the repository's, else
+// creates the repository's channel, all inside its transaction.
+type enrolment struct {
+	worktree, repository string
+	create               bool
+}
+
+func (t enrolment) none() bool { return t.worktree == "" }
+
+// place is where the event's directory lies: its worktree root, and the
+// root that names its repository, the same for every linked worktree.
+func place(e event) (worktree, repository string) {
+	if e.CWD == "" {
+		return "", ""
+	}
+	worktree, _ = cli.RepoRoot(e.CWD)
+	if worktree == "" {
+		return "", ""
+	}
+	repository, _ = cli.RepoIdentity(worktree)
+	return worktree, repository
+}
+
+// enrollmentRoot is the repository a start is recorded under.
 func enrollmentRoot(e event) string {
 	if e.startupRepo != nil {
 		return *e.startupRepo
 	}
-	if e.CWD == "" {
-		return ""
-	}
-	root, _ := cli.RepoRoot(e.CWD)
-	if root == "" {
-		return ""
-	}
-	identity, _ := cli.RepoIdentity(root)
-	return identity
+	_, repository := place(e)
+	return repository
 }
 
-// enrolTarget is the root whose channel the session joins: the worktree's
-// own default when the owner set one, else the repository's default, else
-// the repository itself while the owner's automatic joining is on, when the
-// dispatcher creates its channel.
-func enrolTarget(ctx context.Context, rv *os.Root, e event, repo string) string {
-	if repo == "" {
-		return ""
-	}
-	if worktree, _ := cli.RepoRoot(e.CWD); worktree != "" && worktree != repo {
-		if match, _ := hasDefault(ctx, rv, worktree); match {
-			return worktree
-		}
-	}
-	if match, _ := hasDefault(ctx, rv, repo); match || autoJoin(ctx, rv) {
-		return repo
-	}
-	return ""
-}
-
-// startRoot is the repository a start event may enrol the session in. A
-// session joins only where its first start was: a later resume, clear or
-// compact start from another place enrols nothing, as a prompt does not.
-func startRoot(stateRoot string, e event) string {
-	repo := enrollmentRoot(e)
+// startedHere applies the start record: a session joins only where its
+// first start was. A record written before repositories had one identity
+// holds the worktree's digest and still counts for that worktree. need says
+// a record is required (a prompt), not only respected (a later start).
+func startedHere(stateRoot string, e event, need bool) bool {
 	if e.startupRepo != nil {
-		return repo // this start is the recorded one
+		return true // this start is the recorded one
 	}
-	if first := startupRepoDigest(stateRoot, e.Identity); first != "" && first != repoDigestRecord(repo) {
-		return ""
+	first := startupRepoDigest(stateRoot, e.Identity)
+	if first == "" {
+		return !need
 	}
-	return repo
+	worktree, repository := place(e)
+	return repository != "" && (first == repoDigestRecord(repository) || first == repoDigestRecord(worktree))
 }
 
-func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e event) string {
-	if hookExpired(ctx) {
-		return ""
+// enrolTarget says where the event's directory may be enrolled, or nothing
+// when it has no default and may not get a channel: outside a real work
+// tree, or with the owner's automatic joining off.
+func enrolTarget(ctx context.Context, rv *os.Root, e event) enrolment {
+	worktree, repository := place(e)
+	if worktree == "" {
+		return enrolment{}
 	}
-	startup := startupRepoDigest(stateRoot, e.Identity)
-	if len(startup) != sha256.Size*2+1 {
-		return ""
+	t := enrolment{worktree: worktree, repository: repository}
+	t.create = autoJoin(ctx, rv) && cli.IsWorkTree(e.CWD)
+	if t.create {
+		return t
 	}
-	repo := enrollmentRoot(e)
-	if repo == "" || startup != repoDigestRecord(repo) {
-		return ""
+	if match, _ := hasDefault(ctx, rv, worktree); match {
+		return t
 	}
-	return enrolTarget(ctx, rv, e, repo)
+	if match, _ := hasDefault(ctx, rv, repository); match {
+		return t
+	}
+	return enrolment{}
 }
 
-func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo string, want bool, epoch uint64) wire.Request {
+func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e event) enrolment {
+	if hookExpired(ctx) || !startedHere(stateRoot, e, true) {
+		return enrolment{}
+	}
+	return enrolTarget(ctx, rv, e)
+}
+
+func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enrolment, want bool, epoch uint64) wire.Request {
 	ref := e.reference(entry)
 	// The launch's build and mode, as the hook's environment states them;
 	// "unverified" where the manifest names no source or it does not parse.
@@ -447,17 +460,20 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo stri
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
-			Source: e.Source, RepoRoot: repo, HookAtMS: entry.UnixMilli(), Epoch: epoch,
+			Source: e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
+			HookAtMS: entry.UnixMilli(), Epoch: epoch,
 		})
 	} else {
 		req.Verb = wire.VerbHookEvent
 		if !want {
-			repo = ""
+			repo = enrolment{}
 		}
 		req.Args, _ = json.Marshal(wire.HookEventArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, EventRef: ref,
 			Fact: e.Fact, TurnRef: e.TurnRef, HookAtMS: entry.UnixMilli(), WantOutput: want, Epoch: epoch,
-			EnrollRepoRoot:     repo,
+			EnrollRepoRoot:     repo.worktree,
+			EnrollRepository:   repo.repository,
+			EnrollCreate:       repo.create,
 			Receipt:            e.receipt,
 			ContinuationActive: e.stopActive == "true",
 		})

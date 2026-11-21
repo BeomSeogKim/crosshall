@@ -408,12 +408,15 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 		}
 		return e, nil
 	}
-	updated, kept, err := removeEntries(current.Bytes, record.Entries)
+	// Removing $defaults while leaving the list would discard Claude's
+	// built-in rules. The byte-exact path above restores an absent list.
+	claims := slices.DeleteFunc(slices.Clone(record.Entries), isClaudeAutoModeDefaults)
+	updated, kept, err := removeEntries(current.Bytes, claims)
 	if err != nil {
 		return edit{}, err
 	}
 	e.Kept = kept
-	e.Remove = remainingEntries(record.Entries, kept)
+	e.Remove = remainingEntries(claims, kept)
 	if len(e.Remove) != 0 {
 		e.After.Hash, e.After.File = sum(updated), ""
 	}
@@ -428,7 +431,7 @@ func remainingEntries(entries, kept []Entry) []Entry {
 	var removed []Entry
 	for _, e := range entries {
 		if !slices.ContainsFunc(kept, func(k Entry) bool {
-			return k.Event == e.Event && k.Group == e.Group && string(k.Value) == string(e.Value)
+			return k.Event == e.Event && k.Group == e.Group && k.AutoMode == e.AutoMode && string(k.Value) == string(e.Value)
 		}) {
 			removed = append(removed, e)
 		}

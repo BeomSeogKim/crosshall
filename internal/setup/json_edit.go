@@ -10,9 +10,10 @@ import (
 )
 
 type Entry struct {
-	Event string          `json:"event,omitempty"`
-	Group string          `json:"group,omitempty"`
-	Value json.RawMessage `json:"value"`
+	Event    string          `json:"event,omitempty"`
+	Group    string          `json:"group,omitempty"`
+	AutoMode bool            `json:"auto_mode,omitempty"`
+	Value    json.RawMessage `json:"value"`
 }
 
 const agyHookGroup = "crosshall"
@@ -167,6 +168,9 @@ type configEntry struct {
 }
 
 func parseConfigEntry(entry Entry) (configEntry, error) {
+	if entry.AutoMode && (entry.Event != "" || entry.Group != "") {
+		return configEntry{}, errInvalidEntry
+	}
 	node, err := parseConfigJSON(entry.Value)
 	if err != nil {
 		return configEntry{}, errInvalidEntry
@@ -224,7 +228,9 @@ func findConfigSlot(doc *configNode, entry Entry) (container *configNode, missin
 		return nil, nil, errInvalidConfig
 	}
 	section, key := "hooks", entry.Event
-	if entry.Event == "" {
+	if entry.AutoMode {
+		section, key = "autoMode", "allow"
+	} else if entry.Event == "" {
 		section, key = "permissions", "allow"
 	}
 	object := doc.field(section)

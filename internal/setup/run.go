@@ -466,7 +466,9 @@ func printPlan(out io.Writer, p plan) error {
 		}{{"add", f.Add}, {"remove", f.Remove}, {"keep edited, missing or ambiguous", f.Kept}} {
 			for _, e := range group.entries {
 				kind := e.Event
-				if kind == "" {
+				if e.AutoMode {
+					kind = "autoMode.allow"
+				} else if kind == "" {
 					kind = "permissions.allow"
 				}
 				fmt.Fprintf(&contents, "  %s %s %s\n", group.label, kind, e.Value)

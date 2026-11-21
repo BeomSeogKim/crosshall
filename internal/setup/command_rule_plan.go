@@ -25,7 +25,20 @@ func (s Service) preflightCommandRules(target *installTarget, j journal) error {
 		if err != nil {
 			return err
 		}
+		doc, err := configDocument(target.Current.Bytes)
+		if err != nil {
+			return err
+		}
+		defaults := true
+		if doc != nil {
+			_, missing, err := findConfigSlot(doc, Entry{AutoMode: true})
+			if err != nil {
+				return err
+			}
+			defaults = len(missing) > 0
+		}
 		target.Wanted = append(target.Wanted, entries...)
+		target.Wanted = append(target.Wanted, claudeAutoModeEntries(s.Executable, defaults)...)
 		return nil
 	}
 	location, err := resolveCommandRulePath(target.Spec)
@@ -138,7 +151,7 @@ func checkCommandRuleRelocation(target installTarget, owned []Entry) error {
 		wanted = slices.Concat(wanted, claudeRules(false), claudeRules(true))
 	}
 	for _, entry := range remainingEntries(owned, wanted) {
-		if entry.Event != "" {
+		if entry.Event != "" || isClaudeAutoModeDefaults(entry) {
 			continue
 		}
 		matches, err := entryMatches(target.Current.Bytes, []Entry{entry})
@@ -150,6 +163,10 @@ func checkCommandRuleRelocation(target installTarget, owned []Entry) error {
 		}
 	}
 	return nil
+}
+
+func isClaudeAutoModeDefaults(entry Entry) bool {
+	return entry.AutoMode && string(entry.Value) == claudeDefaultRules
 }
 
 func removeRuleText(raw []byte, rule string) ([]byte, bool) {

@@ -20,6 +20,7 @@ const (
 	journalName                = "install-journal.json"
 	legacyJournalVersion       = 1
 	commandRulesJournalVersion = 2
+	classifierJournalVersion   = 3
 )
 
 type journal struct {
@@ -165,11 +166,29 @@ func emptyJournal() journal {
 }
 
 func (j journal) formatVersion() int {
-	// A pending edit can publish rules before their ownership is recorded.
-	if len(j.RuleFiles) != 0 || j.Pending != nil && slices.ContainsFunc(j.Pending.Edits, func(e edit) bool { return e.Rules }) {
-		return commandRulesJournalVersion
+	classifier := func(e Entry) bool { return e.AutoMode }
+	for _, file := range j.Files {
+		if slices.ContainsFunc(file.Entries, classifier) {
+			return classifierJournalVersion
+		}
 	}
-	return legacyJournalVersion
+	version := legacyJournalVersion
+	if len(j.RuleFiles) != 0 {
+		version = commandRulesJournalVersion
+	}
+	// A pending edit can publish rules before their ownership is recorded.
+	if j.Pending != nil {
+		for _, e := range j.Pending.Edits {
+			if slices.ContainsFunc(e.Add, classifier) || slices.ContainsFunc(e.Remove, classifier) ||
+				(e.Record != nil && slices.ContainsFunc(e.Record.Entries, classifier)) {
+				return classifierJournalVersion
+			}
+			if e.Rules {
+				version = commandRulesJournalVersion
+			}
+		}
+	}
+	return version
 }
 
 func readJournalAt(state *os.Root) (journal, string, error) {
@@ -190,7 +209,7 @@ func readJournalAt(state *os.Root) (journal, string, error) {
 	// Require an explicit supported version; maps default to initialized.
 	j.Version = 0
 	if len(data) > maxJournal || json.Unmarshal(data, &j) != nil ||
-		(j.Version != legacyJournalVersion && j.Version != commandRulesJournalVersion) ||
+		(j.Version < legacyJournalVersion || j.Version > classifierJournalVersion) ||
 		j.Files == nil || j.RuleFiles == nil || j.Builds == nil {
 		return j, "", errors.New("invalid install journal")
 	}

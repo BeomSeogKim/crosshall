@@ -83,3 +83,16 @@ func TestPendingCommandRulesUseVersionTwoBeforePublication(t *testing.T) {
 		t.Fatalf("journal before publication: %+v (%v)", got, err)
 	}
 }
+
+func TestPendingClassifierRulesUseVersionThreeBeforePublication(t *testing.T) {
+	f := setuptest.New(t, "claude")
+	j := emptyJournal()
+	j.Pending = &operation{Action: "setup", Adapters: []string{"claude"}, Edits: []edit{{
+		Adapter: "claude", Add: claudeAutoModeEntries(filepath.Join(f.Bin, "crosshall"), true),
+	}}}
+	writeStatusJournal(t, f, j)
+	got, _, err := readJournal(f.State)
+	if err != nil || got.Version != 3 || len(got.Files) != 0 || got.Pending == nil || !got.Pending.Edits[0].Add[0].AutoMode {
+		t.Fatalf("classifier journal before publication: %+v (%v)", got, err)
+	}
+}

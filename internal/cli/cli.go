@@ -76,7 +76,7 @@ Owner commands (from a separate owner terminal):
   owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
   owner budget grant <channel> --pool <n>            Add root tokens to a channel's join pool
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
-  owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default]
+  owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
   owner publish hall on|off                         Turn notices on or off for the hall
   owner publish member <binding-id> on|off|default  Set notices for one member; the member

@@ -293,6 +293,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		Intended, Installed, Drifted        int
 		Policy                              *struct {
 			Enabled, Reminder bool
+			TurnEnd           string `json:"turn_end"`
 			Epoch             uint64
 		}
 		Reminder *struct {
@@ -381,7 +382,9 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			fmt.Fprintln(&output, "  turn-end notice status unknown")
 		} else {
 			status := "unavailable"
-			if notice.Available {
+			if a.Policy != nil && a.Policy.TurnEnd == "off" {
+				status = fmt.Sprintf("off by the owner (undo: crosshall owner adapter set %s --turn-end default)", a.Adapter)
+			} else if notice.Available {
 				status = "available"
 				if notice.TrustedFrom != "" {
 					status += fmt.Sprintf(" (trusted from %s evidence)", notice.TrustedFrom)

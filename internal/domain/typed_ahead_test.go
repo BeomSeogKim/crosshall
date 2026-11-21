@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // #163: a prompt typed while the previous turn runs reports that turn's id,
@@ -81,5 +83,87 @@ func TestAReceiptOnARepeatedTurnIdStaysAbsorbed(t *testing.T) {
 	p.resolve(id, PublishSubmitted)
 	if p.reserve() != 0 {
 		t.Fatal("the route still publishes after an absorbed receipt")
+	}
+}
+
+// typedPrompt is a prompt callback with the hook's entry time in its event
+// reference, as the Claude manifest sends it.
+func typedPrompt(turn string, at int64) HookEvent {
+	return event("launch", FactPromptSubmitted, turn+":prompt@"+strconv.FormatInt(at, 10), turn, at, true)
+}
+
+func turnEndFor(t *testing.T, r wire.HookResult, id int64) bool {
+	t.Helper()
+	return strings.Contains(r.TurnEndLine, strconv.FormatInt(id, 10))
+}
+
+// Astra #794: a late duplicate of a finished prompt, from a fresh hook
+// process, is a replay: it opens no turn and supersedes nothing.
+func TestALateDuplicateOfAFinishedPromptIsAReplay(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	at := f.now.UnixMilli() + 1
+	f.hook(reader, typedPrompt("turn-a", at))
+	f.hook(reader, stop("launch", "turn-a", at+1))
+	f.hook(reader, typedPrompt("turn-b", at+2))
+	ask := f.turnEndAsk(writer, "reader", "during b")
+	observed := f.count(`SELECT COUNT(*) FROM observation`)
+	if r := f.hook(reader, typedPrompt("turn-a", at+3)); !quiet(r) {
+		t.Fatalf("a late duplicate printed %+v", r)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM observation`); n != observed {
+		t.Fatalf("a late duplicate added %d observations", n-observed)
+	}
+	if r := f.hook(reader, stop("launch", "turn-b", at+4)); !turnEndFor(t, r, ask) {
+		t.Fatalf("the current turn's end line %q after a late duplicate", r.TurnEndLine)
+	}
+}
+
+// Astra #796, the native chained shape: B typed during A, C typed during B.
+// Callbacks Prompt A, Prompt A, Stop A, Prompt B, Stop B, Stop C.
+func TestAChainOfTypedAheadPromptsChecksTheLastTurn(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	at := f.now.UnixMilli() + 1
+	f.hook(reader, typedPrompt("turn-a", at))
+	f.hook(reader, typedPrompt("turn-a", at+1)) // B, typed during A
+	f.hook(reader, stop("launch", "turn-a", at+2))
+	f.hook(reader, typedPrompt("turn-b", at+3)) // C, typed during B
+	f.hook(reader, stop("launch", "turn-b", at+4))
+	ask := f.turnEndAsk(writer, "reader", "during c")
+	if r := f.hook(reader, stop("launch", "turn-c", at+5)); !turnEndFor(t, r, ask) {
+		t.Fatalf("the chain's last turn end line %q, want the check to run", r.TurnEndLine)
+	}
+}
+
+// Astra #798 (1): the older of two same-id prompt packets is delivered after
+// the newer; hook entry time, not arrival, decides which one typed ahead.
+func TestTypedAheadPacketsOrderByEntryTime(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	at := f.now.UnixMilli() + 1
+	f.hook(reader, typedPrompt("turn-a", at+1)) // B, typed during A, delivered first
+	f.hook(reader, typedPrompt("turn-a", at))   // A itself
+	f.hook(reader, stop("launch", "turn-a", at+2))
+	ask := f.turnEndAsk(writer, "reader", "during b")
+	if r := f.hook(reader, stop("launch", "turn-b", at+3)); !turnEndFor(t, r, ask) {
+		t.Fatalf("the typed-ahead turn's end line %q, want the check to run", r.TurnEndLine)
+	}
+}
+
+// Astra #798 (2): an unknown Stop before its predecessor finished leaves the
+// history ambiguous: it adopts nothing.
+func TestAnUnknownStopBeforeItsPredecessorAdoptsNothing(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	at := f.now.UnixMilli() + 1
+	f.hook(reader, typedPrompt("turn-a", at))
+	f.hook(reader, typedPrompt("turn-a", at+1))
+	f.turnEndAsk(writer, "reader", "open")
+	if r := f.hook(reader, stop("launch", "turn-x", at+2)); r.TurnEndLine != "" {
+		t.Fatalf("an unknown Stop before turn-a ended ran the check: %q", r.TurnEndLine)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = 'turn-x'`); n != 0 {
+		t.Fatal("an ambiguous unknown Stop adopted a placeholder")
 	}
 }

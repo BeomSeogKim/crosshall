@@ -146,3 +146,23 @@ func TestPromptRequestsCarryTheHookEntryTime(t *testing.T) {
 		t.Fatalf("event ref of %d bytes", len(ref))
 	}
 }
+
+// Astra #794: only a manifest that asks for it adds the entry time; Codex
+// prompts keep their native reference, so a repeat stays a replay.
+func TestOnlyClaudePromptsCarryTheEntryTime(t *testing.T) {
+	m, _ := loadManifest("codex")
+	spec, ok := m.event("UserPromptSubmit")
+	if !ok {
+		t.Skip("no codex prompt event")
+	}
+	input := `{"hook_event_name":"UserPromptSubmit","session_id":"s","turn_id":"turn-a"}`
+	e, err := parseEvent(strings.NewReader(input), m, spec, func(name string) (string, bool) { return "s", name == "CODEX_THREAD_ID" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
+	second := makeRequest(time.UnixMilli(1700), m, spec, e, enrolment{}, true, 1)
+	if first.OpKey != second.OpKey {
+		t.Fatalf("codex prompt keys differ by entry time: %q %q", first.OpKey, second.OpKey)
+	}
+}

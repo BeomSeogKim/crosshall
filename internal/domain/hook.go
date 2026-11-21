@@ -561,6 +561,9 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 			origin = "crosshall_wake"
 		}
 	}
+	if replay, err := promptReplay(ctx, tx, principal, cmd); err != nil || replay {
+		return okOrErr(out, err)
+	}
 	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
 		return okOrErr(out, err)
 	}

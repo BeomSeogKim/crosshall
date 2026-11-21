@@ -445,7 +445,7 @@ func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e 
 
 func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enrolment, want bool, epoch uint64) wire.Request {
 	ref := e.reference(entry)
-	if e.EventRef != "" && e.Fact == wire.HookPromptSubmitted {
+	if m.PromptEntryRef && e.EventRef != "" && e.Fact == wire.HookPromptSubmitted {
 		ref = wire.PromptEventRef(ref, entry.UnixMilli())
 	}
 	// The launch's build and mode, as the hook's environment states them;

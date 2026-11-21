@@ -222,6 +222,8 @@ func TestClearAfterTheProcessMemberLeftJoinsNobody(t *testing.T) {
 			if r := f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+30)); r.Enrollment != "none" || r.Alias != "" {
 				t.Fatalf("clear start: %+v, want nothing", r)
 			}
+			// Its first prompt, from a directory with no member, stays out too.
+			f.hook(cleared, recoveryPrompt("pid-7-c", "first", f.now.UnixMilli()+40))
 			if f.keyState(first) != "live" || f.keyState(second) != "live" || f.count(`SELECT COUNT(*) FROM binding`) != bindings {
 				t.Fatal("the clear revived or added a member")
 			}
@@ -329,5 +331,27 @@ func TestAClearAfterAnOwnerRestoreDoesNotTakeTheMemberBack(t *testing.T) {
 	}
 	if got == principal {
 		t.Fatal("a clear in the old process took the restored member back")
+	}
+}
+
+// Astra #677: a process gone without an end leaves its launch open; a new
+// process reusing the PID is not occupied by it, so a hand join there binds
+// and its clear keeps the member.
+func TestAJoinBindsAReusedPIDWhoseOldLaunchNeverEnded(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.svc.LaunchProcess = testProcess
+	running := map[string]bool{"pid-7-join": true, "pid-7-c": true}
+	f.svc.LaunchAlive = func(ref string, _ int64) bool { return running[ref] }
+	gone := f.newSession("claude")
+	f.hook(gone, start("pid-7-a", "startup", f.now.UnixMilli())) // killed later, no end
+	s := f.newSession("claude")
+	r := decode[JoinResult](t, f.join(s, Join{Channel: "checkout", Alias: "worker",
+		Launch: joinLaunch("pid-7-join", f.now.UnixMilli()+10)}, ""))
+	if r.Launch == nil {
+		t.Fatal("the old process's unended launch kept the new process from binding")
+	}
+	cleared := f.newSession("claude")
+	if got := f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+20)); got.Enrollment != "restored" || got.Alias != "worker" {
+		t.Fatalf("clear in the new process: %+v, want @worker kept", got)
 	}
 }

@@ -62,16 +62,35 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 	if !ok || len(l.Ref) <= len(own)+1 || !s.LaunchAlive(l.Ref, l.AtMS) {
 		return nil, nil
 	}
-	// One process runs one conversation: no member of the adapter may have a
-	// launch open on it, unless that member left by hand or was departed by
-	// the owner; then this join is the explicit one that ends its absence.
-	var free bool
-	if err := tx.QueryRowContext(ctx, `SELECT vendor = ?2 AND NOT EXISTS(SELECT 1 FROM adapter_launch l
-		JOIN principal o ON o.id = l.principal_id AND o.vendor = ?2
+	var vendor string
+	if err := tx.QueryRowContext(ctx, `SELECT vendor FROM principal WHERE id = ?`, principal).Scan(&vendor); err != nil || vendor != l.Profile.Adapter {
+		return nil, err
+	}
+	// One process runs one conversation: no present member of the adapter
+	// may have a launch open on it that still runs (an unended launch of a
+	// process gone without an end does not count; the PID may be reused).
+	// A member that left by hand or was departed by the owner does not
+	// count either: this join is the explicit one that ends its absence.
+	rows, err := tx.QueryContext(ctx, `SELECT l.launch_ref, l.started_hook_at_ms FROM adapter_launch l
+		JOIN principal o ON o.id = l.principal_id AND o.vendor = ?1
 		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
-		WHERE l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND (l.launch_ref = ?3 OR l.launch_ref LIKE ?3 || '-%')
-			AND (b.state = 'live' OR b.departed_by_hook = 1) AND COALESCE(b.owner_hook_fence_ms < ?4, 1))
-		FROM principal WHERE id = ?1`, principal, l.Profile.Adapter, own, l.AtMS).Scan(&free); err != nil || !free {
+		WHERE l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?2 || '-%')
+			AND (b.state = 'live' OR b.departed_by_hook = 1) AND COALESCE(b.owner_hook_fence_ms < ?3, 1)`,
+		vendor, own, l.AtMS)
+	if err != nil {
+		return nil, err
+	}
+	occupied := false
+	for rows.Next() {
+		var ref string
+		var began int64
+		if err := rows.Scan(&ref, &began); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		occupied = occupied || s.LaunchAlive(ref, began)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || occupied {
 		return nil, err
 	}
 	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.AtMS); err != nil {

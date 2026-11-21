@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binary = filepath.Join(dir, "crosshall")
-	build := exec.Command("go", "build", "-o", binary, "../../cmd/crosshall")
+	build := exec.Command("go", "build", "-tags=testvendorhome", "-o", binary, "../../cmd/crosshall")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build failed:", err)
@@ -58,9 +58,11 @@ func TestMain(m *testing.M) {
 // world is one isolated installation: a home, a state root that does not
 // exist yet, and the rendezvous root the dispatcher derives from it.
 type world struct {
-	t     *testing.T
-	home  string
-	state string
+	t       *testing.T
+	home    string
+	state   string
+	lease   *os.File
+	workers *os.File
 }
 
 func newWorld(t *testing.T) *world {
@@ -70,7 +72,23 @@ func newWorld(t *testing.T) *world {
 		home = resolved
 	}
 	w := &world{t: t, home: home, state: filepath.Join(home, "state")}
-	t.Cleanup(w.stop)
+	leaseDir, err := os.MkdirTemp(t.TempDir(), "dispatcher-lease-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.workers, err = os.OpenFile(filepath.Join(leaseDir, "workers.lock"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.workers.Close() })
+	w.lease, err = os.OpenFile(filepath.Join(leaseDir, "runner.lock"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(w.cleanup)
+	if err := syscall.Flock(int(w.lease.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
 	return w
 }
 
@@ -81,11 +99,16 @@ func (w *world) baseEnv() []string {
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"TMPDIR=" + filepath.Join(w.home, "tmp"),
 		"CROSSHALL_STATE_DIR=" + w.state,
+		w.dispatcherLeaseEnv(),
 	}
 	if sentinel := os.Getenv("CROSSHALL_TEST_VENDOR_SENTINEL"); sentinel != "" {
 		env = append(env, "CROSSHALL_TEST_VENDOR_SENTINEL="+sentinel)
 	}
 	return env
+}
+
+func (w *world) dispatcherLeaseEnv() string {
+	return "CROSSHALL_TEST_DISPATCHER_LEASE_DIR=" + filepath.Dir(w.lease.Name())
 }
 
 type participant struct {
@@ -280,6 +303,29 @@ func (w *world) stop() {
 		}
 	}
 	_ = os.RemoveAll(w.rendezvous())
+}
+
+func (w *world) cleanup() {
+	if err := w.lease.Close(); err != nil {
+		w.t.Errorf("release fixture dispatcher lease: %v", err)
+	}
+	if err := lockFixtureFileUntil(w.workers, time.Now().Add(5*time.Second)); err != nil {
+		w.t.Errorf("wait for fixture dispatcher cleanup: %v", err)
+		return
+	}
+	if err := os.RemoveAll(w.rendezvous()); err != nil {
+		w.t.Errorf("remove fixture rendezvous: %v", err)
+	}
+}
+
+func lockFixtureFileUntil(file *os.File, deadline time.Time) error {
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func randomHex(n int) string {

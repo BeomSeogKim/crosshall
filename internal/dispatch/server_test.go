@@ -20,6 +20,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if handled, code := RunTestDispatcherGuardian(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	if len(os.Args) == 2 && os.Args[1] == "__dispatch" {
 		for _, variable := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "CROSSHALL_ROUTE", "CROSSHALL_TEST_EXTRA"} {
 			if _, present := os.LookupEnv(variable); present {

@@ -134,7 +134,7 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 		return nil, err
 	}
 	defer logFile.Close()
-	cmd := exec.Command(executable, "__dispatch")
+	cmd := exec.Command(executable, dispatcherSubcommand())
 	cmd.Dir = cfg.StateRoot
 	cmd.Env = cfg.dispatcherEnv()
 	cmd.Stdout, cmd.Stderr = logFile, logFile
@@ -156,7 +156,7 @@ func (cfg LaunchConfig) dispatcherEnv() []string {
 			env = append(env, key+"="+value)
 		}
 	}
-	return env
+	return appendTestDispatcherEnv(env)
 }
 
 // prepareDaemonProcess is called in the dedicated dispatcher process. The

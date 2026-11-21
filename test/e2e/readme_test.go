@@ -222,7 +222,7 @@ func TestReadmeNormalizeDueDate(t *testing.T) {
 func readmeReleaseBinary(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "crosshall")
-	build := exec.Command("go", "build", "-ldflags", "-X main.version=v0.0.0-readme-test", "-o", path, "../../cmd/crosshall")
+	build := exec.Command("go", "build", "-tags=testvendorhome", "-ldflags", "-X main.version=v0.0.0-readme-test", "-o", path, "../../cmd/crosshall")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
@@ -272,7 +272,7 @@ func newReadmeInstall(t *testing.T, release string) *readmeInstall {
 }
 
 func (in *readmeInstall) env() []string {
-	return append([]string{"HOME=" + in.w.home, "PATH=" + in.bin + ":/usr/bin:/bin", "TMPDIR=" + filepath.Join(in.w.home, "tmp")}, in.extra...)
+	return append([]string{"HOME=" + in.w.home, "PATH=" + in.bin + ":/usr/bin:/bin", "TMPDIR=" + filepath.Join(in.w.home, "tmp"), in.w.dispatcherLeaseEnv()}, in.extra...)
 }
 
 func (in *readmeInstall) close() {
@@ -526,19 +526,9 @@ func TestReadmeRemovalDeletesNothingUnlessSafe(t *testing.T) {
 			if out, code := in.run(t, start); code != 0 {
 				t.Fatalf("owner start: %d %v", code, out)
 			}
-			// The dispatcher outlives a refused removal. Stop it by the PID taken
-			// now: a broken guard may delete the lock file that cleanup reads.
-			pids := in.w.dispatcherPIDs()
-			if len(pids) == 0 {
+			if len(in.w.dispatcherPIDs()) == 0 {
 				t.Fatal("no dispatcher after owner start")
 			}
-			t.Cleanup(func() {
-				for _, pid := range pids {
-					if proc, err := os.FindProcess(pid); err == nil {
-						_ = proc.Kill()
-					}
-				}
-			})
 			tc.setup(in)
 			kept := []string{in.w.state, in.w.rendezvous(), filepath.Join(in.bin, "crosshall")}
 			if in.extra != nil {

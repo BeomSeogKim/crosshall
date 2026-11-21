@@ -31,6 +31,9 @@ var version = "dev"
 
 func main() {
 	entry := time.Now()
+	if handled, code := dispatch.RunTestDispatcherGuardian(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "hook" {
 		runHook(entry, os.Args[2:])
 		return

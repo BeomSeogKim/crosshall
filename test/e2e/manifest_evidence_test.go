@@ -183,6 +183,19 @@ func TestManifestEvidenceCoversAnotherBuildsPublishAndStop(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	// #194: an empty inbox tells the session the hall reaches that no wait
+	// is needed, and the pull member beside it to wait.
+	const waitLine = "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.\n"
+	claude := &participant{w: w, extra: []string{"TMPDIR=" + tmp, "CLAUDE_CODE_SESSION_ID=" + c.key}}
+	claude.must("read")
+	claude.must("reply", strconv.FormatInt(stopID, 10), "done")
+	if out := claude.mustPlain("inbox"); !strings.HasPrefix(out, "Inbox is empty. "+domain.HallDelivers+"\n") {
+		t.Fatalf("empty inbox of a session the hall reaches:\n%s", out)
+	}
+	writer.must("read")
+	if out := writer.mustPlain("inbox"); !strings.HasPrefix(out, waitLine) {
+		t.Fatalf("empty inbox of a pull member:\n%s", out)
+	}
 	ask := writer.must("ask", "@claude1", "Fixture work for publish")
 	var result domain.AskResult
 	if err := json.Unmarshal([]byte(ask.stdout), &result); err != nil || result.ID <= 0 || len(result.Recipients) != 1 || result.Recipients[0].Next != "notice queued" {

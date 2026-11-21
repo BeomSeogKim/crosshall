@@ -43,6 +43,8 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 			readInTrailer := trailer.OwedCount != nil && len(trailer.Pending) > 0 && refusal.Hint == "crosshall read"
 			if refusal.Hint != "" && !readInTrailer {
 				fmt.Fprintf(stderr, "next: %s\n", refusal.Hint)
+			} else if refusal.Hint == "" && trailer.Delivers {
+				fmt.Fprintln(stderr, domain.HallDelivers)
 			}
 			printLedgerTrailer(stderr, cmd, trailer, false)
 		}

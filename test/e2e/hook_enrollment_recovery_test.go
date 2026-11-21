@@ -88,8 +88,10 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			}
 
 			recovered := f.waitForEnrollmentWelcome(repo, test.adapter, "UserPromptSubmit", prompt)
+			// A second callback with the recovered prompt's id (#163: a prompt
+			// typed while that turn ran) is observed, and repeats nothing.
 			if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt(recovered)); got != "" {
-				t.Fatalf("replayed callback returned %q", got)
+				t.Fatalf("a second callback of the turn returned %q", got)
 			}
 			if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("ordinary")); got != "" {
 				t.Fatalf("established session received a second welcome %q", got)
@@ -101,10 +103,10 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				(SELECT COUNT(*) FROM binding WHERE principal_id = k.principal_id AND state = 'live'),
 				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id AND launch_ref = 'session' AND verified = 0
 					AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'),
-				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND event_ref = ?),
+				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND turn_ref = ?),
 				(SELECT COUNT(*) FROM publish_route WHERE principal_id = k.principal_id)
-				FROM principal_key k WHERE vendor = ? AND key = ?`, recovered+":UserPromptSubmit", test.adapter, key).Scan(&bindings, &launches, &observations, &routes); err != nil ||
-				bindings != 1 || launches != 1 || observations != 1 || routes != 0 {
+				FROM principal_key k WHERE vendor = ? AND key = ?`, recovered, test.adapter, key).Scan(&bindings, &launches, &observations, &routes); err != nil ||
+				bindings != 1 || launches != 1 || observations != 2 || routes != 0 {
 				t.Fatalf("recovery wrote bindings %d, launches %d, observations %d, routes %d (%v)",
 					bindings, launches, observations, routes, err)
 			}

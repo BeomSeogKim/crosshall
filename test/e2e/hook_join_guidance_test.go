@@ -212,8 +212,8 @@ func hookPromptObserved(t *testing.T, db *sql.DB, adapter, turn string) bool {
 	t.Helper()
 	var observed bool
 	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM observation o JOIN principal_key k ON k.principal_id = o.principal_id
-		WHERE k.vendor = ? AND k.key = ? AND o.kind = 'prompt_submitted' AND o.event_ref = ?)`,
-		adapter, setupSessionPrefix+adapter, turn+":UserPromptSubmit").Scan(&observed); err != nil {
+		WHERE k.vendor = ? AND k.key = ? AND o.kind = 'prompt_submitted' AND o.turn_ref = ?)`,
+		adapter, setupSessionPrefix+adapter, turn).Scan(&observed); err != nil {
 		t.Fatal(err)
 	}
 	return observed

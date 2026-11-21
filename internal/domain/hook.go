@@ -628,21 +628,25 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	switch cmd.Fact {
 	case FactPromptSubmitted:
 		if cmd.TurnRef != "" {
+			turn, err := promptTurn(ctx, tx, principal, cmd)
+			if err != nil {
+				return core.Result{}, err
+			}
 			// A prompt older than a turn already opened is stale: it opens its
 			// turn as superseded and supersedes nothing.
 			var newer int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn WHERE principal_id = ? AND launch_ref = ?
-				AND turn_ref <> ? AND opened_hook_at_ms > ?`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS).Scan(&newer); err != nil {
+				AND turn_ref <> ? AND opened_hook_at_ms > ?`, principal, cmd.LaunchRef, turn, cmd.HookAtMS).Scan(&newer); err != nil {
 				return core.Result{}, err
 			}
 			if newer == 0 {
 				if _, err := tx.ExecContext(ctx, `UPDATE turn SET superseded = 1 WHERE principal_id = ? AND launch_ref = ? AND turn_ref <> ?`,
-					principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
+					principal, cmd.LaunchRef, turn); err != nil {
 					return core.Result{}, err
 				}
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, superseded)
-				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS, newer > 0); err != nil {
+				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, principal, cmd.LaunchRef, turn, cmd.HookAtMS, newer > 0); err != nil {
 				return core.Result{}, err
 			}
 			if newer > 0 {
@@ -650,6 +654,9 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 			}
 		}
 	case FactTurnFinishing:
+		if err := adoptTypedAhead(ctx, tx, principal, cmd); err != nil {
+			return core.Result{}, err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE turn SET finishing_hook_at_ms = COALESCE(finishing_hook_at_ms, ?)
 			WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, cmd.HookAtMS, principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
 			return core.Result{}, err

@@ -72,16 +72,15 @@ func (c claudeSession) waitForConsumption(deadline time.Time) {
 func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
-	var ref string
-	if prompt, _ := fields["prompt_id"].(string); prompt != "" {
-		ref = prompt + ":" + event
-	}
+	// A prompt's event reference also carries its hook's entry time (#163):
+	// match the turn and the kind.
+	ref, _ := fields["prompt_id"].(string)
 	db := c.w.db()
 	count := func() int {
 		c.w.t.Helper()
 		var recorded int
 		err := db.QueryRow(`SELECT COUNT(*) FROM observation o JOIN leaf l ON l.principal_id = o.principal_id
-			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.event_ref = ?)`,
+			WHERE l.digest = ? AND o.kind = ? AND (? = '' OR o.turn_ref = ?)`,
 			digest, fact, ref, ref).Scan(&recorded)
 		if err != nil {
 			c.w.t.Fatal(err)
@@ -220,14 +219,25 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	// The clean stamp and the quiet Stop both publish without a round trip.
 	c.fireAndRecord("UserPromptSubmit", wire.HookPromptSubmitted, map[string]any{"prompt_id": "p5"})
 	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p5", "stop_hook_active": false})
-	// A second replay of every callback that carries a native reference
-	// prints nothing and changes nothing. (Starts and ends carry none: the
-	// hook's own time tells them apart, so a replay of one is a new event.)
+	// A second prompt callback with a used id is a prompt typed while that
+	// turn ran (#163), told apart by the hook's own time: it prints nothing
+	// already announced, and adds only its observation and its turn. A
+	// second Stop changes nothing. (Starts and ends carry no native
+	// reference: the hook's own time tells them apart too.)
 	before := tableCounts(t, w)
 	for _, p := range []string{"p1", "p2", "p3", "p4", "p5"} {
 		if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": p}); got != "" {
-			t.Fatalf("replayed prompt %s printed %q", p, got)
+			t.Fatalf("a second prompt callback %s printed %q", p, got)
 		}
+	}
+	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
+	typed := tableCounts(t, w)
+	if typed["observation"] != before["observation"]+5 || typed["turn"] != before["turn"]+5 {
+		t.Fatalf("second prompt callbacks: %v -> %v, want five observations and five turns more", before, typed)
+	}
+	before["observation"], before["turn"] = typed["observation"], typed["turn"]
+	if !reflect.DeepEqual(before, typed) {
+		t.Fatalf("second prompt callbacks changed other rows: %v", typed)
 	}
 	for _, p := range []string{"p1", "p5"} {
 		if got := c.fire("Stop", map[string]any{"prompt_id": p, "stop_hook_active": false}); got != "" {
@@ -271,8 +281,10 @@ func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
 	assertWorkUnread(t, db, id)
 	var observations int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE event_ref = ? AND kind = ?`,
-		"typed-notice:UserPromptSubmit", wire.HookPromptSubmitted).Scan(&observations); err != nil || observations != 1 {
+	// A second callback with the same prompt id is a prompt typed while the
+	// turn ran (#163): it is observed too, and repeats no ID.
+	if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE turn_ref = ? AND kind = ?`,
+		"typed-notice", wire.HookPromptSubmitted).Scan(&observations); err != nil || observations != 2 {
 		t.Fatalf("typed notice observations = %d, error %v", observations, err)
 	}
 }

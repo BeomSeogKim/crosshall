@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 func TestDispatcherRetiresKilledClaudeLaunch(t *testing.T) {
@@ -22,6 +23,82 @@ func TestDispatcherRetiresKilledClaudeLaunch(t *testing.T) {
 	}
 	t.Run("known identity", func(t *testing.T) { checkKilledClaudeLaunch(t, true) })
 	t.Run("died before identity was stored", func(t *testing.T) { checkKilledClaudeLaunch(t, false) })
+}
+
+func TestDispatcherRetiresKilledHandJoinedClaudeLaunchOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires a Linux PID namespace")
+	}
+	namespace := proc.PIDNamespace()
+	if namespace == "" {
+		t.Fatal("cannot read the test process's PID namespace")
+	}
+	w, writer, c := m2World(t)
+	process := exec.CommandContext(t.Context(), "/bin/sh", "-c", `export CLAUDE_PID=$$
+"$1" join checkout --as hand || exit $?
+exec /bin/sleep 60`, "sh", binary)
+	process.Dir = c.repo
+	process.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = process.Process.Kill()
+		_ = process.Wait()
+	})
+
+	type launchState struct {
+		binding, pidNamespace          string
+		pid, startIdentity             int64
+		departedByHook, endedByProcess bool
+	}
+	db := w.db()
+	state := func() launchState {
+		t.Helper()
+		var got launchState
+		err := db.QueryRow(`SELECT b.state, l.pid_namespace, COALESCE(l.process_pid, 0),
+			COALESCE(l.process_start_identity, 0), b.departed_by_hook, l.ended_by_process
+			FROM principal_key k JOIN binding b ON b.principal_id = k.principal_id
+			JOIN adapter_launch l ON l.principal_id = k.principal_id
+			WHERE k.vendor = 'claude' AND k.key = ?`, c.key).Scan(&got.binding, &got.pidNamespace, &got.pid,
+			&got.startIdentity, &got.departedByHook, &got.endedByProcess)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return got
+	}
+	for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(25 * time.Millisecond) {
+		got := state()
+		if got.binding == "live" {
+			if got.pidNamespace != namespace {
+				t.Fatalf("hand join stored PID namespace %q, want %q", got.pidNamespace, namespace)
+			}
+			if got.pid == int64(process.Process.Pid) && got.startIdentity > 0 {
+				break
+			}
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("hand join did not bind a live launch: %+v", got)
+		}
+	}
+	if err := process.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("expected the fixture process to exit after SIGKILL")
+	}
+	for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(25 * time.Millisecond) {
+		got := state()
+		if got.binding == "departed" && got.departedByHook && got.endedByProcess {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("dispatcher did not retire the hand-joined launch: %+v", got)
+		}
+	}
+	if rosterHas(t, writer, "hand") {
+		t.Fatal("the killed hand-joined launch remains live in who")
+	}
 }
 
 func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool) {

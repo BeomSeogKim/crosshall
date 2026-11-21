@@ -89,13 +89,25 @@ func hasDefault(ctx context.Context, rv *os.Root, repo string) (bool, error) {
 	if !filepath.IsAbs(repo) || filepath.Clean(repo) != repo {
 		return false, nil
 	}
+	sum := sha256.Sum256([]byte(repo))
+	return repoSetHas(ctx, rv, hex.EncodeToString(sum[:]))
+}
+
+// AutoJoinLine is the line of the published repository set that says the
+// owner's automatic joining is on: any Git repository may then be joined.
+const AutoJoinLine = "auto"
+
+func autoJoin(ctx context.Context, rv *os.Root) bool {
+	on, _ := repoSetHas(ctx, rv, AutoJoinLine)
+	return on
+}
+
+func repoSetHas(ctx context.Context, rv *os.Root, want string) (bool, error) {
 	f, err := spool.OpenServerFile(rv, "repo-defaults", os.O_RDONLY)
 	if err != nil {
 		return false, err
 	}
 	defer f.Close()
-	sum := sha256.Sum256([]byte(repo))
-	want := hex.EncodeToString(sum[:])
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), 4096)
 	for scanner.Scan() {

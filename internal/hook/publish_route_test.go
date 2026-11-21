@@ -41,7 +41,7 @@ func TestClaudeHookKeepsRuntimeProfileSeparateAndBuildsRouteRequest(t *testing.T
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
 	}
-	req := makeRequest(time.UnixMilli(1000), m, spec, e, "", true, 1)
+	req := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
 	var enrollArgs wire.HookEnrollArgs
 	if err := json.Unmarshal(req.Args, &enrollArgs); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestCodexHookExtractsThreadAndSessionLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
 	}
-	req := makeRequest(time.UnixMilli(1000), m, spec, e, "", true, 1)
+	req := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
 	var args wire.HookEnrollArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		t.Fatal(err)

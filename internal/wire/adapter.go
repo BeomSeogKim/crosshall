@@ -33,21 +33,29 @@ type HookEnrollArgs struct {
 	EventRef       string      `json:"event_ref"`
 	Source         string      `json:"source"`
 	RepoRoot       string      `json:"repo_root"`
-	HookAtMS       int64       `json:"hook_at_ms"`
-	Epoch          uint64      `json:"epoch"`
+	// Repository names the whole repository of RepoRoot's worktree, and
+	// CreateChannel says the hook found a real work tree there, so the
+	// repository may get its own channel. The dispatcher resolves the
+	// worktree's default, then the repository's, in its transaction.
+	Repository    string `json:"repository,omitempty"`
+	CreateChannel bool   `json:"create_channel,omitempty"`
+	HookAtMS      int64  `json:"hook_at_ms"`
+	Epoch         uint64 `json:"epoch"`
 }
 
 type HookEventArgs struct {
-	Profile        HookProfile `json:"profile"`
-	LaunchRef      string      `json:"launch_ref"`
-	LaunchVerified bool        `json:"launch_verified"`
-	EventRef       string      `json:"event_ref"`
-	Fact           string      `json:"fact"`
-	TurnRef        string      `json:"turn_ref,omitempty"`
-	HookAtMS       int64       `json:"hook_at_ms"`
-	WantOutput     bool        `json:"want_output"`
-	Epoch          uint64      `json:"epoch"`
-	EnrollRepoRoot string      `json:"enroll_repo_root,omitempty"`
+	Profile          HookProfile `json:"profile"`
+	LaunchRef        string      `json:"launch_ref"`
+	LaunchVerified   bool        `json:"launch_verified"`
+	EventRef         string      `json:"event_ref"`
+	Fact             string      `json:"fact"`
+	TurnRef          string      `json:"turn_ref,omitempty"`
+	HookAtMS         int64       `json:"hook_at_ms"`
+	WantOutput       bool        `json:"want_output"`
+	Epoch            uint64      `json:"epoch"`
+	EnrollRepoRoot   string      `json:"enroll_repo_root,omitempty"`
+	EnrollRepository string      `json:"enroll_repository,omitempty"`
+	EnrollCreate     bool        `json:"enroll_create,omitempty"`
 	// Receipt records an observed publish notice as "publish:" followed by its IDs.
 	Receipt    string `json:"receipt,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -89,7 +97,10 @@ type HookResult struct {
 	ReminderText string           `json:"reminder_text,omitempty"`
 	Ack          *HookAck         `json:"ack,omitempty"`
 	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
-	Epoch        uint64           `json:"epoch"`
+	// ChannelCreated tells the dispatcher that this enrolment made the
+	// repository's channel, so the published repository set is stale.
+	ChannelCreated bool   `json:"channel_created,omitempty"`
+	Epoch          uint64 `json:"epoch"`
 }
 
 type HookJoinHintAck struct {

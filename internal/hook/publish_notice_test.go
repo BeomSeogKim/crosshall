@@ -60,7 +60,7 @@ func assertPublishHookRequest(t *testing.T, vendor, promptFields, want string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return makeRequest(time.UnixMilli(1024), m, spec, e, "", true, 7)
+		return makeRequest(time.UnixMilli(1024), m, spec, e, enrolment{}, true, 7)
 	}
 	baseline := observed("")
 	request := observed(promptFields)

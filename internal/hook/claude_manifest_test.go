@@ -93,7 +93,7 @@ func TestClaudeLaunchVersionAndModeComeFromTheHookEnvironment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := makeRequest(time.UnixMilli(1), m, spec, e, "", true, 1)
+		req := makeRequest(time.UnixMilli(1), m, spec, e, enrolment{}, true, 1)
 		var args struct {
 			Profile struct {
 				Version string `json:"vendor_version"`

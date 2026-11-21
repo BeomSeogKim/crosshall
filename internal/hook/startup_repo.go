@@ -32,8 +32,9 @@ func prepareRepoLifecycle(args []string, input io.Reader, locate func() (Paths, 
 	}
 	m, ok := loadManifest(args[0])
 	spec, known := m.event(args[1])
-	prompt, _ := m.event("UserPromptSubmit")
-	if !ok || !known || !prompt.RecoverEnroll {
+	// Every adapter that enrols keeps the record: a later start from
+	// another place must not join the session there.
+	if !ok || !known || (!spec.Enroll && spec.Fact != wire.HookSessionEnded) {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())

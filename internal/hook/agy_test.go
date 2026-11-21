@@ -93,7 +93,7 @@ func TestAntigravitySessionStartAcceptsOnlySupportedPayload(t *testing.T) {
 				got.VendorVersion != "unverified" || got.LaunchRef != "" || got.receipt != "" {
 				t.Fatalf("unexpected startup event: %+v", got)
 			}
-			req := makeRequest(time.Now(), m, spec, got, workspace, true, 1)
+			req := makeRequest(time.Now(), m, spec, got, enrolment{worktree: workspace, repository: workspace}, true, 1)
 			if req.Verb != wire.VerbHookEnroll || strings.Contains(string(req.Args), "private prompt") ||
 				strings.Contains(string(req.Args), transcript("antigravity-cli")) {
 				t.Fatalf("unexpected enrollment request: %+v", req)

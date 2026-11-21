@@ -198,13 +198,15 @@ func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields
 	db := f.db()
 	f.waitEnrollmentPackets(adapter, event, deadline)
 	if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); !welcome {
-		// A member query can confirm the native receipt if its one-way acknowledgement expired.
+		// A member request can confirm the native receipt if its one-way
+		// acknowledgement expired. A wait carries no member rules, so the
+		// session's first command still gets them.
 		identity := "CLAUDE_CODE_SESSION_ID"
 		if adapter == "codex" {
 			identity = "CODEX_THREAD_ID"
 		}
 		member := &participant{w: f.world, extra: []string{identity + "=" + setupSessionPrefix + adapter}}
-		member.must("who")
+		member.run("wait", "--existing", "--timeout", "1s")
 		if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); !welcome {
 			f.t.Fatalf("%s welcome from %q was not acknowledged; counter %q, %s", event, delivered, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
 		}
@@ -230,8 +232,8 @@ func (f *setupWorld) waitForWelcomeDelivery(cwd, adapter, event string, fields f
 			if !strings.Contains(native.Output.Context, "Joined #setup-check as @"+adapter+"1") {
 				f.t.Fatalf("%s did not deliver the welcome: %q; %s", event, out, f.enrollmentEvidence(adapter))
 			}
-			if !strings.Contains(native.Output.Context, "Before voluntarily ending any turn") {
-				f.t.Fatalf("%s welcome omitted the member rules: %q", event, out)
+			if strings.Contains(native.Output.Context, "Before voluntarily ending any turn") {
+				f.t.Fatalf("%s start line carried the member rules: %q", event, out)
 			}
 			return turn
 		}
@@ -306,6 +308,7 @@ func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", "claude", "--apply")
+			f.owner().must("owner", "channel", "auto", "off") // a start with no channel is told how to join
 			mapped := f.enrollmentRepo()
 			other := filepath.Join(f.home, "other")
 			if err := os.MkdirAll(filepath.Join(other, ".git"), 0700); err != nil {
@@ -350,6 +353,7 @@ func TestInstalledHookRecordsOtherStartSources(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", "claude", "--apply")
 			f.owner().must("owner", "channel", "create", "setup-check")
+			f.member().must("join", "setup-check", "--as", "peer")
 			repo := filepath.Join(f.home, "later-mapped")
 			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
 				t.Fatal(err)

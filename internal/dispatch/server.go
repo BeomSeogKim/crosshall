@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -609,7 +611,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack)
+		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack, leafRulesReceipt(arrival))
 		if err != nil {
 			return err
 		}
@@ -702,26 +704,53 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	return result, nil
 }
 
+// leafRulesReceipt reads the roster cursor of the reply with which the CLI
+// printed the member rules, as it recorded it in the member's directory. A
+// hook's own output acknowledges nothing, but its request finds this record
+// like any other, so a prompt after one command knows the rules were given.
+func leafRulesReceipt(arrival Arrival) uint64 {
+	if arrival.Owner || arrival.Dir == nil {
+		return 0
+	}
+	data, err := ident.ReadPrivateFile(arrival.Dir, spool.RulesReceipt, 32)
+	if err != nil {
+		return 0
+	}
+	cursor, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	return cursor
+}
+
 // Apply the acknowledgement before the handler reads the roster. The undo
 // restores just these fields on an enrolled refusal, leaving its audit intact.
-func acknowledgeRoster(ctx context.Context, tx store.Tx, bindingID *int64, cursor uint64) (uint64, func() error, error) {
-	if bindingID == nil || cursor == 0 {
+// A member a hook joined owes its rules until the CLI recorded printing them
+// (rules): a roster cursor alone, which an older version also wrote after a
+// reply without rules, settles them only for a member that joined by hand.
+func acknowledgeRoster(ctx context.Context, tx store.Tx, bindingID *int64, cursor, rules uint64) (uint64, func() error, error) {
+	if bindingID == nil || (cursor == 0 && rules == 0) {
 		return 0, nil, nil
 	}
 	var previous, latest int64
-	var hinted bool
-	err := tx.QueryRowContext(ctx, `SELECT roster_ack_seq, hint_acked,
+	var hinted, hooked bool
+	err := tx.QueryRowContext(ctx, `SELECT roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL,
 		(SELECT COALESCE(max(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id)
-		FROM binding WHERE id = ? AND state = 'live'`, *bindingID).Scan(&previous, &hinted, &latest)
+		FROM binding WHERE id = ? AND state = 'live'`, *bindingID).Scan(&previous, &hinted, &hooked, &latest)
+	if errors.Is(err, sql.ErrNoRows) && cursor == 0 {
+		return 0, nil, nil // only a receipt, and the binding it was for is not live
+	}
 	if err != nil {
 		return 0, nil, err
 	}
 	bounded := min(cursor, uint64(max(latest, 0)))
-	if bounded == 0 || (hinted && int64(bounded) <= previous) {
+	seen := bounded
+	if hooked {
+		seen = min(rules, uint64(max(latest, 0)))
+	}
+	acked, given := max(previous, int64(bounded), int64(seen)), hinted || seen > 0
+	if acked == previous && given == hinted {
 		return bounded, nil, nil
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = 1 WHERE id = ?",
-		max(previous, int64(bounded)), *bindingID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = ? WHERE id = ?",
+		acked, given, *bindingID); err != nil {
 		return 0, nil, err
 	}
 	return bounded, func() error {

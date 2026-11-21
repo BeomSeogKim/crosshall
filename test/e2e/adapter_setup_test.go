@@ -204,6 +204,8 @@ func (f *setupWorld) enrollmentRepo() string {
 		f.t.Fatal(err)
 	}
 	owner.must("owner", "channel", "default", "setup-check", "--repo", repo)
+	// A hook tells a session who it is only once it has company.
+	f.member().must("join", "setup-check", "--as", "peer")
 	return repo
 }
 

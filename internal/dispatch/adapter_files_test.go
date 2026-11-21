@@ -205,8 +205,9 @@ func TestHookJoinHintReceiptIsBoundToTheLiveExchange(t *testing.T) {
 	s, root := adapterFilesFixture(t)
 	leaf := adapterLeafFixture(t, s, root, true)
 	s.fixtureSQL(t, `INSERT INTO channel (id, name, state, created_at_ms) VALUES (1, 'dev', 'active', 1);
-		INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, roster_baseline_seq, hint_acked, roster_ack_seq)
-		VALUES (2, 1, 1, 'fixture', 1, 2, 1, 2);
+		INSERT INTO principal (id, kind, vendor, created_at_ms) VALUES (2, 'session', 'claude', 1);
+		INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, roster_baseline_seq, roster_ack_seq)
+		VALUES (2, 1, 1, 'fixture', 1, 2, 2), (3, 2, 1, 'peer', 1, NULL, 2);
 		INSERT INTO roster_change (channel_id, seq, principal_id, field) VALUES (1, 3, 1, 'joined');
 		INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('codex', 1, 0, 1, 1);
 		INSERT INTO adapter_launch (principal_id, launch_ref, started_hook_at_ms, profile, verified)
@@ -235,13 +236,16 @@ func TestHookJoinHintReceiptIsBoundToTheLiveExchange(t *testing.T) {
 			if err := acknowledgeHookJoinHint(t.Context(), tx, Arrival{Dir: leaf}, wire.Request{Generation: "test-gen"}, member); err != nil {
 				return err
 			}
-			var got bool
-			var cursor int
-			if err := tx.QueryRowContext(t.Context(), "SELECT roster_baseline_seq IS NULL, roster_ack_seq FROM binding WHERE id = 2").Scan(&got, &cursor); err != nil {
+			// A receipt records that the start line arrived and moves the
+			// snapshot; the rules stay due with the member's first command.
+			var got, rules bool
+			var snapshot int
+			if err := tx.QueryRowContext(t.Context(), "SELECT start_line_seen, hint_acked, roster_baseline_seq FROM binding WHERE id = 2").
+				Scan(&got, &rules, &snapshot); err != nil {
 				return err
 			}
-			if got != want || want && uint64(cursor) != ack.RosterSeq || !want && cursor != 2 {
-				t.Fatalf("receipt %+v changed ack to %t cursor %d, want ack %t", ack, got, cursor, want)
+			if got != want || rules || want && uint64(snapshot) != ack.RosterSeq || !want && snapshot != 2 {
+				t.Fatalf("receipt %+v changed ack to %t (rules %t) snapshot %d, want ack %t", ack, got, rules, snapshot, want)
 			}
 			return nil
 		}); err != nil {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -442,6 +443,21 @@ type ledgerTrailer struct {
 	Changes   []domain.Member `json:"roster_changes"`
 	// JoinHint is repeated by the first command of a member a hook enrolled.
 	JoinHint string `json:"join_hint"`
+}
+
+// PrintFirstRules prints the member rules a first command carries and the
+// roster changes that come with them, for a command rendered elsewhere. An
+// error means they did not reach w and must not be acknowledged.
+func PrintFirstRules(w io.Writer, data []byte) error {
+	var trailer ledgerTrailer
+	if err := json.Unmarshal(data, &trailer); err != nil {
+		return err
+	}
+	trailer.OwedCount = nil
+	var text bytes.Buffer
+	printLedgerTrailer(&text, domain.Who{}, trailer, true)
+	_, err := w.Write(text.Bytes())
+	return err
 }
 
 func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, success bool) {

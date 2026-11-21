@@ -251,7 +251,7 @@ func acknowledgeHookJoinHint(ctx context.Context, tx store.Tx, arrival Arrival, 
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE binding
-		SET hint_acked = 1, roster_ack_seq = MAX(roster_ack_seq, ?1), roster_baseline_seq = NULL
+		SET start_line_seen = 1, roster_baseline_seq = ?1
 		WHERE id = ?2 AND principal_id = ?3 AND route_epoch = ?4 AND state = 'live'
 			AND roster_baseline_seq <= ?1 AND ?1 <= (
 				SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id

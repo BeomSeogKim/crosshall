@@ -514,9 +514,13 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		return nil, nil
 	}
 	var parts []string
+	cue := result.Cue
 	if joinHintBoundary(spec) && (result.Enrollment == "joined" || result.JoinHintAck != nil) {
 		if result.Hint != "" {
 			parts = append(parts, result.Hint)
+			if result.CueWithStartLine != nil {
+				cue = *result.CueWithStartLine
+			}
 		}
 		if len(result.Roster) != 0 {
 			var members []domain.Member
@@ -536,8 +540,8 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		case "restored":
 			// After a context reset the core sends a short cue in place of
 			// what the session was already given.
-			if result.Cue != "" {
-				parts = append(parts, result.Cue)
+			if cue != "" {
+				parts = append(parts, cue)
 			}
 		case "none":
 			if result.Hint == "" {

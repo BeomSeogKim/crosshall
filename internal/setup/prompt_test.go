@@ -148,10 +148,15 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 		"Codex hooks in /fixture/home/.codex/hooks.json (default under HOME)",
 		"Antigravity hooks in /fixture/home/.gemini/config/hooks.json (default under HOME)",
 		"Review and trust these hooks with Codex /hooks.",
+		autoJoinNote,
 	} {
 		if i := strings.Index(r.out, label); i < 0 || i >= question {
 			t.Errorf("%q missing before consent:\n%s", label, r.out)
 		}
+	}
+	// The switch is the hall's: it is stated once, not per agent.
+	if n := strings.Count(r.out, autoJoinNote); n != 1 {
+		t.Errorf("the hall-wide note is printed %d times:\n%s", n, r.out)
 	}
 	if !slices.Equal(ops.installed, []string{"claude", "codex", "agy"}) || ops.rules["claude"] != (ClaudeRules{}) {
 		t.Fatalf("installed %v rules %+v", ops.installed, ops.rules)

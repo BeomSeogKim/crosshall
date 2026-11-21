@@ -122,6 +122,14 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 					state += ", stale"
 				}
 				route := member.Route
+				switch member.Reach {
+				case "notice":
+					route = "the hall starts its turn"
+				case "prompt":
+					route = "sees work at its next prompt"
+				case "pull":
+					route = "pull only: sees work when it runs a crosshall command"
+				}
 				if member.Publish != nil {
 					route += "; publish: " + publishWords(*member.Publish)
 				}
@@ -142,6 +150,14 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 				}
 				fmt.Fprintln(w)
 			}
+		}
+		for _, build := range r.StoppedBuilds {
+			name := build.Adapter
+			if name == "claude" {
+				name = "Claude Code"
+			}
+			fmt.Fprintf(w, "Notices to %s %s are stopped since %s (notice %d, %s). After checking the session, turn them back on with: crosshall owner publish resume %d\n",
+				name, build.Version, clock(build.StoppedAtMS), build.Notice, build.Reason, build.ResumeBindingID)
 		}
 		if hasToken {
 			fmt.Fprintln(w, "To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.")

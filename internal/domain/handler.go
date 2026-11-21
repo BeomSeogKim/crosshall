@@ -28,6 +28,7 @@ type Service struct {
 	LaunchAlive        func(ref string, startedHookAtMS int64) bool
 	LaunchProcess      func(ref string) (string, bool)
 	LaunchPIDNamespace func() string
+	HasPromptLine      func(adapter, revision string) bool
 	// LeafReceipts reads the roster receipts a session key's member
 	// directory holds and has not sent yet (the cursor and the rules one),
 	// if the directory is the registered one (file identity) and carries

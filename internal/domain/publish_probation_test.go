@@ -106,6 +106,12 @@ func TestPublishProbationSharesTheFirstStopAndResumesThroughAnotherBinding(t *te
 	later, laterIDs := probationNotice(p, peerBinding, "peer", "stop-later")
 	p.hook(p.reader, p.promptReceipt("reader-open", publishTestLaunch, p.now.UnixMilli()+10, firstIDs))
 	firstAt := probationBuild(p, 1, first, "absorbed", false)
+	owner := decode[OwnerWhoResult](t, p.owner(OwnerWho{}, ""))
+	wantStop := OwnerStoppedBuild{Adapter: testProfile.Adapter, Version: testProfile.VendorVersion, Platform: testProfile.Platform,
+		Mode: testProfile.Mode, StoppedAtMS: firstAt, Notice: first, Reason: "absorbed", ResumeBindingID: min(p.binding.ID, peerBinding.ID)}
+	if !slices.Equal(owner.StoppedBuilds, []OwnerStoppedBuild{wantStop}) {
+		t.Fatalf("owner stopped builds %+v, want %+v", owner.StoppedBuilds, wantStop)
+	}
 	state, found, err := store.ReadPublishState(t.Context(), p.db, peerBinding.ID, p.now)
 	if err != nil || !found || state.State != "suspended" || state.Notice != first {
 		t.Fatalf("peer did not show the shared stop: %+v, found %t, error %v", state, found, err)
@@ -128,6 +134,9 @@ func TestPublishProbationSharesTheFirstStopAndResumesThroughAnotherBinding(t *te
 	probationBuild(p, 1, first, "absorbed", true)
 	if n := p.count(`SELECT COUNT(*) FROM capability_build WHERE vendor_version = '2.1.328' AND lifted_at_ms IS NULL`); n != 1 {
 		t.Fatal("resume lifted a stop for another build")
+	}
+	if stopped := decode[OwnerWhoResult](t, p.owner(OwnerWho{}, "")).StoppedBuilds; len(stopped) != 0 {
+		t.Fatalf("owner who included a stop without a live binding: %+v", stopped)
 	}
 	if resumed := decode[PublishSwitchResult](t, p.owner(cmd, "resume-peer-again")); resumed.BuildStopLifted {
 		t.Fatalf("resume reported a second shared lift: %+v", resumed)

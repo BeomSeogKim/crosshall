@@ -94,3 +94,45 @@ func TestWaitingMarksDepartedRecipientWithoutReplacingPickup(t *testing.T) {
 		t.Fatalf("exit %d: stdout %q, stderr %q", code, out, stderr)
 	}
 }
+
+func TestOwnerWhoRendersReachAndStoppedBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name, reach, route, state, want string
+	}{
+		{"notice", "notice", "pull", "live", "the hall starts its turn"},
+		{"prompt", "prompt", "pull", "live", "sees work at its next prompt"},
+		{"pull", "pull", "pull", "live", "pull only: sees work when it runs a crosshall command"},
+		{"departed", "", "unavailable", "departed", "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "checkout", Members: []domain.OwnerMember{{
+				Member: domain.Member{BindingID: 3, Alias: "reader", Vendor: "claude", Route: tc.route},
+				Reach:  tc.reach, BindingState: tc.state,
+			}}}}}
+			env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
+			out, stderr, code := run(t, env, "owner", "who", "--all")
+			want := "  @reader [binding 3] " + tc.state + ", claude, focus unset; " + tc.want + ", last evidence: unknown (joined 0s ago)\n"
+			if code != core.ExitOK || !strings.Contains(out, want) {
+				t.Fatalf("exit %d, stderr %q, stdout %q, want %q", code, stderr, out, want)
+			}
+		})
+	}
+	t.Run("stopped", func(t *testing.T) {
+		result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "checkout", Members: []domain.OwnerMember{{
+			Member: domain.Member{BindingID: 3, Alias: "reader", Vendor: "claude", Route: "pull",
+				Publish: &domain.PublishStatus{State: "suspended", Reason: "absorbed"}},
+			Reach: "prompt", BindingState: "live", DepartToken: departureToken,
+		}}}}, StoppedBuilds: []domain.OwnerStoppedBuild{{
+			Adapter: "claude", Version: "2.1.331", Platform: "darwin-arm64", Mode: "interactive",
+			StoppedAtMS: 60_000, Notice: 41, Reason: "absorbed", ResumeBindingID: 3,
+		}}}
+		env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
+		out, stderr, code := run(t, env, "owner", "who", "--all")
+		footer := "Notices to Claude Code 2.1.331 are stopped since " + clock(60_000) +
+			" (notice 41, absorbed). After checking the session, turn them back on with: crosshall owner publish resume 3"
+		if code != core.ExitOK || !strings.Contains(out, "sees work at its next prompt; publish: suspended") ||
+			!strings.Contains(out, footer+"\nTo depart a listed binding") {
+			t.Fatalf("exit %d, stderr %q, stdout %q, want footer %q after the member", code, stderr, out, footer)
+		}
+	})
+}

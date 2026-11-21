@@ -29,18 +29,23 @@ func recordPublishProbation(ctx context.Context, tx store.Tx, attempt int64, obs
 	return err
 }
 
+const currentBindingLaunch = `adapter_launch l ON l.rowid = (
+	SELECT latest.rowid FROM adapter_launch latest
+	WHERE latest.principal_id = b.principal_id AND latest.ended_hook_at_ms IS NULL
+	ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)`
+
+const resumableBindingBuild = `b.state = 'live' AND l.verified = 1 AND l.fenced = 0
+	AND cb.vendor = json_extract(l.profile, '$.adapter')
+	AND cb.vendor_version = json_extract(l.profile, '$.vendor_version')
+	AND cb.platform = json_extract(l.profile, '$.platform')
+	AND cb.mode = json_extract(l.profile, '$.mode')
+	AND cb.manifest_rev = json_extract(l.profile, '$.manifest_rev')`
+
 func liftPublishBuildForBinding(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE capability_build AS cb SET lifted_at_ms = MAX(?1, stopped_at_ms)
 		WHERE cb.cap = 'publish' AND `+store.CapabilityBuildStopped("cb")+` AND EXISTS (
-			SELECT 1 FROM binding b JOIN adapter_launch l ON l.rowid = (
-				SELECT latest.rowid FROM adapter_launch latest
-				WHERE latest.principal_id = b.principal_id AND latest.ended_hook_at_ms IS NULL
-				ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)
-			WHERE b.id = ?2 AND b.state = 'live' AND l.verified = 1 AND l.fenced = 0
-			  AND cb.vendor = json_extract(l.profile, '$.adapter')
-			  AND cb.vendor_version = json_extract(l.profile, '$.vendor_version')
-			  AND cb.platform = json_extract(l.profile, '$.platform') AND cb.mode = json_extract(l.profile, '$.mode')
-			  AND cb.manifest_rev = json_extract(l.profile, '$.manifest_rev'))`, ms(now), binding)
+			SELECT 1 FROM binding b JOIN `+currentBindingLaunch+`
+			WHERE b.id = ?2 AND `+resumableBindingBuild+`)`, ms(now), binding)
 	if err != nil {
 		return false, err
 	}

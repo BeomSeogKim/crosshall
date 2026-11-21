@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -152,11 +153,25 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
 				req.PathConsent = writeInstallerPathConsent
 			}
+			installed := false
+			req.Installed = func() { installed = true }
 			runErr := service.Run(context.Background(), setup.Request(req))
-			if dispatcherReady && req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_READY_RECEIPT") == "1" {
-				return errors.Join(runErr, writeInstallerReceipt(4, "ready"))
+			if !req.Offer || !req.Terminal || os.Getenv("CROSSHALL_INSTALL_READY_RECEIPT") != "1" {
+				return runErr
 			}
-			return runErr
+			// The installer reads each line on its own: a ready dispatcher
+			// does not prove that any agent's hooks were installed.
+			var lines []string
+			if dispatcherReady {
+				lines = append(lines, "ready")
+			}
+			if installed {
+				lines = append(lines, "installed")
+			}
+			if len(lines) == 0 {
+				return runErr
+			}
+			return errors.Join(runErr, writeInstallerReceipt(4, strings.Join(lines, "\n")))
 		}
 	} else {
 		env.Unavailable = pathErr.Error()
@@ -219,7 +234,8 @@ func serve(paths statePaths, pathErr error) int {
 				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
-				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
+				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, HasPromptLine: hook.HasPromptLine,
+				LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
 					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation)
 				}},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {

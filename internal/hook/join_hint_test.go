@@ -1,6 +1,8 @@
 package hook
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -25,9 +27,16 @@ func TestHookJoinHintReceiptRequiresAFullWriteAndSuppressesOnlyGuidance(t *testi
 	defer leaf.Close()
 	m, _ := loadManifest("codex")
 	spec, _ := m.event("UserPromptSubmit")
-	ack := wire.HookJoinHintAck{Generation: "fixture-gen", BindingID: 5, RouteEpoch: 1, RosterSeq: 2}
+	ack := wire.HookJoinHintAck{Generation: "fixture-gen", BindingID: 5, RouteEpoch: 1, RosterSeq: 2, Offer: "offer-1"}
 	result := wire.HookResult{
 		Epoch: 7, Hint: "fixture member rules", PendingLine: "[crosshall] pending: 12", JoinHintAck: &ack,
+	}
+	projected, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.WriteFile(JoinHintOfferFile, projected, 0600); err != nil {
+		t.Fatal(err)
 	}
 	write := func(w io.Writer) (string, bool) {
 		return writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, w)
@@ -38,7 +47,7 @@ func TestHookJoinHintReceiptRequiresAFullWriteAndSuppressesOnlyGuidance(t *testi
 	if _, ok := ReadJoinHintAck(leaf, "fixture-gen"); ok {
 		t.Fatal("short write persisted a receipt")
 	}
-	lock, err := spool.OpenServerFile(leaf, "join-hint.lock", os.O_CREATE|os.O_RDWR)
+	lock, err := spool.OpenServerFile(leaf, joinHintLock, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,5 +79,26 @@ func TestHookJoinHintReceiptRequiresAFullWriteAndSuppressesOnlyGuidance(t *testi
 	}
 	if _, ok := ReadJoinHintAck(leaf, "replacement-gen"); ok {
 		t.Fatal("old generation carried the receipt into a replacement exchange")
+	}
+}
+
+func TestRevokedJoinHintDoesNotReachStdoutOrCreateALock(t *testing.T) {
+	rv, _, leafPath := runFixture(t)
+	leaf, err := ident.OpenPrivateDir(leafPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	m, _ := loadManifest("codex")
+	spec, _ := m.event("UserPromptSubmit")
+	stale := wire.HookJoinHintAck{Generation: "fixture-gen", BindingID: 5, RouteEpoch: 1, RosterSeq: 2, Offer: "revoked"}
+	result := wire.HookResult{Epoch: 7, Hint: "fixture member rules", PendingLine: "[crosshall] pending: 12", JoinHintAck: &stale}
+	var output strings.Builder
+	failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, stale.Generation, "codex", 7, spec, result, &output)
+	if failure != "" || seen || strings.Contains(output.String(), result.Hint) || !strings.Contains(output.String(), result.PendingLine) {
+		t.Fatalf("revoked guide reached stdout or hid unrelated output: %q %t %q", failure, seen, output.String())
+	}
+	if _, err := leaf.Lstat(joinHintLock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("revoked response left an output lock: %v", err)
 	}
 }

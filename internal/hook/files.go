@@ -181,9 +181,24 @@ func hasSeenNotice(leaf *os.Root, generation string) bool {
 
 const seenJoinHint = "seen-join-hint"
 
+const JoinHintOfferFile = "join-hint-offer"
+
+func ReadJoinHintOffer(leaf *os.Root, generation string) (wire.HookJoinHintAck, bool) {
+	return readJoinHintRecord(leaf, JoinHintOfferFile, generation)
+}
+
+func CurrentJoinHintOffer(leaf *os.Root, ack wire.HookJoinHintAck) bool {
+	offer, ok := ReadJoinHintOffer(leaf, ack.Generation)
+	return ok && offer.SameOffer(ack)
+}
+
 func ReadJoinHintAck(leaf *os.Root, generation string) (wire.HookJoinHintAck, bool) {
+	return readJoinHintRecord(leaf, seenJoinHint, generation)
+}
+
+func readJoinHintRecord(leaf *os.Root, name, generation string) (wire.HookJoinHintAck, bool) {
 	var ack wire.HookJoinHintAck
-	data, err := ident.ReadPrivateFile(leaf, seenJoinHint, 512)
+	data, err := ident.ReadPrivateFile(leaf, name, 512)
 	if err != nil || json.Unmarshal(data, &ack) != nil {
 		return ack, false
 	}

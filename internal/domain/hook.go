@@ -105,7 +105,7 @@ type hookBinding struct {
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
 	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms,
-			b.roster_baseline_seq IS NOT NULL AND b.hint_acked = 0
+			b.roster_baseline_seq IS NOT NULL
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
 		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence, &b.joinHintPending)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -349,7 +349,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
-	// The snapshot shown here is the baseline of the member's first ordinary command.
+	// The snapshot also keeps the full welcome pending after an ordinary roster acknowledgement.
 	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq = ? WHERE id = ?`, out.JoinHintAck.RosterSeq, bindingID); err != nil {
 		return core.Result{}, err
 	}

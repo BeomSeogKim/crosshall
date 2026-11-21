@@ -80,12 +80,14 @@ func (s *server) publishAdapterStamp(dir *os.Root, generation string, notice, re
 type adapterInvalidation struct {
 	digest, identity, generation string
 	notice, reminder             bool
+	departed                     bool
 }
 
 func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidation, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT COALESCE(l.digest, ''), COALESCE(l.file_identity, ''),
-		       COALESCE(l.generation, ''), d.notice, d.reminder
+		       COALESCE(l.generation, ''), d.notice, d.reminder, NOT EXISTS (
+		           SELECT 1 FROM binding b WHERE b.principal_id = d.principal_id AND b.state = 'live')
 		FROM adapter_dirty d LEFT JOIN leaf l ON l.principal_id = d.principal_id
 		  AND l.state = 'live' AND EXISTS (
 		    SELECT 1 FROM principal_key k WHERE k.vendor = l.vendor AND k.key = l.key
@@ -98,7 +100,7 @@ func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidati
 	var changes []adapterInvalidation
 	for rows.Next() {
 		var change adapterInvalidation
-		if err := rows.Scan(&change.digest, &change.identity, &change.generation, &change.notice, &change.reminder); err != nil {
+		if err := rows.Scan(&change.digest, &change.identity, &change.generation, &change.notice, &change.reminder, &change.departed); err != nil {
 			return nil, err
 		}
 		changes = append(changes, change)
@@ -159,6 +161,11 @@ func (s *server) invalidateAdapterLeaf(members *os.Root, change adapterInvalidat
 	if id != change.identity {
 		return nil // The identity resolver cannot accept requests from this leaf.
 	}
+	if change.departed {
+		if err := dir.Remove(hook.JoinHintOfferFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	if _, err := s.publishAdapterStamp(dir, change.generation, change.notice, change.reminder); err != nil {
 		// Keep the ordinary command usable where the old stamp can still be
 		// invalidated. A missing stamp forces a fresh output evaluation.
@@ -189,6 +196,7 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 		}
 		if output.JoinHintAck != nil {
 			output.JoinHintAck.Generation = req.Generation
+			s.logFailure(publishJoinHintOffer(arrival.Dir, output.JoinHintAck))
 		}
 		if ack := output.Ack; ack != nil {
 			stamp, ok := s.adapterStamp(arrival.Dir, req.Generation)
@@ -220,17 +228,32 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 	return err
 }
 
+func publishJoinHintOffer(leaf *os.Root, ack *wire.HookJoinHintAck) error {
+	if prior, ok := hook.ReadJoinHintOffer(leaf, ack.Generation); ok &&
+		prior.BindingID == ack.BindingID && prior.RouteEpoch == ack.RouteEpoch {
+		ack.Offer = prior.Offer
+		return nil
+	}
+	ack.Offer = wire.NewID()
+	raw, err := json.Marshal(ack)
+	if err != nil {
+		return err
+	}
+	return publishAdapterText(leaf, hook.JoinHintOfferFile, string(raw)+"\n")
+}
+
 func acknowledgeHookJoinHint(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, caller core.Caller) error {
 	if arrival.Owner || arrival.Dir == nil || caller.Role != core.RoleMember || caller.BindingID == nil || caller.PrincipalID == nil {
 		return nil
 	}
 	ack, ok := hook.ReadJoinHintAck(arrival.Dir, req.Generation)
-	if !ok || ack.BindingID != *caller.BindingID {
+	if !ok || ack.BindingID != *caller.BindingID || !hook.CurrentJoinHintOffer(arrival.Dir, ack) {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE binding SET hint_acked = 1, roster_ack_seq = MAX(roster_ack_seq, ?1)
+	_, err := tx.ExecContext(ctx, `UPDATE binding
+		SET hint_acked = 1, roster_ack_seq = MAX(roster_ack_seq, ?1), roster_baseline_seq = NULL
 		WHERE id = ?2 AND principal_id = ?3 AND route_epoch = ?4 AND state = 'live'
-			AND hint_acked = 0 AND roster_baseline_seq <= ?1 AND ?1 <= (
+			AND roster_baseline_seq <= ?1 AND ?1 <= (
 				SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id
 			)`, ack.RosterSeq, ack.BindingID, *caller.PrincipalID, ack.RouteEpoch)
 	return err

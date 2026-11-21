@@ -209,10 +209,11 @@ func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, gener
 	if ack == nil {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout), false
 	}
-	if !ack.ValidFor(generation) || !joinHintBoundary(spec) || result.Hint == "" {
+	if !ack.ValidFor(generation) || !joinHintBoundary(spec) || result.Hint == "" ||
+		!CurrentJoinHintOffer(leaf, *ack) {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
 	}
-	lock, err := spool.OpenServerFile(leaf, "join-hint.lock", os.O_CREATE|os.O_RDWR)
+	lock, err := spool.OpenServerFile(leaf, joinHintLock, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
 	}
@@ -220,10 +221,17 @@ func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, gener
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
 	}
-	if prior, ok := ReadJoinHintAck(leaf, generation); ok && prior.BindingID == ack.BindingID && prior.RouteEpoch >= ack.RouteEpoch {
+	if prior, ok := ReadJoinHintAck(leaf, generation); ok && prior.SameOffer(*ack) {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), true
 	}
-	if failure := writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout); failure != "" {
+	output, failure := prepareHookOutput(rv, adapter, epoch, spec, result)
+	if failure != "" {
+		return failure, false
+	}
+	if !CurrentJoinHintOffer(leaf, *ack) {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
+	}
+	if failure := writeHookOutput(ctx, stdout, output); failure != "" {
 		return failure, false
 	}
 	if hookExpired(ctx) {
@@ -243,14 +251,26 @@ func joinHintBoundary(spec eventSpec) bool {
 }
 
 func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout io.Writer) string {
+	output, failure := prepareHookOutput(rv, adapter, epoch, spec, result)
+	if failure != "" {
+		return failure
+	}
+	return writeHookOutput(ctx, stdout, output)
+}
+
+func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) ([]byte, string) {
 	output, err := present(spec, result)
 	if err != nil {
-		return "refused"
+		return nil, "refused"
 	}
 	current, err := readPolicy(rv, adapter)
 	if err != nil || !current.Enabled || current.Epoch != epoch || result.Epoch != current.Epoch {
-		return "stale_epoch"
+		return nil, "stale_epoch"
 	}
+	return output, ""
+}
+
+func writeHookOutput(ctx context.Context, stdout io.Writer, output []byte) string {
 	if hookExpired(ctx) {
 		return "deadline"
 	}

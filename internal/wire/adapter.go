@@ -97,11 +97,17 @@ type HookJoinHintAck struct {
 	RouteEpoch int64  `json:"route_epoch"`
 	Generation string `json:"gen"`
 	RosterSeq  uint64 `json:"roster_seq"`
+	Offer      string `json:"offer,omitempty"`
 }
 
 func (a HookJoinHintAck) ValidFor(generation string) bool {
 	return generation != "" && a.Generation == generation &&
-		a.BindingID > 0 && a.RouteEpoch > 0 && int64(a.RosterSeq) > 0
+		a.BindingID > 0 && a.RouteEpoch > 0 && int64(a.RosterSeq) > 0 && a.Offer != ""
+}
+
+func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
+	return a.Offer != "" && a.Offer == b.Offer && a.BindingID == b.BindingID &&
+		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation
 }
 
 type HookAck struct {

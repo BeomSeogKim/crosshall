@@ -31,6 +31,8 @@ An unjoined Claude Code or Codex CLI session can join on a later prompt when its
 
 If a join committed before its hook could deliver the welcome, the next eligible hook can deliver the alias and member rules. Once a hook delivers the welcome, later prompts omit it.
 
+The hook checks membership immediately before writing the welcome. A write already in progress can finish after the member leaves.
+
 Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
 
 ## The turn-end check

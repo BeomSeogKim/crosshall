@@ -216,9 +216,52 @@ func TestPublishReceiptValidatesListAndAuthenticatedScope(t *testing.T) {
 	}
 }
 
+// Owner trial #566: the first prompt of a fresh launch has no previous turn,
+// and with nothing observed since the launch started it is the notice's own.
+func TestPublishReceiptInAFreshSessionIsItsOwnTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "fresh")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	if n := p.count(`SELECT COUNT(*) FROM turn`) + p.count(`SELECT COUNT(*) FROM observation WHERE launch_ref = ?`, publishTestLaunch); n != 0 {
+		t.Fatalf("fixture recorded %d turns or facts before the notice", n)
+	}
+	cmd := p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli()+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "own_turn")
+	p.verifyPromptOrigin(cmd, "crosshall_wake")
+	p.resolve(id, PublishSubmitted)
+	p.turnEndAsk(p.writer, "reader", "after-fresh")
+	if p.reserve() == 0 {
+		t.Fatal("a fresh session's notice did not admit the next batch")
+	}
+}
+
+func TestPublishReceiptInABusySessionStaysUnknown(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", p.now.UnixMilli()+50))
+	ask := p.turnEndAsk(p.writer, "reader", "busy")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli()+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "unknown")
+	p.verifyPromptOrigin(cmd, "unknown")
+}
+
+// A fresh launch whose user prompt was dropped is not idle once anything of
+// that turn was seen.
 func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, p.now.UnixMilli()+50, false))
 	ask := p.turnEndAsk(p.writer, "reader", "missing-prompt")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
@@ -227,7 +270,7 @@ func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {
 	if n := p.count(`SELECT COUNT(*) FROM turn`); n != 0 {
 		t.Fatalf("fixture recorded %d turns before the notice", n)
 	}
-	cmd := p.promptReceipt("unrecorded-user-turn", publishTestLaunch, p.now.UnixMilli()+100, []int64{ask})
+	cmd := p.promptReceipt(unrecorded, publishTestLaunch, p.now.UnixMilli()+100, []int64{ask})
 	p.hook(p.reader, cmd)
 	p.observation(id, "unknown")
 	p.verifyPromptOrigin(cmd, "unknown")

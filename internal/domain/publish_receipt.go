@@ -60,6 +60,11 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 				AND o.hook_at_ms BETWEEN t.finishing_hook_at_ms AND ?4
 				AND (o.kind <> 'turn_finishing' OR o.turn_ref IS NOT t.turn_ref OR o.hook_at_ms <> t.finishing_hook_at_ms)
 		)) THEN 'own_turn'
+		WHEN NOT EXISTS (SELECT 1 FROM previous) AND EXISTS (SELECT 1 FROM adapter_launch l
+			WHERE l.principal_id = ?1 AND l.launch_ref = ?2 AND l.started_hook_at_ms <= ?4 AND NOT EXISTS (
+				SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
+					AND o.hook_at_ms BETWEEN l.started_hook_at_ms AND ?4
+			)) THEN 'own_turn'
 		ELSE 'unknown'
 	END`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS).Scan(&observation); err != nil {
 		return false, err

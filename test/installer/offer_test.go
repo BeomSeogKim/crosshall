@@ -71,8 +71,11 @@ if [ "${CROSSHALL_INSTALL_PATH_CONSENT:-}" = 1 ] && [ "${OFFER_CONFIRM_PATH:-}" 
     *) printf 'no\n' >&3 ;;
   esac
 fi
-if [ "${CROSSHALL_INSTALL_READY_RECEIPT:-}" = 1 ] && [ "${OFFER_READY:-}" = 1 ]; then
-  printf 'ready\n' >&4
+if [ "${CROSSHALL_INSTALL_READY_RECEIPT:-}" = 1 ]; then
+  receipt=
+  [ "${OFFER_READY:-}" = 1 ] && receipt='ready\n'
+  [ "${OFFER_INSTALLED:-}" = 1 ] && receipt="${receipt}installed\n"
+  [ -z "$receipt" ] || printf "$receipt" >&4
 fi
 exit "$OFFER_EXIT"
 `)
@@ -124,6 +127,15 @@ esac
 		lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(output), "\r\n", "\n")), "\n")
 		start := "Next (in a plain terminal): " + strings.ReplaceAll(target, " ", `\ `) + " owner start"
 		ready := os.Getenv("OFFER_READY") == "1"
+		// #196: the reachability line comes last, and only after an install.
+		if os.Getenv("OFFER_INSTALLED") == "1" {
+			if lines[len(lines)-1] != reachLine(target) {
+				t.Fatalf("an install did not end with the reachability line: %q", output)
+			}
+			lines = lines[:len(lines)-1]
+		} else if strings.Contains(string(output), "owner who --all") {
+			t.Fatalf("reachability line without an install: %q", output)
+		}
 		if lines[0] != "Installed crosshall v0.1.0 at "+target ||
 			(ready && strings.Contains(string(output), start)) || (!ready && lines[len(lines)-1] != start) {
 			t.Fatalf("unexpected install output: %q", output)
@@ -149,6 +161,7 @@ esac
 	}
 
 	t.Setenv("OFFER_READY", "")
+	t.Setenv("OFFER_INSTALLED", "")
 	t.Run("fresh owner terminal", func(t *testing.T) { check(t, true, false) })
 	t.Run("upgrade reaches footprint check", func(t *testing.T) { check(t, true, false) })
 	t.Run("optional setup failure keeps binary", func(t *testing.T) { check(t, true, true) })
@@ -159,6 +172,20 @@ esac
 	t.Run("partial setup readied the dispatcher", func(t *testing.T) {
 		t.Setenv("OFFER_READY", "1")
 		check(t, true, true)
+	})
+	t.Run("setup installed hooks", func(t *testing.T) {
+		t.Setenv("OFFER_READY", "1")
+		t.Setenv("OFFER_INSTALLED", "1")
+		check(t, true, false)
+	})
+	t.Run("partial setup installed hooks", func(t *testing.T) {
+		t.Setenv("OFFER_READY", "1")
+		t.Setenv("OFFER_INSTALLED", "1")
+		check(t, true, true)
+	})
+	t.Run("installed hooks without a ready receipt", func(t *testing.T) {
+		t.Setenv("OFFER_INSTALLED", "1")
+		check(t, true, false)
 	})
 	t.Run("piped input", func(t *testing.T) { check(t, false, false, "--pipe-in") })
 	t.Run("piped output", func(t *testing.T) { check(t, false, false, "--pipe-out") })
@@ -173,10 +200,10 @@ esac
 	for _, tc := range []struct {
 		name, answer, prompt     string
 		combined, piped, changed bool
-		suffix, forge            bool
+		suffix, forge, installed bool
 	}{
 		{name: "path only", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true},
-		{name: "shared yes", answer: "y\n", prompt: "Apply the PATH and hook changes shown?", combined: true, changed: true},
+		{name: "shared yes", answer: "y\n", prompt: "Apply the PATH and hook changes shown?", combined: true, changed: true, installed: true},
 		{name: "shared no", answer: "n\n", prompt: "Apply the PATH and hook changes shown?", combined: true},
 		{name: "piped", answer: "y\n", piped: true},
 		{name: "suffix undo", answer: "y\n", prompt: "Apply the PATH changes shown?", changed: true, suffix: true},
@@ -199,6 +226,10 @@ esac
 			t.Setenv("OFFER_LOG", filepath.Join(home, "offer"))
 			t.Setenv("OFFER_EXIT", "0")
 			t.Setenv("OFFER_CONFIRM_PATH", "")
+			t.Setenv("OFFER_INSTALLED", "")
+			if tc.installed {
+				t.Setenv("OFFER_INSTALLED", "1")
+			}
 			if tc.combined {
 				t.Setenv("OFFER_CONFIRM_PATH", "1")
 			}
@@ -231,6 +262,13 @@ esac
 				return ""
 			}
 			out := run()
+			if tc.installed {
+				shown := strings.TrimSpace(strings.ReplaceAll(out, "\r\n", "\n"))
+				reach := reachLine(filepath.Join(installedDir, "crosshall"))
+				if !strings.HasSuffix(shown, "\n"+reach) || strings.LastIndex(shown, "Updated PATH in") > strings.LastIndex(shown, reach) {
+					t.Fatalf("the reachability line is not last after the PATH update:\n%s", shown)
+				}
+			}
 			prompts := strings.Count(out, "changes shown?")
 			if tc.prompt == "" && prompts != 0 || tc.prompt != "" && (prompts != 1 || !strings.Contains(out, tc.prompt)) {
 				t.Fatalf("unexpected confirmation: %s", out)
@@ -344,4 +382,11 @@ esac
 			}
 		})
 	}
+}
+
+// reachLine is the installer's last line after an install, naming the
+// installed path as the installer quotes it.
+func reachLine(target string) string {
+	return "Open new sessions of these agents in a project. " + strings.ReplaceAll(target, " ", `\ `) +
+		" owner who --all then shows who the hall can reach."
 }

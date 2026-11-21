@@ -516,3 +516,12 @@ fi
 if ! grep -qsFx ready "$stage/setup-ready"; then
   print_next
 fi
+# Last, after every outcome and PATH change: only when some agent's hooks
+# were installed, which a ready dispatcher alone does not prove.
+if grep -qsFx installed "$stage/setup-ready"; then
+  if [[ $on_path == true ]]; then
+    printf 'Open new sessions of these agents in a project. crosshall owner who --all then shows who the hall can reach.\n'
+  else
+    printf 'Open new sessions of these agents in a project. %q owner who --all then shows who the hall can reach.\n' "$target"
+  fi
+fi

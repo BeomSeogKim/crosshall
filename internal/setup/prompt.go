@@ -431,6 +431,9 @@ func (p *prompter) finish(result promptResult, note string) error {
 	result.Version, result.OK = 1, true
 	var failed, retries []string
 	for _, o := range result.Vendors {
+		if o.Outcome == "installed" && p.req.Installed != nil {
+			p.req.Installed()
+		}
 		if o.Outcome == "failed" {
 			result.OK = false
 			failed = append(failed, o.Adapter)

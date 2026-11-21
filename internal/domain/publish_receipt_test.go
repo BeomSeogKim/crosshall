@@ -255,6 +255,47 @@ func TestPublishReceiptInABusySessionStaysUnknown(t *testing.T) {
 	p.verifyPromptOrigin(cmd, "unknown")
 }
 
+// Fable #580: a later start of the same launch moves its start time and
+// writes no fact, so a compact inside an open user turn must not read fresh.
+func TestPublishReceiptAfterACompactInsideAnOpenTurnStaysUnknown(t *testing.T) {
+	for _, turn := range []string{"notice", "user"} {
+		t.Run("receipt turn "+turn, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			at := p.now.UnixMilli()
+			p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
+			enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+60, 1)
+			p.proveRoute()
+			ask := p.turnEndAsk(p.writer, "reader", "compact-"+turn)
+			id := p.reserve()
+			if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+				t.Fatal("reservation did not start")
+			}
+			cmd := p.promptReceipt(turn, publishTestLaunch, at+100, []int64{ask})
+			p.hook(p.reader, cmd)
+			p.observation(id, "unknown")
+		})
+	}
+}
+
+func TestPublishReceiptAfterAClearOfAnIdleSessionIsItsOwnTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	at := p.now.UnixMilli()
+	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "clear", publishTestSocket, "default", at+60, 1)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "after-clear")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "own_turn")
+	p.verifyPromptOrigin(cmd, "crosshall_wake")
+}
+
 // A fresh launch whose user prompt was dropped is not idle once anything of
 // that turn was seen.
 func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {

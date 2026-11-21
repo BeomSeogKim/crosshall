@@ -54,6 +54,8 @@ type JoinResult struct {
 	Changes []Member `json:"roster_changes,omitempty"`
 	// RosterSeq is the cursor the client acknowledges after rendering.
 	RosterSeq uint64 `json:"roster_seq"`
+	// RulesGiven says the hint carries the member rules in full.
+	RulesGiven bool `json:"rules_given,omitempty"`
 }
 
 // WhoResult is the data of a roster listing.
@@ -107,11 +109,16 @@ func RulesHint(alias, channel string) string {
 	return fmt.Sprintf("[crosshall] Already in #%s as @%s.\n", channel, alias) + hintRules
 }
 
-// BootstrapHint is the hint on the first command of a member that a hook
-// enrolled. The hook offered the rules, but nothing shows that they arrived,
-// so the hint names the member and where the rules are without claiming it.
-func BootstrapHint(alias, channel string) string {
-	return fmt.Sprintf("[crosshall] Joined #%s as @%s.\n", channel, alias) + rulesCommand(channel)
+// StartLine is all a hook tells a member it enrolled, and only once the
+// member has company: who it is, who is there, and where the rules are. The
+// rules themselves come with the member's first command.
+func StartLine(alias, channel string, peers []string) string {
+	const shown = 3
+	names := "@" + strings.Join(peers[:min(len(peers), shown)], ", @")
+	if more := len(peers) - shown; more > 0 {
+		names += fmt.Sprintf(" and %d more", more)
+	}
+	return fmt.Sprintf("[crosshall] Joined #%s as @%s, with %s. ", channel, alias, names) + rulesCommand(channel)
 }
 
 // ResetHint tells a session whose context was cleared who it is and where

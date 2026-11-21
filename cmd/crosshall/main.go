@@ -131,6 +131,18 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 						return fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
 					}
 					dispatcherReady = true
+					if !enabled {
+						return nil
+					}
+					// The plan said so: installing turns automatic joining on, once.
+					auto := domain.ChannelAuto{On: true, Initial: true}
+					result, err = transport.Do(ctx, cli.Call{Owner: true, Command: auto, OpKey: wire.NewID()})
+					if err != nil {
+						return err
+					}
+					if result.Status != core.ExitOK {
+						return fmt.Errorf("dispatcher did not confirm automatic joining (%s)", result.Code)
+					}
 					return nil
 				}}
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {

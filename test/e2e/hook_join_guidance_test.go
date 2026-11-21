@@ -17,19 +17,20 @@ import (
 	"time"
 )
 
-func TestInstalledHookRepeatsUndeliveredJoinGuidance(t *testing.T) {
+func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 	for _, adapter := range []struct{ name, turn, identity string }{
 		{"claude", "prompt_id", "CLAUDE_CODE_SESSION_ID"},
 		{"codex", "turn_id", "CODEX_THREAD_ID"},
 	} {
-		t.Run(adapter.name, func(t *testing.T) {
+		prompt := func(turn string) string { return fmt.Sprintf(`%q:%q`, adapter.turn, turn) }
+		const rules = "Before voluntarily ending any turn"
+		key := setupSessionPrefix + adapter.name
+		// blocked joins a session whose start and first prompt could print nothing.
+		blocked := func(t *testing.T) (*setupWorld, string, *participant) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", adapter.name, "--apply")
 			repo := f.enrollmentRepo()
 			db := f.db()
-			prompt := func(turn string) string { return fmt.Sprintf(`%q:%q`, adapter.turn, turn) }
-
-			key := setupSessionPrefix + adapter.name
 			for deadline := time.Now().Add(fixtureEventTimeout); ; {
 				f.blockHookOutput(repo, adapter.name, "SessionStart", `"source":"startup"`)
 				f.waitEnrollmentPackets(adapter.name, "SessionStart", deadline)
@@ -56,46 +57,102 @@ func TestInstalledHookRepeatsUndeliveredJoinGuidance(t *testing.T) {
 					t.Fatalf("blocked prompt was never observed; last hook %q", f.hookCounter(adapter.name, "UserPromptSubmit"))
 				}
 			}
-			if roster, welcome := hookJoinAcknowledgements(t, db, adapter.name); roster || welcome {
-				t.Fatal("the store acknowledged guidance that never reached stdout")
+			if command, hook := hookJoinAcknowledgements(t, db, adapter.name); command || hook {
+				t.Fatal("the store acknowledged a start line that never reached stdout")
 			}
-			receipt := filepath.Join(f.enrollmentLeaf(adapter.name), "seen-join-hint")
-			if _, err := os.Lstat(receipt); !os.IsNotExist(err) {
-				t.Fatalf("blocked guidance left a delivery receipt: %v", err)
+			if _, err := os.Lstat(filepath.Join(f.enrollmentLeaf(adapter.name), "seen-join-hint")); !os.IsNotExist(err) {
+				t.Fatalf("a blocked start line left a delivery receipt: %v", err)
 			}
-			member := &participant{w: f.world, extra: []string{adapter.identity + "=" + key}}
-			firstInbox := member.mustPlain("inbox")
-			secondInbox := member.mustPlain("inbox")
-			if !strings.Contains(firstInbox, "join setup-check --rules") || strings.Contains(secondInbox, "join setup-check --rules") ||
-				strings.Contains(firstInbox+secondInbox, "Before voluntarily ending any turn") {
-				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
-			}
-			if roster, welcome := hookJoinAcknowledgements(t, db, adapter.name); !roster || welcome {
-				t.Fatalf("inbox should confirm only its roster: roster %t, welcome %t", roster, welcome)
-			}
-			deadline := time.Now().Add(fixtureEventTimeout)
-			f.waitForWelcomeDelivery(repo, adapter.name, "UserPromptSubmit", prompt, deadline)
-			f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
-			if info, err := os.Lstat(receipt); err != nil || !info.Mode().IsRegular() {
-				t.Fatalf("native guidance did not leave a delivery receipt: %v", err)
-			}
-			for attempt := 1; ; attempt++ {
-				turn := fmt.Sprintf("after-delivery-%d", attempt)
+			return f, repo, &participant{w: f.world, extra: []string{adapter.identity + "=" + key}}
+		}
+		// quietPrompt submits prompts until the store has seen one; none may print.
+		quietPrompt := func(t *testing.T, f *setupWorld, repo, label string) {
+			t.Helper()
+			db := f.db()
+			for deadline, attempt := time.Now().Add(fixtureEventTimeout), 1; ; attempt++ {
+				turn := fmt.Sprintf("%s-%d", label, attempt)
 				if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt(turn)); got != "" {
-					t.Fatalf("submit hook repeated delivered guidance: %q", got)
+					t.Fatalf("submit hook printed %q, want nothing", got)
 				}
 				f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
 				if hookPromptObserved(t, db, adapter.name, turn) {
-					if _, welcome := hookJoinAcknowledgements(t, db, adapter.name); !welcome {
-						t.Fatal("the store did not acknowledge delivered guidance")
-					}
-					break
+					return
 				}
 				if !time.Now().Before(deadline) {
-					t.Fatalf("quiet prompt after delivery was never observed; last hook %q", f.hookCounter(adapter.name, "UserPromptSubmit"))
+					t.Fatalf("quiet prompt was never observed; last hook %q", f.hookCounter(adapter.name, "UserPromptSubmit"))
 				}
 			}
+		}
+		// startLine submits prompts until one prints the start line, without the rules.
+		startLine := func(f *setupWorld, repo string) {
+			deadline := time.Now().Add(fixtureEventTimeout)
+			f.waitForWelcomeDelivery(repo, adapter.name, "UserPromptSubmit", prompt, deadline)
+			f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
+		}
+		t.Run(adapter.name+" hook first", func(t *testing.T) {
+			f, repo, member := blocked(t)
+			startLine(f, repo)
+			if info, err := os.Lstat(filepath.Join(f.enrollmentLeaf(adapter.name), "seen-join-hint")); err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("the start line did not leave a delivery receipt: %v", err)
+			}
+			quietPrompt(t, f, repo, "after-delivery")
+			if _, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !hook {
+				t.Fatal("the store did not acknowledge the delivered start line")
+			}
+			// The rules come with the first command, once.
+			firstInbox := member.mustPlain("inbox")
+			secondInbox := member.mustPlain("inbox")
+			if !strings.Contains(firstInbox, rules) || strings.Contains(secondInbox, rules) {
+				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
+			}
 		})
+		t.Run(adapter.name+" command first", func(t *testing.T) {
+			f, repo, member := blocked(t)
+			firstInbox := member.mustPlain("inbox")
+			secondInbox := member.mustPlain("inbox")
+			if !strings.Contains(firstInbox, "Joined #setup-check as @"+adapter.name+"1.") || !strings.Contains(firstInbox, rules) ||
+				strings.Contains(secondInbox, rules) {
+				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
+			}
+			if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
+				t.Fatalf("inbox should confirm only its own guidance: command %t, hook %t", command, hook)
+			}
+			quietPrompt(t, f, repo, "after-command")
+		})
+		// The version before the start line left a roster cursor after a
+		// reply that carried no rules. It outlives the upgrade and must not
+		// settle the rules: the next command still prints them.
+		for _, first := range [][]string{{"inbox"}, {"join", "setup-check"}} {
+			t.Run(adapter.name+" an older version's cursor, then "+first[0], func(t *testing.T) {
+				f, repo, member := blocked(t)
+				if err := os.WriteFile(filepath.Join(f.enrollmentLeaf(adapter.name), "ack"), []byte("1\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				startLine(f, repo)
+				once := member.mustPlain(first...)
+				again := member.mustPlain(first...)
+				if !strings.Contains(once, rules) || strings.Contains(again, rules) {
+					t.Fatalf("unexpected %s guidance: %q and %q", first[0], once, again)
+				}
+			})
+		}
+		// One command gave the rules: the leaf says so before the store does,
+		// and the next prompt must not add the start line.
+		for _, first := range []string{"inbox", "whoami"} {
+			t.Run(adapter.name+" one "+first+", then a prompt", func(t *testing.T) {
+				f, repo, member := blocked(t)
+				if out := member.mustPlain(first); !strings.Contains(out, rules) {
+					t.Fatalf("the first %s carried no rules: %q", first, out)
+				}
+				quietPrompt(t, f, repo, "after-one-command")
+				if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
+					t.Fatalf("the prompt should record the rules the command printed: command %t, hook %t", command, hook)
+				}
+				if out := member.mustPlain("inbox"); strings.Contains(out, rules) {
+					t.Fatalf("the rules were printed again: %q", out)
+				}
+			})
+		}
 	}
 }
 
@@ -162,14 +219,16 @@ func hookPromptObserved(t *testing.T, db *sql.DB, adapter, turn string) bool {
 	return observed
 }
 
-func hookJoinAcknowledgements(t *testing.T, db *sql.DB, adapter string) (roster, welcome bool) {
+// hookJoinAcknowledgements reports what the store knows reached the session:
+// the rules through a command, and the start line through a hook.
+func hookJoinAcknowledgements(t *testing.T, db *sql.DB, adapter string) (command, hook bool) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT b.hint_acked, b.roster_baseline_seq IS NULL
+	if err := db.QueryRow(`SELECT b.hint_acked, b.start_line_seen
 		FROM binding b JOIN principal_key k ON k.principal_id = b.principal_id
-		WHERE k.vendor = ? AND k.key = ? AND b.state = 'live'`, adapter, setupSessionPrefix+adapter).Scan(&roster, &welcome); err != nil {
+		WHERE k.vendor = ? AND k.key = ? AND b.state = 'live'`, adapter, setupSessionPrefix+adapter).Scan(&command, &hook); err != nil {
 		t.Fatal(err)
 	}
-	return roster, welcome
+	return command, hook
 }
 
 func (f *setupWorld) blockHookOutput(repo, adapter, event, fields string) {
@@ -219,5 +278,22 @@ func blockHookProcess(t *testing.T, cmd *exec.Cmd) {
 	raw, err := io.ReadAll(read)
 	if err != nil || !bytes.Equal(raw, bytes.Repeat([]byte{'x'}, filled)) {
 		t.Fatalf("%v emitted unexpected stdout with its pipe full: %d bytes, %v", cmd.Args, len(raw)-filled, err)
+	}
+}
+
+// whoami asks for the roster but shows none of it: it must leave a peer's
+// arrival for the next command to announce.
+func TestWhoamiLeavesRosterNewsForTheNextCommand(t *testing.T) {
+	w, _, c := m2World(t)
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	member := &participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key}}
+	member.mustPlain("inbox")
+	member.mustPlain("inbox")
+	(&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=late-peer-session"}}).must("join", "checkout", "--as", "latepeer")
+	if out := member.mustPlain("whoami"); strings.Contains(out, "latepeer") {
+		t.Fatalf("whoami announced the roster: %q", out)
+	}
+	if out := member.mustPlain("inbox"); !strings.Contains(out, "@latepeer joined") {
+		t.Fatalf("the peer's arrival was never announced: %q", out)
 	}
 }

@@ -38,6 +38,8 @@ func TestPublishSwitchCommandsDispatch(t *testing.T) {
 		{"owner", "publish", "hall", "default"}, {"owner", "publish", "member", "x", "on"},
 		{"owner", "publish", "member", "7"}, {"owner", "publish", "resume", "0"}, {"owner", "publish"},
 		{"owner", "adapter", "set", "claude", "--publish", "maybe"},
+		{"owner", "adapter", "set", "claude", "--turn-end", "maybe"},
+		{"owner", "adapter", "set", "claude", "--turn-end", "off", "--turn-end", "on"},
 	} {
 		ft := &fakeTransport{}
 		if _, _, code := run(t, Env{Transport: ft}, args...); code != core.ExitUsage || len(ft.calls) != 0 {
@@ -181,5 +183,16 @@ func TestDoctorRendersPublishMembersAndCounters(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("doctor lacks %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestOwnerAdapterSetTurnEndSwitch(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, store.AdapterPolicy{Adapter: "claude", Enabled: true, TurnEnd: "off", Epoch: 4})}
+	stdout, _, code := run(t, Env{Transport: ft}, "--key", "k", "owner", "adapter", "set", "claude", "--turn-end", "off")
+	if code != core.ExitOK || stdout != "claude adapter enabled=on reminder=off turn_end=off epoch=4\n" {
+		t.Fatalf("exit %d, stdout %q", code, stdout)
+	}
+	if cmd := ft.calls[0].Command.(domain.AdapterSet); cmd.TurnEnd == nil || *cmd.TurnEnd != "off" || cmd.Publish != nil {
+		t.Fatalf("call %+v", cmd)
 	}
 }

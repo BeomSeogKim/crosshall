@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -441,5 +442,62 @@ func TestAdapterPolicyNamesEveryManifest(t *testing.T) {
 	}
 	if string(raw) != want.String() {
 		t.Fatalf("policy %q, want %q", raw, want.String())
+	}
+}
+
+// The hook policy file carries enabled, reminder and the epoch only, so a
+// publish or turn-end switch change, which hooks do not read from it,
+// leaves it in place; a change it carries still republishes it.
+func TestAdapterSwitchOnlyChangesKeepThePolicyFile(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	s.fixtureSQL(t, `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms) VALUES ('claude', 1, 0, 2, 1)`)
+	s.cfg.Resolve = func(context.Context, store.Tx, Arrival, wire.Request) (Resolution, error) {
+		return Resolution{Caller: core.Caller{Role: core.RoleOwner}}, nil
+	}
+	var command domain.AdapterSet
+	s.cfg.Decode = func(req wire.Request, _ Resolution) (domain.Request, error) {
+		return domain.Request{OpKey: req.OpKey, Command: command}, nil
+	}
+	const sentinel = "sentinel policy\n"
+	s.cfg.Handle = handlerFunc(func(context.Context, store.Tx, core.Caller, domain.Request) (core.Result, error) {
+		for _, dir := range []*os.Root{root, s.state} {
+			name := adapterPolicyName
+			if dir == s.state {
+				name = hook.StatePolicyName
+			}
+			if raw, err := dir.ReadFile(name); err != nil || string(raw) != sentinel {
+				t.Fatalf("policy file %s during the change: %q, %v", name, raw, err)
+			}
+		}
+		return domain.OK(store.AdapterPolicy{Adapter: "claude"})
+	})
+	plant := func() {
+		t.Helper()
+		if err := root.WriteFile(adapterPolicyName, []byte(sentinel), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.state.WriteFile(hook.StatePolicyName, []byte(sentinel), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	off, on := "off", true
+	for i, c := range []struct {
+		set       wire.AdapterPolicyArgs
+		republish bool
+	}{
+		{wire.AdapterPolicyArgs{Adapter: "claude", TurnEnd: &off}, false},
+		{wire.AdapterPolicyArgs{Adapter: "claude", Publish: &off}, false},
+		{wire.AdapterPolicyArgs{Adapter: "claude", Enabled: &on, TurnEnd: &off}, true},
+	} {
+		plant()
+		command = domain.AdapterSet{AdapterPolicyArgs: c.set}
+		req := wire.Request{Verb: wire.VerbAdapterSet, OpKey: fmt.Sprintf("switch-%d", i)}
+		if got := s.fixtureRequest(t, Arrival{Owner: true}, req); got.Status != core.ExitOK {
+			t.Fatalf("%+v: %+v", c.set, got)
+		}
+		raw, err := root.ReadFile(adapterPolicyName)
+		if err != nil || (string(raw) == sentinel) == c.republish {
+			t.Fatalf("%+v: policy file after the change %q (%v), republished %v", c.set, raw, err, c.republish)
+		}
 	}
 }

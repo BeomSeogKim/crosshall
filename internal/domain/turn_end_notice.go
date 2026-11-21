@@ -24,6 +24,7 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 			AND l.ended_hook_at_ms IS NULL AND l.profile = ?4
 			AND t.opened_hook_at_ms BETWEEN l.started_hook_at_ms AND ?5
 			AND `+store.CapabilityCovered("json_extract(l.profile,'$.adapter')", "l.profile", "'turn_end'")+`
+			AND `+store.TurnEndSwitchOn("json_extract(l.profile,'$.adapter')")+`
 			AND NOT EXISTS (SELECT 1 FROM turn_end_notice n
 				WHERE n.principal_id = t.principal_id AND n.launch_ref = t.launch_ref AND n.turn_ref = t.turn_ref)
 	)`, principal, cmd.LaunchRef, cmd.TurnRef, profileJSON(p), cmd.HookAtMS).Scan(&eligible)

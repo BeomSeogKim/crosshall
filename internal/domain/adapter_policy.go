@@ -30,12 +30,15 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 	if req.OpKey == "" {
 		return Fail(core.ExitUsage, "", "an operation key is required for this command", "run it through the crosshall command, which supplies the key"), nil
 	}
-	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil && cmd.Publish == nil ||
-		cmd.Publish != nil && *cmd.Publish != "on" && *cmd.Publish != "off" && *cmd.Publish != "default" {
+	if !ValidAdapterName(cmd.Adapter) || cmd.Enabled == nil && cmd.Reminder == nil && cmd.Publish == nil && cmd.TurnEnd == nil ||
+		!validTriSwitch(cmd.Publish) || !validTriSwitch(cmd.TurnEnd) {
 		return Fail(core.ExitUsage, "", "choose a supported adapter and at least one valid policy switch", "crosshall owner adapter set claude --enabled on"), nil
 	}
 	if cmd.Adapter == "agy" && cmd.Publish != nil && *cmd.Publish == "on" {
 		return Fail(core.ExitUsage, "", "Antigravity has no publish adapter", "crosshall setup status"), nil
+	}
+	if cmd.Adapter == "agy" && cmd.TurnEnd != nil && *cmd.TurnEnd == "on" {
+		return Fail(core.ExitUsage, "", "Antigravity has no turn-end check", "crosshall setup status"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -59,21 +62,22 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 	if cmd.Publish != nil {
 		after.Publish = strings.TrimSuffix(*cmd.Publish, "default")
 	}
+	if cmd.TurnEnd != nil {
+		after.TurnEnd = strings.TrimSuffix(*cmd.TurnEnd, "default")
+	}
 	if after != before {
 		// The publish switch is read live at reservation and at the final
-		// fence, so changing it needs no new epoch and keeps routes.
+		// fence, and the turn-end switch at each Stop, so changing either
+		// needs no new epoch and keeps routes.
 		if after.Enabled != before.Enabled || after.Reminder != before.Reminder {
 			after.Epoch++
 		}
 		after.ChangedAtMS = ms(now)
-		var publish any
-		if after.Publish != "" {
-			publish = after.Publish == "on"
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO adapter_policy(adapter, enabled, reminder, publish, epoch, changed_at_ms)
-			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(adapter) DO UPDATE SET
-			enabled = excluded.enabled, reminder = excluded.reminder, publish = excluded.publish, epoch = excluded.epoch,
-			changed_at_ms = excluded.changed_at_ms`, after.Adapter, after.Enabled, after.Reminder, publish, after.Epoch, after.ChangedAtMS)
+		_, err := tx.ExecContext(ctx, `INSERT INTO adapter_policy(adapter, enabled, reminder, publish, turn_end, epoch, changed_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(adapter) DO UPDATE SET
+			enabled = excluded.enabled, reminder = excluded.reminder, publish = excluded.publish, turn_end = excluded.turn_end,
+			epoch = excluded.epoch, changed_at_ms = excluded.changed_at_ms`,
+			after.Adapter, after.Enabled, after.Reminder, switchValue(after.Publish), switchValue(after.TurnEnd), after.Epoch, after.ChangedAtMS)
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -94,6 +98,19 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		return core.Result{}, err
 	}
 	return result, record(ctx, tx, owner, req.OpKey, scope, cmd, result, now)
+}
+
+// validTriSwitch accepts an absent switch or on, off or default.
+func validTriSwitch(value *string) bool {
+	return value == nil || *value == "on" || *value == "off" || *value == "default"
+}
+
+// switchValue stores on as 1, off as 0 and default as NULL.
+func switchValue(word string) any {
+	if word == "" {
+		return nil
+	}
+	return word == "on"
 }
 
 func refreshMemberAdapterCapabilities(ctx context.Context, tx store.Tx, principal int64, adapter string) error {

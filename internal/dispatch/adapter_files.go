@@ -178,40 +178,61 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 	if err := json.Unmarshal(result.Data, &output); err != nil {
 		return err
 	}
-	if output.Ack == nil {
+	if output.Ack == nil && output.JoinHintAck == nil {
 		return nil
 	}
-	ack := output.Ack
 	if req.Reply != nil && !*req.Reply {
-		output.Ack = nil
-	} else if arrival.Dir == nil || req.Generation == "" {
-		return errors.New("hook acknowledgement has no authenticated generation")
+		output.Ack, output.JoinHintAck = nil, nil
 	} else {
-		stamp, ok := s.adapterStamp(arrival.Dir, req.Generation)
-		if !ok {
-			var err error
-			stamp, err = s.publishAdapterStamp(arrival.Dir, req.Generation, true, true)
-			if err != nil {
-				return err
-			}
+		if arrival.Dir == nil || req.Generation == "" {
+			return errors.New("hook acknowledgement has no authenticated generation")
 		}
-		ack.Instance, ack.Generation = s.ready.Instance, req.Generation
-		switch ack.Kind {
-		case "notice":
-			ack.Seq = stamp.NoticeSeq
-		case "reminder":
-			if ack.TurnRef == "" {
-				return errors.New("reminder acknowledgement has no turn")
+		if output.JoinHintAck != nil {
+			output.JoinHintAck.Generation = req.Generation
+		}
+		if ack := output.Ack; ack != nil {
+			stamp, ok := s.adapterStamp(arrival.Dir, req.Generation)
+			if !ok {
+				var err error
+				stamp, err = s.publishAdapterStamp(arrival.Dir, req.Generation, true, true)
+				if err != nil {
+					return err
+				}
 			}
-			ack.Seq = stamp.ReminderSeq
-		default:
-			return fmt.Errorf("unknown hook acknowledgement %q", ack.Kind)
+			ack.Instance, ack.Generation = s.ready.Instance, req.Generation
+			switch ack.Kind {
+			case "notice":
+				ack.Seq = stamp.NoticeSeq
+			case "reminder":
+				if ack.TurnRef == "" {
+					return errors.New("reminder acknowledgement has no turn")
+				}
+				ack.Seq = stamp.ReminderSeq
+			default:
+				return fmt.Errorf("unknown hook acknowledgement %q", ack.Kind)
+			}
 		}
 	}
 	data, err := json.Marshal(output)
 	if err == nil {
 		result.Data = data
 	}
+	return err
+}
+
+func acknowledgeHookJoinHint(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, caller core.Caller) error {
+	if arrival.Owner || arrival.Dir == nil || caller.Role != core.RoleMember || caller.BindingID == nil || caller.PrincipalID == nil {
+		return nil
+	}
+	ack, ok := hook.ReadJoinHintAck(arrival.Dir, req.Generation)
+	if !ok || ack.BindingID != *caller.BindingID {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE binding SET hint_acked = 1, roster_ack_seq = MAX(roster_ack_seq, ?1)
+		WHERE id = ?2 AND principal_id = ?3 AND route_epoch = ?4 AND state = 'live'
+			AND hint_acked = 0 AND roster_baseline_seq <= ?1 AND ?1 <= (
+				SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id
+			)`, ack.RosterSeq, ack.BindingID, *caller.PrincipalID, ack.RouteEpoch)
 	return err
 }
 

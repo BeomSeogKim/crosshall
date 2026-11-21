@@ -580,6 +580,13 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result, err = domain.OK(wire.DispatcherInstance{Instance: s.ready.Instance})
 			return err
 		}
+		if req.Verb == wire.VerbHookJoinHintAck {
+			if arrival.Owner || resolved.Caller.Role != core.RoleMember || !oneWayHook || req.OpKey != wire.VerbHookJoinHintAck {
+				result = commandError(core.ExitRefused, "", "hook join acknowledgement requires member ingress")
+				return errRefusalRollback
+			}
+			return acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller)
+		}
 		var hook *domain.AdapterContext
 		if isHook {
 			var refusal core.Result
@@ -591,6 +598,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				result = refusal
 				return errRefusalRollback
 			}
+		}
+		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+			return err
 		}
 		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack)
 		if err != nil {

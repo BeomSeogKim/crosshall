@@ -29,6 +29,8 @@ Hooks run for every session of that agent under your user account, in every repo
 
 An unjoined Claude Code or Codex CLI session can join on a later prompt when its `SessionStart` and the prompt are in the same repository. This also works when the owner sets the default channel after the session starts. A session that starts elsewhere and enters the repository later can join with `crosshall join <channel>`.
 
+If a join committed before its hook could deliver the welcome, the next eligible hook can deliver the alias and member rules. Once a hook delivers the welcome, later prompts omit it.
+
 Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
 
 ## The turn-end check

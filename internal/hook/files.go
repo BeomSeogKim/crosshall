@@ -179,6 +179,17 @@ func hasSeenNotice(leaf *os.Root, generation string) bool {
 	return err == nil && len(fields) == 3 && fields[1] == generation
 }
 
+const seenJoinHint = "seen-join-hint"
+
+func ReadJoinHintAck(leaf *os.Root, generation string) (wire.HookJoinHintAck, bool) {
+	var ack wire.HookJoinHintAck
+	data, err := ident.ReadPrivateFile(leaf, seenJoinHint, 512)
+	if err != nil || json.Unmarshal(data, &ack) != nil {
+		return ack, false
+	}
+	return ack, ack.ValidFor(generation)
+}
+
 func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookAck) error {
 	// Hold the same stable inode across the comparison and atomic publication.
 	// Losing a lock costs a future check; no hook waits on another hook's disk I/O.

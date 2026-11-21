@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -196,6 +197,48 @@ func TestHookAcknowledgementUsesItsOwnSequenceAndLiveInstance(t *testing.T) {
 	if after := ack("notice", "", nil); after == nil || after.Instance != s.ready.Instance {
 		t.Fatalf("new ack from stale dispatcher: %+v", after)
 	}
+}
+
+func TestHookJoinHintReceiptIsBoundToTheLiveExchange(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	leaf := adapterLeafFixture(t, s, root, true)
+	s.fixtureSQL(t, `INSERT INTO channel (id, name, state, created_at_ms) VALUES (1, 'dev', 'active', 1);
+		INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, roster_baseline_seq)
+		VALUES (2, 1, 1, 'fixture', 1, 2);
+		INSERT INTO roster_change (channel_id, seq, principal_id, field) VALUES (1, 3, 1, 'joined');`)
+	principal, binding := int64(1), int64(2)
+	member := core.Caller{Role: core.RoleMember, PrincipalID: &principal, BindingID: &binding}
+	check := func(ack wire.HookJoinHintAck, want bool) {
+		t.Helper()
+		data, err := json.Marshal(ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := leaf.WriteFile("seen-join-hint", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+			if err := acknowledgeHookJoinHint(t.Context(), tx, Arrival{Dir: leaf}, wire.Request{Generation: "test-gen"}, member); err != nil {
+				return err
+			}
+			var got bool
+			var cursor int
+			if err := tx.QueryRowContext(t.Context(), "SELECT hint_acked, roster_ack_seq FROM binding WHERE id = 2").Scan(&got, &cursor); err != nil {
+				return err
+			}
+			if got != want || want && cursor != 3 || !want && cursor != 0 {
+				t.Fatalf("receipt %+v changed ack to %t cursor %d, want ack %t", ack, got, cursor, want)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(wire.HookJoinHintAck{Generation: "old-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 3}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 1, RouteEpoch: 1, RosterSeq: 3}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 2, RosterSeq: 3}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 4}, false)
+	check(wire.HookJoinHintAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 1, RosterSeq: 3}, true)
 }
 
 func TestAdapterMirrorsFailClosedBetweenCommitAndPublication(t *testing.T) {

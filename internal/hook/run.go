@@ -185,10 +185,14 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err := json.Unmarshal(reply.Response.Data, &result); err != nil {
 		return "refused"
 	}
-	if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
+	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, stdout)
+	if failure != "" {
 		return failure
 	}
-	if notice && result.Ack != nil && !hookExpired(ctx) {
+	if joinHintSeen && !hookExpired(ctx) {
+		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
+	}
+	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {
@@ -197,6 +201,45 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		}
 	}
 	return "rpc"
+}
+
+func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, generation, adapter string, epoch uint64,
+	spec eventSpec, result wire.HookResult, stdout io.Writer) (string, bool) {
+	ack := result.JoinHintAck
+	if ack == nil {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout), false
+	}
+	if !ack.ValidFor(generation) || !joinHintBoundary(spec) || result.Hint == "" {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
+	}
+	lock, err := spool.OpenServerFile(leaf, "join-hint.lock", os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
+	}
+	if prior, ok := ReadJoinHintAck(leaf, generation); ok && prior.BindingID == ack.BindingID && prior.RouteEpoch >= ack.RouteEpoch {
+		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), true
+	}
+	if failure := writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout); failure != "" {
+		return failure, false
+	}
+	if hookExpired(ctx) {
+		return "deadline", false
+	}
+	raw, _ := json.Marshal(ack)
+	return "", writeRecord(leaf, seenJoinHint, string(raw)+"\n") == nil
+}
+
+func withoutJoinHint(result wire.HookResult) wire.HookResult {
+	result.Hint, result.Roster, result.Omitted, result.JoinHintAck = "", nil, 0, nil
+	return result
+}
+
+func joinHintBoundary(spec eventSpec) bool {
+	return (spec.Enroll || spec.RecoverEnroll) && (spec.Output == "context" || spec.Output == "inject_steps")
 }
 
 func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout io.Writer) string {
@@ -212,7 +255,7 @@ func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uin
 		return "deadline"
 	}
 	if len(output) > 0 {
-		if _, err := stdout.Write(output); err != nil {
+		if n, err := stdout.Write(output); err != nil || n != len(output) {
 			return "refused"
 		}
 	}
@@ -400,23 +443,25 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		return nil, nil
 	}
 	var parts []string
-	if spec.Enroll || spec.RecoverEnroll && result.Enrollment == "joined" {
+	if joinHintBoundary(spec) && (result.Enrollment == "joined" || result.JoinHintAck != nil) {
+		if result.Hint != "" {
+			parts = append(parts, result.Hint)
+		}
+		if len(result.Roster) != 0 {
+			var members []domain.Member
+			if err := json.Unmarshal(result.Roster, &members); err != nil {
+				return nil, err
+			}
+			if len(members) > 0 {
+				var roster strings.Builder
+				cli.RenderRoster(&roster, result.Channel, "", members, result.Omitted)
+				parts = append(parts, strings.TrimRight(roster.String(), "\n"))
+			}
+		}
+	}
+	if spec.Enroll {
 		switch result.Enrollment {
 		case "joined":
-			if result.Hint != "" {
-				parts = append(parts, result.Hint)
-			}
-			if len(result.Roster) != 0 {
-				var members []domain.Member
-				if err := json.Unmarshal(result.Roster, &members); err != nil {
-					return nil, err
-				}
-				if len(members) > 0 {
-					var roster strings.Builder
-					cli.RenderRoster(&roster, result.Channel, "", members, result.Omitted)
-					parts = append(parts, strings.TrimRight(roster.String(), "\n"))
-				}
-			}
 		case "restored":
 			// After a context reset the core sends a short cue in place of
 			// what the session was already given.

@@ -91,21 +91,23 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 }
 
 type hookBinding struct {
-	id, channel    int64
-	routeEpoch     int64
-	joinedAtMS     int64
-	alias, state   string
-	channelName    string
-	dnd            bool
-	byHook         bool // departed by a clean session end, so a start restores it
-	ownerHookFence sql.NullInt64
+	id, channel     int64
+	routeEpoch      int64
+	joinedAtMS      int64
+	alias, state    string
+	channelName     string
+	dnd             bool
+	byHook          bool // departed by a clean session end, so a start restores it
+	joinHintPending bool
+	ownerHookFence  sql.NullInt64
 }
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms,
+			b.roster_baseline_seq IS NOT NULL AND b.hint_acked = 0
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence)
+		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence, &b.joinHintPending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
@@ -213,6 +215,11 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return core.Result{}, err
 	}
 	out.Enrollment, out.Alias, out.Channel = "restored", b.alias, b.channelName
+	if b.joinHintPending {
+		if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+			return core.Result{}, err
+		}
+	}
 	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
@@ -337,31 +344,40 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 			return core.Result{}, err
 		}
 	}
-	seq, err := rosterSeq(ctx, tx, ch.id)
-	if err != nil {
+	out.Enrollment = "joined"
+	b := hookBinding{id: bindingID, routeEpoch: 1, channel: ch.id, alias: alias, state: "live", channelName: ch.name}
+	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
 	// The snapshot shown here is the baseline of the member's first ordinary command.
-	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq = ? WHERE id = ?`, seq, bindingID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq = ? WHERE id = ?`, out.JoinHintAck.RosterSeq, bindingID); err != nil {
 		return core.Result{}, err
 	}
-	members, err := roster(ctx, tx, ch.id, principal, now)
-	if err != nil {
+	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
 		return core.Result{}, err
+	}
+	return OK(out)
+}
+
+func offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBinding, now time.Time, out *wire.HookResult) error {
+	seq, err := rosterSeq(ctx, tx, b.channel)
+	if err != nil {
+		return err
+	}
+	members, err := roster(ctx, tx, b.channel, principal, now)
+	if err != nil {
+		return err
 	}
 	if len(members) > RosterCap {
 		out.Omitted = len(members) - RosterCap
 		members = members[:RosterCap]
 	}
 	if out.Roster, err = json.Marshal(members); err != nil {
-		return core.Result{}, err
+		return err
 	}
-	out.Enrollment, out.Alias, out.Channel, out.Hint = "joined", alias, ch.name, Hint(alias, ch.name)
-	b := hookBinding{id: bindingID, channel: ch.id, alias: alias, state: "live", channelName: ch.name}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
-		return core.Result{}, err
-	}
-	return OK(out)
+	out.Alias, out.Channel, out.Hint = b.alias, b.channelName, Hint(b.alias, b.channelName)
+	out.JoinHintAck = &wire.HookJoinHintAck{BindingID: b.id, RouteEpoch: b.routeEpoch, RosterSeq: seq}
+	return nil
 }
 
 func okOrErr(out wire.HookResult, err error) (core.Result, error) {
@@ -641,6 +657,11 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	if live && cmd.WantOutput {
 		switch cmd.Fact {
 		case FactPromptSubmitted:
+			if b.joinHintPending {
+				if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+					return core.Result{}, err
+				}
+			}
 			if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
 				return core.Result{}, err
 			}

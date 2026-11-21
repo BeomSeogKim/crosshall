@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -156,30 +157,36 @@ func setupHookFor(t *testing.T, file setupFile, event string) setupHook {
 
 func (f *setupWorld) invokeHook(repo, adapter, event, fields string) string {
 	f.t.Helper()
-	hook := setupHookFor(f.t, readSetupFile(f.t, f.paths[adapter]), event)
-	var cmd *exec.Cmd
-	if adapter == "claude" {
-		if hook.Command != f.executable || !slices.Equal(hook.Args, []string{"hook", adapter, event}) {
-			f.t.Fatalf("Claude encoding: %+v", hook)
-		}
-		cmd = exec.CommandContext(f.t.Context(), hook.Command, hook.Args...)
-	} else {
-		if len(hook.Args) != 0 || !strings.HasSuffix(hook.Command, " hook codex "+event) {
-			f.t.Fatalf("Codex encoding: %+v", hook)
-		}
-		cmd = exec.CommandContext(f.t.Context(), "/bin/sh", "-c", hook.Command)
-	}
-	if hook.Timeout != 1 {
-		f.t.Errorf("%s %s timeout = %d", adapter, event, hook.Timeout)
-	}
-	payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, setupSessionPrefix+adapter, repo, fields)
-	cmd.Dir, cmd.Env, cmd.Stdin = repo, f.env, strings.NewReader(payload)
+	cmd := f.installedHookCommand(f.t.Context(), repo, adapter, event, fields)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil || stderr.Len() != 0 {
 		f.t.Fatalf("invoke installed %s %s: %v, stderr %q", adapter, event, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+func (f *setupWorld) installedHookCommand(ctx context.Context, repo, adapter, event, fields string) *exec.Cmd {
+	f.t.Helper()
+	hook := setupHookFor(f.t, readSetupFile(f.t, f.paths[adapter]), event)
+	var cmd *exec.Cmd
+	if adapter == "claude" {
+		if hook.Command != f.executable || !slices.Equal(hook.Args, []string{"hook", adapter, event}) {
+			f.t.Fatalf("Claude encoding: %+v", hook)
+		}
+		cmd = exec.CommandContext(ctx, hook.Command, hook.Args...)
+	} else {
+		if len(hook.Args) != 0 || !strings.HasSuffix(hook.Command, " hook codex "+event) {
+			f.t.Fatalf("Codex encoding: %+v", hook)
+		}
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", hook.Command)
+	}
+	if hook.Timeout != 1 {
+		f.t.Errorf("%s %s timeout = %d", adapter, event, hook.Timeout)
+	}
+	payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, setupSessionPrefix+adapter, repo, fields)
+	cmd.Dir, cmd.Env, cmd.Stdin = repo, f.env, strings.NewReader(payload)
+	return cmd
 }
 
 func (f *setupWorld) enrollmentRepo() string {

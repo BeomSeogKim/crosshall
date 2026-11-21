@@ -60,7 +60,7 @@ func (c Client) HookCall(ctx context.Context, id ident.Identity, generation stri
 		if oneWay {
 			return Reply{}, errors.New("unsupported hook operation")
 		}
-	case wire.VerbHookRoute:
+	case wire.VerbHookRoute, wire.VerbHookJoinHintAck:
 		if !oneWay {
 			return Reply{}, errors.New("unsupported hook operation")
 		}

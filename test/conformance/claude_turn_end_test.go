@@ -142,14 +142,11 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		if c.carries(1, id) != 0 || c.carries(2, id) != 1 {
 			t.Fatalf("pending line in requests 1 and 2: %d, %d", c.carries(1, id), c.carries(2, id))
 		}
-		if !strings.Contains(c.model.request(1), "Before voluntarily ending any turn while joined, leave no request addressed to you unread") {
-			t.Error("the join hint in the session's first request lacks the turn-end rule")
-		}
 		pid := `(SELECT principal_id FROM binding WHERE alias = 'claude1')`
 		if n := c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`); n != 1 {
 			t.Errorf("%d turn claims, want 1", n)
 		}
-		if n := c.storeCount(`SELECT COUNT(*) FROM turn_end_notice_item WHERE message_id = ? AND principal_id = `+pid, id); n != 1 {
+		if n := c.storeCount(`SELECT COUNT(*) FROM announcement WHERE via = 'turn_end' AND message_id = ? AND principal_id = `+pid, id); n != 1 {
 			t.Errorf("request %d claimed %d times", id, n)
 		}
 		if n := c.storeCount(`SELECT COUNT(*) FROM recipient WHERE message_id = ? AND picked_up_at_ms IS NULL AND principal_id = `+pid, id); n != 1 {

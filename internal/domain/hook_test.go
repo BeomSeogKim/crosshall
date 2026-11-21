@@ -84,7 +84,7 @@ func usable(launch string) bool {
 }
 
 func start(launch, source string, at int64) HookEnroll {
-	return HookEnroll{wire.HookEnrollArgs{Profile: testProfile, LaunchRef: launch, LaunchVerified: usable(launch),
+	return HookEnroll{wire.HookEnrollArgs{Profile: testProfile, LaunchRef: launch, LaunchVerified: usable(launch), LaunchHosted: usable(launch),
 		EventRef: fmt.Sprintf("start:%s:%d", source, at), Source: source, RepoRoot: testRepo, HookAtMS: at, Epoch: 1}}
 }
 

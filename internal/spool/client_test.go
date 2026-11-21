@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -172,6 +173,73 @@ func TestMemberFirstContactAndRenderedAck(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(leaf, spool.RulesReceipt)); err != nil || strings.TrimSpace(string(b)) != "12" {
 		t.Fatalf("rules receipt: %q %v", b, err)
+	}
+
+	// The directory is registered again while a reply of the old generation
+	// waits to be rendered (a cleared conversation joining as a new member):
+	// that reply records nothing; one naming the new generation does.
+	done = callMember(ctx, f, wire.Request{Verb: "who"})
+	oldAttempt := claim(t, leaf, &req)
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if err := os.Remove(filepath.Join(leaf, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "gen"), []byte("generation-b"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	answer(t, leaf, oldAttempt, oldAttempt, core.ExitOK, "", `{"roster_seq":40,"rules_given":true}`)
+	if err := (<-done).reply.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if _, err := os.Stat(filepath.Join(leaf, name)); !os.IsNotExist(err) {
+			t.Fatalf("a reply of the old generation wrote %s into the new one: %v", name, err)
+		}
+	}
+	done = callMember(ctx, f, wire.Request{Verb: "join"})
+	freshAttempt := claim(t, leaf, &req)
+	answer(t, leaf, freshAttempt, freshAttempt, core.ExitOK, "", `{"roster_seq":3,"generation":"generation-b"}`)
+	if err := (<-done).reply.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(leaf, "ack")); err != nil || strings.TrimSpace(string(b)) != "3" {
+		t.Fatalf("the fresh join's cursor under the new generation: %q %v", b, err)
+	}
+
+	// Astra #747: a renderer holds the directory, so the dispatcher has not
+	// published the generation the reply names yet; the reply waits for it.
+	done = callMember(ctx, f, wire.Request{Verb: "join"})
+	heldAttempt := claim(t, leaf, &req)
+	answer(t, leaf, heldAttempt, heldAttempt, core.ExitOK, "", `{"roster_seq":5,"rules_given":true,"generation":"generation-c"}`)
+	reply := (<-done).reply
+	held, err := os.Open(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	acked := make(chan error, 1)
+	go func() { acked <- reply.Acknowledge() }()
+	time.Sleep(100 * time.Millisecond)
+	held.Close() // the renderer is done; the publication follows a pass later
+	time.Sleep(100 * time.Millisecond)
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if err := os.Remove(filepath.Join(leaf, name)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "gen"), []byte("generation-c"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acked; err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if b, err := os.ReadFile(filepath.Join(leaf, name)); err != nil || strings.TrimSpace(string(b)) != "5" {
+			t.Fatalf("%s after the delayed publication: %q %v", name, b, err)
+		}
 	}
 }
 

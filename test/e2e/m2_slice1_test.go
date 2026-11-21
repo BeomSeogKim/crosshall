@@ -58,13 +58,41 @@ func (c claudeSession) fire(event string, fields map[string]any) string {
 func (c claudeSession) waitForConsumption(deadline time.Time) {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
-	leaf := filepath.Join(c.w.rendezvous(), "m", digest[:16])
-	for queued := fixtureQueuedPackets(c.w.t, leaf); len(queued) != 0; queued = fixtureQueuedPackets(c.w.t, leaf) {
+	rv := c.w.rendezvous()
+	for {
+		first := fixtureQueuedPackets(c.w.t, filepath.Join(rv, "first"))
+		member := fixtureQueuedPackets(c.w.t, filepath.Join(rv, "m", digest[:16]))
+		if len(first) == 0 && len(member) == 0 {
+			return
+		}
 		if time.Now().After(deadline) {
-			c.w.t.Fatalf("one-way observations still queued: %v", queued)
+			c.w.t.Fatalf("hook packets still queued: first contact %v, member %v", first, member)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (c claudeSession) fireUntil(event string, fields map[string]any, expected string, observed func(string) bool) string {
+	c.w.t.Helper()
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for {
+		out := c.fire(event, fields)
+		c.waitForConsumption(deadline)
+		if observed(out) {
+			return out
+		}
+		if !time.Now().Before(deadline) {
+			c.w.t.Fatalf("%s did not reach %s: last output %q, counter %q", event, expected, out, c.lastCounter())
+		}
+	}
+}
+
+func (c claudeSession) startWithContext(source string) string {
+	c.w.t.Helper()
+	out := c.fireUntil("SessionStart", map[string]any{"source": source}, source+" context", func(out string) bool {
+		return out != ""
+	})
+	return hostContext(c.w.t, out)
 }
 
 // fireAndRecord waits for a new committed observation. A one-way packet can
@@ -395,11 +423,22 @@ func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
 			first, second := spawn(), spawn()
 			a.pid = strconv.Itoa(first.Process.Pid)
 			b.pid = strconv.Itoa(second.Process.Pid)
-			a.fire("SessionStart", map[string]any{"source": "startup"})
-			b.fire("SessionStart", map[string]any{"source": "resume"})
-			if got := tableCounts(t, w)["adapter_launch"]; got != 2 {
-				t.Fatalf("want two registered launches, got %d", got)
+			db := w.db()
+			register := func(s claudeSession, source string, want int) {
+				t.Helper()
+				s.fireUntil("SessionStart", map[string]any{"source": source}, strconv.Itoa(want)+" registered launches", func(string) bool {
+					var got int
+					if err := db.QueryRow(`SELECT COUNT(*) FROM adapter_launch`).Scan(&got); err != nil {
+						t.Fatal(err)
+					}
+					if got > want {
+						t.Fatalf("%s registered %d launches, want %d", source, got, want)
+					}
+					return got == want
+				})
 			}
+			register(a, "startup", 1)
+			register(b, "resume", 2)
 			end := func(s claudeSession) {
 				before := tableCounts(t, w)["observation"]
 				s.fireAndRecord("SessionEnd", wire.HookSessionEnded, map[string]any{"reason": "other"})
@@ -423,10 +462,7 @@ func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
 				}
 				end(b)
 			case "same-pid-open-row":
-				b.fire("SessionStart", map[string]any{"source": "clear"})
-				if got := tableCounts(t, w)["adapter_launch"]; got != 3 {
-					t.Fatalf("want three registered launches, got %d", got)
-				}
+				register(b, "clear", 3)
 				end(b)
 				if !rosterHas(t, writer, "claude1") {
 					t.Fatal("B end departed while A is open")
@@ -450,28 +486,50 @@ func TestM2OverlappingLaunchEndsDepartAfterTheLast(t *testing.T) {
 // command that prints the rules.
 func TestM2ContextResetGetsACueNotARepeat(t *testing.T) {
 	w, writer, c := m2World(t)
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude1") {
+	if got := c.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude1") {
 		t.Fatalf("auto-join context %q", got)
 	}
 	const pointer = "[crosshall] You are @claude1 in #checkout. `crosshall join checkout --rules` prints the member rules."
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "clear"})); got != pointer {
+	if got := c.startWithContext("clear"); got != pointer {
 		t.Fatalf("clear with nothing waiting: %q", got)
 	}
-	if got := c.fire("SessionStart", map[string]any{"source": "compact"}); got != "" {
-		t.Fatalf("compact with nothing waiting: %q", got)
+	db := w.db()
+	latestStart := func() int64 {
+		t.Helper()
+		var started int64
+		if err := db.QueryRow(`SELECT MAX(started_hook_at_ms) FROM adapter_launch`).Scan(&started); err != nil {
+			t.Fatal(err)
+		}
+		return started
 	}
+	before := latestStart()
+	c.fireUntil("SessionStart", map[string]any{"source": "compact"}, "a committed compact", func(out string) bool {
+		if out != "" {
+			t.Fatalf("compact with nothing waiting: %q", out)
+		}
+		return latestStart() > before
+	})
 	grantRoots(t, w, "writer", 1)
 	id := num(t, writer.must("ask", "@claude1", "a request offered before the reset"), "id")
 	pending := pendingContext([]string{strconv.FormatInt(id, 10)})
-	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "before-reset", "prompt": "go on"})); got != pending {
-		t.Fatalf("prompt offer %q", got)
-	}
+	// An offer can commit even if the hook has no time left to print it.
+	c.fireUntil("UserPromptSubmit", map[string]any{"prompt_id": "before-reset", "prompt": "go on"}, "a committed prompt offer", func(out string) bool {
+		if out != "" && hostContext(t, out) != pending {
+			t.Fatalf("prompt offer %q", out)
+		}
+		var offered bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM offer_item i JOIN offer o ON o.id = i.offer_id
+			WHERE i.message_id = ? AND o.reason = 'prompt')`, id).Scan(&offered); err != nil {
+			t.Fatal(err)
+		}
+		return offered
+	})
 	const count = "[crosshall] 1 unread, 0 owed. Run crosshall read."
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "compact"})); got != count {
+	if got := c.startWithContext("compact"); got != count {
 		t.Fatalf("compact with an offered ask unread: %q", got)
 	}
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "clear"})); got != pointer+"\n"+count {
+	if got := c.startWithContext("clear"); got != pointer+"\n"+count {
 		t.Fatalf("clear with an offered ask unread: %q", got)
 	}
-	assertWorkUnread(t, w.db(), id)
+	assertWorkUnread(t, db, id)
 }

@@ -92,6 +92,7 @@ type event struct {
 	PermissionMode string
 	LaunchRef      string
 	LaunchVerified bool
+	LaunchHosted   bool
 	TurnRef        string
 	EventRef       string
 	Fact           string

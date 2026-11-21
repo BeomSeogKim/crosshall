@@ -9,6 +9,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // Wire verbs for the commands in this package.
@@ -76,6 +77,23 @@ type Join struct {
 	RepoRoot string `json:"repo_root,omitempty"`
 	// Rules asks a repeated join to print the member rules again.
 	Rules bool `json:"rules,omitempty"`
+	// Launch is the agent process a hand join runs in, when the session's
+	// adapter names one; the dispatcher binds it only if that process runs.
+	Launch *JoinLaunch `json:"launch,omitempty"`
+}
+
+// The proposed launch is new on every call; a retried join with the same key
+// is the same join, and replays the launch the first call bound.
+func (j Join) normalized() Command {
+	j.Launch = nil
+	return j
+}
+
+// JoinLaunch is a launch reference a join proposes, as a start would bind it.
+type JoinLaunch struct {
+	Ref     string           `json:"ref"`
+	AtMS    int64            `json:"at_ms"`
+	Profile wire.HookProfile `json:"profile"`
 }
 
 func (Join) command() {}

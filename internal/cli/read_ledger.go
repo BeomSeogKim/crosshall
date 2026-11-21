@@ -227,7 +227,7 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		if len(r.Unread) == 0 && len(r.Owed) == 0 && len(r.Cancelled) == 0 {
 			if r.Delivers {
-				fmt.Fprintln(w, "Inbox is empty.")
+				fmt.Fprintln(w, "Inbox is empty. "+domain.HallDelivers)
 			} else {
 				fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.")
 			}
@@ -443,6 +443,8 @@ type ledgerTrailer struct {
 	Changes   []domain.Member `json:"roster_changes"`
 	// JoinHint is repeated by the first command of a member a hook enrolled.
 	JoinHint string `json:"join_hint"`
+	// Delivers marks a wait timeout for a member the hall delivers to.
+	Delivers bool `json:"delivers"`
 }
 
 // PrintFirstRules prints the member rules a first command carries and the

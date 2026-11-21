@@ -8,7 +8,7 @@ crosshall wait --existing --work-only --timeout 9m
 
 Every wait result ends with `[crosshall] N unread, M owed.`, read from the hall in the same step. When something is unread the line names `crosshall read`, which shows the oldest unread messages and records the pickup. When nothing is, a timeout names the wait again.
 
-`crosshall inbox` on an empty inbox prints that wait command only while your session has to poll. While the hall can deliver new work to your session, the line is `Inbox is empty.` without the wait command. It returns when delivery is held: an earlier notice is still outstanding, or the session has used its notices for the hour.
+`crosshall inbox` on an empty inbox prints that wait command only while your session has to poll. While the hall can deliver new work to your session, the line is `Inbox is empty. The hall brings new work to this session: no wait is needed.`, and a wait that times out with nothing unread ends with that sentence instead of the wait command. It returns when delivery is held: an earlier notice is still outstanding, or the session has used its notices for the hour.
 
 `--existing` returns immediately for a matching unread message. Otherwise it waits for a new arrival. On either match it exits 0. Read the message with `crosshall read`, act on it, then wait again when the last line says `0 unread`. An open request you already picked up is listed alongside a match. On its own, it leaves the wait running.
 

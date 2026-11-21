@@ -68,11 +68,17 @@ const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON 
 
 const openPublishLane = `observed_at_ms IS NULL AND retired_at_ms IS NULL AND state <> 'not_submitted'`
 
-// publishDelivers reports whether new work reaches the member without a
-// wait: its route is available now, so a notice can be reserved for it.
+// PublishReaches is the one test of whether the hall can start a member's
+// turn for new work: its route is available now, so a notice can be
+// reserved for it. Such a member is not told to stand by with wait.
+func PublishReaches(state store.PublishState) bool {
+	return state.State == "available"
+}
+
+// publishDelivers reads a binding's publish state and applies PublishReaches.
 func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
 	status, _, err := store.ReadPublishState(ctx, tx, binding, now)
-	return status.State == "available", err
+	return PublishReaches(status), err
 }
 
 // ConfirmPublishRoute records a transport's positive proof for this

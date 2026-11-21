@@ -45,10 +45,7 @@ type conformance struct {
 
 func newConformance(t *testing.T) *conformance {
 	t.Helper()
-	root, err := os.MkdirTemp("", "crosshall-conformance-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := filepath.Join(t.TempDir(), "crosshall-conformance")
 	c := &conformance{t: t, root: root, home: filepath.Join(root, "home"), state: filepath.Join(root, "state"),
 		config: filepath.Join(root, "claude-config"), repo: filepath.Join(root, "home", "checkout")}
 	for _, dir := range []string{c.home, filepath.Join(c.home, "tmp"), c.config, filepath.Join(c.repo, ".git")} {
@@ -362,7 +359,6 @@ func (c *conformance) cleanup() {
 			_ = os.RemoveAll(filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid()), slug))
 		}
 	}
-	_ = os.RemoveAll(c.root)
 }
 
 // fixture is the loopback stand-in for the model endpoint. It records every

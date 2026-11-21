@@ -150,7 +150,7 @@ func TestCodexExecTurnEndConformance(t *testing.T) {
 				want  int
 			}{
 				{"SELECT count(*) FROM turn_end_notice WHERE adapter='codex'", wantClaims},
-				{"SELECT count(*) FROM turn_end_notice_item WHERE message_id=1", wantClaims},
+				{"SELECT count(*) FROM announcement WHERE via='turn_end' AND message_id=1", wantClaims},
 				{"SELECT count(*) FROM recipient WHERE message_id=1 AND picked_up_at_ms IS NULL", 1},
 			} {
 				var count int

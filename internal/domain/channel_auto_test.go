@@ -99,4 +99,18 @@ func TestInitialAutomaticJoiningYieldsToTheOwnersChoice(t *testing.T) {
 	if f.count(`SELECT enabled FROM hall_auto_join`) != 0 {
 		t.Fatal("an install overrode the owner's choice")
 	}
+
+	// "off" on a hall that never set the switch changes nothing and is a
+	// choice all the same.
+	fresh := newFixture(t)
+	r := fresh.owner(ChannelAuto{On: false}, "off-first")
+	wantOK(t, r)
+	if got := decode[ChannelAutoResult](t, r); got.On || got.Changed || fresh.count(`SELECT COUNT(*) FROM hall_auto_join WHERE enabled = 0`) != 1 {
+		t.Fatalf("off on a fresh hall: %+v", got)
+	}
+	r = fresh.owner(ChannelAuto{On: true, Initial: true}, "install")
+	wantOK(t, r)
+	if got := decode[ChannelAutoResult](t, r); got.On || got.Changed || fresh.count(`SELECT enabled FROM hall_auto_join`) != 0 {
+		t.Fatalf("an install after off on a fresh hall: %+v", got)
+	}
 }

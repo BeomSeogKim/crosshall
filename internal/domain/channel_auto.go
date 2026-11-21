@@ -52,17 +52,18 @@ func (s *Service) channelAuto(ctx context.Context, tx store.Tx, caller core.Call
 	if err != nil {
 		return core.Result{}, err
 	}
-	out := ChannelAutoResult{On: cmd.On, Changed: was != cmd.On}
-	if cmd.Initial {
-		var set bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM hall_auto_join)`).Scan(&set); err != nil {
-			return core.Result{}, err
-		}
-		if set {
-			out = ChannelAutoResult{On: was}
-		}
+	var set bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM hall_auto_join)`).Scan(&set); err != nil {
+		return core.Result{}, err
 	}
-	if out.Changed {
+	out := ChannelAutoResult{On: cmd.On, Changed: was != cmd.On}
+	if cmd.Initial && set {
+		out = ChannelAutoResult{On: was}
+	}
+	// The owner's own command is stored even when it changes nothing: "off"
+	// on a hall that never set the switch is a choice, and a later install
+	// must find it.
+	if out.Changed || (!cmd.Initial && !set) {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO hall_auto_join (id, enabled, changed_at_ms) VALUES (1, ?1, ?2)
 			ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, changed_at_ms = excluded.changed_at_ms`,
 			cmd.On, ms(now)); err != nil {

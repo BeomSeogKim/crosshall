@@ -81,6 +81,42 @@ func TestInstallingHooksTurnsAutomaticJoiningOnOnce(t *testing.T) {
 	}
 }
 
+// An owner who turned automatic joining off on a hall that never had it on
+// keeps it off through a yes to the installer and through a setup command.
+func TestInstallingHooksKeepsAnOffSetOnAFreshHall(t *testing.T) {
+	enabled := func(f *setupWorld) (on int) {
+		t.Helper()
+		if err := f.db().QueryRow(`SELECT enabled FROM hall_auto_join`).Scan(&on); err != nil {
+			t.Fatalf("the owner's off left no record: %v", err)
+		}
+		return on
+	}
+	t.Run("installer", func(t *testing.T) {
+		f := newSetupWorld(t)
+		f.owner().must("owner", "channel", "auto", "off")
+		code, out := f.inTerminal(f.env, "y\n", nil, "setup")
+		if code != 0 || !strings.Contains(out, "claude: installed") ||
+			!strings.Contains(out, "Its sessions then join their repository's channel when they start, unless you turned that off") {
+			t.Fatalf("exit %d:\n%s", code, out)
+		}
+		if enabled(f) != 0 {
+			t.Fatal("a yes to the installer turned automatic joining on against the owner's off")
+		}
+	})
+	t.Run("antigravity setup", func(t *testing.T) {
+		f := newSetupWorld(t)
+		vendor := filepath.Join(filepath.Dir(f.executable), "agy")
+		if err := os.WriteFile(vendor, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 9\nprintf '1.5.13\\n'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		f.owner().must("owner", "channel", "auto", "off")
+		f.apply("", "setup", "antigravity", "--apply")
+		if enabled(f) != 0 {
+			t.Fatal("an Antigravity setup turned automatic joining on against the owner's off")
+		}
+	})
+}
+
 // With the owner's switch on, a session that starts in a Git repository
 // with no channel gets the repository's own channel, and a session in a
 // linked worktree of that repository joins the same one.

@@ -58,7 +58,7 @@ A no skips future installer offers for the listed agents. Enter skips this offer
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only and is remembered: the installer does not offer the hooks for those agents again, and `crosshall setup` installs them whenever you choose. Pressing Enter skips the offer this once. Without the hooks, [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and is remembered: the installer does not offer the hooks for those agents again, and `crosshall setup` installs them whenever you choose. Pressing Enter skips the offer this once. Without the hooks, [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
@@ -81,7 +81,7 @@ On a default install in your own terminal, the installer can add `~/.local/bin` 
 | Receiver | How it sees new work |
 | --- | --- |
 | A session with an available notice route (today: Claude Code, interactive, macOS arm64) | The hall starts a turn in it, also when it is idle. Nobody relays. |
-| Any other Claude Code or Codex CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. Until that prompt it sees nothing: say anything to it. |
+| Any other Claude Code or Codex CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. If the agent is idle, send a prompt to surface the pending line, or have it run `crosshall read`. |
 | Antigravity CLI, and any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
 
 **5. See who is reachable.** In a plain terminal, not an agent session:

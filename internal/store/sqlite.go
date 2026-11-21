@@ -53,10 +53,13 @@ var autoJoinSchema string
 //go:embed migrations/013_start_line.sql
 var startLineSchema string
 
+//go:embed migrations/014_cleared_keys.sql
+var clearedKeysSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
-	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema,
+	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema,
 }
 
 // Store owns the dispatcher's single SQLite connection.

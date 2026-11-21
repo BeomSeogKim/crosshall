@@ -23,6 +23,23 @@ func parseFixture(adapter, name, body string, values map[string]string) (event, 
 	})
 }
 
+func TestHasPromptLineUsesTheInstalledManifest(t *testing.T) {
+	for _, tc := range []struct {
+		adapter, revision string
+		want              bool
+	}{
+		{"claude", "claude-2", true},
+		{"codex", "codex-1", true},
+		{"agy", "agy-1", false},
+		{"claude", "stale-revision", false},
+		{"unknown", "unknown", false},
+	} {
+		if got := HasPromptLine(tc.adapter, tc.revision); got != tc.want {
+			t.Errorf("%s %s: prompt line %t, want %t", tc.adapter, tc.revision, got, tc.want)
+		}
+	}
+}
+
 func TestManifestEvents(t *testing.T) {
 	for _, adapter := range []string{"codex", "claude"} {
 		m, ok := loadManifest(adapter)

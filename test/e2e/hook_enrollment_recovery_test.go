@@ -53,15 +53,17 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				t.Fatal(err)
 			}
 			pauseFixtureProcess(t, child)
-			start := f.invokeHook(repo, test.adapter, "SessionStart", `"source":"startup"`)
+			if out := f.waitForStartupRepository(repo, test.adapter, "startup", repo); out != "" {
+				t.Fatalf("stalled startup emitted %q", out)
+			}
 			stage := f.enrollmentEvidence(test.adapter)
 			resumeFixtureProcess(t, child)
 			wantStage := "no registered leaf"
 			if test.provisional {
 				wantStage = "provisional leaf without principal"
 			}
-			if start != "" || !strings.Contains(stage, wantStage) {
-				t.Fatalf("stalled start output %q, %s", start, stage)
+			if !strings.Contains(stage, wantStage) {
+				t.Fatalf("unexpected enrollment after stalled start: %s", stage)
 			}
 			if test.provisional && test.adapter == "claude" {
 				writeInterruptedClaudeLaunch(t, f.world, key, pid)
@@ -76,20 +78,17 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				if got := f.enrollmentEvidence(test.adapter); !strings.Contains(got, "no registered leaf") {
 					t.Fatal(got)
 				}
+				pauseFixtureProcess(t, child)
+				missed := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("dispatcher-still-paused"))
+				missedStage := f.enrollmentEvidence(test.adapter)
+				resumeFixtureProcess(t, child)
+				if missed != "" || !strings.Contains(missedStage, "no registered leaf") {
+					t.Fatalf("first recovery unexpectedly enrolled while paused: %q, %s", missed, missedStage)
+				}
 			}
 
-			out := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("recovered"))
-			var native struct {
-				Output struct {
-					Event   string `json:"hookEventName"`
-					Context string `json:"additionalContext"`
-				} `json:"hookSpecificOutput"`
-			}
-			if err := json.Unmarshal([]byte(out), &native); err != nil || native.Output.Event != "UserPromptSubmit" ||
-				!strings.Contains(native.Output.Context, "Joined #setup-check as @"+test.adapter+"1") {
-				t.Fatalf("prompt recovery output %q (%v), %s", out, err, f.enrollmentEvidence(test.adapter))
-			}
-			if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("recovered")); got != "" {
+			recovered := f.waitForEnrollmentWelcome(repo, test.adapter, "UserPromptSubmit", prompt)
+			if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt(recovered)); got != "" {
 				t.Fatalf("replayed callback returned %q", got)
 			}
 			if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("ordinary")); got != "" {
@@ -102,15 +101,23 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				(SELECT COUNT(*) FROM binding WHERE principal_id = k.principal_id AND state = 'live'),
 				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id AND launch_ref = 'session' AND verified = 0
 					AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'),
-				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND event_ref = 'recovered:UserPromptSubmit'),
+				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND event_ref = ?),
 				(SELECT COUNT(*) FROM publish_route WHERE principal_id = k.principal_id)
-				FROM principal_key k WHERE vendor = ? AND key = ?`, test.adapter, key).Scan(&bindings, &launches, &observations, &routes); err != nil ||
+				FROM principal_key k WHERE vendor = ? AND key = ?`, recovered+":UserPromptSubmit", test.adapter, key).Scan(&bindings, &launches, &observations, &routes); err != nil ||
 				bindings != 1 || launches != 1 || observations != 1 || routes != 0 {
 				t.Fatalf("recovery wrote bindings %d, launches %d, observations %d, routes %d (%v)",
 					bindings, launches, observations, routes, err)
 			}
 			if test.adapter == "claude" {
 				c := claudeSession{w: f.world, key: key, pid: pid, repo: repo}
+				if !test.provisional {
+					// An interrupted hook can leave a staging file without publishing a packet.
+					digest := (ident.Identity{Vendor: "claude", Key: key}).Digest()
+					part := filepath.Join(f.rendezvous(), "m", digest[:16], "in", strings.Repeat("a", 32)+".part")
+					if err := os.WriteFile(part, nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				c.fireAndRecord("UserPromptSubmit", "prompt_submitted", map[string]any{"prompt_id": "bad-cwd", "cwd": []int{2}})
 				c.fireAndRecord("SessionEnd", "session_ended", map[string]any{"reason": "other"})
 				var launch string
@@ -138,6 +145,70 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 	}
 }
 
+func (f *setupWorld) waitForStartupRepository(cwd, adapter, source, repo string) string {
+	f.t.Helper()
+	identity := ident.Identity{Vendor: adapter, Key: setupSessionPrefix + adapter}
+	path := filepath.Join(f.state, "hook-start-repos", identity.Digest())
+	want := "-\n"
+	if repo != "" {
+		want = fmt.Sprintf("%x\n", sha256.Sum256([]byte(repo)))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out := f.invokeHook(cwd, adapter, "SessionStart", fmt.Sprintf(`"source":%q`, source))
+		if strings.Contains(out, "Joined #") {
+			f.t.Fatalf("startup enrolled before the fixture was ready to recover: %q", out)
+		}
+		record, err := os.ReadFile(path)
+		if err == nil && string(record) == want {
+			return out
+		}
+		if !os.IsNotExist(err) || !time.Now().Before(deadline) {
+			f.t.Fatalf("startup repository record %q (%v), want %q; %s", record, err, want, f.enrollmentEvidence(adapter))
+		}
+	}
+}
+
+func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields func(string) string) string {
+	f.t.Helper()
+	db := f.db()
+	deadline := time.Now().Add(5 * time.Second)
+	var delivered string
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		turn := fmt.Sprintf("recovery-%d", attempt)
+		out := f.invokeHook(cwd, adapter, event, fields(turn))
+		if out != "" {
+			var native struct {
+				Output struct {
+					Event   string `json:"hookEventName"`
+					Context string `json:"additionalContext"`
+				} `json:"hookSpecificOutput"`
+			}
+			if err := json.Unmarshal([]byte(out), &native); err != nil || native.Output.Event != event {
+				f.t.Fatalf("unexpected %s response %q (%v), %s", event, out, err, f.enrollmentEvidence(adapter))
+			}
+			if strings.Contains(native.Output.Context, "Joined #setup-check as @"+adapter+"1") {
+				delivered = turn
+			} else if delivered == "" || event != "SessionStart" {
+				f.t.Fatalf("%s did not deliver the welcome: %q; %s", event, out, f.enrollmentEvidence(adapter))
+			}
+		}
+		if delivered != "" {
+			if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); welcome {
+				return delivered
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.t.Fatalf("no acknowledged recovery welcome (last delivered attempt %q, %s counter %q); %s",
+		delivered, event, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
+	return ""
+}
+
+func recoveryPrompt(turn string) string {
+	return fmt.Sprintf(`"prompt_id":%q`, turn)
+}
+
 func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 	for _, name := range []string{"no start", "start outside git", "different repository", "same repository mapped later"} {
 		t.Run(name, func(t *testing.T) {
@@ -152,12 +223,14 @@ func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 				t.Fatal(err)
 			}
 			start, prompt := other, mapped
+			startRepo := other
 			if name == "start outside git" {
 				start = f.home
+				startRepo = ""
 			}
 			if name != "no start" {
-				out := f.invokeHook(start, "claude", "SessionStart", `"source":"startup"`)
-				if !strings.Contains(out, "crosshall join") || strings.Contains(out, "Joined #") {
+				out := f.waitForStartupRepository(start, "claude", "startup", startRepo)
+				if out != "" && !strings.Contains(out, "crosshall join") {
 					t.Fatalf("unmapped startup output %q", out)
 				}
 			}
@@ -168,12 +241,12 @@ func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 				if err := os.Mkdir(prompt, 0700); err != nil {
 					t.Fatal(err)
 				}
+				f.waitForEnrollmentWelcome(prompt, "claude", "UserPromptSubmit", recoveryPrompt)
+				return
 			}
 			out := f.invokeHook(prompt, "claude", "UserPromptSubmit", `"prompt_id":"after-start"`)
-			stage := f.enrollmentEvidence("claude")
-			if wantJoin && (!strings.Contains(out, "Joined #setup-check as @claude1") || !strings.Contains(stage, "live binding")) ||
-				!wantJoin && (out != "" || !strings.Contains(stage, "no registered leaf")) {
-				t.Fatalf("want join %v; prompt output %q, %s", wantJoin, out, stage)
+			if stage := f.enrollmentEvidence("claude"); out != "" || !strings.Contains(stage, "no registered leaf") {
+				t.Fatalf("unmatched prompt output %q, %s", out, stage)
 			}
 		})
 	}
@@ -192,13 +265,11 @@ func TestInstalledHookRecordsOtherStartSources(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if got := f.invokeHook(repo, "claude", "SessionStart", fmt.Sprintf(`"source":%q`, source)); got != "" {
+			if got := f.waitForStartupRepository(repo, "claude", source, repo); got != "" {
 				t.Fatalf("unmapped %s produced %q", source, got)
 			}
 			f.owner().must("owner", "channel", "default", "setup-check", "--repo", repo)
-			if got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"first"`); !strings.Contains(got, "Joined #setup-check as @claude1") {
-				t.Fatalf("%s did not recover (%q); %s", source, got, f.enrollmentEvidence("claude"))
-			}
+			f.waitForEnrollmentWelcome(repo, "claude", "UserPromptSubmit", recoveryPrompt)
 		})
 	}
 }
@@ -221,12 +292,12 @@ func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
 					t.Fatal(err)
 				}
 				start, later := other, mapped
+				startRepo := other
 				if place == "outside git" {
 					start = f.home
+					startRepo = ""
 				}
-				if out := f.invokeHook(start, "claude", "SessionStart", `"source":"startup"`); strings.Contains(out, "Joined #") {
-					t.Fatalf("unmapped startup output %q", out)
-				}
+				f.waitForStartupRepository(start, "claude", "startup", startRepo)
 				wantJoin := false
 				switch place {
 				case "same repository mapped later":
@@ -236,11 +307,14 @@ func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
 					f.invokeHook(start, "claude", "SessionEnd", `"reason":"other"`)
 					wantJoin = true
 				}
-				out := f.invokeHook(later, "claude", "SessionStart", fmt.Sprintf(`"source":%q`, source))
-				stage := f.enrollmentEvidence("claude")
-				if wantJoin && (!strings.Contains(out, "Joined #setup-check as @claude1") || !strings.Contains(stage, "live binding")) ||
-					!wantJoin && (out != "" || !strings.Contains(stage, "no registered leaf")) {
-					t.Fatalf("want join %v; %s start output %q, %s", wantJoin, source, out, stage)
+				fields := fmt.Sprintf(`"source":%q`, source)
+				if wantJoin {
+					f.waitForEnrollmentWelcome(later, "claude", "SessionStart", func(string) string { return fields })
+					return
+				}
+				out := f.invokeHook(later, "claude", "SessionStart", fields)
+				if stage := f.enrollmentEvidence("claude"); out != "" || !strings.Contains(stage, "no registered leaf") {
+					t.Fatalf("unmatched %s start output %q, %s", source, out, stage)
 				}
 			})
 		}

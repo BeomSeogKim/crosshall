@@ -28,7 +28,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 					"extra_model_requests_per_continuation":1,"trusted_from":"2.1.330"},
 				"publish":{"builds":[
 					{"version":"2.1.330","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"tested"},
-					{"version":"2.1.331","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"trusted","confirmed":1},
+					{"version":"2.1.331","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"trusted","confirmed":1,"held_unobserved":2},
 					{"version":"2.1.332","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"seen"},
 					{"version":"2.1.333","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"stopped","stopped_at_ms":60000,"notice":41,"reason":"absorbed"}]},
 				"unverified_launches":2,
@@ -54,7 +54,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		"turn-end notice available (trusted from 2.1.330 evidence), committed claims 2 on 20261119 UTC, 1 extra model request per continuation",
 		"turn-end notice unavailable, committed claims 0 on 20261119 UTC, 1 extra model request per continuation",
 		"publish build 2.1.330 (darwin-arm64 interactive claude-2): tested",
-		"publish build 2.1.331 (darwin-arm64 interactive claude-2): trusted 1 of 3",
+		"publish build 2.1.331 (darwin-arm64 interactive claude-2): trusted 1 of 3, 2 held unobserved",
 		"publish build 2.1.332 (darwin-arm64 interactive claude-2): seen",
 		"publish build 2.1.333 (darwin-arm64 interactive claude-2): stopped at " + clock(60000) + " (notice 41, absorbed)",
 		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode",
@@ -67,8 +67,13 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 	out, _, code = run(t, env, "--json", "owner", "doctor")
 	var data struct {
 		Adapters []struct {
-			Adapter       string
-			Hooks         json.RawMessage
+			Adapter string
+			Hooks   json.RawMessage
+			Publish struct {
+				Builds []struct {
+					HeldUnobserved *int `json:"held_unobserved"`
+				}
+			}
 			TurnEndNotice *struct {
 				Available                         bool
 				Date                              string
@@ -92,6 +97,11 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		len(data.Adapters) != 2 || data.Adapters[0].Adapter != "claude" || len(data.Adapters[0].Hooks) == 0 ||
 		data.Adapters[1].Adapter != "codex" || len(data.Adapters[1].Hooks) != 0 {
 		t.Fatalf("doctor diagnostics JSON exit %d: %s (%v)", code, out, err)
+	}
+	builds := data.Adapters[0].Publish.Builds
+	if len(builds) != 4 || builds[1].HeldUnobserved == nil || *builds[1].HeldUnobserved != 2 ||
+		builds[0].HeldUnobserved != nil || builds[2].HeldUnobserved != nil || builds[3].HeldUnobserved != nil {
+		t.Errorf("unexpected held-unobserved count in doctor JSON: %s", out)
 	}
 	if r := data.Adapters[0].Reminder; r == nil || r.Available == nil || *r.Available ||
 		r.ReleaseState != "parked" || r.Reason != "The release has no active reminder path." ||

@@ -382,6 +382,9 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				switch build.State {
 				case "trusted":
 					words = fmt.Sprintf("trusted %d of %d", build.Confirmed, store.PublishBuildConfirmations)
+					if build.HeldUnobserved != nil {
+						words += fmt.Sprintf(", %d held unobserved", *build.HeldUnobserved)
+					}
 				case "stopped":
 					words = fmt.Sprintf("stopped at %s (notice %d, %s)", clock(build.StoppedAtMS), build.Notice, build.Reason)
 				case "candidate":

@@ -173,3 +173,69 @@ func TestOwnerViewsReportManifestBuildStates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDoctorCountsUnobservedNoticesByTrustedBuild(t *testing.T) {
+	ctx := t.Context()
+	db, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedAdapterLedger(t, db)
+	err = db.Update(ctx, func(tx Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
+			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, checked_at_ms, result_ref)
+			VALUES ('claude', '1', 'darwin-arm64', 'interactive', 'claude-2', 'publish', 'tested', 3, 'fixture')`)
+		if err != nil {
+			return err
+		}
+		for i, attempt := range []struct {
+			version, state        string
+			observedAt, retiredAt any
+		}{
+			{version: "2", state: "submitted"},
+			{version: "2", state: "uncertain"},
+			{version: "2", state: "submitting"},
+			{version: "2", state: "submitted", observedAt: 6},
+			{version: "2", state: "uncertain", retiredAt: 6},
+			{version: "2", state: "not_submitted"},
+			{version: "3", state: "submitted"},
+			{version: "4", state: "reserved"},
+			{version: "1", state: "submitted"},
+		} {
+			id := i + 4
+			_, err := tx.ExecContext(ctx, `INSERT INTO principal (id, kind, vendor, created_at_ms) VALUES (?1, 'session', 'claude', 1);
+				INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms) VALUES (?1, ?1, 1, 'writer-' || ?1, 1);
+				INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms) VALUES
+					(?1, 'fixture', json_object('adapter', 'claude', 'vendor_version', ?2, 'platform', 'darwin-arm64',
+						'mode', 'interactive', 'manifest_rev', 'claude-2'), 1, 1);
+				INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
+					launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms,
+					observed_at_ms, retired_at_ms)
+				VALUES (?1, ?1, 1, 1, 'claude', 'session', 'fixture', 1, ?1, 2, ?3, 3,
+					CASE WHEN ?3 <> 'reserved' THEN 4 END, ?4, ?5)`,
+				id, attempt.version, attempt.state, attempt.observedAt, attempt.retiredAt)
+			if err != nil {
+				return err
+			}
+		}
+		var doctor DoctorAdapterState
+		if err := readDoctorBuilds(ctx, tx, "claude", &doctor); err != nil {
+			return err
+		}
+		builds := doctor.Publish.Builds
+		if len(builds) != 4 || builds[0].Version != "1" || builds[0].State != "tested" || builds[0].HeldUnobserved != nil {
+			t.Fatalf("publish builds: %+v", builds)
+		}
+		for i, want := range []int{3, 1, 0} {
+			build := builds[i+1]
+			if build.State != "trusted" || build.HeldUnobserved == nil || *build.HeldUnobserved != want {
+				t.Errorf("build %s: %+v, want %d held unobserved", build.Version, build, want)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -116,9 +117,10 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 
 // A repository made with git init --separate-git-dir has one identity for
 // its main checkout and its linked worktrees: they share the automatic
-// channel, and the owner's default set in the main checkout.
+// channel, and the owner's default set in the main checkout, also one that
+// an older version kept under the main checkout's path.
 func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing.T) {
-	for _, explicit := range []bool{false, true} {
+	for _, explicit := range []string{"", "default", "older default"} {
 		f := newSetupWorld(t)
 		f.apply("", "setup", "claude", "codex", "--apply")
 		owner := f.owner()
@@ -156,20 +158,39 @@ func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing
 			}
 		}
 		want := "metadata"
-		if explicit {
+		if explicit != "" {
 			want = "chosen"
 			owner.must("owner", "channel", "create", "chosen")
 			owner.must("owner", "channel", "default", "chosen", "--repo", main)
 		}
-		if got := startAs(f, "claude", "one", main); !strings.Contains(got, "Joined #"+want+" as @claude1") {
-			t.Fatalf("explicit %v: the main checkout printed %q", explicit, got)
+		if explicit == "older default" {
+			owner.must("owner", "stop")
+			canonical, err := filepath.EvalSymlinks(main)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(f.state, "store.sqlite3"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := db.Exec(`UPDATE repo_default SET repo_root = ?`, canonical)
+			if rows, _ := res.RowsAffected(); err != nil || rows != 1 {
+				t.Fatalf("rewrite the default as an older version kept it: %d rows (%v)", rows, err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			owner.must("owner", "channel", "auto", "on") // the upgraded dispatcher starts
 		}
 		if got := startAs(f, "codex", "two", linked); !strings.Contains(got, "Joined #"+want+" as @codex1") {
-			t.Fatalf("explicit %v: the linked worktree printed %q", explicit, got)
+			t.Fatalf("%q: the linked worktree printed %q", explicit, got)
+		}
+		if got := startAs(f, "claude", "one", main); !strings.Contains(got, "Joined #"+want+" as @claude1") {
+			t.Fatalf("%q: the main checkout printed %q", explicit, got)
 		}
 		var channels int
 		if err := f.db().QueryRow(`SELECT COUNT(*) FROM channel`).Scan(&channels); err != nil || channels != 1 {
-			t.Fatalf("explicit %v: channels %d (%v)", explicit, channels, err)
+			t.Fatalf("%q: channels %d (%v)", explicit, channels, err)
 		}
 	}
 }
@@ -182,23 +203,7 @@ func TestAutomaticJoiningKeepsAnAntigravityConversationWhereItStarted(t *testing
 	owner.must("owner", "adapter", "set", "agy", "--enabled", "on")
 	first := gitRepository(t, filepath.Join(f.home, "first"))
 	second := gitRepository(t, filepath.Join(f.home, "second"))
-	start := func(conversation, workspace string) {
-		t.Helper()
-		payload, err := json.Marshal(map[string]any{
-			"conversationId": conversation,
-			"workspacePaths": []string{workspace},
-			"transcriptPath": filepath.Join(f.home, ".gemini", "antigravity-cli", "brain", conversation,
-				".system_generated", "logs", "transcript_full.jsonl"),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.CommandContext(t.Context(), f.executable, "hook", "agy", "SessionStart")
-		cmd.Dir, cmd.Env, cmd.Stdin = workspace, f.env, strings.NewReader(string(payload))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("Antigravity start: %v, output %q", err, out)
-		}
-	}
+	start := func(conversation, workspace string) { startAntigravity(f, conversation, workspace) }
 	state := func() (channels, members int) {
 		t.Helper()
 		if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil {
@@ -222,12 +227,15 @@ func TestAutomaticJoiningKeepsAnAntigravityConversationWhereItStarted(t *testing
 }
 
 // Only a real work tree gets a channel of its own: not a directory whose
-// .git holds a HEAD and nothing else, which Git rejects, and not a place
-// inside a repository's own .git directory.
+// .git holds a HEAD and nothing else, which Git rejects. And a session
+// inside Git's own directories, wherever they live, is in no repository: it
+// creates nothing, joins nothing, and is not recorded as started there.
 func TestAutomaticJoiningNeedsARealWorkTree(t *testing.T) {
 	f := newSetupWorld(t)
 	f.apply("", "setup", "claude", "--apply")
-	f.owner().must("owner", "channel", "auto", "on")
+	owner := f.owner()
+	owner.must("owner", "adapter", "set", "agy", "--enabled", "on")
+	owner.must("owner", "channel", "auto", "on")
 	hollow := filepath.Join(f.home, "hollow")
 	if err := os.MkdirAll(filepath.Join(hollow, ".git"), 0700); err != nil {
 		t.Fatal(err)
@@ -236,18 +244,77 @@ func TestAutomaticJoiningNeedsARealWorkTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := gitRepository(t, filepath.Join(f.home, "real"))
-	for session, dir := range map[string]string{"hollow": hollow, "inside": filepath.Join(repo, ".git", "objects")} {
+	objects := filepath.Join(repo, ".git", "objects")
+	// git init --separate-git-dir=<checkout>/metadata
+	apart := filepath.Join(f.home, "apart")
+	for path, text := range map[string]string{
+		filepath.Join(apart, "metadata", "HEAD"):            "ref: refs/heads/main\n",
+		filepath.Join(apart, "metadata", "objects", "info"): "",
+		filepath.Join(apart, "metadata", "refs", "info"):    "",
+		filepath.Join(apart, ".git"):                        "gitdir: " + filepath.Join(apart, "metadata") + "\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func() (channels, members int) {
+		t.Helper()
+		if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	prompt := func(session, dir, turn string) string {
+		return fireHook(f, "claude", session, dir, "UserPromptSubmit", fmt.Sprintf(`"prompt_id":%q,"turn_id":%q,"prompt":"synthetic"`, turn, turn))
+	}
+	const first, late = "0a6a3c1e-0000-4000-8000-00000000000a", "0a6a3c1e-0000-4000-8000-00000000000b"
+	for session, dir := range map[string]string{
+		"hollow": hollow, "inside": objects, "apart": filepath.Join(apart, "metadata", "objects"),
+	} {
 		if got := startAs(f, "claude", session, dir); got != "" {
 			t.Errorf("a start in %s printed %q", dir, got)
 		}
 	}
-	var channels, members int
-	if err := f.db().QueryRow(`SELECT (SELECT COUNT(*) FROM channel), (SELECT COUNT(*) FROM binding)`).Scan(&channels, &members); err != nil ||
-		channels != 0 || members != 0 {
-		t.Fatalf("starts outside a work tree made %d channels and %d members (%v)", channels, members, err)
+	startAntigravity(f, first, objects)
+	// The same conversations, now in the work tree: they did not start there.
+	if got := prompt("inside", repo, "second"); got != "" {
+		t.Errorf("a prompt in the work tree after a start inside .git printed %q", got)
+	}
+	startAntigravity(f, first, repo)
+	if channels, members := state(); channels != 0 || members != 0 {
+		t.Fatalf("starts outside a work tree made %d channels and %d members", channels, members)
 	}
 	if got := startAs(f, "claude", "work", repo); !strings.Contains(got, "Joined #real as @claude1") {
 		t.Fatalf("the work tree printed %q", got)
+	}
+	// The repository has its channel now; inside .git is still no place to join it.
+	if got := startAs(f, "claude", "late", objects); got != "" {
+		t.Errorf("a start inside .git of a repository with a channel printed %q", got)
+	}
+	startAntigravity(f, late, objects)
+	if channels, members := state(); channels != 1 || members != 1 {
+		t.Fatalf("starts inside .git left %d channels and %d members", channels, members)
+	}
+}
+
+func startAntigravity(f *setupWorld, conversation, workspace string) {
+	f.t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"conversationId": conversation,
+		"workspacePaths": []string{workspace},
+		"transcriptPath": filepath.Join(f.home, ".gemini", "antigravity-cli", "brain", conversation,
+			".system_generated", "logs", "transcript_full.jsonl"),
+	})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	cmd := exec.CommandContext(f.t.Context(), f.executable, "hook", "agy", "SessionStart")
+	cmd.Dir, cmd.Env, cmd.Stdin = workspace, f.env, strings.NewReader(string(payload))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		f.t.Fatalf("Antigravity start: %v, output %q", err, out)
 	}
 }
 

@@ -1,0 +1,94 @@
+package dispatch
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/store"
+)
+
+// A default set, before repositories had one identity, in the main checkout
+// of a repository whose Git directory lives apart is kept under the
+// checkout's path. A starting dispatcher moves it to the repository's
+// identity; a default already there stays, and other rows are untouched.
+func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
+	s, _ := adapterFilesFixture(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apart := func(name string) (checkout, metadata string) {
+		checkout, metadata = filepath.Join(base, name), filepath.Join(base, name+"-metadata")
+		write(filepath.Join(metadata, "HEAD"), "ref: refs/heads/main\n")
+		write(filepath.Join(checkout, ".git"), "gitdir: "+metadata+"\n")
+		return checkout, metadata
+	}
+	moved, movedTo := apart("moved")
+	kept, keptAt := apart("kept")
+	plain := filepath.Join(base, "plain")
+	write(filepath.Join(plain, ".git", "HEAD"), "ref: refs/heads/main\n")
+	linked := filepath.Join(base, "linked")
+	admin := filepath.Join(movedTo, "worktrees", "linked")
+	write(filepath.Join(admin, "commondir"), "../..\n")
+	write(filepath.Join(linked, ".git"), "gitdir: "+admin+"\n")
+	gone := filepath.Join(base, "gone")
+
+	ctx := t.Context()
+	if err := s.db.Update(ctx, func(tx store.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO channel (id, name, state, created_at_ms)
+			VALUES (1, 'old', 'active', 1), (2, 'new', 'active', 1)`); err != nil {
+			return err
+		}
+		for root, channel := range map[string]int{moved: 1, kept: 1, keptAt: 2, plain: 1, linked: 2, gone: 1} {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO repo_default (repo_root, channel_id) VALUES (?, ?)`, root, channel); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // a second start changes nothing
+		if err := s.adoptRepoDefaults(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]int{}
+	if err := s.db.Update(ctx, func(tx store.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT repo_root, channel_id FROM repo_default`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var root string
+			var channel int
+			if err := rows.Scan(&root, &channel); err != nil {
+				return err
+			}
+			got[root] = channel
+		}
+		return rows.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{movedTo: 1, keptAt: 2, plain: 1, linked: 2, gone: 1}
+	if len(got) != len(want) {
+		t.Fatalf("defaults %v, want %v", got, want)
+	}
+	for root, channel := range want {
+		if got[root] != channel {
+			t.Fatalf("defaults %v, want %v", got, want)
+		}
+	}
+}

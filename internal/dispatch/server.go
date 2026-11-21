@@ -369,6 +369,7 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 	}
 	// After startup or a purge, the snapshots and held lease must be visible
 	// in the same rendezvous before hooks can trust this ready marker.
+	s.logFailure(s.adoptRepoDefaults(ctx))
 	if err := s.publishAdapterFilesAt(ctx, root); err != nil {
 		return err
 	}

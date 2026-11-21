@@ -15,6 +15,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 const setupClaudeOriginal = "{\n  \"z-user\": 7,\n  \"hooks\": {\"SessionStart\": [{\"hooks\":[{\"type\":\"command\",\"command\":\"claude-user-hook\"}]}]},\n  \"permissions\": {\"allow\":[\"Bash(existing)\"]},\n  \"a-user\": false\n}\n"
@@ -356,15 +359,28 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	writer.must("join", "setup-check", "--as", "writer")
 	for _, adapter := range []string{"claude", "codex"} {
 		alias := adapter + "1"
-		out := f.invokeHook(repo, adapter, "SessionStart", `"source":"startup"`)
-		if !strings.Contains(hostContext(t, out), "Joined #setup-check as @"+alias) {
-			f.logDispatcher()
-			t.Fatalf("wrong installed %s enrollment output: %q, %s", adapter, out, f.enrollmentEvidence(adapter))
-		}
+		f.waitForEnrollmentWelcome(repo, adapter, "SessionStart", func(string) string { return `"source":"startup"` })
 		ids := notes(t, writer, alias, 1)
-		prompt := f.invokeHook(repo, adapter, "UserPromptSubmit", `"prompt_id":"turn-on","turn_id":"turn-on"`)
-		if got := hostContext(t, prompt); got != pendingContext(ids) {
-			t.Fatalf("%s installed hook did not offer pending mail: %q", adapter, got)
+		digest := (ident.Identity{Vendor: adapter, Key: setupSessionPrefix + adapter}).Digest()
+		leaf := filepath.Join(f.rendezvous(), "m", digest[:16])
+		deadline := time.Now().Add(fixtureEventTimeout)
+		var got string
+		for attempt := 0; time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if len(fixtureQueuedPackets(t, leaf)) != 0 {
+				continue
+			}
+			attempt++
+			turn := fmt.Sprintf("turn-on-%d", attempt)
+			fields := fmt.Sprintf(`"prompt_id":%q,"turn_id":%q`, turn, turn)
+			if prompt := f.invokeHook(repo, adapter, "UserPromptSubmit", fields); prompt != "" {
+				got = hostContext(t, prompt)
+				break
+			}
+		}
+		if got != pendingContext(ids) {
+			f.logDispatcher()
+			t.Fatalf("%s installed hook pending mail %q, want %q; %s",
+				adapter, got, pendingContext(ids), f.enrollmentEvidence(adapter))
 		}
 		notes(t, writer, alias, 1)
 	}

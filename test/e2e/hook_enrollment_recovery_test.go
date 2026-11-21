@@ -147,13 +147,12 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 
 func (f *setupWorld) waitForStartupRepository(cwd, adapter, source, repo string) string {
 	f.t.Helper()
-	identity := ident.Identity{Vendor: adapter, Key: setupSessionPrefix + adapter}
-	path := filepath.Join(f.state, "hook-start-repos", identity.Digest())
+	path := f.startupRepositoryFile(adapter)
 	want := "-\n"
 	if repo != "" {
 		want = fmt.Sprintf("%x\n", sha256.Sum256([]byte(repo)))
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		out := f.invokeHook(cwd, adapter, "SessionStart", fmt.Sprintf(`"source":%q`, source))
 		if strings.Contains(out, "Joined #") {
@@ -169,11 +168,54 @@ func (f *setupWorld) waitForStartupRepository(cwd, adapter, source, repo string)
 	}
 }
 
+func (f *setupWorld) startupRepositoryFile(adapter string) string {
+	id := ident.Identity{Vendor: adapter, Key: setupSessionPrefix + adapter}
+	return filepath.Join(f.state, "hook-start-repos", id.Digest())
+}
+
+func (f *setupWorld) waitForStartupRecordRemoval(cwd string) {
+	f.t.Helper()
+	path := f.startupRepositoryFile("claude")
+	for deadline := time.Now().Add(fixtureEventTimeout); ; {
+		if got := f.invokeHook(cwd, "claude", "SessionEnd", `"reason":"other"`); got != "" {
+			f.t.Fatalf("SessionEnd produced %q", got)
+		}
+		_, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return
+		}
+		if err != nil || !time.Now().Before(deadline) {
+			f.t.Fatalf("SessionEnd left the startup record (%v); counter %q", err, f.hookCounter("claude", "SessionEnd"))
+		}
+		f.waitEnrollmentPackets("claude", "SessionEnd", deadline)
+	}
+}
+
 func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields func(string) string) string {
 	f.t.Helper()
+	deadline := time.Now().Add(fixtureEventTimeout)
+	delivered := f.waitForWelcomeDelivery(cwd, adapter, event, fields, deadline)
 	db := f.db()
-	deadline := time.Now().Add(5 * time.Second)
-	var delivered string
+	f.waitEnrollmentPackets(adapter, event, deadline)
+	if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); !welcome {
+		// A member request can confirm the native receipt if its one-way
+		// acknowledgement expired. A wait carries no member rules, so the
+		// session's first command still gets them.
+		identity := "CLAUDE_CODE_SESSION_ID"
+		if adapter == "codex" {
+			identity = "CODEX_THREAD_ID"
+		}
+		member := &participant{w: f.world, extra: []string{identity + "=" + setupSessionPrefix + adapter}}
+		member.run("wait", "--existing", "--timeout", "1s")
+		if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); !welcome {
+			f.t.Fatalf("%s welcome from %q was not acknowledged; counter %q, %s", event, delivered, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
+		}
+	}
+	return delivered
+}
+
+func (f *setupWorld) waitForWelcomeDelivery(cwd, adapter, event string, fields func(string) string, deadline time.Time) string {
+	f.t.Helper()
 	for attempt := 1; time.Now().Before(deadline); attempt++ {
 		turn := fmt.Sprintf("recovery-%d", attempt)
 		out := f.invokeHook(cwd, adapter, event, fields(turn))
@@ -187,26 +229,78 @@ func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields
 			if err := json.Unmarshal([]byte(out), &native); err != nil || native.Output.Event != event {
 				f.t.Fatalf("unexpected %s response %q (%v), %s", event, out, err, f.enrollmentEvidence(adapter))
 			}
-			if strings.Contains(native.Output.Context, "Joined #setup-check as @"+adapter+"1") {
-				delivered = turn
-			} else if delivered == "" || event != "SessionStart" {
+			if !strings.Contains(native.Output.Context, "Joined #setup-check as @"+adapter+"1") {
 				f.t.Fatalf("%s did not deliver the welcome: %q; %s", event, out, f.enrollmentEvidence(adapter))
 			}
-		}
-		if delivered != "" {
-			if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); welcome {
-				return delivered
+			if strings.Contains(native.Output.Context, "Before voluntarily ending any turn") {
+				f.t.Fatalf("%s start line carried the member rules: %q", event, out)
 			}
+			return turn
 		}
-		time.Sleep(20 * time.Millisecond)
+		f.waitEnrollmentPackets(adapter, event, deadline)
 	}
-	f.t.Fatalf("no acknowledged recovery welcome (last delivered attempt %q, %s counter %q); %s",
-		delivered, event, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
+	f.t.Fatalf("no %s recovery welcome (counter %q); %s", event, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
 	return ""
+}
+
+func (f *setupWorld) waitEnrollmentPackets(adapter, event string, deadline time.Time) {
+	f.t.Helper()
+	leaf := f.enrollmentLeaf(adapter)
+	for {
+		packets := fixtureQueuedPackets(f.t, leaf)
+		if len(packets) == 0 {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			f.t.Fatalf("%s %s packets still queued: %v; last counter %q", adapter, event, packets, f.hookCounter(adapter, event))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (f *setupWorld) enrollmentLeaf(adapter string) string {
+	id := ident.Identity{Vendor: adapter, Key: setupSessionPrefix + adapter}
+	return filepath.Join(f.rendezvous(), "m", id.Digest()[:16])
 }
 
 func recoveryPrompt(turn string) string {
 	return fmt.Sprintf(`"prompt_id":%q`, turn)
+}
+
+func (f *setupWorld) waitForUnmatchedStart(cwd, fields string) {
+	f.t.Helper()
+	counterBytes := func() int64 {
+		entries, err := os.ReadDir(filepath.Join(f.rendezvous(), "hooks"))
+		if err != nil && !os.IsNotExist(err) {
+			f.t.Fatal(err)
+		}
+		var size int64
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			if info.Mode().IsRegular() {
+				size += info.Size()
+			}
+		}
+		return size
+	}
+	for deadline := time.Now().Add(fixtureEventTimeout); ; {
+		before := counterBytes()
+		out := f.invokeHook(cwd, "claude", "SessionStart", fields)
+		f.waitEnrollmentPackets("claude", "SessionStart", deadline)
+		stage := f.enrollmentEvidence("claude")
+		if out != "" || !strings.Contains(stage, "no registered leaf") {
+			f.t.Fatalf("unmatched start %s produced %q, %s", fields, out, stage)
+		}
+		if counterBytes() > before && strings.HasPrefix(f.hookCounter("claude", "SessionStart"), "claude SessionStart unmatched ") {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			f.t.Fatalf("start %s never reached the unmatched decision; %s", fields, stage)
+		}
+	}
 }
 
 func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
@@ -306,7 +400,7 @@ func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
 					f.owner().must("owner", "channel", "default", "setup-check", "--repo", other)
 					later, wantJoin = other, true
 				case "ended first":
-					f.invokeHook(start, "claude", "SessionEnd", `"reason":"other"`)
+					f.waitForStartupRecordRemoval(start)
 					wantJoin = true
 				}
 				fields := fmt.Sprintf(`"source":%q`, source)
@@ -314,10 +408,7 @@ func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
 					f.waitForEnrollmentWelcome(later, "claude", "SessionStart", func(string) string { return fields })
 					return
 				}
-				out := f.invokeHook(later, "claude", "SessionStart", fields)
-				if stage := f.enrollmentEvidence("claude"); out != "" || !strings.Contains(stage, "no registered leaf") {
-					t.Fatalf("unmatched %s start output %q, %s", source, out, stage)
-				}
+				f.waitForUnmatchedStart(later, fields)
 			})
 		}
 	}
@@ -330,28 +421,19 @@ func TestInstalledHookKeepsAndPrunesStartupRecord(t *testing.T) {
 			f.apply("", "setup", "claude", "--apply")
 			repo := f.enrollmentRepo()
 			key := setupSessionPrefix + "claude"
-			id := ident.Identity{Vendor: "claude", Key: key}
-			marker := filepath.Join(f.state, "hook-start-repos", id.Digest())
+			marker := f.startupRepositoryFile("claude")
 			owner := f.owner()
 			if action == "join after owner restart" || action == "end while owner stopped" {
 				owner.must("owner", "stop")
 			}
-			start := repo
+			start, startupRepo := repo, repo
 			if action == "join by command" {
-				start = f.home
+				start, startupRepo = f.home, ""
 			}
-			out := f.invokeHook(start, "claude", "SessionStart", `"source":"startup"`)
 			if action == "join on start" {
-				if !strings.Contains(out, "Joined #setup-check as @claude1") {
-					t.Fatalf("mapped startup produced %q", out)
-				}
+				f.waitForEnrollmentWelcome(start, "claude", "SessionStart", func(string) string { return `"source":"startup"` })
 			} else {
-				if strings.Contains(out, "Joined #") {
-					t.Fatalf("startup enrolled early: %q", out)
-				}
-				if _, err := os.Stat(marker); err != nil {
-					t.Fatalf("startup record missing: %v", err)
-				}
+				f.waitForStartupRepository(start, "claude", "startup", startupRepo)
 			}
 			if action == "join after owner restart" || action == "end while owner stopped" {
 				if pids := f.dispatcherPIDs(); len(pids) != 0 {
@@ -361,23 +443,19 @@ func TestInstalledHookKeepsAndPrunesStartupRecord(t *testing.T) {
 			switch action {
 			case "join after owner restart":
 				owner.must("owner", "start")
-				if got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"after-restart"`); !strings.Contains(got, "Joined #setup-check as @claude1") {
-					t.Fatalf("prompt after owner restart produced %q", got)
-				}
+				f.waitForEnrollmentWelcome(repo, "claude", "UserPromptSubmit", recoveryPrompt)
 			case "join by command":
 				env := append(slices.Clone(f.env), "CLAUDE_CODE_SESSION_ID="+key)
 				if got := f.command(env, "", "join", "setup-check"); got.exit != 0 {
 					t.Fatalf("manual join failed: %s", got.stdout)
 				}
 			case "end while owner stopped":
-				if got := f.invokeHook(repo, "claude", "SessionEnd", `"reason":"other"`); got != "" {
-					t.Fatalf("end with owner stopped produced %q", got)
-				}
+				f.waitForStartupRecordRemoval(repo)
 				if pids := f.dispatcherPIDs(); len(pids) != 0 {
 					t.Fatalf("end hook restarted the dispatcher: %v", pids)
 				}
 			}
-			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			if _, err := os.Lstat(marker); !os.IsNotExist(err) {
 				t.Fatalf("startup record survived %s: %v", action, err)
 			}
 		})

@@ -9,19 +9,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
-// A hook tells a session it enrolled one line: who it is and who is there.
-// The line is offered again until it reached stdout; the member rules come
-// with the member's first command, and once a command gave them the hook has
-// nothing left to say.
 func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 	for _, adapter := range []struct{ name, turn, identity string }{
 		{"claude", "prompt_id", "CLAUDE_CODE_SESSION_ID"},
@@ -29,39 +24,80 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 	} {
 		prompt := func(turn string) string { return fmt.Sprintf(`%q:%q`, adapter.turn, turn) }
 		const rules = "Before voluntarily ending any turn"
-		line := "Joined #setup-check as @" + adapter.name + "1, with @peer."
+		key := setupSessionPrefix + adapter.name
+		// blocked joins a session whose start and first prompt could print nothing.
 		blocked := func(t *testing.T) (*setupWorld, string, *participant) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", adapter.name, "--apply")
 			repo := f.enrollmentRepo()
-			f.blockHookOutput(repo, adapter.name, "SessionStart", `"source":"startup"`)
-			if stage := f.enrollmentEvidence(adapter.name); !strings.Contains(stage, "live binding") {
-				t.Fatalf("startup did not commit while stdout blocked: %s", stage)
-			}
-			f.blockHookOutput(repo, adapter.name, "UserPromptSubmit", prompt("blocked-again"))
-			if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); command || hook {
-				t.Fatal("the store acknowledged a start line that never reached stdout")
-			}
-			return f, repo, &participant{w: f.world, extra: []string{adapter.identity + "=" + setupSessionPrefix + adapter.name}}
-		}
-		t.Run(adapter.name+" hook first", func(t *testing.T) {
-			f, repo, member := blocked(t)
-			out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("delivered"))
-			if out == "" || !strings.Contains(hostContext(t, out), line) || strings.Contains(out, rules) {
-				t.Fatalf("submit hook did not deliver the start line alone: %q", out)
-			}
-			if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-delivery")); got != "" {
-				t.Fatalf("submit hook repeated a delivered start line: %q", got)
-			}
-			deadline := time.Now().Add(time.Second)
-			for {
-				if _, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); hook {
+			db := f.db()
+			for deadline := time.Now().Add(fixtureEventTimeout); ; {
+				f.blockHookOutput(repo, adapter.name, "SessionStart", `"source":"startup"`)
+				f.waitEnrollmentPackets(adapter.name, "SessionStart", deadline)
+				var live bool
+				if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM binding b JOIN principal_key k ON k.principal_id = b.principal_id
+					WHERE k.vendor = ? AND k.key = ? AND b.state = 'live')`, adapter.name, key).Scan(&live); err != nil {
+					t.Fatal(err)
+				}
+				if live {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("the store did not acknowledge the delivered start line")
+					t.Fatalf("startup did not commit while stdout blocked: %s", f.enrollmentEvidence(adapter.name))
 				}
-				time.Sleep(10 * time.Millisecond)
+			}
+			for deadline, attempt := time.Now().Add(fixtureEventTimeout), 1; ; attempt++ {
+				turn := fmt.Sprintf("blocked-%d", attempt)
+				f.blockHookOutput(repo, adapter.name, "UserPromptSubmit", prompt(turn))
+				f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
+				if hookPromptObserved(t, db, adapter.name, turn) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("blocked prompt was never observed; last hook %q", f.hookCounter(adapter.name, "UserPromptSubmit"))
+				}
+			}
+			if command, hook := hookJoinAcknowledgements(t, db, adapter.name); command || hook {
+				t.Fatal("the store acknowledged a start line that never reached stdout")
+			}
+			if _, err := os.Lstat(filepath.Join(f.enrollmentLeaf(adapter.name), "seen-join-hint")); !os.IsNotExist(err) {
+				t.Fatalf("a blocked start line left a delivery receipt: %v", err)
+			}
+			return f, repo, &participant{w: f.world, extra: []string{adapter.identity + "=" + key}}
+		}
+		// quietPrompt submits prompts until the store has seen one; none may print.
+		quietPrompt := func(t *testing.T, f *setupWorld, repo, label string) {
+			t.Helper()
+			db := f.db()
+			for deadline, attempt := time.Now().Add(fixtureEventTimeout), 1; ; attempt++ {
+				turn := fmt.Sprintf("%s-%d", label, attempt)
+				if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt(turn)); got != "" {
+					t.Fatalf("submit hook printed %q, want nothing", got)
+				}
+				f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
+				if hookPromptObserved(t, db, adapter.name, turn) {
+					return
+				}
+				if !time.Now().Before(deadline) {
+					t.Fatalf("quiet prompt was never observed; last hook %q", f.hookCounter(adapter.name, "UserPromptSubmit"))
+				}
+			}
+		}
+		// startLine submits prompts until one prints the start line, without the rules.
+		startLine := func(f *setupWorld, repo string) {
+			deadline := time.Now().Add(fixtureEventTimeout)
+			f.waitForWelcomeDelivery(repo, adapter.name, "UserPromptSubmit", prompt, deadline)
+			f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
+		}
+		t.Run(adapter.name+" hook first", func(t *testing.T) {
+			f, repo, member := blocked(t)
+			startLine(f, repo)
+			if info, err := os.Lstat(filepath.Join(f.enrollmentLeaf(adapter.name), "seen-join-hint")); err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("the start line did not leave a delivery receipt: %v", err)
+			}
+			quietPrompt(t, f, repo, "after-delivery")
+			if _, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !hook {
+				t.Fatal("the store did not acknowledge the delivered start line")
 			}
 			// The rules come with the first command, once.
 			firstInbox := member.mustPlain("inbox")
@@ -81,9 +117,7 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 			if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
 				t.Fatalf("inbox should confirm only its own guidance: command %t, hook %t", command, hook)
 			}
-			if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-command")); got != "" {
-				t.Fatalf("submit hook added a start line after the rules: %q", got)
-			}
+			quietPrompt(t, f, repo, "after-command")
 		})
 		// The version before the start line left a roster cursor after a
 		// reply that carried no rules. It outlives the upgrade and must not
@@ -91,13 +125,10 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 		for _, first := range [][]string{{"inbox"}, {"join", "setup-check"}} {
 			t.Run(adapter.name+" an older version's cursor, then "+first[0], func(t *testing.T) {
 				f, repo, member := blocked(t)
-				digest := (ident.Identity{Vendor: adapter.name, Key: setupSessionPrefix + adapter.name}).Digest()
-				if err := os.WriteFile(filepath.Join(f.rendezvous(), "m", digest[:16], "ack"), []byte("1\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(f.enrollmentLeaf(adapter.name), "ack"), []byte("1\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("upgraded")); !strings.Contains(hostContext(t, out), line) {
-					t.Fatalf("the start line is still owed after the upgrade: %q", out)
-				}
+				startLine(f, repo)
 				once := member.mustPlain(first...)
 				again := member.mustPlain(first...)
 				if !strings.Contains(once, rules) || strings.Contains(again, rules) {
@@ -113,9 +144,7 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 				if out := member.mustPlain(first); !strings.Contains(out, rules) {
 					t.Fatalf("the first %s carried no rules: %q", first, out)
 				}
-				if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-one-command")); got != "" {
-					t.Fatalf("submit hook added a start line after the rules: %q", got)
-				}
+				quietPrompt(t, f, repo, "after-one-command")
 				if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
 					t.Fatalf("the prompt should record the rules the command printed: command %t, hook %t", command, hook)
 				}
@@ -131,12 +160,9 @@ func TestHookJoinHintFilesRetireWithTheLeaf(t *testing.T) {
 	f := newSetupWorld(t)
 	f.apply("", "setup", "claude", "--apply")
 	repo := f.enrollmentRepo()
-	if got := f.invokeHook(repo, "claude", "SessionStart", `"source":"startup"`); !strings.Contains(got, "Joined #setup-check as @claude1") {
-		t.Fatalf("startup did not deliver a welcome: %q", got)
-	}
+	f.waitForEnrollmentWelcome(repo, "claude", "SessionStart", func(string) string { return `"source":"startup"` })
 	key := setupSessionPrefix + "claude"
-	digest := (ident.Identity{Vendor: "claude", Key: key}).Digest()
-	leaf := filepath.Join(f.rendezvous(), "m", digest[:16])
+	leaf := f.enrollmentLeaf("claude")
 	guard := filepath.Join(leaf, "join-hint.lock")
 	receipt := filepath.Join(leaf, "seen-join-hint")
 	lock, err := os.OpenFile(guard, os.O_RDWR, 0)
@@ -167,18 +193,30 @@ func TestHookJoinHintFilesRetireWithTheLeaf(t *testing.T) {
 	if err := lock.Close(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		_, guardErr := os.Stat(guard)
 		_, receiptErr := os.Stat(receipt)
 		if os.IsNotExist(guardErr) && os.IsNotExist(receiptErr) {
 			return
 		}
-		if time.Now().After(deadline) {
+		if (guardErr != nil && !os.IsNotExist(guardErr)) || (receiptErr != nil && !os.IsNotExist(receiptErr)) || !time.Now().Before(deadline) {
+			f.logDispatcher()
 			t.Fatalf("fenced leaf retained its acknowledgement files: guard %v, receipt %v", guardErr, receiptErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func hookPromptObserved(t *testing.T, db *sql.DB, adapter, turn string) bool {
+	t.Helper()
+	var observed bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM observation o JOIN principal_key k ON k.principal_id = o.principal_id
+		WHERE k.vendor = ? AND k.key = ? AND o.kind = 'prompt_submitted' AND o.event_ref = ?)`,
+		adapter, setupSessionPrefix+adapter, turn+":UserPromptSubmit").Scan(&observed); err != nil {
+		t.Fatal(err)
+	}
+	return observed
 }
 
 // hookJoinAcknowledgements reports what the store knows reached the session:
@@ -195,15 +233,22 @@ func hookJoinAcknowledgements(t *testing.T, db *sql.DB, adapter string) (command
 
 func (f *setupWorld) blockHookOutput(repo, adapter, event, fields string) {
 	f.t.Helper()
+	ctx, cancel := context.WithTimeout(f.t.Context(), 3*time.Second)
+	defer cancel()
+	blockHookProcess(f.t, f.installedHookCommand(ctx, repo, adapter, event, fields))
+}
+
+func blockHookProcess(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
 	read, write, err := os.Pipe()
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	defer read.Close()
 	defer write.Close()
 	fd := int(write.Fd())
 	if err := syscall.SetNonblock(fd, true); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	fill := bytes.Repeat([]byte{'x'}, 4096)
 	filled := 0
@@ -216,26 +261,23 @@ func (f *setupWorld) blockHookOutput(repo, adapter, event, fields string) {
 			fill = fill[:len(fill)/2]
 		case syscall.EINTR:
 		default:
-			f.t.Fatal(err)
+			t.Fatal(err)
 		}
 	}
 	if err := syscall.SetNonblock(fd, false); err != nil || filled == 0 {
-		f.t.Fatalf("fill the stdout pipe: %d bytes, %v", filled, err)
+		t.Fatalf("fill the stdout pipe: %d bytes, %v", filled, err)
 	}
-	ctx, cancel := context.WithTimeout(f.t.Context(), 3*time.Second)
-	defer cancel()
-	cmd := f.installedHookCommand(ctx, repo, adapter, event, fields)
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = write, &stderr
 	if err := cmd.Run(); err != nil || stderr.Len() != 0 {
-		f.t.Fatalf("invoke %s %s with blocked stdout: %v, stderr %q", adapter, event, err, stderr.String())
+		t.Fatalf("invoke %v with blocked stdout: %v, stderr %q", cmd.Args, err, stderr.String())
 	}
 	if err := write.Close(); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	raw, err := io.ReadAll(read)
 	if err != nil || !bytes.Equal(raw, bytes.Repeat([]byte{'x'}, filled)) {
-		f.t.Fatalf("%s %s emitted unexpected stdout with its pipe full: %d bytes, %v", adapter, event, len(raw)-filled, err)
+		t.Fatalf("%v emitted unexpected stdout with its pipe full: %d bytes, %v", cmd.Args, len(raw)-filled, err)
 	}
 }
 

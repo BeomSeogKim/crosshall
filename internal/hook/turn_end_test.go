@@ -111,11 +111,9 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 				}
 				return spool.Reply{Response: wire.Response{Result: core.Result{Status: core.ExitOK, Data: json.RawMessage(data)}}}, tc.err
 			}}
-			ctx, cancel := context.WithTimeout(context.Background(), Budget)
-			defer cancel()
 			input := `{"hook_event_name":"` + tc.event + `","session_id":"fixture-session","prompt_id":"fixture-turn","last_assistant_message":"private message"` + tc.flag + `}`
 			var out strings.Builder
-			outcome := dispatchEvent(ctx, time.Now(), rv, transport, []string{"claude", tc.event}, strings.NewReader(input), &out,
+			outcome := dispatchEvent(t.Context(), time.Now(), rv, transport, []string{"claude", tc.event}, strings.NewReader(input), &out,
 				func(name string) (string, bool) { value, found := env[name]; return value, found })
 			if calls != tc.calls || outcome != tc.outcome || (out.Len() != 0) != tc.output {
 				t.Fatalf("calls=%d, outcome=%s, stdout=%q", calls, outcome, out.String())

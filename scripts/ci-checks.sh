@@ -94,6 +94,11 @@ fi
 if ! go vet -tags e2e,testvendorhome ./test/e2e/ || ! go test -tags e2e,testvendorhome -count=1 ./test/e2e/; then
   fail=1
 fi
+# The conformance suite drives real vendor binaries, so CI cannot run it.
+# Compile it, so that a change it no longer builds against fails here.
+if ! go vet -tags conformance ./test/conformance/...; then
+  fail=1
+fi
 if ! bash scripts/install_test.sh; then
   fail=1
 fi

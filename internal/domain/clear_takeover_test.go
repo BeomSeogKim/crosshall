@@ -146,29 +146,50 @@ func TestClearAfterAHandJoinKeepsTheMember(t *testing.T) {
 	}
 }
 
+func TestHandJoinRecordsItsPIDNamespace(t *testing.T) {
+	const namespace = "12345678-1234-1234-1234-123456789abc:100"
+	f, _ := adapterChannel(t)
+	f.svc.LaunchProcess = testProcess
+	f.svc.LaunchAlive = func(string, int64) bool { return true }
+	f.svc.LaunchPIDNamespace = func() string { return namespace }
+	session := f.newSession("claude")
+	launch := joinLaunch("pid-7-join", f.now.UnixMilli())
+	launch.PIDNamespace = namespace
+	res := f.join(session, Join{Channel: "checkout", Alias: "worker", Launch: launch}, "")
+	wantOK(t, res)
+	joined := decode[JoinResult](t, res)
+	if got := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = ? AND pid_namespace = ?`, launch.Ref, namespace); got != 1 {
+		t.Fatalf("join stored %d launches with the supplied PID namespace, want 1", got)
+	}
+	if joined.Launch == nil || joined.Launch.Ref != launch.Ref || joined.Launch.PIDNamespace != "" {
+		t.Fatalf("join response launch = %+v", joined.Launch)
+	}
+}
+
 func TestAJoinBindsOnlyARunningProcessNotYetBound(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		alive   bool
-		started bool
-		adapter string
-		at      int64
+		name, adapter, namespace string
+		alive, started           bool
+		at                       int64
 	}{
 		{name: "a dead process", alive: false, adapter: "claude"},
 		{name: "a process a start already bound", alive: true, started: true, adapter: "claude"},
 		{name: "another adapter", alive: true, adapter: "codex"},
 		{name: "an old time", alive: true, adapter: "claude", at: -joinLaunchAgeMS - 1},
+		{name: "another PID namespace", alive: true, adapter: "claude", namespace: "12345678-1234-1234-1234-123456789abc:200"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f, _ := adapterChannel(t)
 			f.svc.LaunchProcess = testProcess
 			f.svc.LaunchAlive = func(string, int64) bool { return c.alive }
+			f.svc.LaunchPIDNamespace = func() string { return "12345678-1234-1234-1234-123456789abc:100" }
 			s := f.newSession("claude")
 			if c.started {
 				f.hook(s, start("pid-7-a", "startup", f.now.UnixMilli()))
 			}
 			l := joinLaunch("pid-7-join", f.now.UnixMilli()+c.at)
 			l.Profile.Adapter = c.adapter
+			l.PIDNamespace = c.namespace
 			alias := "worker"
 			if c.started {
 				alias = "claude1"

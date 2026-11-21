@@ -71,7 +71,7 @@ func TestHookLeavesADispatcherTheOwnerStopped(t *testing.T) {
 	}
 	w.owner().must("owner", "start")
 	next := c
-	next.key, next.pid = "synthetic-next-session", "4343"
+	next.key = "synthetic-next-session"
 	if got := next.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude2") || !rosterHas(t, writer, "claude2") {
 		t.Fatalf("the new session did not join after the owner's start: %q", got)
 	}

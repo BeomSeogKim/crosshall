@@ -98,7 +98,7 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil || occupied {
 		return nil, err
 	}
-	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.AtMS); err != nil {
+	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, "", l.AtMS); err != nil {
 		return nil, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, l.Ref, l.AtMS, now); err != nil {

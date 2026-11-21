@@ -38,6 +38,7 @@ type HookEnrollArgs struct {
 	// LaunchHosted says the hook's nearest non-shell ancestor is the launch's
 	// process, so the start is that process's own and not a nested session's.
 	LaunchHosted bool   `json:"launch_hosted,omitempty"`
+	PIDNamespace string `json:"pid_namespace,omitempty"`
 	EventRef     string `json:"event_ref"`
 	Source       string `json:"source"`
 	RepoRoot     string `json:"repo_root"`

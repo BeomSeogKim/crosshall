@@ -669,14 +669,18 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		c := newConformance(t)
 		c.requireClaude()
 		c.owner("owner", "start")
+		c.owner("owner", "publish", "hall", "off")
 		c.owner("owner", "channel", "create", "checkout")
 		c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
 		c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 		c.writer("join", "checkout", "--as", "writer")
 		c.owner("owner", "budget", "grant", "checkout/@writer", "--roots", "1")
 		c.installInteractive()
+		version := c.version()
 		if tested {
-			c.importTurnEnd(c.version(), "interactive", "tested", "loopback run before the check: bootstraps the exact profile it measures")
+			c.importTurnEnd(version, "interactive", "tested", "loopback run before the check: bootstraps the exact profile it measures")
+		} else {
+			c.importTurnEnd(version, "interactive", "candidate", "no tested evidence for this fixture")
 		}
 		return c
 	}
@@ -691,7 +695,11 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		if c.model.count() != 1 || c.carries(1, id) != 0 || claims(c) != 0 {
 			t.Fatalf("without evidence: %d requests, %d claims", c.model.count(), claims(c))
 		}
-		return c.observedBuild("interactive")
+		observed := c.observedBuild("interactive")
+		if version := c.version(); observed != version {
+			t.Fatalf("observed build %q, want the candidate fixture build %q", observed, version)
+		}
+		return observed
 	}
 	continued := func(t *testing.T) string {
 		c := world(t, true)

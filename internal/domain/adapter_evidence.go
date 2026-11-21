@@ -120,6 +120,11 @@ func (s *Service) adapterEvidence(ctx context.Context, tx store.Tx, caller core.
 		if err != nil {
 			return core.Result{}, err
 		}
+		if n != 0 && r.Cap == "publish" && r.Level == "tested" {
+			if err := liftPublishBuildForEvidence(ctx, tx, cmd, now); err != nil {
+				return core.Result{}, err
+			}
+		}
 		changed += int(n)
 	}
 	out := AdapterEvidenceResult{Vendor: cmd.Vendor, VendorVersion: cmd.VendorVersion, Platform: cmd.Platform,

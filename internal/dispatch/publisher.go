@@ -19,9 +19,8 @@ const publishRecordRetry = 250 * time.Millisecond
 const publishProveRetry = 10 * time.Second
 
 type publisher struct {
-	db *store.Store
-	// profiles are the tested publish profiles this binary ships.
-	profiles []domain.PublishProfile
+	db       *store.Store
+	evidence []domain.BuiltinEvidence
 	// timeout bounds each transport call and abandon the wait for a
 	// canceled callback to return; zero means publishTimeout.
 	timeout, abandon time.Duration
@@ -36,7 +35,7 @@ type publisher struct {
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
 	return p.db.Update(ctx, func(tx store.Tx) error {
-		if err := domain.SeedPublishProfiles(ctx, tx, p.profiles); err != nil {
+		if err := domain.SeedBuiltinEvidence(ctx, tx, p.evidence); err != nil {
 			return err
 		}
 		return domain.RecoverPublish(ctx, tx, now)

@@ -138,16 +138,19 @@ func TestWaitingShowsNoticeSubmissionObservationAndPickup(t *testing.T) {
 
 func TestResumeWordsAreHonest(t *testing.T) {
 	for _, test := range []struct {
-		state domain.PublishStatus
-		want  string
+		state           domain.PublishStatus
+		buildStopLifted bool
+		want            string
 	}{
-		{domain.PublishStatus{State: "available"},
+		{domain.PublishStatus{State: "available"}, false,
 			"Resume recorded for @opus in #dev (binding 7).\n  publish: available\n"},
-		{domain.PublishStatus{State: "suspended", Reason: `version "9" not in the profile list`},
-			"Resume recorded for @opus in #dev (binding 7).\n  publish: suspended: version \"9\" not in the profile list\n"},
+		{domain.PublishStatus{State: "candidate", Reason: "no tested evidence for claude-2 on darwin-arm64 interactive"}, false,
+			"Resume recorded for @opus in #dev (binding 7).\n  publish: candidate (no tested evidence for claude-2 on darwin-arm64 interactive)\n"},
+		{domain.PublishStatus{State: "available"}, true,
+			"Resume recorded for @opus in #dev (binding 7).\n  lifted the publish stop for this build across all members\n  publish: available\n"},
 	} {
 		ft := &fakeTransport{result: okResult(t, domain.PublishSwitchResult{BindingID: 7, Channel: "dev", Alias: "opus",
-			Switch: "resume", Changed: true, Publish: &test.state})}
+			Switch: "resume", Changed: true, BuildStopLifted: test.buildStopLifted, Publish: &test.state})}
 		stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "owner", "publish", "resume", "7")
 		if stdout != test.want {
 			t.Errorf("stdout %q, want %q", stdout, test.want)

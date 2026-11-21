@@ -81,7 +81,7 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 		       (1, 'claude', 'current-claude', 'tomorrow', ?)`,
 		day.UnixMilli()-1, day.UnixMilli(), nextDay.UnixMilli()-1, nextDay.UnixMilli())
 
-	check := func(t *testing.T, wantClaudeAvailable bool) {
+	check := func(t *testing.T, wantClaudeAvailable bool, wantTrustedFrom string) {
 		t.Helper()
 		adapters := []doctorAdapter{
 			{InstallStatus: setup.InstallStatus{Adapter: "claude"}},
@@ -97,8 +97,9 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 				TurnEndNotice *struct {
 					Available                         *bool
 					Date                              string
-					CommittedClaims                   *int `json:"committed_claims"`
-					ExtraModelRequestsPerContinuation int  `json:"extra_model_requests_per_continuation"`
+					TrustedFrom                       string `json:"trusted_from"`
+					CommittedClaims                   *int   `json:"committed_claims"`
+					ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
 				} `json:"turn_end_notice"`
 			}
 		}
@@ -106,20 +107,26 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 			t.Fatalf("doctor JSON: %s (%v)", raw, err)
 		}
 		for i, want := range []struct {
-			adapter   string
-			available bool
-			claims    int
-		}{{"claude", wantClaudeAvailable, 2}, {"codex", false, 0}} {
+			adapter     string
+			available   bool
+			claims      int
+			trustedFrom string
+		}{{"claude", wantClaudeAvailable, 2, wantTrustedFrom}, {"codex", false, 0, ""}} {
 			a := got.Adapters[i]
 			n := a.TurnEndNotice
 			if a.Adapter != want.adapter || n == nil || n.Available == nil || *n.Available != want.available ||
 				n.Date != "20261119" || n.CommittedClaims == nil || *n.CommittedClaims != want.claims ||
-				n.ExtraModelRequestsPerContinuation != 1 {
-				t.Errorf("doctor JSON: %s, want %s available=%t claims=%d", raw, want.adapter, want.available, want.claims)
+				n.ExtraModelRequestsPerContinuation != 1 || n.TrustedFrom != want.trustedFrom {
+				t.Errorf("doctor JSON: %s, want %s available=%t claims=%d trusted_from=%q", raw, want.adapter, want.available, want.claims, want.trustedFrom)
 			}
 		}
 	}
-	check(t, true)
+	check(t, true, "")
+	t.Run("inherited from another version", func(t *testing.T) {
+		update(t, "UPDATE capability_evidence SET vendor_version = '2.1.328' WHERE vendor = 'claude' AND cap = 'turn_end'")
+		defer update(t, "UPDATE capability_evidence SET vendor_version = '2.1.327' WHERE vendor = 'claude' AND cap = 'turn_end'")
+		check(t, true, "2.1.328")
+	})
 	for _, test := range []struct {
 		name, disable, restore string
 	}{
@@ -129,8 +136,6 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE principal_id = 1"},
 		{"binding departed", "UPDATE binding SET state = 'departed' WHERE principal_id = 1",
 			"UPDATE binding SET state = 'live' WHERE principal_id = 1"},
-		{"wrong version", "UPDATE capability_evidence SET vendor_version = '2.1.328' WHERE vendor = 'claude' AND cap = 'turn_end'",
-			"UPDATE capability_evidence SET vendor_version = '2.1.327' WHERE vendor = 'claude' AND cap = 'turn_end'"},
 		{"wrong platform", "UPDATE capability_evidence SET platform = 'linux-amd64' WHERE vendor = 'claude' AND cap = 'turn_end'",
 			"UPDATE capability_evidence SET platform = 'darwin-arm64' WHERE vendor = 'claude' AND cap = 'turn_end'"},
 		{"wrong mode", "UPDATE capability_evidence SET mode = 'interactive' WHERE vendor = 'claude' AND cap = 'turn_end'",
@@ -143,7 +148,7 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			update(t, test.disable)
 			defer update(t, test.restore)
-			check(t, false)
+			check(t, false, "")
 		})
 	}
 }

@@ -132,6 +132,12 @@ func TestTurnEndNoticeGuards(t *testing.T) {
 			c.Profile.VendorVersion = "2.0.0"
 			e.VendorVersion = c.Profile.VendorVersion
 		}},
+		{name: "unverified build", before: func(f *fixture, _ session, c *HookEvent, _ *AdapterEvidence) {
+			c.Profile.VendorVersion = "unverified"
+			if _, err := f.db.Exec(`UPDATE adapter_launch SET profile = ? WHERE launch_ref = ?`, profileJSON(c.Profile), c.LaunchRef); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
 		{name: "different manifest evidence", before: func(_ *fixture, _ session, _ *HookEvent, e *AdapterEvidence) { e.ManifestRev = "other" }},
 		{name: "different platform evidence", before: func(_ *fixture, _ session, _ *HookEvent, e *AdapterEvidence) { e.Platform = "other" }},
 		{name: "different mode evidence", before: func(_ *fixture, _ session, _ *HookEvent, e *AdapterEvidence) { e.Mode = "other" }},
@@ -154,6 +160,40 @@ func TestTurnEndNoticeGuards(t *testing.T) {
 			}
 			if n := f.count(`SELECT COUNT(*) FROM turn_end_notice`); n != 0 {
 				t.Fatalf("ineligible Stop wrote %d claims", n)
+			}
+		})
+	}
+}
+
+func TestTurnEndNoticeHonorsExactEvidenceOverManifestFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name, level string
+		want        bool
+	}{
+		{"manifest evidence", "", true},
+		{"exact candidate", "candidate", false},
+		{"exact unavailable", "unavailable", false},
+		{"exact tested", "tested", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, reader, writer := turnEndFixture(t, "launch")
+			e := turnEndEvidence("tested")
+			e.VendorVersion = "2.0.0"
+			wantOK(t, f.owner(e, "manifest-evidence"))
+			if tc.level != "" {
+				wantOK(t, f.owner(turnEndEvidence(tc.level), "exact-evidence"))
+			}
+			id := f.turnEndAsk(writer, "reader", "unread")
+			var wantLine string
+			var wantClaims int
+			if tc.want {
+				wantLine = fmt.Sprintf("[crosshall] pending: %d", id)
+				wantClaims = 1
+			}
+			got := f.hook(reader, stop("launch", "turn-1", f.now.UnixMilli()+1))
+			claims := f.count(`SELECT COUNT(*) FROM turn_end_notice`)
+			if got.TurnEndLine != wantLine || claims != wantClaims {
+				t.Fatalf("Stop printed %q with %d claims, want %q with %d claims", got.TurnEndLine, claims, wantLine, wantClaims)
 			}
 		})
 	}

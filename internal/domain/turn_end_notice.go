@@ -23,13 +23,10 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 		WHERE t.principal_id = ?1 AND t.launch_ref = ?2 AND t.turn_ref = ?3 AND t.superseded = 0
 			AND l.ended_hook_at_ms IS NULL AND l.profile = ?4
 			AND t.opened_hook_at_ms BETWEEN l.started_hook_at_ms AND ?5
-			AND EXISTS (SELECT 1 FROM capability_evidence e
-				WHERE e.vendor = ?6 AND e.vendor_version = ?7 AND e.platform = ?8
-					AND e.mode = ?9 AND e.manifest_rev = ?10 AND e.cap = 'turn_end' AND e.level = 'tested')
+			AND `+store.CapabilityCovered("json_extract(l.profile,'$.adapter')", "l.profile", "'turn_end'")+`
 			AND NOT EXISTS (SELECT 1 FROM turn_end_notice n
 				WHERE n.principal_id = t.principal_id AND n.launch_ref = t.launch_ref AND n.turn_ref = t.turn_ref)
-	)`, principal, cmd.LaunchRef, cmd.TurnRef, profileJSON(p), cmd.HookAtMS, p.Adapter, p.VendorVersion,
-		p.Platform, p.Mode, p.ManifestRev).Scan(&eligible)
+	)`, principal, cmd.LaunchRef, cmd.TurnRef, profileJSON(p), cmd.HookAtMS).Scan(&eligible)
 	if err != nil || !eligible {
 		return "", err
 	}

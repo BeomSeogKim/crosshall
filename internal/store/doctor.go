@@ -23,7 +23,6 @@ type DoctorAdapterState struct {
 }
 
 // DoctorPublishState reports registered publish routes for one adapter.
-// In slice 1, routes are never available for sending.
 type DoctorPublishState struct {
 	State        string `json:"state"`
 	Reason       string `json:"reason"`
@@ -32,6 +31,7 @@ type DoctorPublishState struct {
 	// Counters count the notices reserved on the diagnostics day.
 	Counters DoctorPublishCounters `json:"counters"`
 	Members  []DoctorPublishMember `json:"members,omitempty"`
+	Builds   []DoctorPublishBuild  `json:"builds,omitempty"`
 }
 
 // DoctorPublishCounters counts notices by outcome and by observation.
@@ -53,6 +53,18 @@ type DoctorPublishMember struct {
 	State     PublishState `json:"publish"`
 }
 
+type DoctorPublishBuild struct {
+	Version     string `json:"version"`
+	Platform    string `json:"platform"`
+	Mode        string `json:"mode"`
+	ManifestRev string `json:"manifest_rev"`
+	State       string `json:"state"`
+	Confirmed   int    `json:"confirmed,omitempty"`
+	StoppedAtMS int64  `json:"stopped_at_ms,omitempty"`
+	Notice      int64  `json:"notice,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 type DoctorEvidence struct {
 	Version     string `json:"version"`
 	Platform    string `json:"platform"`
@@ -65,6 +77,7 @@ type DoctorEvidence struct {
 // DoctorTurnEndNotice reports live eligibility and durable claims for one UTC day.
 type DoctorTurnEndNotice struct {
 	Available                         bool   `json:"available"`
+	TrustedFrom                       string `json:"trusted_from,omitempty"`
 	Date                              string `json:"date"`
 	CommittedClaims                   int    `json:"committed_claims"`
 	ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
@@ -166,30 +179,8 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time
 	state := DoctorAdapterState{Policy: policy}
 	state.TurnEndNotice.Date = day.Format("20060102")
 	state.TurnEndNotice.ExtraModelRequestsPerContinuation = 1
-	err = tx.QueryRowContext(ctx, `
-		WITH live_profile AS (
-			SELECT json_extract(l.profile, '$.vendor_version') AS version,
-			       json_extract(l.profile, '$.platform') AS platform,
-			       json_extract(l.profile, '$.mode') AS mode,
-			       json_extract(l.profile, '$.manifest_rev') AS manifest_rev
-			FROM adapter_launch l
-			WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
-			  AND l.rowid = (SELECT rowid FROM adapter_launch
-			                  WHERE principal_id = l.principal_id
-			                  ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1)
-			  AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
-		)
-		SELECT (SELECT COUNT(*) FROM live_profile WHERE version = 'unverified' OR mode = 'unverified'),
-		       ? AND EXISTS (
-		           SELECT 1 FROM live_profile p JOIN capability_evidence e
-		             ON e.vendor_version = p.version AND e.platform = p.platform
-		            AND e.mode = p.mode AND e.manifest_rev = p.manifest_rev
-		           WHERE e.vendor = ? AND e.cap = 'turn_end' AND e.level = 'tested'
-		             AND p.version NOT IN ('', 'unverified') AND p.mode NOT IN ('', 'unverified')
-		       ),
-		       (SELECT COUNT(*) FROM turn_end_notice WHERE adapter = ? AND at_ms >= ? AND at_ms < ?)`,
-		adapter, policy.Enabled, adapter, adapter, day.UnixMilli(), day.AddDate(0, 0, 1).UnixMilli()).
-		Scan(&state.UnverifiedLaunches, &state.TurnEndNotice.Available, &state.TurnEndNotice.CommittedClaims)
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn_end_notice WHERE adapter = ? AND at_ms >= ? AND at_ms < ?`,
+		adapter, day.UnixMilli(), day.AddDate(0, 0, 1).UnixMilli()).Scan(&state.TurnEndNotice.CommittedClaims)
 	if err != nil {
 		return DoctorAdapterState{}, err
 	}
@@ -214,6 +205,9 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time
 	} else if sampleReason.Valid && sampleReason.String != "" {
 		state.Publish.Reason = sampleReason.String
 	}
+	if err := readDoctorBuilds(ctx, tx, adapter, &state); err != nil {
+		return DoctorAdapterState{}, err
+	}
 	if err := readDoctorPublish(ctx, tx, adapter, day, now, &state.Publish); err != nil {
 		return DoctorAdapterState{}, err
 	}
@@ -233,6 +227,81 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time
 		state.Evidence = append(state.Evidence, e)
 	}
 	return state, rows.Err()
+}
+
+func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAdapterState) error {
+	rows, err := tx.QueryContext(ctx, `SELECT l.profile, COUNT(*) FROM adapter_launch l
+		WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
+			AND l.rowid = (SELECT current.rowid FROM adapter_launch current
+				WHERE current.principal_id = l.principal_id
+				ORDER BY current.ended_hook_at_ms IS NOT NULL, current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
+			AND EXISTS (SELECT 1 FROM binding WHERE principal_id = l.principal_id AND state = 'live')
+		GROUP BY l.profile ORDER BY json_extract(l.profile, '$.vendor_version'), json_extract(l.profile, '$.platform'),
+			json_extract(l.profile, '$.mode'), json_extract(l.profile, '$.manifest_rev')`, adapter)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type profileCount struct {
+		profile string
+		count   int
+	}
+	var profiles []profileCount
+	for rows.Next() {
+		var profile profileCount
+		if err := rows.Scan(&profile.profile, &profile.count); err != nil {
+			return err
+		}
+		profiles = append(profiles, profile)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var exactTurnEnd bool
+	for _, profile := range profiles {
+		turnEnd, err := readCapabilityBuild(ctx, tx, adapter, profile.profile, "turn_end")
+		if err != nil {
+			return err
+		}
+		if turnEnd.Version == "unverified" || turnEnd.Mode == "unverified" {
+			out.UnverifiedLaunches += profile.count
+			continue
+		}
+		if out.Policy.Enabled && turnEnd.Covered {
+			out.TurnEndNotice.Available = true
+			if turnEnd.ExactLevel == "tested" {
+				exactTurnEnd = true
+			} else if out.TurnEndNotice.TrustedFrom == "" {
+				out.TurnEndNotice.TrustedFrom = turnEnd.TestedFrom
+			}
+		}
+		publish, err := readCapabilityBuild(ctx, tx, adapter, profile.profile, "publish")
+		if err != nil {
+			return err
+		}
+		out.Publish.Builds = append(out.Publish.Builds, doctorPublishBuild(publish))
+	}
+	if exactTurnEnd {
+		out.TurnEndNotice.TrustedFrom = ""
+	}
+	return nil
+}
+
+func doctorPublishBuild(build capabilityBuildEvidence) DoctorPublishBuild {
+	out := DoctorPublishBuild{Version: build.Version, Platform: build.Platform, Mode: build.Mode, ManifestRev: build.ManifestRev}
+	switch {
+	case build.Stopped:
+		out.State, out.StoppedAtMS, out.Notice, out.Reason = "stopped", build.StoppedAtMS, build.Notice, build.StopReason
+	case !build.Covered:
+		out.State, out.Reason = "candidate", build.candidateReason()
+	case build.ExactLevel == "tested":
+		out.State = "tested"
+	case build.Confirmed == PublishBuildConfirmations:
+		out.State = "seen"
+	default:
+		out.State, out.Confirmed = "trusted", build.Confirmed
+	}
+	return out
 }
 
 func readDoctorPublish(ctx context.Context, tx Tx, adapter string, day, now time.Time, out *DoctorPublishState) error {

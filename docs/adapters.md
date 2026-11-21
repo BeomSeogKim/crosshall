@@ -49,15 +49,15 @@ Antigravity's adapter handles the CLI's `SessionStart` with a single workspace a
 
 ## The turn-end check
 
-An adapter only checks the turn-end rule; it does not replace it. When a turn ends while a request addressed to the session is unread, the adapter continues that turn once with the `[crosshall] pending:` line. It does so only if the check is available for this build and mode. Claude Code receives the line as Stop hook context. On Codex the check is unavailable in this release, because a stock Codex session cannot be verified. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. `crosshall owner doctor` shows per adapter whether the turn-end notice is available, and how many continuations it committed today. It is available only when three things hold. The owner has imported tested evidence for that exact build and mode, recorded by a conformance run that observed the continuation. The adapter policy is on. The running session's build and mode can be verified.
+When a turn ends with an unread request, a supported adapter continues that turn once with the `[crosshall] pending:` line. Claude Code receives the line as Stop hook context. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. The binary ships tested evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The adapter must be enabled, the running build and mode must be verified, and the session must match the evidence. Stock Codex sessions cannot be verified for this check.
 
-To make the check available for Claude Code, work from the release checkout with `claude` and Go on PATH. Print mode (`claude -p`) and interactive sessions are separate modes with separate evidence, so do this for each mode you use:
+To record evidence for another Claude Code profile, work from the release checkout with `claude` and Go on PATH. Print mode (`claude -p`) and interactive sessions use separate evidence.
 1. Create an output directory outside your home and resolve its physical path, so it contains no symbolic link: `out="$(cd "$(mktemp -d)" && pwd -P)"`.
 2. Run `CROSSHALL_CONFORMANCE_OUT="$out" go test -tags conformance -count=1 -run '^TestClaudeCodeTurnEndConformance$' ./test/conformance` for print mode, or the same command with `'^TestClaudeCodeInteractiveTurnEndConformance$'` for interactive sessions. The run uses temporary homes and a local stand-in for the model, so it makes no billed requests. The interactive run starts a real `claude` on a pseudo-terminal of its own and types into it; it opens no window and touches no session of yours.
 3. Import the file it writes to `"$out"` with `crosshall owner adapter evidence <file>`.
 4. Turn the adapter on with `crosshall owner adapter set claude --enabled on`.
 
-`crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations. Evidence belongs to one hook manifest revision: after an upgrade that changes it (`claude-2` in this release), run the conformance test again and import the new file.
+`crosshall owner doctor` lists tested turn-end evidence and reports availability for current sessions, including the source version when they inherit evidence. Its count measures committed continuation claims. Evidence covers the same vendor, platform, mode and manifest revision. An exact-version entry takes precedence, so an exact `candidate` or `unavailable` entry keeps the check off for that build. If the vendor's hook callback format changes and requires a new manifest revision, run the conformance test again and import its evidence.
 
 In an interactive session the check also covers a turn whose prompt was typed ahead, while the turn before it was still running. Stock Codex sessions cannot be verified, so the check stays unavailable for them.
 
@@ -75,11 +75,11 @@ With an adapter's hooks installed, the hall can tell a session about new work wi
 
 An idle session starts a turn for it; a busy one takes it as its own turn after the current one. The session runs `crosshall read`, which picks the work up. The notice carries message IDs only, never a body or a peer's words. Claude Code (seen on 2.1.329) shows it to the person as a message from another session, inside its own wrapper paragraph.
 
-**In this release no profile is listed as tested, so no route publishes.** Every session with a route shows `publish: candidate` and stays on pull and the prompt line. The sender is built only for Claude Code; Codex and Antigravity have none.
+The binary ships tested publish evidence for Claude Code 2.1.330 on macOS arm64 in interactive mode with manifest `claude-2`. Uncovered sessions stay on pull and the prompt line. The sender is available for Claude Code.
 
 A route publishes when all of these hold:
 
-1. The session's launch is verified and current, and its exact profile (agent version, platform, mode, hook manifest revision) is listed as tested for publish. [CONFORMANCE.md](../CONFORMANCE.md#publish-profiles) says what that takes.
+1. The session's launch is verified and current. Tested evidence covers its vendor, platform, mode and manifest revision. Exact-version evidence overrides inherited evidence. [Conformance](../CONFORMANCE.md#publish-profiles)
 2. The dispatcher proved the route: it connected to the reported socket without writing and read, from the operating system, that the listener is the session's own process.
 3. The route was activated. Only messages stored after that moment are offered, so a backlog never arrives as a burst.
 4. No switch is off, the session is not in bypass permission mode, and the route is not suspended, capped or held.
@@ -98,14 +98,14 @@ What the owner controls:
 | `crosshall owner publish hall on\|off` | Notices for the whole hall |
 | `crosshall owner adapter set <adapter> --publish on\|off\|default` | Notices for one agent kind |
 | `crosshall owner publish member <binding-id> on\|off\|default` | Notices for one member; this switch beats the adapter's, which beats the hall's |
-| `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension |
+| `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension and any stop of its current build |
 
-`crosshall owner who --all` and `crosshall owner doctor` show each member's state with its reason, for example `publish: candidate (profile not tested)`, `publish: held: notice 4 unobserved since 14:02` or `publish: off (turned off by the owner for the hall)`. Doctor also counts the day's notices per adapter: submitted, uncertain, not submitted, and how they were observed.
+`crosshall owner who --all` and `crosshall owner doctor` show each member's reason. Doctor also shows the publish status of each live build and the day's notice outcomes per adapter.
 
 The hall stops by itself, toward pull, in these cases:
 
 - **Held.** A notice was written but the session's hook has not reported it. Nothing more is sent to that session until the notice is observed or the session's process ends. A timeout frees nothing.
-- **Suspended.** A notice landed inside a turn the person had started, or the hall could not tell that it did not; a third notice in a row could not be submitted; or the session runs an agent version that is not in the tested list. A suspension lasts 30 minutes; the third one in a launch lasts until the launch ends. The state line says when it lifts, and `crosshall owner publish resume` lifts it at once, except for an untested version.
+- **Suspended.** An absorbed or unknown notice suspends its launch. So do three consecutive failed submissions. A suspension lasts 30 minutes, and the third suspension in a launch lasts until it ends. For a version inheriting tested evidence, an absorbed or unknown notice before the first three own-turn receipts also stops publish for that build. Resume lifts the build stop and keeps the confirmation count. A newer tested evidence import for the exact version also lifts the build stop.
 - **Capped.** A member gets at most 30 notices an hour.
 
 A notice is an offer, not a delivery: the message is already stored, and a notice that is lost or ignored leaves it unread for `crosshall read`, the prompt line or a wait.

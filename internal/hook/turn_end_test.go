@@ -43,6 +43,7 @@ func TestTurnEndEnvelopesContainOnlyPendingIDs(t *testing.T) {
 func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 	for _, tc := range []struct {
 		name, event, flag, outcome string
+		listedVersion              string
 		unknown, off, offline      bool
 		calls                      int
 		want, active, output       bool
@@ -50,9 +51,10 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 		oldEpoch, unlisted         bool
 	}{
 		{name: "available", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true},
+		{name: "another version in snapshot", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, listedVersion: "2.0.0"},
 		{name: "continued elsewhere", event: "Stop", flag: `,"stop_hook_active":true`, outcome: "clean", calls: 1, active: true},
 		{name: "missing flag", event: "Stop", outcome: "clean", calls: 1},
-		{name: "check unavailable for this build", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1, unlisted: true},
+		{name: "no tested profile in snapshot", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1, unlisted: true},
 		{name: "wrong flag type", event: "Stop", flag: `,"stop_hook_active":"false"`, outcome: "clean", calls: 1},
 		{name: "duplicate flag", event: "Stop", flag: `,"stop_hook_active":true,"stop_hook_active":false`, outcome: "clean", calls: 1},
 		{name: "failure Stop", event: "StopFailure", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1},
@@ -81,7 +83,11 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !tc.unlisted {
-				listed := "claude 2.1.327 " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-2\n"
+				version := tc.listedVersion
+				if version == "" {
+					version = "2.1.327"
+				}
+				listed := "claude " + version + " " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-2\n"
 				if err := os.WriteFile(filepath.Join(dir, "turn_end"), []byte(listed), 0600); err != nil {
 					t.Fatal(err)
 				}

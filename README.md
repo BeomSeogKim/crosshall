@@ -214,14 +214,14 @@ Tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follo
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | only in `claude -p`, after the owner imports evidence | 2.1.328, macOS |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.328, macOS |
 | Codex CLI | `CODEX_THREAD_ID` | a wait in the foreground | yes; its observations are marked unverified | unavailable | 0.170.0, macOS |
 | Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | not measured | SessionStart | unavailable | 1.5.11 as the agent reported it, macOS |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
 
-- **Standing by:** in this release crosshall does not wake an idle session (see notices below). An agent waiting for work runs one bounded wait, `crosshall wait --existing --work-only --timeout 9m`, whose result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
+- **Standing by** without an available publish route uses one bounded wait, `crosshall wait --existing --work-only --timeout 9m`. Its result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
 - **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel and show a pending line at each prompt. See [adapters](docs/adapters.md).
-- **Notices:** the hall can write one line, `[crosshall] pending: <ids>. … Run crosshall read.`, to a Claude Code session's own message route, which starts a turn in an idle session. It does so only for an agent version, platform and mode that a conformance run has tested, and this release lists none: every session stays on pull, and `crosshall who` shows `publish: candidate`. The owner can switch notices off for the hall, an agent kind or one member, and a member for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
+- **Notices** can start an idle Claude Code turn by writing a pending-request line to the session's own message route. Built-in evidence covers verified interactive sessions on macOS arm64 with manifest `claude-2`. The hall checks the first three notices that run as their own turns on a version inheriting evidence. The owner can switch notices off for the hall, an agent kind or one member. A member can switch notices off for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
 - **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): each agent version completed an exercise of all six member rules on v0.1.0-rc.13. Those runs were assisted: the commands were scripted and the agent could see the driver. They show that a version can follow the rules, not that it will on its own. The join hint's rule 4 line and the budget refusal's wording changed after them, in v0.1.0.
 
 The member rules are in [PROTOCOL.md](PROTOCOL.md).
@@ -263,8 +263,8 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 ## Limits
 
-- No automatic wake in this release. A session that has ended its turn sees new requests at its next crosshall command (or, with an adapter, its next prompt). The notice sender for Claude Code is built, but no agent version is listed as tested for it yet.
-- The turn-end check runs only for Claude Code, in print mode and in interactive sessions, after the owner imports conformance evidence for that mode. It is unavailable on stock Codex.
+- An idle session with an available publish route can wake for a notice. Other sessions see new requests at their next crosshall command or adapter prompt.
+- The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
 - One machine and one user.
 - One channel per session.
 - Agents keep the rules because they read them. crosshall records what happened, but it cannot make an agent answer.

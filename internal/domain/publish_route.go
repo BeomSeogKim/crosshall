@@ -110,7 +110,10 @@ func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoc
 		state = excluded.state,
 		reason = excluded.reason,
 		registered_at_ms = excluded.registered_at_ms,
-		updated_at_ms = excluded.updated_at_ms
+		updated_at_ms = excluded.updated_at_ms,
+		start_socket = NULL,
+		socket_attach = NULL,
+		socket_attach_at_ms = NULL
 	WHERE excluded.binding_epoch > publish_route.binding_epoch
 	   OR (excluded.binding_epoch = publish_route.binding_epoch AND excluded.registered_at_ms >= publish_route.registered_at_ms)`,
 		bindingID, principal, bindingEpoch, adapter, sessionRef, launchRef,
@@ -230,7 +233,12 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 		return hookUsage("invalid hook.route arguments"), nil
 	}
 	if a, ok := publish.Lookup(cmd.Adapter); cmd.SocketPath != "" && (!ok || !a.AcceptsSocket(cmd.SocketPath)) {
-		return Refuse("", "socket path is outside the vendor's socket directory", "use the session's vendor socket path"), nil
+		if cmd.PermissionMode == "" {
+			return Refuse("", "socket path is outside the vendor's socket directory", "use the session's vendor socket path"), nil
+		}
+		// The path is never stored, but the report's mode still applies: a
+		// switch into a mode that stops publishing must not be lost with it.
+		cmd.SocketPath, cmd.Start = "", false
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
 	if open, err := policyOpen(ctx, tx, cmd.Adapter, cmd.Epoch); err != nil || !open {

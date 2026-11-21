@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"testing"
@@ -269,7 +270,7 @@ func TestPublishRouteFencesSecondMemberLeafAndBadSocketPathWithoutDroppingEnroll
 	}
 	for _, bad := range badPaths {
 		r := f.exec(f.caller(s3), Request{
-			Command:    claudeRoute("pid-3", "bad-"+bad, bad, "default", t0+4_000, 1),
+			Command:    claudeRoute("pid-3", "bad-"+bad, bad, "", t0+4_000, 1),
 			Vendor:     s3.vendor,
 			SessionKey: s3.key,
 			OpKey:      "hook:claude:pid-3:bad-" + bad,
@@ -545,5 +546,65 @@ func TestPublishRouteTakesTheSocketFromALaterCallback(t *testing.T) {
 	}
 	if socket, startSocket, attach := recorded(); socket != "/tmp/cc-socks/2.sock" || startSocket != "seen" || attach != "start" {
 		t.Fatalf("another path from a start: socket %q start_socket %q attach %q", socket, startSocket, attach)
+	}
+}
+
+// #180: a turn's report carries the socket and the mode together; a socket
+// path that is not accepted is dropped, but a mode that stops publishing
+// still applies.
+func TestPublishRouteAppliesTheModeOfAReportWithABadSocket(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	bid := bindingIDOf(t, f, f.principalOf(s))
+	wantOK(t, f.exec(f.caller(s), Request{Command: claudeRoute("pid-1", "start", "/tmp/cc-socks/1.sock", "default", t0, 1),
+		Vendor: s.vendor, SessionKey: s.key, OpKey: "hook:route:claude:pid-1:start"}))
+	if _, _, _, _, state, _, _ := routeState(t, f, bid); state != "active" {
+		t.Fatalf("the route did not start active: %q", state)
+	}
+	wantOK(t, f.exec(f.caller(s), Request{Command: claudeRoute("pid-1", "bypass", "/etc/passwd", "bypassPermissions", t0+1_000, 1),
+		Vendor: s.vendor, SessionKey: s.key, OpKey: "hook:route:claude:pid-1:bypass"}))
+	_, _, _, mode, state, reason, _ := routeState(t, f, bid)
+	var socket string
+	if err := f.db.QueryRow(`SELECT socket_path FROM publish_route WHERE binding_id = ?`, bid).Scan(&socket); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "bypassPermissions" || state != "invalidated" || reason != "bypass mode" || socket != "/tmp/cc-socks/1.sock" {
+		t.Fatalf("after a bypass report with a bad socket: mode %q state %q reason %q socket %q", mode, state, reason, socket)
+	}
+}
+
+// #180: a new registration of the route (a resume or a clear) starts its
+// socket record over; reports on the same route keep it.
+func TestPublishRouteRegistrationResetsTheSocketRecord(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	bid := bindingIDOf(t, f, f.principalOf(s))
+	report := func(ref, socket string, at int64, fromStart bool) {
+		t.Helper()
+		cmd := claudeRoute("pid-1", ref, socket, "default", at, 1)
+		cmd.Start = fromStart
+		wantOK(t, f.exec(f.caller(s), Request{Command: cmd, Vendor: s.vendor, SessionKey: s.key, OpKey: "hook:route:claude:pid-1:" + ref}))
+	}
+	record := func() (startSocket, attach sql.NullString, at sql.NullInt64) {
+		t.Helper()
+		if err := f.db.QueryRow(`SELECT start_socket, socket_attach, socket_attach_at_ms FROM publish_route WHERE binding_id = ?`, bid).
+			Scan(&startSocket, &attach, &at); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	report("start", "", t0, true)
+	report("prompt", "/tmp/cc-socks/1.sock", t0+1_000, false)
+	report("prompt-2", "/tmp/cc-socks/1.sock", t0+2_000, false)
+	if startSocket, attach, at := record(); startSocket.String != "missing" || attach.String != "same" || !at.Valid {
+		t.Fatalf("same-route reports: start_socket %v attach %v at %v", startSocket, attach, at)
+	}
+	f.hook(s, start("pid-1", "resume", t0+3_000))
+	if startSocket, attach, at := record(); startSocket.Valid || attach.Valid || at.Valid {
+		t.Fatalf("a new registration kept start_socket %v attach %v at %v", startSocket, attach, at)
 	}
 }

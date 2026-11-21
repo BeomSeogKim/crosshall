@@ -96,7 +96,7 @@ func TestInstallingHooksKeepsAnOffSetOnAFreshHall(t *testing.T) {
 		f.owner().must("owner", "channel", "auto", "off")
 		code, out := f.inTerminal(f.env, "y\n", nil, "setup")
 		if code != 0 || !strings.Contains(out, "claude: installed") ||
-			strings.Count(out, "Installing turns on automatic joining for this hall, unless you already set it") != 1 {
+			strings.Count(out, "You turned automatic joining off, so a repository without a channel gets none. On: crosshall owner channel auto on") != 1 {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 		if enabled(f) != 0 {

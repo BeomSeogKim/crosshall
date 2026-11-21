@@ -39,9 +39,10 @@ type VendorPlan struct {
 	Recovery     bool           `json:"recovery,omitempty"`
 	Err          error          `json:"-"`
 
-	op      operation
-	journal journal
-	digest  string
+	op         operation
+	journal    journal
+	digest     string
+	disclosure installDisclosure
 }
 
 // PendingScopeError reports the recorded scope before any recovery proceeds.
@@ -213,6 +214,7 @@ func newVendorPlan(op operation, targets []installTarget, j journal, digest stri
 	p := VendorPlan{
 		Action: op.Action, Adapters: view.Adapters, Files: view.Files,
 		Retained: view.Retained, Resume: resume, op: op, journal: j, digest: digest,
+		disclosure: view.disclosure,
 	}
 	if len(op.Adapters) == 1 {
 		p.Adapter = op.Adapters[0]
@@ -261,7 +263,7 @@ func recordedPlanPath(j journal, adapter string) string {
 // RenderVendorPlan writes the hook and approval preview for a prepared plan.
 func RenderVendorPlan(w io.Writer, p VendorPlan) error {
 	return printPlan(w, plan{Kind: p.Action, Adapters: p.Adapters, Files: p.Files,
-		Retained: p.Retained, Resume: p.Resume, Recovery: p.Recovery})
+		Retained: p.Retained, Resume: p.Resume, Recovery: p.Recovery, disclosure: p.disclosure})
 }
 
 // Install applies a confirmed plan. A resume always keeps the recorded rules.

@@ -19,6 +19,11 @@ type InstallSpec struct {
 	Matchers map[string]string `json:"matchers"`
 }
 
+// RoutineMemberVerbs defines which commands setup can grant to an adapter.
+func RoutineMemberVerbs() []string {
+	return []string{"ask", "inbox", "join", "leave", "log", "note", "read", "reply", "status", "wait", "waiting", "who"}
+}
+
 // InstallSpecs returns the installation descriptions in adapter order.
 func InstallSpecs() []InstallSpec {
 	files, _ := manifests.FS.ReadDir(".")

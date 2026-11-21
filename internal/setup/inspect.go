@@ -97,11 +97,11 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 		if path != record.Path || current.DirIdentity != record.Latest.Dir {
 			status.Drifted += len(record.Entries)
 		} else {
-			_, kept, err := removeEntries(current.Bytes, record.Entries)
+			_, removed, _, err := removeEntries(current.Bytes, record.Entries)
 			if err != nil {
 				return err
 			}
-			status.Drifted += len(kept)
+			status.Drifted += len(record.Entries) - len(removed)
 		}
 	}
 	switch {

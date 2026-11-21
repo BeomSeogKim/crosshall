@@ -16,14 +16,15 @@ import (
 )
 
 type installTarget struct {
-	Spec       hook.InstallSpec
-	StateRoot  string
-	Path       string
-	PathSource string
-	Current    fileSnapshot
-	Build      build
-	Wanted     []Entry
-	Evidence   []store.DoctorEvidence
+	Spec         hook.InstallSpec
+	StateRoot    string
+	Path         string
+	PathSource   string
+	Current      fileSnapshot
+	Build        build
+	Wanted       []Entry
+	Evidence     []store.DoctorEvidence
+	CommandRules *commandRuleTarget
 }
 
 func verifyHome(home string) error {
@@ -72,11 +73,6 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 	if old.Path != "" && old.Path != target.Path {
 		return target, fmt.Errorf("%s has journal entries in another configuration home (%q); resolved %q", spec.Adapter, old.Path, target.Path)
 	}
-	for _, retained := range j.Retained {
-		if retained.Adapter == spec.Adapter && retained.Path != target.Path {
-			return target, fmt.Errorf("%s has retained hooks to inspect in another configuration home (%q); resolved %q", spec.Adapter, retained.Path, target.Path)
-		}
-	}
 	current, err := readConfig(target.Path)
 	if err != nil {
 		return target, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
@@ -105,6 +101,15 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 		}
 	}
 	target.Current, target.Build, target.Wanted = current, b, wanted
+	if err := s.preflightCommandRules(&target, j); err != nil {
+		return target, fmt.Errorf("%s command rules: %w", spec.Adapter, err)
+	}
+	for _, retained := range j.Retained {
+		if retained.Adapter == spec.Adapter && retained.Path != target.Path &&
+			(target.CommandRules == nil || retained.Path != target.CommandRules.Location.Path) {
+			return target, fmt.Errorf("%s has retained settings to inspect in another configuration home (%q); resolved hooks to %q", spec.Adapter, retained.Path, target.Path)
+		}
+	}
 	return target, nil
 }
 
@@ -149,89 +154,109 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 	}
 }
 
-func makeInstall(j journal, targets []installTarget, read, send bool) (operation, error) {
+func makeInstall(j journal, targets []installTarget) (operation, error) {
 	op := operation{Action: "setup", Builds: make(map[string]build)}
 	for _, target := range targets {
 		adapter := target.Spec.Adapter
 		op.Adapters = append(op.Adapters, adapter)
 		op.Builds[adapter] = target.Build
 		record, known := j.Files[adapter]
-		base := target.Current.Bytes
-		var restore [][]span
-		var remove []Entry
-		if adapter == "codex" {
-			var migrate bool
-			var err error
-			base, migrate, err = codexInstallBase(target, record)
-			if err != nil {
-				return operation{}, err
-			}
-			if migrate {
-				restore, remove = record.Undo, record.Entries
-			}
-		}
-		if len(restore) > 0 {
-			record.Undo, record.Entries = nil, nil
-		} else if known && adapter != "agy" {
-			entries, err := checkHookRelocation(target, record.Entries)
-			if err != nil {
-				return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
-			}
-			record.Entries = entries
-		}
-		wanted := target.Wanted
-		if adapter == "claude" && (read || send) {
-			wanted = slices.Clone(wanted)
-			if read {
-				wanted = append(wanted, claudeRules(false)...)
-			}
-			if send {
-				wanted = append(wanted, claudeRules(true)...)
-			}
-		}
-		updated, added, err := addEntries(base, wanted)
+		e, err := planJSONInstall(target, record, known, false)
 		if err != nil {
 			return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
 		}
-		if len(updated) > maxConfigBytes {
-			return operation{}, fmt.Errorf("%s configuration would exceed the %d-byte limit", adapter, maxConfigBytes)
-		}
-		before := stamp(target.Current)
-		if known && before != record.Latest {
-			// An owner edit invalidates exact restoration even when setup
-			// adds no hooks and only refreshes the cached vendor build.
-			record.Undo = nil
-		}
-		if len(added) == 0 && len(restore) == 0 {
-			e := edit{Adapter: adapter, Path: target.Path, Before: before, After: before}
-			if known {
-				e.Record = &record
+		op.Edits = append(op.Edits, e)
+		if rules := target.CommandRules; rules != nil {
+			if rules.Skipped != nil {
+				op.Retained = append(op.Retained, *rules.Skipped)
+				continue
+			}
+			record, known := j.RuleFiles[adapter]
+			if rules.Text != "" {
+				e, err = planTextRuleInstall(adapter, *rules, record, known)
+			} else {
+				extra := installTarget{Spec: target.Spec, Path: rules.Location.Path, Current: rules.Current, Wanted: rules.Entries}
+				e, err = planJSONInstall(extra, record, known, true)
+			}
+			if err != nil {
+				return operation{}, fmt.Errorf("%s command rules: %w", adapter, err)
 			}
 			op.Edits = append(op.Edits, e)
-			continue
 		}
-		after := fingerprint{Exists: true, Hash: sum(updated), Mode: 0600, Dir: before.Dir}
-		if before.Exists {
-			after.Mode = before.Mode
-		}
-		if !known {
-			record = ownedFile{Path: target.Path, Original: before}
-		}
-		if !known || len(record.Undo) > 0 || len(restore) > 0 {
-			inverse, err := insertionSpans(base, updated)
-			if err != nil {
-				return operation{}, err
-			}
-			record.Undo = append(slices.Clone(record.Undo), inverse)
-		}
-		record.Entries = append(slices.Clone(record.Entries), remainingEntries(added, record.Entries)...)
-		record.Latest = after
-		op.Edits = append(op.Edits, edit{
-			Adapter: adapter, Path: target.Path, Before: before, After: after,
-			Add: added, Remove: remove, Restore: restore, Record: &record,
-		})
 	}
 	return op, nil
+}
+
+func planJSONInstall(target installTarget, record ownedFile, known, rules bool) (edit, error) {
+	adapter := target.Spec.Adapter
+	base := target.Current.Bytes
+	var restore [][]span
+	var remove []Entry
+	if adapter == "codex" && !rules {
+		var migrate bool
+		var err error
+		base, migrate, err = codexInstallBase(target, record)
+		if err != nil {
+			return edit{}, err
+		}
+		if migrate {
+			restore, remove = record.Undo, record.Entries
+		}
+	}
+	if len(restore) > 0 {
+		record.Undo, record.Entries = nil, nil
+	} else if known && adapter != "agy" && !rules {
+		entries, err := checkHookRelocation(target, record.Entries)
+		if err != nil {
+			return edit{}, err
+		}
+		record.Entries = entries
+	}
+	if known && (adapter == "claude" || rules) {
+		if err := checkCommandRuleRelocation(target, record.Entries); err != nil {
+			return edit{}, err
+		}
+	}
+	updated, added, err := addEntries(base, target.Wanted)
+	if err != nil {
+		return edit{}, err
+	}
+	if len(updated) > maxConfigBytes {
+		return edit{}, fmt.Errorf("configuration would exceed the %d-byte limit", maxConfigBytes)
+	}
+	before := stamp(target.Current)
+	if known && before != record.Latest {
+		// An owner edit invalidates exact restoration even when setup
+		// adds no hooks and only refreshes the cached vendor build.
+		record.Undo = nil
+	}
+	if len(added) == 0 && len(restore) == 0 {
+		e := edit{Adapter: adapter, Rules: rules, Path: target.Path, Before: before, After: before}
+		if known {
+			e.Record = &record
+		}
+		return e, nil
+	}
+	after := fingerprint{Exists: true, Hash: sum(updated), Mode: 0600, Dir: before.Dir}
+	if before.Exists {
+		after.Mode = before.Mode
+	}
+	if !known {
+		record = ownedFile{Path: target.Path, Original: before}
+	}
+	if !known || len(record.Undo) > 0 || len(restore) > 0 {
+		inverse, err := insertionSpans(base, updated)
+		if err != nil {
+			return edit{}, err
+		}
+		record.Undo = append(slices.Clone(record.Undo), inverse)
+	}
+	record.Entries = append(slices.Clone(record.Entries), remainingEntries(added, record.Entries)...)
+	record.Latest = after
+	return edit{
+		Adapter: adapter, Rules: rules, Path: target.Path, Before: before, After: after,
+		Add: added, Remove: remove, Restore: restore, Record: &record,
+	}, nil
 }
 
 // Setup never adds a relocated executable beside one it already installed.
@@ -322,9 +347,11 @@ func makeUninstall(j journal) operation {
 	for _, spec := range hook.InstallSpecs() {
 		addRemoval(&op, spec, j)
 	}
-	for adapter, record := range j.Files {
-		if !slices.Contains(op.Adapters, adapter) {
-			op.Retained = append(op.Retained, retainedFile{adapter, record.Path, "unknown adapter in install journal"})
+	for _, files := range []map[string]ownedFile{j.Files, j.RuleFiles} {
+		for adapter, record := range files {
+			if !slices.Contains(op.Adapters, adapter) {
+				op.Retained = append(op.Retained, retainedFile{adapter, record.Path, "unknown adapter in install journal"})
+			}
 		}
 	}
 	return op
@@ -332,11 +359,16 @@ func makeUninstall(j journal) operation {
 
 func addRemoval(op *operation, spec hook.InstallSpec, j journal) {
 	op.Adapters = append(op.Adapters, spec.Adapter)
-	record, ok := j.Files[spec.Adapter]
-	if !ok {
-		return
+	if record, ok := j.RuleFiles[spec.Adapter]; ok {
+		addFileRemoval(op, spec, record, true)
 	}
-	e, err := planRemoval(spec, record)
+	if record, ok := j.Files[spec.Adapter]; ok {
+		addFileRemoval(op, spec, record, false)
+	}
+}
+
+func addFileRemoval(op *operation, spec hook.InstallSpec, record ownedFile, rules bool) {
+	e, err := planRemoval(spec, record, rules)
 	if err != nil {
 		op.Retained = append(op.Retained, retainedFile{spec.Adapter, record.Path, err.Error()})
 		return
@@ -344,15 +376,16 @@ func addRemoval(op *operation, spec hook.InstallSpec, j journal) {
 	op.Edits = append(op.Edits, e)
 }
 
-func planRemoval(spec hook.InstallSpec, record ownedFile) (edit, error) {
-	home, path, err := configPath(spec)
+func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, error) {
+	location, err := resolveEditPath(spec, rules)
 	if err != nil {
 		return edit{}, err
 	}
+	path := location.Path
 	if path != record.Path {
 		return edit{}, fmt.Errorf("journal belongs to another configuration home (%q); resolved %q", record.Path, path)
 	}
-	if err := verifyHome(home); err != nil {
+	if err := verifyHome(location.Home); err != nil {
 		return edit{}, err
 	}
 	current, err := readConfig(path)
@@ -362,22 +395,28 @@ func planRemoval(spec hook.InstallSpec, record ownedFile) (edit, error) {
 	if current.DirIdentity != record.Latest.Dir {
 		return edit{}, errors.New("configuration directory has changed since installation")
 	}
-	e := edit{Adapter: spec.Adapter, Path: path, Before: stamp(current), After: stamp(current)}
+	e := edit{Adapter: spec.Adapter, Rules: rules, Path: path, Before: stamp(current), After: stamp(current)}
+	if rules && spec.Adapter == "codex" {
+		return planTextRuleRemoval(e, current, record)
+	}
 	if len(record.Undo) > 0 && e.Before == record.Latest {
 		e.Remove, e.Restore = record.Entries, record.Undo
 		e.After.Exists, e.After.Mode = record.Original.Exists, record.Original.Mode
 		e.After.Hash, e.After.File = record.Original.Hash, ""
-		if spec.Adapter == "agy" && !e.After.Exists {
+		if e.ownsDirectories() && !e.After.Exists {
 			e.CleanupDirs = record.Dirs
 		}
 		return e, nil
 	}
-	updated, kept, err := removeEntries(current.Bytes, record.Entries)
+	// Removing $defaults while leaving the list would discard Claude's
+	// built-in rules. The byte-exact path above restores an absent list.
+	claims := slices.DeleteFunc(slices.Clone(record.Entries), isClaudeAutoModeDefaults)
+	updated, removed, kept, err := removeEntries(current.Bytes, claims)
 	if err != nil {
 		return edit{}, err
 	}
 	e.Kept = kept
-	e.Remove = remainingEntries(record.Entries, kept)
+	e.Remove = removed
 	if len(e.Remove) != 0 {
 		e.After.Hash, e.After.File = sum(updated), ""
 	}
@@ -392,7 +431,7 @@ func remainingEntries(entries, kept []Entry) []Entry {
 	var removed []Entry
 	for _, e := range entries {
 		if !slices.ContainsFunc(kept, func(k Entry) bool {
-			return k.Event == e.Event && k.Group == e.Group && string(k.Value) == string(e.Value)
+			return k.Event == e.Event && k.Group == e.Group && k.AutoMode == e.AutoMode && string(k.Value) == string(e.Value)
 		}) {
 			removed = append(removed, e)
 		}
@@ -427,14 +466,14 @@ func verifyTargets(op operation) error {
 			if spec.Adapter != e.Adapter {
 				continue
 			}
-			home, selected, err := configPath(spec)
+			location, err := resolveEditPath(spec, e.Rules)
 			if err != nil {
 				return err
 			}
-			if selected != e.Path {
-				return fmt.Errorf("%s pending plan belongs to another configuration home (%q); resolved %q", spec.Adapter, e.Path, selected)
+			if location.Path != e.Path {
+				return fmt.Errorf("%s pending plan belongs to another configuration home (%q); resolved %q", spec.Adapter, e.Path, location.Path)
 			}
-			if err := verifyHome(home); err != nil {
+			if err := verifyHome(location.Home); err != nil {
 				return err
 			}
 			found = true

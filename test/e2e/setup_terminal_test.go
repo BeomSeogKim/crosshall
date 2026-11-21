@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +47,10 @@ func TestSetupAsksForOneConsentInATerminal(t *testing.T) {
 	for _, want := range []string{
 		"Claude Code hooks in " + f.paths["claude"] + " (from CLAUDE_CONFIG_DIR)",
 		"Codex hooks in " + f.paths["codex"] + " (from CODEX_HOME)",
-		"Install the listed hooks? [y/N]",
+		fmt.Sprintf(`host_executable(name="crosshall", paths=[%q])`, f.executable),
+		`prefix_rule(pattern=["crosshall", "read"], decision="allow")`,
+		"Rules for the bare command crosshall trust the agent's PATH",
+		"Install the listed hooks and command rules? [y/N]",
 		"claude: installed", "codex: installed",
 	} {
 		if !strings.Contains(out, want) {
@@ -57,8 +61,9 @@ func TestSetupAsksForOneConsentInATerminal(t *testing.T) {
 		t.Fatalf("expected one consent:\n%s", out)
 	}
 	claude := readSetupFile(t, f.paths["claude"]).bytes
-	if !bytes.Contains(claude, []byte(`"permissions": {"allow":["Bash(existing)"]}`)) ||
-		bytes.Contains(claude, []byte("Bash(crosshall")) {
+	if !bytes.Contains(claude, []byte(`"permissions": {"allow":["Bash(existing)",`)) ||
+		!bytes.Contains(claude, []byte("Bash(crosshall read:*)")) ||
+		bytes.Contains(claude, []byte("Bash(crosshall run:*)")) {
 		t.Fatalf("claude settings: %s", claude)
 	}
 	if codex := readSetupFile(t, f.paths["codex"]).bytes; !bytes.Contains(codex, []byte("hook codex SessionStart")) {
@@ -91,7 +96,7 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 				"CROSSHALL_TEST_PATH_RECEIPT="+receipt, "CROSSHALL_TEST_READY_RECEIPT="+ready, "CROSSHALL_TEST_BINARY="+f.executable)
 			f.executable = wrapper
 			code, out := f.inTerminal(env, tc.input, nil, "setup", "--offer")
-			if code != 0 || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Apply the shown PATH change and install the listed hooks? [y/N]") {
+			if code != 0 || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Apply the shown PATH change and install the listed hooks and command rules? [y/N]") {
 				t.Fatalf("offer exit %d:\n%s", code, out)
 			}
 			if data, err := os.ReadFile(receipt); err != nil || string(data) != tc.receipt {
@@ -125,7 +130,7 @@ func TestManualSetupDeclineKeepsTheInstallerOffer(t *testing.T) {
 		t.Fatalf("manual decline created setup state: %v", err)
 	}
 	if code, out := f.inTerminal(f.env, "\n", nil, "setup", "--offer"); code != 0 ||
-		strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the listed hooks?") {
+		strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the listed hooks and command rules?") {
 		t.Fatalf("installer offer after manual decline exited %d:\n%s", code, out)
 	}
 }

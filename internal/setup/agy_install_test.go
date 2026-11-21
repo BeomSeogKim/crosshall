@@ -60,7 +60,7 @@ func TestAgySetupOwnsOnlyItsNamedSessionStartGroup(t *testing.T) {
 			selected := []string{"agy"}
 			plans, err := s.PlanInstall(ctx, selected)
 			plan := requireAgyPlan(t, plans, err)
-			if plan.Path != target || plan.PathSource != "default" || plan.Name != "Antigravity" || len(plan.Approvals) != 0 {
+			if plan.Path != target || plan.PathSource != "default" || plan.Name != "Antigravity" || len(plan.Files) != 2 {
 				t.Fatalf("install preview = %+v", plan)
 			}
 			if test.before == "" {
@@ -69,7 +69,7 @@ func TestAgySetupOwnsOnlyItsNamedSessionStartGroup(t *testing.T) {
 				}
 			}
 			f.CheckTargets(t)
-			if err := s.Install(ctx, plan, ClaudeRules{}); err != nil {
+			if err := s.Install(ctx, plan); err != nil {
 				t.Fatal(err)
 			}
 			installed := configBytes(t, target)
@@ -195,7 +195,7 @@ func TestAgySetupResumesAfterCreatingOnlyTheFirstDirectory(t *testing.T) {
 		t.Fatalf("partial directory creation did not allow recovery: %+v", resume)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, resume, ClaudeRules{}); err != nil {
+	if err := s.Install(ctx, resume); err != nil {
 		t.Fatal(err)
 	}
 	if status := readAdapterStatuses(t, f, s.Executable)[2]; status.Install != "installed" || !status.Owned {
@@ -234,7 +234,7 @@ func TestAgyUninstallRetainsUnownedAndNonemptyDirectories(t *testing.T) {
 				}
 			}
 			plans, err := s.PlanInstall(ctx, selected)
-			if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+			if err := s.Install(ctx, requireAgyPlan(t, plans, err)); err != nil {
 				t.Fatal(err)
 			}
 			if test.addedFile != "" {
@@ -264,7 +264,7 @@ func TestAgyUninstallResumesAfterRemovingOnlyTheConfigDirectory(t *testing.T) {
 	selected := []string{"agy"}
 	f.CheckTargets(t)
 	plans, err := s.PlanInstall(ctx, selected)
-	if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+	if err := s.Install(ctx, requireAgyPlan(t, plans, err)); err != nil {
 		t.Fatal(err)
 	}
 	plans, err = s.PlanUninstall(ctx, selected)
@@ -390,7 +390,7 @@ func TestAgyUninstallRetriesBusyOwnedDirectory(t *testing.T) {
 	selected := []string{"agy"}
 	f.CheckTargets(t)
 	plans, err := s.PlanInstall(ctx, selected)
-	if err := s.Install(ctx, requireAgyPlan(t, plans, err), ClaudeRules{}); err != nil {
+	if err := s.Install(ctx, requireAgyPlan(t, plans, err)); err != nil {
 		t.Fatal(err)
 	}
 	parent := filepath.Join(f.Home, ".gemini")

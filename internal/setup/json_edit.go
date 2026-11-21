@@ -10,9 +10,10 @@ import (
 )
 
 type Entry struct {
-	Event string          `json:"event,omitempty"`
-	Group string          `json:"group,omitempty"`
-	Value json.RawMessage `json:"value"`
+	Event    string          `json:"event,omitempty"`
+	Group    string          `json:"group,omitempty"`
+	AutoMode bool            `json:"auto_mode,omitempty"`
+	Value    json.RawMessage `json:"value"`
 }
 
 const agyHookGroup = "crosshall"
@@ -167,6 +168,9 @@ type configEntry struct {
 }
 
 func parseConfigEntry(entry Entry) (configEntry, error) {
+	if entry.AutoMode && (entry.Event != "" || entry.Group != "") {
+		return configEntry{}, errInvalidEntry
+	}
 	node, err := parseConfigJSON(entry.Value)
 	if err != nil {
 		return configEntry{}, errInvalidEntry
@@ -224,7 +228,9 @@ func findConfigSlot(doc *configNode, entry Entry) (container *configNode, missin
 		return nil, nil, errInvalidConfig
 	}
 	section, key := "hooks", entry.Event
-	if entry.Event == "" {
+	if entry.AutoMode {
+		section, key = "autoMode", "allow"
+	} else if entry.Event == "" {
 		section, key = "permissions", "allow"
 	}
 	object := doc.field(section)
@@ -317,17 +323,20 @@ func addEntries(original []byte, want []Entry) ([]byte, []Entry, error) {
 	return updated, added, nil
 }
 
-func removeEntries(original []byte, claims []Entry) ([]byte, []Entry, error) {
-	updated := original
-	var remaining []Entry
+func removeEntries(original []byte, claims []Entry) (updated []byte, removed, remaining []Entry, err error) {
+	updated = original
 	for _, entry := range claims {
 		doc, err := configDocument(updated)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		list, _, matches, err := locateConfigEntry(doc, entry)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		// A string claim has no identity beyond its exact value.
+		if entry.Event == "" && matches.full == 0 {
+			continue
 		}
 		if matches.full != 1 || matches.related != 1 {
 			remaining = append(remaining, entry)
@@ -335,8 +344,9 @@ func removeEntries(original []byte, claims []Entry) ([]byte, []Entry, error) {
 		}
 		start, end := configEntryRange(list, matches.index)
 		updated = spliceConfig(updated, start, end, nil)
+		removed = append(removed, entry)
 	}
-	return updated, remaining, nil
+	return updated, removed, remaining, nil
 }
 
 func entryMatches(original []byte, entries []Entry) ([]int, error) {

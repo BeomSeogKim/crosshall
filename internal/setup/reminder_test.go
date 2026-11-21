@@ -18,6 +18,7 @@ import (
 
 func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	service, claudePath := setupFixture(t)
+	service.Executable = filepath.Join(os.Getenv("HOME"), "installed binaries", "crosshall")
 	codexHome := os.Getenv("CODEX_HOME")
 	if err := os.Mkdir(codexHome, 0700); err != nil {
 		t.Fatal(err)
@@ -35,7 +36,7 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Applied || len(preview.Files) != 2 {
+	if preview.Applied || len(preview.Files) != 3 {
 		t.Fatalf("unexpected preview: %+v", preview)
 	}
 	baseEvents := map[string][]string{
@@ -44,9 +45,17 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	}
 	reminders := make(map[string]reminderStatus)
 	for _, f := range preview.Files {
+		if f.AddText != "" {
+			if f.Adapter != "codex" || f.Reminder != nil {
+				t.Errorf("unexpected command rules plan: %v", f.Path)
+			}
+			continue
+		}
 		var events []string
 		for _, e := range f.Add {
-			events = append(events, e.Event)
+			if e.Event != "" {
+				events = append(events, e.Event)
+			}
 		}
 		if !slices.Equal(events, baseEvents[f.Adapter]) {
 			t.Errorf("%s preview events = %v", f.Adapter, events)

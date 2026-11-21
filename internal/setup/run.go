@@ -36,17 +36,16 @@ type Request struct {
 }
 
 type plan struct {
-	Version   int             `json:"v"`
-	OK        bool            `json:"ok"`
-	Kind      string          `json:"kind"`
-	DryRun    bool            `json:"dry_run"`
-	Applied   bool            `json:"applied"`
-	Resume    bool            `json:"resume,omitempty"`
-	Recovery  bool            `json:"recovery,omitempty"`
-	Adapters  []string        `json:"adapters"`
-	Files     []PlanFile      `json:"files"`
-	Approvals []ApprovalOffer `json:"approvals,omitempty"`
-	Retained  []retainedFile  `json:"retained,omitempty"`
+	Version  int            `json:"v"`
+	OK       bool           `json:"ok"`
+	Kind     string         `json:"kind"`
+	DryRun   bool           `json:"dry_run"`
+	Applied  bool           `json:"applied"`
+	Resume   bool           `json:"resume,omitempty"`
+	Recovery bool           `json:"recovery,omitempty"`
+	Adapters []string       `json:"adapters"`
+	Files    []PlanFile     `json:"files"`
+	Retained []retainedFile `json:"retained,omitempty"`
 	// quietJoin leaves autoJoinNote to a caller that prints several plans.
 	quietJoin bool
 }
@@ -64,15 +63,10 @@ type PlanFile struct {
 	Add        []Entry                `json:"add,omitempty"`
 	Remove     []Entry                `json:"remove,omitempty"`
 	Kept       []Entry                `json:"kept,omitempty"`
+	AddText    string                 `json:"add_text,omitempty"`
+	RemoveText string                 `json:"remove_text,omitempty"`
 	Evidence   []store.DoctorEvidence `json:"capability_evidence,omitempty"`
 	Reminder   *reminderStatus        `json:"reminder,omitempty"`
-}
-
-type ApprovalOffer struct {
-	Adapter string   `json:"adapter"`
-	Kind    string   `json:"kind"`
-	Rules   []string `json:"rules,omitempty"`
-	Manual  bool     `json:"manual,omitempty"`
 }
 
 func (s Service) Run(ctx context.Context, req Request) error {
@@ -224,7 +218,7 @@ func (s Service) Run(ctx context.Context, req Request) error {
 	default:
 		targets, err = s.targets(ctx, j)
 		if err == nil {
-			op, err = makeInstall(j, targets, false, false)
+			op, err = makeInstall(j, targets)
 		}
 	}
 	if err != nil {
@@ -253,18 +247,6 @@ func (s Service) Run(ctx context.Context, req Request) error {
 		if !ok {
 			return printCompletion(req, p)
 		}
-		read, send, err := confirmClaudeRules(scanner, prompts, p.Approvals)
-		if err != nil {
-			return err
-		}
-		if read || send {
-			op, err = makeInstall(j, targets, read, send)
-			if err != nil {
-				return err
-			}
-			p = displayPlan(req, op, targets, resume)
-			p.Recovery = recovery
-		}
 	}
 	if err := s.apply(ctx, digest, op); err != nil {
 		return err
@@ -290,18 +272,6 @@ func confirm(scanner *bufio.Scanner, out io.Writer, label string) (bool, error) 
 	}
 	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
 	return answer == "y" || answer == "yes", nil
-}
-
-func confirmClaudeRules(scanner *bufio.Scanner, out io.Writer, approvals []ApprovalOffer) (bool, bool, error) {
-	if len(approvals) == 0 || approvals[0].Adapter != "claude" {
-		return false, false, nil
-	}
-	read, err := confirm(scanner, out, "Add Claude Code read-command allow rules?")
-	if err != nil {
-		return false, false, err
-	}
-	send, err := confirm(scanner, out, "Add Claude Code send-command allow rules?")
-	return read, send, err
 }
 
 func (s Service) setPolicies(ctx context.Context, adapters []string, enabled bool) error {
@@ -340,7 +310,22 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 	if err := verifyTargets(op); err != nil {
 		return err
 	}
-	if j.Pending == nil {
+	if op.Action == "setup" {
+		for _, e := range op.Edits {
+			if e.Adapter != "codex" || e.AddText == "" {
+				continue
+			}
+			conflict, err := existingCodexHostRule(e.Path, true)
+			if err != nil {
+				return err
+			}
+			if conflict != nil {
+				return fmt.Errorf("Codex rules changed at %q after planning; rerun to review the new plan", conflict.Path)
+			}
+		}
+	}
+	prepared := j.Pending != nil
+	if !prepared {
 		for _, e := range op.Edits {
 			current, err := readConfig(e.Path)
 			if err != nil {
@@ -350,10 +335,12 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 				return errors.New("configuration changed after planning; rerun to review the new plan")
 			}
 		}
-		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) {
+		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) && j.Version == j.formatVersion() {
 			return s.setPolicies(ctx, op.Adapters, true)
 		}
 		j.Pending = &op
+	}
+	if !prepared || j.Version != j.formatVersion() {
 		if err := writeJournal(state, j); err != nil {
 			return err
 		}
@@ -402,54 +389,31 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 	}
 	for _, e := range op.Edits {
 		b := op.Builds[e.Adapter]
-		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Version: b.Version,
-			Add: e.Add, Remove: e.Remove, Kept: e.Kept}
+		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Add: e.Add, Remove: e.Remove, Kept: e.Kept,
+			AddText: e.AddText, RemoveText: e.RemoveText}
+		if !e.Rules {
+			f.Version = b.Version
+		}
 		for _, target := range targets {
+			if rules := target.CommandRules; e.Rules && rules != nil && rules.Location.Path == f.Path {
+				f.PathSource = rules.Location.Source
+				break
+			}
 			if target.Path == f.Path {
-				f.Evidence = target.Evidence
-				f.PathSource = target.PathSource
+				if !e.Rules {
+					f.Evidence = target.Evidence
+					f.PathSource = target.PathSource
+				}
 				break
 			}
 		}
-		if p.Kind == "setup" {
+		if p.Kind == "setup" && !e.Rules {
 			status := releaseReminderStatus(e.Adapter, b.Version, b.Platform, b.Revision, f.Evidence)
 			f.Reminder = &status
 		}
 		p.Files = append(p.Files, f)
 	}
-	for _, target := range targets {
-		p.Approvals = append(p.Approvals, approvalOffers(target.Spec.Adapter)...)
-	}
 	return p
-}
-
-func approvalOffers(adapter string) []ApprovalOffer {
-	if adapter != "claude" && adapter != "codex" {
-		return nil
-	}
-	var offers []ApprovalOffer
-	for _, kind := range []string{"read", "send"} {
-		onSend := kind == "send"
-		o := ApprovalOffer{Adapter: adapter, Kind: kind}
-		if adapter == "claude" {
-			for _, entry := range claudeRules(onSend) {
-				var rule string
-				_ = json.Unmarshal(entry.Value, &rule)
-				o.Rules = append(o.Rules, rule)
-			}
-		} else {
-			o.Manual = true
-			verbs := []string{"inbox", "who", "waiting", "status", "read", "log"}
-			if onSend {
-				verbs = []string{"note", "ask", "reply"}
-			}
-			for _, verb := range verbs {
-				o.Rules = append(o.Rules, fmt.Sprintf(`prefix_rule(pattern=["crosshall", %q], decision="allow")`, verb))
-			}
-		}
-		offers = append(offers, o)
-	}
-	return offers
 }
 
 func printPlan(out io.Writer, p plan) error {
@@ -466,7 +430,15 @@ func printPlan(out io.Writer, p plan) error {
 	for _, item := range p.Retained {
 		fmt.Fprintf(&contents, "  retain %s %s (%s)\n", item.Adapter, item.Path, item.Reason)
 	}
+	commandRules, codexRules := false, false
 	for _, f := range p.Files {
+		if p.Kind == "setup" {
+			commandRules = commandRules || f.AddText != ""
+			codexRules = codexRules || (f.Adapter == "codex" && f.AddText != "")
+			for _, entry := range f.Add {
+				commandRules = commandRules || entry.Event == ""
+			}
+		}
 		if f.Version == "" {
 			fmt.Fprintf(&contents, "%s %s\n", f.Adapter, f.Path)
 		} else {
@@ -501,14 +473,32 @@ func printPlan(out io.Writer, p plan) error {
 		}{{"add", f.Add}, {"remove", f.Remove}, {"keep edited, missing or ambiguous", f.Kept}} {
 			for _, e := range group.entries {
 				kind := e.Event
-				if kind == "" {
+				if e.AutoMode {
+					kind = "autoMode.allow"
+				} else if kind == "" {
 					kind = "permissions.allow"
 				}
 				fmt.Fprintf(&contents, "  %s %s %s\n", group.label, kind, e.Value)
 			}
 		}
+		for _, group := range []struct {
+			label string
+			rules string
+		}{{"add", f.AddText}, {"remove", f.RemoveText}} {
+			for rule := range strings.SplitSeq(strings.TrimSuffix(group.rules, "\n"), "\n") {
+				if rule != "" {
+					fmt.Fprintf(&contents, "  %s command rule %s\n", group.label, rule)
+				}
+			}
+		}
 	}
 	if p.Kind == "setup" {
+		if commandRules && !p.Resume {
+			fmt.Fprintln(&contents, "Rules for the bare command crosshall trust the agent's PATH to select the executable.")
+		}
+		if codexRules {
+			fmt.Fprintln(&contents, "Codex allow rules run matching commands outside its sandbox.")
+		}
 		for _, adapter := range p.Adapters {
 			fmt.Fprintf(&contents, "Enable %s adapter policy after installation.\n", adapter)
 			if adapter == "codex" {
@@ -521,15 +511,6 @@ func printPlan(out io.Writer, p plan) error {
 	} else {
 		for _, adapter := range p.Adapters {
 			fmt.Fprintf(&contents, "Disable %s adapter policy.\n", adapter)
-		}
-	}
-	for _, o := range p.Approvals {
-		fmt.Fprintf(&contents, "Optional %s %s-command allow rules\n", o.Adapter, o.Kind)
-		if o.Manual {
-			fmt.Fprintln(&contents, "  Review manually in your Codex user rules; an allow rule runs its match outside the sandbox.")
-		}
-		for _, rule := range o.Rules {
-			fmt.Fprintf(&contents, "  %s\n", rule)
 		}
 	}
 	_, err := io.WriteString(out, contents.String())

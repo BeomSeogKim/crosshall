@@ -42,12 +42,24 @@ func TestRecoveredUninstallReportsUnknownOwnershipAfterAtomicSave(t *testing.T) 
 
 func TestInterruptedUninstallDisablesPoliciesWithMovedVendorHome(t *testing.T) {
 	service, path := setupFixture(t)
-	if _, err := runSetupTest(t, service, "setup", "yes\nno\nno\n", false); err != nil {
+	if _, err := runSetupTest(t, service, "setup", "yes\n", false); err != nil {
+		t.Fatal(err)
+	}
+	installed := configBytes(t, path)
+	rules, _, err := memberCommandRules("claude", service.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited, _, _, err := removeEntries(installed, rules[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, edited, 0600); err != nil {
 		t.Fatal(err)
 	}
 	lost := errors.New("interrupted policy update")
 	service.SetPolicy = func(context.Context, string, bool) error { return lost }
-	if _, err := runSetupTest(t, service, "setup", "yes\nyes\nno\n", false); !errors.Is(err, lost) {
+	if _, err := runSetupTest(t, service, "setup", "yes\n", false); !errors.Is(err, lost) {
 		t.Fatalf("expected the second setup to stop with a pending edit, got %v", err)
 	}
 	_, beforeDigest, err := readJournal(service.StateRoot)

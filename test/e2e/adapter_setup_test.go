@@ -276,6 +276,7 @@ func TestAdapterSetupReportsStalledEnrollment(t *testing.T) {
 
 func TestAdapterSetupLifecycle(t *testing.T) {
 	f := newSetupWorld(t)
+	codexRules := filepath.Join(filepath.Dir(f.paths["codex"]), "rules", "crosshall.rules")
 	originals := make(map[string]setupFile)
 	for adapter, path := range f.paths {
 		originals[adapter] = readSetupFile(t, path)
@@ -288,13 +289,16 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 		if _, err := os.Stat(f.state); !os.IsNotExist(err) {
 			t.Fatalf("preview or refusal created dispatcher state: %v", err)
 		}
+		if _, err := os.Stat(codexRules); !os.IsNotExist(err) {
+			t.Fatalf("preview or refusal created Codex rules: %v", err)
+		}
 	}
 
 	preview := f.apply("", "setup", "--dry-run")
 	if preview.obj["dry_run"] != true || preview.obj["applied"] != false {
 		t.Fatalf("unexpected dry-run result: %s", preview.stdout)
 	}
-	for _, want := range []string{"2.1.327", "0.170.0", "SessionStart", `"kind":"read"`, `"kind":"send"`} {
+	for _, want := range []string{"2.1.327", "0.170.0", "SessionStart", "Bash(crosshall read:*)", "Bash(crosshall note:*)", `"add_text":"host_executable(`} {
 		if !strings.Contains(preview.stdout, want) {
 			t.Errorf("dry run omitted %q", want)
 		}
@@ -338,10 +342,15 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 			t.Errorf("setup removed the existing %s hook", adapter)
 		}
 	}
-	// --apply adds no allow rules and keeps the owner's own.
 	if claude := installed["claude"].bytes; !bytes.Contains(claude, []byte("Bash(existing)")) ||
-		bytes.Contains(claude, []byte("Bash(crosshall read")) || bytes.Contains(claude, []byte("Bash(crosshall note")) {
+		!bytes.Contains(claude, []byte("Bash(crosshall read:*)")) ||
+		!bytes.Contains(claude, []byte("Bash(crosshall note:*)")) ||
+		bytes.Contains(claude, []byte("Bash(crosshall run:*)")) {
 		t.Fatalf("Claude permissions after --apply: %s", claude)
+	}
+	installedRules := readSetupFile(t, codexRules)
+	if !bytes.Contains(installedRules.bytes, []byte(`prefix_rule(pattern=["crosshall", "read"], decision="allow")`)) {
+		t.Fatalf("Codex permissions after --apply: %s", installedRules.bytes)
 	}
 	journalPath := filepath.Join(f.state, "install-journal.json")
 	journal := readSetupFile(t, journalPath)
@@ -353,6 +362,7 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 		assertSetupFile(t, path, installed[adapter], true)
 	}
 	assertSetupFile(t, journalPath, journal, true)
+	assertSetupFile(t, codexRules, installedRules, true)
 
 	repo := f.enrollmentRepo()
 	writer := f.member()
@@ -410,6 +420,9 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 	f.apply("", "uninstall", "--apply")
 	for adapter, path := range f.paths {
 		assertSetupFile(t, path, originals[adapter], false)
+	}
+	if _, err := os.Stat(codexRules); !os.IsNotExist(err) {
+		t.Fatalf("uninstall left managed Codex rules: %v", err)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -56,7 +55,7 @@ func TestRetainedRecoveryBlocksInstallAtDifferentPath(t *testing.T) {
 	lost := errors.New("interrupted policy update")
 	s.SetPolicy = func(context.Context, string, bool) error { return lost }
 	f.CheckTargets(t)
-	if err := s.Install(ctx, original, ClaudeRules{}); !errors.Is(err, lost) {
+	if err := s.Install(ctx, original); !errors.Is(err, lost) {
 		t.Fatalf("expected interruption after publishing hooks: %v", err)
 	}
 	s.SetPolicy = setPolicy
@@ -76,7 +75,7 @@ func TestRetainedRecoveryBlocksInstallAtDifferentPath(t *testing.T) {
 		t.Fatalf("expected recovery plan: %+v", recovery)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, recovery, ClaudeRules{}); err != nil {
+	if err := s.Install(ctx, recovery); err != nil {
 		t.Fatal(err)
 	}
 	j, digest, err := readJournal(f.State)
@@ -96,7 +95,7 @@ func TestRetainedRecoveryBlocksInstallAtDifferentPath(t *testing.T) {
 			resolved, original.Path, got.Path, got.RecordedPath, got.Err)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, got, ClaudeRules{}); err == nil {
+	if err := s.Install(ctx, got); err == nil {
 		t.Fatal("install accepted a plan for a different configuration path")
 	}
 	if _, err := runSetupTest(t, s, "setup", "", true); err == nil ||
@@ -146,7 +145,7 @@ func TestScopedSetupAndUninstallPreserveOtherVendor(t *testing.T) {
 		t.Fatalf("unexpected plan scope: %+v, %+v", claude, codex)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, claude, ClaudeRules{Read: true}); err != nil {
+	if err := s.Install(ctx, claude); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(codex.Path); !errors.Is(err, os.ErrNotExist) || !slices.Equal(policy, []string{"claude on"}) {
@@ -155,13 +154,13 @@ func TestScopedSetupAndUninstallPreserveOtherVendor(t *testing.T) {
 	// Confirmation was collected in one batch. A completed disjoint first
 	// plan changes the shared journal, yet the second approval remains valid.
 	f.CheckTargets(t)
-	if err := s.Install(ctx, codex, ClaudeRules{}); err != nil {
+	if err := s.Install(ctx, codex); err != nil {
 		t.Fatal(err)
 	}
 	codexBefore := configBytes(t, codex.Path)
 	oldClaude := configBytes(t, claude.Path)
-	rules := claudeRules(false)
-	if len(rules) == 0 || !bytes.Contains(oldClaude, rules[0].Value) || !slices.Equal(policy, []string{"claude on", "codex on"}) {
+	rules, _, err := memberCommandRules("claude", s.Executable)
+	if err != nil || len(rules) == 0 || !bytes.Contains(oldClaude, rules[0].Value) || !slices.Equal(policy, []string{"claude on", "codex on"}) {
 		t.Fatalf("missing read approval or incorrect policy: %s %v", oldClaude, policy)
 	}
 	edited := bytes.Replace(oldClaude, []byte(s.Executable), []byte(filepath.Join(f.Root, "owner-edited")), 1)
@@ -209,7 +208,7 @@ func TestScopedConcurrentInstallRequiresFreshPlan(t *testing.T) {
 		f.CheckTargets(t)
 		go func() {
 			<-start
-			results <- s.Install(t.Context(), p, ClaudeRules{})
+			results <- s.Install(t.Context(), p)
 		}()
 	}
 	close(start)
@@ -223,7 +222,7 @@ func TestScopedConcurrentInstallRequiresFreshPlan(t *testing.T) {
 		t.Fatalf("wanted one approval to apply and one stale plan to fail: %v, %v", a, b)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(t.Context(), first[0], ClaudeRules{}); err == nil || !strings.Contains(err.Error(), "changed after planning") {
+	if err := s.Install(t.Context(), first[0]); err == nil || !strings.Contains(err.Error(), "changed after planning") {
 		t.Fatalf("stale approval reused after the other install finished: %v", err)
 	}
 }
@@ -246,7 +245,7 @@ func TestScopedPlanRejectsAnOwnerEditAfterPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(t.Context(), plans[0], ClaudeRules{}); err == nil {
+	if err := s.Install(t.Context(), plans[0]); err == nil {
 		t.Fatal("a stale approval overwrote a configuration")
 	}
 	if got := configBytes(t, path); !bytes.Equal(got, owner) {
@@ -263,7 +262,26 @@ func TestScopedSelectionCannotResumeSubsetOfLegacyJournal(t *testing.T) {
 	stopped := errors.New("fixture interrupted before policy")
 	s.SetPolicy = func(context.Context, string, bool) error { return stopped }
 	f.CheckTargets(t)
-	if err := s.Run(ctx, Request{Action: "setup", Input: strings.NewReader("y\ny\nn\n"), Output: io.Discard}); !errors.Is(err, stopped) {
+	j, digest, err := readJournal(s.StateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := s.targets(ctx, j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range targets {
+		targets[i].CommandRules = nil
+		targets[i].Wanted = slices.DeleteFunc(targets[i].Wanted, func(e Entry) bool { return e.Event == "" })
+		if targets[i].Spec.Adapter == "claude" {
+			targets[i].Wanted = append(targets[i].Wanted, claudeRules(false)...)
+		}
+	}
+	op, err := makeInstall(j, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.apply(ctx, digest, op); !errors.Is(err, stopped) {
 		t.Fatalf("could not leave an rc.6-style pending plan: %v", err)
 	}
 	j, before, err := readJournal(f.State)
@@ -293,7 +311,7 @@ func TestScopedSelectionCannotResumeSubsetOfLegacyJournal(t *testing.T) {
 		return nil
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, resume[0], ClaudeRules{Send: true}); err != nil {
+	if err := s.Install(ctx, resume[0]); err != nil {
 		t.Fatal(err)
 	}
 	claude := configBytes(t, filepath.Join(f.Home, ".claude", "settings.json"))
@@ -314,7 +332,7 @@ func TestScopedBlockedUninstallDisablesOnlySelectedVendor(t *testing.T) {
 		t.Fatalf("plan: %+v, %v", plans, err)
 	}
 	f.CheckTargets(t)
-	if err := s.Install(ctx, plans[0], ClaudeRules{}); !errors.Is(err, stopped) {
+	if err := s.Install(ctx, plans[0]); !errors.Is(err, stopped) {
 		t.Fatalf("could not create pending scoped setup: %v", err)
 	}
 	before := configBytes(t, plans[0].Path)
@@ -324,7 +342,7 @@ func TestScopedBlockedUninstallDisablesOnlySelectedVendor(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", filepath.Join(f.Home, "other codex"))
 	rm, err := s.PlanUninstall(ctx, []string{"codex"})
-	if err != nil || len(rm) != 1 || !rm[0].Recovery || len(rm[0].Retained) != 1 {
+	if err != nil || len(rm) != 1 || !rm[0].Recovery || len(rm[0].Retained) != 2 {
 		t.Fatalf("expected a scope-preserving recovery: %+v, %v", rm, err)
 	}
 	disabled := map[string]bool{}

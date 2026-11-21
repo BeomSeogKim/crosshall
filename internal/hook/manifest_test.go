@@ -29,6 +29,7 @@ func TestHasPromptLineUsesTheInstalledManifest(t *testing.T) {
 		want              bool
 	}{
 		{"claude", "claude-2", true},
+		{"claude", "claude-1", true},
 		{"codex", "codex-1", true},
 		{"agy", "agy-1", false},
 		{"claude", "stale-revision", false},

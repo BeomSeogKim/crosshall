@@ -3,12 +3,59 @@
 package e2e
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
+	f := newSetupWorld(t)
+	f.apply("", "setup", "claude", "--apply")
+	repo := f.enrollmentRepo()
+	f.invokeHook(repo, "claude", "SessionStart", `"source":"startup"`)
+	owner := f.owner()
+	owner.must("owner", "stop")
+
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(f.state, "store.sqlite3")+"?mode=rw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-1')
+		WHERE json_extract(profile, '$.manifest_rev') = 'claude-2'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		t.Fatalf("set the previous release's launch revision: %d rows, %v", changed, err)
+	}
+	owner.must("owner", "start")
+	owner.must("owner", "publish", "hall", "off")
+	checkReach := func(stage string) {
+		t.Helper()
+		out := owner.mustPlain("owner", "who", "--all")
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "@claude1") && strings.Contains(line, "sees work at its next prompt") {
+				return
+			}
+		}
+		t.Fatalf("%s: owner who omitted Claude prompt pickup: %s", stage, out)
+	}
+	checkReach("before the next prompt")
+
+	writer := f.member()
+	writer.must("join", "setup-check", "--as", "writer")
+	owner.must("owner", "budget", "grant", "setup-check/@writer", "--roots", "1")
+	id := num(t, writer.must("ask", "@claude1", "Check this after the upgrade"), "id")
+	got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"after-upgrade"`)
+	if !strings.Contains(got, "[crosshall] pending: "+strconv.FormatInt(id, 10)) {
+		t.Fatalf("the current hook did not show the pending request: %s", got)
+	}
+	checkReach("after the next prompt")
+}
 
 func TestOwnerViewsIncludeDepartedBindingsAndDoNotPickUpMessages(t *testing.T) {
 	w, owner, members := setup(t)

@@ -87,6 +87,106 @@ func TestClaudeAutoModeRulesShareSetupConsentAndRestoreSettings(t *testing.T) {
 	}
 }
 
+func TestClaudeAutoModeUninstallReleasesAbsentClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		duplicate     bool
+		keepCodexRule bool
+	}{
+		{name: "owner changes the classifier rule"},
+		{name: "owner changes the classifier rule while Codex stays installed", keepCodexRule: true},
+		{name: "owner duplicates the exact classifier rule", duplicate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapters := []string{"claude"}
+			cleanVersion := 1
+			if tc.keepCodexRule {
+				adapters = append(adapters, "codex")
+				cleanVersion = 2
+			}
+			f := setuptest.New(t, adapters...)
+			s := scopedService(f)
+			path := filepath.Join(f.Home, ".claude", "settings.json")
+			if err := os.Mkdir(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			const original = "{\n \"owner\": 1, \"autoMode\": {\"allow\": [\"$defaults\", \"Owner guidance\"], \"hard_deny\": [\"Keep protected data local\"]}\n}\n"
+			writeConfigFixture(t, path, []byte(original), 0640)
+			if out, err := realRun(t, s, f, Request{Terminal: true, Adapters: adapters}, "y\n"); err != nil {
+				t.Fatalf("setup failed: %v\n%s", err, out)
+			}
+			guidance := claudeAutoModeEntries(s.Executable, false)[0]
+			var rule string
+			if err := json.Unmarshal(guidance.Value, &rule); err != nil {
+				t.Fatal(err)
+			}
+			checkJournal := func(version int, claudeOwned bool) ownedFile {
+				t.Helper()
+				j, _, err := readJournal(f.State)
+				record, hasClaude := j.Files["claude"]
+				_, hasCodexRule := j.RuleFiles["codex"]
+				if err != nil || j.Version != version || j.Pending != nil || hasClaude != claudeOwned || hasCodexRule != tc.keepCodexRule {
+					t.Fatalf("want journal v%d with Claude ownership %t and Codex rule ownership %t, got %+v (%v)",
+						version, claudeOwned, tc.keepCodexRule, j, err)
+				}
+				return record
+			}
+			checkJournal(3, true)
+
+			installed := configBytes(t, path)
+			if bytes.Count(installed, guidance.Value) != 1 {
+				t.Fatalf("fixture must own exactly one original classifier rule: %s", installed)
+			}
+			const ownerRule = "Owner replacement classifier"
+			ownerValue, err := json.Marshal(ownerRule)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"$defaults", "Owner guidance", ownerRule}
+			if tc.duplicate {
+				ownerValue = bytes.Join([][]byte{guidance.Value, guidance.Value}, []byte(", "))
+				want = []string{"$defaults", "Owner guidance", rule, rule}
+			}
+			edited := bytes.Replace(installed, guidance.Value, ownerValue, 1)
+			writeConfigFixture(t, path, edited, 0640)
+			uninstall := func() {
+				t.Helper()
+				if out, err := realRun(t, s, f, Request{Action: "uninstall", Apply: true, Adapters: []string{"claude"}}, ""); err != nil {
+					t.Fatalf("uninstall failed: %v\n%s", err, out)
+				}
+			}
+			uninstall()
+			after := configBytes(t, path)
+			if got := autoModeAllowed(t, after); !slices.Equal(got, want) || !bytes.Contains(after, []byte(`"hard_deny": ["Keep protected data local"]`)) {
+				t.Fatalf("uninstall did not preserve the owner settings and rules %q: %s", want, after)
+			}
+			if tc.duplicate {
+				record := checkJournal(3, true)
+				if len(record.Entries) != 1 || !record.Entries[0].AutoMode || !bytes.Equal(record.Entries[0].Value, guidance.Value) {
+					t.Fatalf("uninstall did not keep just the ambiguous original claim: %+v", record.Entries)
+				}
+			} else {
+				checkJournal(cleanVersion, false)
+			}
+
+			ownerCleaned := bytes.Replace([]byte(original), []byte(`"owner": 1`), []byte(`"owner": 2`), 1)
+			writeConfigFixture(t, path, ownerCleaned, 0640)
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 1; attempt <= 2; attempt++ {
+				uninstall()
+				checkJournal(cleanVersion, false)
+				after, err := os.Lstat(path)
+				if err != nil || !os.SameFile(before, after) || !bytes.Equal(configBytes(t, path), ownerCleaned) {
+					t.Fatalf("uninstall %d replaced or changed settings after owner cleanup: %v", attempt, err)
+				}
+			}
+		})
+	}
+}
+
 func autoModeAllowed(t *testing.T, raw []byte) []string {
 	t.Helper()
 	var settings struct {

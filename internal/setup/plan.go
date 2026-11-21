@@ -411,12 +411,12 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 	// Removing $defaults while leaving the list would discard Claude's
 	// built-in rules. The byte-exact path above restores an absent list.
 	claims := slices.DeleteFunc(slices.Clone(record.Entries), isClaudeAutoModeDefaults)
-	updated, kept, err := removeEntries(current.Bytes, claims)
+	updated, removed, kept, err := removeEntries(current.Bytes, claims)
 	if err != nil {
 		return edit{}, err
 	}
 	e.Kept = kept
-	e.Remove = remainingEntries(claims, kept)
+	e.Remove = removed
 	if len(e.Remove) != 0 {
 		e.After.Hash, e.After.File = sum(updated), ""
 	}

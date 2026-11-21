@@ -360,7 +360,7 @@ func (e edit) materialize(raw []byte) ([]byte, error) {
 		updated, _, err := addEntries(raw, e.Add)
 		return updated, err
 	}
-	updated, _, err := removeEntries(raw, e.Remove)
+	updated, _, _, err := removeEntries(raw, e.Remove)
 	return updated, err
 }
 

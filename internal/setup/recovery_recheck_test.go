@@ -50,7 +50,7 @@ func TestInterruptedUninstallDisablesPoliciesWithMovedVendorHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited, _, err := removeEntries(installed, rules[:1])
+	edited, _, _, err := removeEntries(installed, rules[:1])
 	if err != nil {
 		t.Fatal(err)
 	}

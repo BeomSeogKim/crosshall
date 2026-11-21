@@ -323,17 +323,20 @@ func addEntries(original []byte, want []Entry) ([]byte, []Entry, error) {
 	return updated, added, nil
 }
 
-func removeEntries(original []byte, claims []Entry) ([]byte, []Entry, error) {
-	updated := original
-	var remaining []Entry
+func removeEntries(original []byte, claims []Entry) (updated []byte, removed, remaining []Entry, err error) {
+	updated = original
 	for _, entry := range claims {
 		doc, err := configDocument(updated)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		list, _, matches, err := locateConfigEntry(doc, entry)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		// A string claim has no identity beyond its exact value.
+		if entry.Event == "" && matches.full == 0 {
+			continue
 		}
 		if matches.full != 1 || matches.related != 1 {
 			remaining = append(remaining, entry)
@@ -341,8 +344,9 @@ func removeEntries(original []byte, claims []Entry) ([]byte, []Entry, error) {
 		}
 		start, end := configEntryRange(list, matches.index)
 		updated = spliceConfig(updated, start, end, nil)
+		removed = append(removed, entry)
 	}
-	return updated, remaining, nil
+	return updated, removed, remaining, nil
 }
 
 func entryMatches(original []byte, entries []Entry) ([]int, error) {

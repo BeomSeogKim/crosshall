@@ -61,7 +61,7 @@ To make the check available for Claude Code, work from the release checkout with
 
 In an interactive session the check covers a turn whose prompt was typed at an idle prompt. It does not cover a turn whose prompt was typed ahead, while the turn before it was still running: Claude Code reports such a prompt with the earlier turn's ID, so the adapter cannot tell that a new turn began (seen on 2.1.330). A request that arrives during such a turn is offered at a later prompt instead. Stock Codex sessions cannot be verified, so the check stays unavailable for them.
 
-In Claude Code, a prompt typed while a turn is running is its own turn: it gets its prompt line, and its Stop gets the check. Hook callbacks that reach the dispatcher out of order are placed by the times their hooks recorded. A Stop that arrives before the prompt that opened its turn cannot be checked, because its hook has already returned.
+In Claude Code, a prompt typed while a turn is running is its own turn: it gets its prompt line, and its Stop gets the check. Hook callbacks that reach the dispatcher out of order are placed by the times their hooks recorded. A Stop that arrives before the prompt that opened its turn cannot be checked, because its hook has already returned. A Stop that arrives before a prompt typed ahead during its turn is checked as the latest turn's, as far as the dispatcher knew then.
 
 ## The prompt line
 

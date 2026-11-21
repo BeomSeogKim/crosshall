@@ -98,7 +98,8 @@ func turnEndFor(t *testing.T, r wire.HookResult, id int64) bool {
 }
 
 // A late duplicate of a finished prompt, from a fresh hook
-// process, is a replay: it opens no turn and supersedes nothing.
+// process, is a replay: it is recorded, so a later delivery can place it,
+// but it opens no turn and supersedes nothing.
 func TestALateDuplicateOfAFinishedPromptIsAReplay(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")
 	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
@@ -107,12 +108,12 @@ func TestALateDuplicateOfAFinishedPromptIsAReplay(t *testing.T) {
 	f.hook(reader, stop("launch", "turn-a", at+1))
 	f.hook(reader, typedPrompt("turn-b", at+2))
 	ask := f.turnEndAsk(writer, "reader", "during b")
-	observed := f.count(`SELECT COUNT(*) FROM observation`)
+	turns := f.count(`SELECT COUNT(*) FROM turn`)
 	if r := f.hook(reader, typedPrompt("turn-a", at+3)); !quiet(r) {
 		t.Fatalf("a late duplicate printed %+v", r)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM observation`); n != observed {
-		t.Fatalf("a late duplicate added %d observations", n-observed)
+	if n := f.count(`SELECT COUNT(*) FROM turn`); n != turns {
+		t.Fatalf("a late duplicate opened %d turns", n-turns)
 	}
 	if r := f.hook(reader, stop("launch", "turn-b", at+4)); !turnEndFor(t, r, ask) {
 		t.Fatalf("the current turn's end line %q after a late duplicate", r.TurnEndLine)

@@ -88,21 +88,23 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 		// The version before the start line left a roster cursor after a
 		// reply that carried no rules. It outlives the upgrade and must not
 		// settle the rules: the next command still prints them.
-		t.Run(adapter.name+" an older version's cursor", func(t *testing.T) {
-			f, repo, member := blocked(t)
-			digest := (ident.Identity{Vendor: adapter.name, Key: setupSessionPrefix + adapter.name}).Digest()
-			if err := os.WriteFile(filepath.Join(f.rendezvous(), "m", digest[:16], "ack"), []byte("1\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("upgraded")); !strings.Contains(hostContext(t, out), line) {
-				t.Fatalf("the start line is still owed after the upgrade: %q", out)
-			}
-			firstInbox := member.mustPlain("inbox")
-			secondInbox := member.mustPlain("inbox")
-			if !strings.Contains(firstInbox, rules) || strings.Contains(secondInbox, rules) {
-				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
-			}
-		})
+		for _, first := range [][]string{{"inbox"}, {"join", "setup-check"}} {
+			t.Run(adapter.name+" an older version's cursor, then "+first[0], func(t *testing.T) {
+				f, repo, member := blocked(t)
+				digest := (ident.Identity{Vendor: adapter.name, Key: setupSessionPrefix + adapter.name}).Digest()
+				if err := os.WriteFile(filepath.Join(f.rendezvous(), "m", digest[:16], "ack"), []byte("1\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("upgraded")); !strings.Contains(hostContext(t, out), line) {
+					t.Fatalf("the start line is still owed after the upgrade: %q", out)
+				}
+				once := member.mustPlain(first...)
+				again := member.mustPlain(first...)
+				if !strings.Contains(once, rules) || strings.Contains(again, rules) {
+					t.Fatalf("unexpected %s guidance: %q and %q", first[0], once, again)
+				}
+			})
+		}
 		// One command gave the rules: the leaf says so before the store does,
 		// and the next prompt must not add the start line.
 		for _, first := range []string{"inbox", "whoami"} {

@@ -365,14 +365,15 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		alias, state, focus string
 		rosterAck           uint64
 		hintAcked           bool
+		hooked              bool // a hook joined it: only a rules receipt settles its rules
 		departedByOwner     bool
 	}
 	if principal != 0 {
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, channel_id, alias, state, focus, roster_ack_seq, hint_acked, departed_by_owner
+			`SELECT id, channel_id, alias, state, focus, roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL, departed_by_owner
 			FROM binding WHERE principal_id = ? ORDER BY id LIMIT 1`, principal).
 			Scan(&existing.id, &existing.channel, &existing.alias, &existing.state, &existing.focus, &existing.rosterAck,
-				&existing.hintAcked, &existing.departedByOwner)
+				&existing.hintAcked, &existing.hooked, &existing.departedByOwner)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return core.Result{}, err
 		}
@@ -515,8 +516,11 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq}
 	// The hint and the full roster repeat until a later command acknowledges
 	// them; after that a re-join says "Already in", prints the rules only on
-	// request and, of the roster, only what changed since the cursor.
-	if !restored || !(existing.hintAcked || req.Ack > 0) {
+	// request and, of the roster, only what changed since the cursor. A
+	// member a hook joined has the rules only once the receipt of printing
+	// them was applied (hint_acked): a cursor alone may be an older
+	// version's, left after a reply without rules.
+	if !restored || !(existing.hintAcked || (!existing.hooked && req.Ack > 0)) {
 		out.Hint, out.RulesGiven = Hint(alias, ch.name), true
 		members, err := roster(ctx, tx, ch.id, principal, now)
 		if err != nil {

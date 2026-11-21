@@ -71,9 +71,9 @@ The last part of `AI_AGENT` is not the mode: both forms were seen in interactive
 - `SessionStart` with `startup`, `resume`, `compact` and `clear`; `UserPromptSubmit` and `Stop` for every turn; `Notification` with `permission_prompt` when an approval dialog opens, and the approved turn goes on to its `Stop`.
 - `/compact` keeps the session ID. `/clear` ends the session (`SessionEnd`, reason `clear`) and starts one with a new ID in the same process, which stays the same member. `/exit` ends it with reason `prompt_input_exit`, the member departs, and resuming the session restores it.
 - A prompt typed at an idle prompt opens a turn of its own: its `UserPromptSubmit` and its `Stop` carry one prompt ID that no other turn has.
-- A prompt typed ahead, while the turn before it is still running, is reported with that earlier turn's prompt ID, before the earlier turn's `Stop`; its own turn then ends with a `Stop` whose ID no prompt carried. The adapter takes the prompt ID as the turn, so such a turn gets no prompt line and no turn-end check.
+- A prompt typed ahead, while the turn before it is still running, is reported with that earlier turn's prompt ID, before the earlier turn's `Stop`; its own turn then ends with a `Stop` whose ID no prompt carried. The adapter takes such a prompt as the start of a turn of its own.
 - A notice the hall publishes while a turn is with the model does not take that shape: it runs after the turn's `Stop` as a turn of its own, with its own prompt ID.
-- With tested evidence for the build, a request stored during a turn continues that turn once with the pending line, as in print mode.
+- With tested evidence for the build, a request stored during a turn continues that turn once with the pending line, as in print mode, also when the turn's prompt was typed ahead.
 
 ## Publish profiles
 

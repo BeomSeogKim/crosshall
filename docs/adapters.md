@@ -59,7 +59,7 @@ To make the check available for Claude Code, work from the release checkout with
 
 `crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations. Evidence belongs to one hook manifest revision: after an upgrade that changes it (`claude-2` in this release), run the conformance test again and import the new file.
 
-In an interactive session the check covers a turn whose prompt was typed at an idle prompt. It does not cover a turn whose prompt was typed ahead, while the turn before it was still running: Claude Code reports such a prompt with the earlier turn's ID, so the adapter cannot tell that a new turn began (seen on 2.1.330). A request that arrives during such a turn is offered at a later prompt instead. Stock Codex sessions cannot be verified, so the check stays unavailable for them.
+In an interactive session the check also covers a turn whose prompt was typed ahead, while the turn before it was still running. Stock Codex sessions cannot be verified, so the check stays unavailable for them.
 
 ## The prompt line
 

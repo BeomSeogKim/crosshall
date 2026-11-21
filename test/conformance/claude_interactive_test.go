@@ -550,8 +550,8 @@ const typedAheadShape = "UserPromptSubmit A, UserPromptSubmit A, Stop A, Stop B"
 // people queue the next thing) is reported with the previous turn's prompt
 // ID, before that turn's Stop, and its own turn ends with a Stop whose ID no
 // prompt ever carried. This pins that shape for the build under test: the
-// adapter takes the prompt ID as the turn, so it sees such a prompt as a
-// repeat and its turn as one that never opened (issue #163).
+// adapter's handling of a typed-ahead prompt as a turn of its own rests on
+// it.
 func TestClaudeCodeInteractiveTypedAheadPrompt(t *testing.T) {
 	c := newConformance(t)
 	c.requireClaude()
@@ -578,7 +578,7 @@ func TestClaudeCodeInteractiveTypedAheadPrompt(t *testing.T) {
 	}
 	if got != typedAheadShape || c.model.count() != 2 {
 		want := typedAheadShape
-		t.Fatalf("typed-ahead prompt: callbacks %q with %d model requests, want %q with 2: the shape issue #163 describes has changed", got, c.model.count(), want)
+		t.Fatalf("typed-ahead prompt: callbacks %q with %d model requests, want %q with 2: the shape the adapter's typed-ahead handling rests on has changed", got, c.model.count(), want)
 	}
 	term.exit()
 }
@@ -588,7 +588,7 @@ func TestClaudeCodeInteractiveTypedAheadPrompt(t *testing.T) {
 // as a turn of its own, with a prompt ID of its own, and the hall observes it
 // as its own turn. So does a notice to an idle session. The scratch hall
 // lists this build for publish only so that the sender runs; the run records
-// facts for issue #163 and writes no evidence, which for publish takes a run
+// facts and writes no evidence, which for publish takes a run
 // a person watches (CONFORMANCE.md).
 func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	c := newConformance(t)
@@ -656,13 +656,13 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 
 // interactiveTurnEndCheck is what the interactive turn-end run observed, as
 // the evidence states it.
-const interactiveTurnEndCheck = "an unread request stored during a turn typed at an idle prompt continues it once with the pending line; " +
-	"no evidence, a note or a read request does not; a typed-ahead prompt's turn is not checked"
+const interactiveTurnEndCheck = "an unread request stored during a turn continues it once with the pending line, " +
+	"also when the turn's prompt was typed ahead; no evidence, a note or a read request does not"
 
 // The turn-end rule as the adapter checks it in an interactive session, with
-// the same cases as print mode. One more case states the limit: the turn of
-// a typed-ahead prompt is not checked, because Claude Code reports no prompt
-// with that turn's ID (issue #163).
+// the same cases as print mode. One more case covers a turn whose prompt
+// was typed ahead: Claude Code reports that prompt under the running turn's
+// ID, and the adapter still checks the turn it opens.
 func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 	world := func(t *testing.T, tested bool) *conformance {
 		t.Helper()
@@ -762,24 +762,33 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		var id int64
 		c.model.during[2] = func() { id = c.writerSends("ask", "synthetic request during the typed-ahead turn") }
 		term.keys("first synthetic prompt\r")
-		term.await("the Stop of both turns", func() bool { return c.count(named("Stop")) >= 2 })
-		// The limit is certified only for a turn that took the typed-ahead
-		// shape, whose request was stored, and whose own Stop the hall
-		// processed for this session: a callback that never reached the
-		// hall must not pass for a turn the hall left unchecked.
-		all := c.events()
-		if got := turnShape(inSession(all, all[0].Session)); all[0].Session == "" || got != typedAheadShape || turnShape(all) != got || id == 0 {
-			t.Fatalf("not a typed-ahead turn with a stored request: callbacks %q, request %d", turnShape(all), id)
-		}
-		stop := all[len(all)-1]
-		term.await("the hall's record of the typed-ahead turn's Stop", func() bool {
-			return c.storeCount(`SELECT COUNT(*) FROM observation o JOIN principal_key k ON k.principal_id = o.principal_id
-				WHERE k.vendor = 'claude' AND k.key = ? AND o.kind = 'turn_finishing' AND o.turn_ref = ?`, stop.Session, stop.Prompt) == 1
+		term.await("the Stop of the continued typed-ahead turn", func() bool {
+			return c.count(func(e hookEvent) bool { return e.Name == "Stop" && e.StopActive }) == 1
 		})
 		term.exit()
-		if c.model.count() != 2 || claims(c) != 0 {
-			t.Fatalf("the typed-ahead turn was checked (%d requests, %d claims, request %d): the limit the evidence states no longer holds (issue #163)",
-				c.model.count(), claims(c), id)
+		// The continuation counts only for a turn that took the typed-ahead
+		// shape: the second prompt under the first turn's ID, the first
+		// turn's Stop, then the second turn's own Stop and its continued one.
+		all := c.events()
+		got := turnShape(inSession(all, all[0].Session))
+		if want := typedAheadShape + ", ContinuedStop B"; all[0].Session == "" || got != want || turnShape(all) != got || id == 0 {
+			t.Fatalf("not a continued typed-ahead turn with a stored request: callbacks %q, want %q, request %d", turnShape(all), want, id)
+		}
+		if c.model.count() != 3 {
+			t.Fatalf("%d model requests, want both turns and one continuation", c.model.count())
+		}
+		if c.carries(1, id) != 0 || c.carries(2, id) != 0 || c.carries(3, id) != 1 {
+			t.Fatalf("pending line in requests 1, 2 and 3: %d, %d, %d", c.carries(1, id), c.carries(2, id), c.carries(3, id))
+		}
+		pid := `(SELECT principal_id FROM binding WHERE alias = 'claude1')`
+		if n := claims(c); n != 1 {
+			t.Errorf("%d turn claims, want 1", n)
+		}
+		if n := c.storeCount(`SELECT COUNT(*) FROM announcement WHERE via = 'turn_end' AND message_id = ? AND principal_id = `+pid, id); n != 1 {
+			t.Errorf("request %d claimed %d times", id, n)
+		}
+		if n := c.storeCount(`SELECT COUNT(*) FROM recipient WHERE message_id = ? AND picked_up_at_ms IS NULL AND principal_id = `+pid, id); n != 1 {
+			t.Error("the continuation picked the request up; it must stay unread in the inbox")
 		}
 		return c.observedBuild("interactive")
 	}

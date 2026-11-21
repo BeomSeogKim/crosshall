@@ -38,24 +38,19 @@ type Request struct {
 }
 
 type plan struct {
-	Version  int            `json:"v"`
-	OK       bool           `json:"ok"`
-	Kind     string         `json:"kind"`
-	DryRun   bool           `json:"dry_run"`
-	Applied  bool           `json:"applied"`
-	Resume   bool           `json:"resume,omitempty"`
-	Recovery bool           `json:"recovery,omitempty"`
-	Adapters []string       `json:"adapters"`
-	Files    []PlanFile     `json:"files"`
-	Retained []retainedFile `json:"retained,omitempty"`
-	// quietJoin leaves autoJoinNote to a caller that prints several plans.
-	quietJoin bool
+	Version      int            `json:"v"`
+	OK           bool           `json:"ok"`
+	Kind         string         `json:"kind"`
+	DryRun       bool           `json:"dry_run"`
+	Applied      bool           `json:"applied"`
+	Resume       bool           `json:"resume,omitempty"`
+	Recovery     bool           `json:"recovery,omitempty"`
+	Adapters     []string       `json:"adapters"`
+	Files        []PlanFile     `json:"files"`
+	Retained     []retainedFile `json:"retained,omitempty"`
+	disclosure   installDisclosure
+	quietConsent bool
 }
-
-// autoJoinNote states, once per consent, what installing changes for the
-// whole hall, whichever agents are listed.
-const autoJoinNote = "Installing turns on automatic joining for this hall, unless you already set it: a session of any agent " +
-	"with crosshall hooks then joins its repository's channel when it starts. `crosshall owner channel auto off` turns it off."
 
 type PlanFile struct {
 	Adapter    string                 `json:"adapter"`
@@ -386,6 +381,9 @@ func buildsUnchanged(before, after map[string]build) bool {
 func displayPlan(req Request, op operation, targets []installTarget, resume bool) plan {
 	p := plan{Version: 1, OK: true, Kind: req.Action, DryRun: req.DryRun, Resume: resume,
 		Adapters: append([]string{}, op.Adapters...), Files: []PlanFile{}, Retained: op.Retained}
+	for _, target := range targets {
+		p.disclosure.include(target.disclosure)
+	}
 	if req.Action == "off" {
 		p.Kind = "setup off"
 	}
@@ -507,8 +505,8 @@ func printPlan(out io.Writer, p plan) error {
 				fmt.Fprintln(&contents, "Review and trust these hooks with Codex /hooks.")
 			}
 		}
-		if len(p.Adapters) > 0 && !p.quietJoin {
-			fmt.Fprintln(&contents, autoJoinNote)
+		if len(p.Adapters) > 0 && !p.quietConsent {
+			_ = p.disclosure.write(&contents)
 		}
 	} else {
 		for _, adapter := range p.Adapters {

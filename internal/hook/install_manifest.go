@@ -11,6 +11,10 @@ import (
 // HasPromptLine reports whether this revision installs a hook that can
 // offer pending work in a user prompt.
 func HasPromptLine(adapter, revision string) bool {
+	// The v0.1.0 Claude hook already offered pending work on UserPromptSubmit.
+	if adapter == "claude" && revision == "claude-1" {
+		return true
+	}
 	m, ok := loadManifest(adapter)
 	if !ok || m.Revision != revision {
 		return false

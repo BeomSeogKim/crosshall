@@ -19,6 +19,9 @@ type InstallConsent struct {
 	PublishProbation   bool
 	TurnEndInteractive bool
 	TurnEndPrint       bool
+	// TurnEndSwitch is the owner's turn-end switch for the adapter: on, off,
+	// or empty when the evidence decides.
+	TurnEndSwitch string
 }
 
 // InspectInstallConsent previews the settings and evidence after the new
@@ -67,7 +70,7 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 	owner := `SELECT '', '', '', '', '', '', '' WHERE 0`
 	build := `SELECT '' vendor, '' vendor_version, '' platform, '' mode, '' manifest_rev, '' cap,
 		0 confirmed, NULL stopped_at_ms, NULL lifted_at_ms WHERE 0`
-	joining, publish := "0", "''"
+	joining, publish, turnEnd := "0", "''", "''"
 	if version >= 2 {
 		owner = `SELECT vendor, vendor_version, platform, mode, manifest_rev, cap, level FROM main.capability_evidence`
 	}
@@ -87,6 +90,9 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 	}
 	if version >= 16 {
 		build = `SELECT * FROM main.capability_build`
+	}
+	if version >= 18 {
+		turnEnd = `CASE (SELECT turn_end FROM adapter_policy WHERE adapter = ?1) WHEN 0 THEN 'off' WHEN 1 THEN 'on' ELSE '' END`
 	}
 	printProfile := `json_set(?2, '$.mode', 'print')`
 	return tx.QueryRowContext(ctx, `WITH
@@ -111,8 +117,8 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 				AND e.vendor_version = `+profileField("?2", "vendor_version")+`)
 			AND COALESCE((SELECT cb.confirmed FROM capability_build cb WHERE `+capabilityProfileMatch("cb", "?1", "?2", "'publish'")+`
 				AND cb.vendor_version = `+profileField("?2", "vendor_version")+`), 0) < ?4,
-			`+CapabilityCovered("?1", "?2", "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'"),
+			`+CapabilityCovered("?1", "?2", "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd,
 		vendor, profile, builtin, PublishBuildConfirmations).
 		Scan(&consent.AutoJoinOff, &consent.PublishCovered, &consent.PublishSwitch, &consent.PublishStopped,
-			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint)
+			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint, &consent.TurnEndSwitch)
 }

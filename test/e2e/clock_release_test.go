@@ -41,7 +41,7 @@ func TestInvalidDevelopmentClockPreventsStartup(t *testing.T) {
 
 func TestTaggedBuildIgnoresTestClock(t *testing.T) {
 	tagged := filepath.Join(t.TempDir(), "crosshall")
-	build := exec.Command("go", "build", "-ldflags=-X main.version=v1.2.3", "-o", tagged, "../../cmd/crosshall")
+	build := exec.Command("go", "build", "-tags=testvendorhome", "-ldflags=-X main.version=v1.2.3", "-o", tagged, "../../cmd/crosshall")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build tagged binary: %s (%v)", out, err)
 	}

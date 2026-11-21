@@ -47,6 +47,7 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		}
 		env = append(env,
 			"CROSSHALL_STATE_DIR="+w.state,
+			w.dispatcherLeaseEnv(),
 			"CLAUDE_CODE_SESSION_ID="+sessionID,
 			"CLAUDE_PID="+pid,
 			"CLAUDE_CODE_ENTRYPOINT=cli",

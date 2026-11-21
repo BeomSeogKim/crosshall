@@ -96,7 +96,7 @@ func createRepoChannel(ctx context.Context, tx store.Tx, repoRoot string, actor 
 	if err != nil {
 		return channelRow{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO repo_default(repo_root, channel_id) VALUES (?, ?)`, repoRoot, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO repo_default(repo_root, channel_id, automatic) VALUES (?, ?, 1)`, repoRoot, id); err != nil {
 		return channelRow{}, err
 	}
 	detail := map[string]string{"by": "hook", "repo_root": repoRoot}

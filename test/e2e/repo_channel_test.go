@@ -120,7 +120,7 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 // channel, and the owner's default set in the main checkout, also one that
 // an older version kept under the main checkout's path.
 func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing.T) {
-	for _, explicit := range []string{"", "default", "older default"} {
+	for _, explicit := range []string{"", "default", "older default", "older default, unreadable once"} {
 		f := newSetupWorld(t)
 		f.apply("", "setup", "claude", "codex", "--apply")
 		owner := f.owner()
@@ -163,7 +163,7 @@ func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing
 			owner.must("owner", "channel", "create", "chosen")
 			owner.must("owner", "channel", "default", "chosen", "--repo", main)
 		}
-		if explicit == "older default" {
+		if strings.HasPrefix(explicit, "older default") {
 			owner.must("owner", "stop")
 			canonical, err := filepath.EvalSymlinks(main)
 			if err != nil {
@@ -180,7 +180,40 @@ func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
+			if explicit == "older default, unreadable once" {
+				// The upgraded dispatcher cannot read the main checkout at its
+				// first start, so the repository gets a channel of its own
+				// before the owner's default is found.
+				if err := os.Chmod(filepath.Join(main, ".git"), 0); err != nil {
+					t.Fatal(err)
+				}
+				owner.must("owner", "channel", "auto", "on")
+				startAs(f, "codex", "early", linked)
+				if got := joinedChannel(f, "codex", "early"); got != "metadata" {
+					t.Fatalf("%q: before the default was adopted the linked worktree joined %q", explicit, got)
+				}
+				if err := os.Chmod(filepath.Join(main, ".git"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				owner.must("owner", "stop")
+			}
 			owner.must("owner", "channel", "auto", "on") // the upgraded dispatcher starts
+		}
+		if explicit == "older default, unreadable once" {
+			// The owner's default replaced the automatic one at the next start.
+			var channel string
+			var rows, automatic int
+			if err := f.db().QueryRow(`SELECT COUNT(*), MAX(c.name), MAX(d.automatic) FROM repo_default d
+				JOIN channel c ON c.id = d.channel_id`).Scan(&rows, &channel, &automatic); err != nil || rows != 1 || channel != "chosen" || automatic != 0 {
+				t.Fatalf("%q: %d defaults, channel %q, automatic %d (%v)", explicit, rows, channel, automatic, err)
+			}
+			for session, dir := range map[string]string{"two": linked, "one": main} {
+				startAs(f, "codex", session, dir)
+				if got := joinedChannel(f, "codex", session); got != "chosen" {
+					t.Fatalf("%q: a start in %s joined %q", explicit, dir, got)
+				}
+			}
+			continue
 		}
 		if got := startAs(f, "codex", "two", linked); !strings.Contains(got, "Joined #"+want+" as @codex1") {
 			t.Fatalf("%q: the linked worktree printed %q", explicit, got)
@@ -384,6 +417,19 @@ func TestAWorktreeStartRecordFromAnOlderVersionStillEnrols(t *testing.T) {
 	if got := joined(); got != "side" {
 		t.Fatalf("the session joined %q", got)
 	}
+}
+
+// joinedChannel names the channel the session is a live member of.
+func joinedChannel(f *setupWorld, adapter, session string) string {
+	f.t.Helper()
+	var name string
+	err := f.db().QueryRow(`SELECT c.name FROM binding b JOIN channel c ON c.id = b.channel_id
+		JOIN principal_key k ON k.principal_id = b.principal_id
+		WHERE k.vendor = ? AND k.key = ? AND b.state = 'live'`, adapter, session).Scan(&name)
+	if err != nil && err != sql.ErrNoRows {
+		f.t.Fatal(err)
+	}
+	return name
 }
 
 func fireHook(f *setupWorld, adapter, session, dir, event, fields string) string {

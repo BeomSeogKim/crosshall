@@ -37,6 +37,8 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 	}
 	moved, movedTo := apart("moved")
 	kept, keptAt := apart("kept")
+	// The owner's older default meets a channel crosshall created since.
+	owned, ownedAt := apart("owned")
 	plain := filepath.Join(base, "plain")
 	write(filepath.Join(plain, ".git", "HEAD"), "ref: refs/heads/main\n")
 	link := func(name string) (worktree, admin string) {
@@ -65,12 +67,13 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 			VALUES (1, 'old', 'active', 1), (2, 'new', 'active', 1)`); err != nil {
 			return err
 		}
-		for root, channel := range map[string]int{moved: 1, kept: 1, keptAt: 2, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1} {
+		for root, channel := range map[string]int{moved: 1, kept: 1, keptAt: 2, owned: 1, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1} {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO repo_default (repo_root, channel_id) VALUES (?, ?)`, root, channel); err != nil {
 				return err
 			}
 		}
-		return nil
+		_, err := tx.ExecContext(ctx, `INSERT INTO repo_default (repo_root, channel_id, automatic) VALUES (?, 2, 1)`, ownedAt)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +101,7 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{movedTo: 1, keptAt: 2, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1}
+	want := map[string]int{movedTo: 1, keptAt: 2, ownedAt: 1, plain: 1, linked: 2, locked: 2, broken: 2, gone: 1}
 	if len(got) != len(want) {
 		t.Fatalf("defaults %v, want %v", got, want)
 	}
@@ -106,5 +109,13 @@ func TestStartupAdoptsOlderMainCheckoutDefaults(t *testing.T) {
 		if got[root] != channel {
 			t.Fatalf("defaults %v, want %v", got, want)
 		}
+	}
+	// The adopted default is the owner's, not an automatic one any more.
+	var automatic, adopted int
+	if err := s.db.Update(ctx, func(tx store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT (SELECT automatic FROM repo_default WHERE repo_root = ?),
+			(SELECT COUNT(*) FROM event WHERE kind = 'channel_default_adopted')`, ownedAt).Scan(&automatic, &adopted)
+	}); err != nil || automatic != 0 || adopted != 3 {
+		t.Fatalf("automatic %d, adoption events %d (%v)", automatic, adopted, err)
 	}
 }

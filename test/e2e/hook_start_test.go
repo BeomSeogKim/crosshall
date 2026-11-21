@@ -47,8 +47,10 @@ func TestHookStartsAStoppedDispatcherAndEnrolls(t *testing.T) {
 // An owner stop withdraws the policy, so no hook brings the hall back until
 // the owner starts it; the start publishes the policy again.
 func TestHookLeavesADispatcherTheOwnerStopped(t *testing.T) {
-	w, _, c := m2World(t)
-	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w, writer, c := m2World(t)
+	if got := c.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude1") || !rosterHas(t, writer, "claude1") {
+		t.Fatalf("the initial session did not join: %q", got)
+	}
 	w.owner().must("owner", "stop")
 
 	for _, fire := range []struct {
@@ -70,8 +72,8 @@ func TestHookLeavesADispatcherTheOwnerStopped(t *testing.T) {
 	w.owner().must("owner", "start")
 	next := c
 	next.key = "synthetic-next-session"
-	if got := hostContext(t, next.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude2") {
-		t.Fatalf("after the owner's start a new session printed %q", got)
+	if got := next.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude2") || !rosterHas(t, writer, "claude2") {
+		t.Fatalf("the new session did not join after the owner's start: %q", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -88,7 +89,10 @@ func compareLaunchPIDNamespaces(platform, dispatcher, launch string) (sameNamesp
 	if dispatcherBoot == "" || launchBoot == "" {
 		return false, false
 	}
-	return dispatcher == launch, dispatcherBoot != launchBoot
+	_, dispatcherInode, _ := strings.Cut(dispatcher, ":")
+	_, launchInode, _ := strings.Cut(launch, ":")
+	// A container can report a different boot ID while the host still runs.
+	return dispatcher == launch, dispatcherBoot != launchBoot && dispatcherInode == launchInode
 }
 
 func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepResult) error {

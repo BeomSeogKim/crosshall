@@ -12,7 +12,7 @@ func TestLaunchSweepComparesPIDNamespaceAndBoot(t *testing.T) {
 		{"linux same", "linux", bootA + ":1", bootA + ":1", true, false},
 		{"linux different namespace", "linux", bootA + ":1", bootA + ":2", false, false},
 		{"linux previous boot", "linux", bootA + ":1", bootB + ":1", false, true},
-		{"linux previous boot other namespace", "linux", bootA + ":1", bootB + ":2", false, true},
+		{"linux different boot and namespace", "linux", bootA + ":1", bootB + ":2", false, false},
 		{"linux malformed boot", "linux", bootA + ":1", "invalid:1", false, false},
 		{"linux malformed inode", "linux", bootA + ":1", bootB + ":0", false, false},
 		{"linux legacy", "linux", bootA + ":1", "", false, false},

@@ -1,6 +1,11 @@
 package wire
 
-import "encoding/json"
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"strconv"
+)
 
 const (
 	VerbHookEnroll      = "hook.enroll"
@@ -68,9 +73,22 @@ type HookEventArgs struct {
 }
 
 func (a HookEventArgs) CanRecoverEnrollment() bool {
-	return a.EnrollRepoRoot != "" && a.WantOutput && a.Fact == HookPromptSubmitted &&
-		a.TurnRef != "" && a.EventRef == a.TurnRef+":UserPromptSubmit" &&
+	return a.EnrollRepoRoot != "" && a.WantOutput && a.Fact == HookPromptSubmitted && a.TurnRef != "" &&
+		(a.EventRef == a.TurnRef+":UserPromptSubmit" || a.EventRef == PromptEventRef(a.TurnRef+":UserPromptSubmit", a.HookAtMS)) &&
 		(a.Profile.Adapter == "claude" || a.Profile.Adapter == "codex")
+}
+
+// PromptEventRef is the reference of a prompt callback: its event's
+// reference and the hook's entry time. A prompt typed while the previous
+// turn runs reports that turn's id (Claude Code, #163); the entry time tells
+// the two callbacks apart, and a retry of the same hook keeps it. A
+// reference that would grow past 128 bytes is replaced by its digest.
+func PromptEventRef(ref string, entryMS int64) string {
+	ref += "@" + strconv.FormatInt(entryMS, 10)
+	if len(ref) > 128 {
+		return fmt.Sprintf("prompt:%x", sha256.Sum256([]byte(ref)))
+	}
+	return ref
 }
 
 type HookRouteArgs struct {

@@ -99,17 +99,22 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			}
 
 			db := f.db()
-			var bindings, launches, observations, routes int
+			var bindings, launches, observations, turns, routes int
 			if err := db.QueryRow(`SELECT
 				(SELECT COUNT(*) FROM binding WHERE principal_id = k.principal_id AND state = 'live'),
 				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id AND launch_ref = 'session' AND verified = 0
 					AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'),
-				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND turn_ref = ?),
+				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND turn_ref = ?1),
+				(SELECT COUNT(*) FROM turn WHERE principal_id = k.principal_id AND turn_ref = ?1),
 				(SELECT COUNT(*) FROM publish_route WHERE principal_id = k.principal_id)
-				FROM principal_key k WHERE vendor = ? AND key = ?`, recovered, test.adapter, key).Scan(&bindings, &launches, &observations, &routes); err != nil ||
-				bindings != 1 || launches != 1 || observations != map[string]int{"claude": 2, "codex": 1}[test.adapter] || routes != 0 {
-				t.Fatalf("recovery wrote bindings %d, launches %d, observations %d, routes %d (%v)",
-					bindings, launches, observations, routes, err)
+				FROM principal_key k WHERE vendor = ?2 AND key = ?3`, recovered, test.adapter, key).Scan(&bindings, &launches, &observations, &turns, &routes); err != nil ||
+				bindings != 1 || launches != 1 || turns != 1 || routes != 0 {
+				t.Fatalf("recovery wrote bindings %d, launches %d, turns %d, routes %d (%v)", bindings, launches, turns, routes, err)
+			}
+			// Claude's second callback is its own event unless both hooks
+			// entered in the same millisecond, which gives them one reference.
+			if want := map[string][2]int{"claude": {1, 2}, "codex": {1, 1}}[test.adapter]; observations < want[0] || observations > want[1] {
+				t.Fatalf("recovery observed the prompt %d times, want %d to %d", observations, want[0], want[1])
 			}
 			if test.adapter == "claude" {
 				c := claudeSession{w: f.world, key: key, pid: pid, repo: repo}

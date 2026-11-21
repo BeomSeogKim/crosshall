@@ -271,6 +271,42 @@ func TestPublishReceiptAfterADeniedTurnIsItsOwnTurn(t *testing.T) {
 	}
 }
 
+// A duplicate prompt that a fresh hook process reports for a turn already
+// handled opens no turn, so it is no activity that would leave a notice's
+// receipt unknown: after a finished turn, and after a turn ended by a denied
+// dialog.
+func TestPublishReceiptIgnoresADuplicatePrompt(t *testing.T) {
+	duplicate := func(ref string, at int64) HookEvent {
+		return event(publishTestLaunch, FactPromptSubmitted, ref+":prompt@"+strconv.FormatInt(at, 10), ref, at, true)
+	}
+	for _, denied := range []bool{false, true} {
+		t.Run(map[bool]string{false: "finished", true: "denied"}[denied], func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			p.finishPreviousTurn()
+			at := p.now.UnixMilli()
+			if denied {
+				p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
+				p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "user:approval", "user", at+60, false))
+			}
+			if r := p.hook(p.reader, duplicate("previous", at+70)); !quiet(r) {
+				t.Fatalf("the duplicate printed %+v", r)
+			}
+			ask := p.turnEndAsk(p.writer, "reader", "after the duplicate")
+			id := p.reserve()
+			if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+				t.Fatal("reservation did not start")
+			}
+			cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
+			p.hook(p.reader, cmd)
+			p.observation(id, "own_turn")
+			if n := p.count(`SELECT COUNT(*) FROM publish_suspension`); n != 0 {
+				t.Fatalf("%d suspensions after a duplicate prompt", n)
+			}
+		})
+	}
+}
+
 // A notice that reports the open turn's id was taken into that turn: the
 // rule for a turn without a Stop does not apply to it.
 func TestPublishReceiptOnTheOpenTurnStaysAbsorbed(t *testing.T) {

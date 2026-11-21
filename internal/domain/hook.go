@@ -603,9 +603,6 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 			origin = "crosshall_wake"
 		}
 	}
-	if replay, err := promptReplay(ctx, tx, principal, cmd); err != nil || replay {
-		return okOrErr(out, err)
-	}
 	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
 		return okOrErr(out, err)
 	}
@@ -671,40 +668,20 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		return OK(out)
 	}
 	switch cmd.Fact {
-	case FactPromptSubmitted:
-		if cmd.TurnRef != "" {
-			turn, err := promptTurn(ctx, tx, principal, cmd)
-			if err != nil {
-				return core.Result{}, err
-			}
-			// A prompt older than a turn already opened is stale: it opens its
-			// turn as superseded and supersedes nothing.
-			var newer int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn WHERE principal_id = ? AND launch_ref = ?
-				AND turn_ref <> ? AND opened_hook_at_ms > ?`, principal, cmd.LaunchRef, turn, cmd.HookAtMS).Scan(&newer); err != nil {
-				return core.Result{}, err
-			}
-			if newer == 0 {
-				if _, err := tx.ExecContext(ctx, `UPDATE turn SET superseded = 1 WHERE principal_id = ? AND launch_ref = ? AND turn_ref <> ?`,
-					principal, cmd.LaunchRef, turn); err != nil {
-					return core.Result{}, err
-				}
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, superseded)
-				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, principal, cmd.LaunchRef, turn, cmd.HookAtMS, newer > 0); err != nil {
-				return core.Result{}, err
-			}
-			if newer > 0 {
-				return OK(out) // a stale prompt is an observation: no offer, no acknowledgement
-			}
+	case FactPromptSubmitted, FactTurnFinishing:
+		if cmd.TurnRef == "" {
+			break
 		}
-	case FactTurnFinishing:
-		if err := adoptTypedAhead(ctx, tx, principal, cmd); err != nil {
+		// The launch's turns are reassigned from all its recorded prompts
+		// and Stops in hook-time order (#174). A prompt that repeats one
+		// already handled, or opened a turn older than one already opened,
+		// is an observation: no offer, no acknowledgement.
+		turn, latest, err := reconcileTurns(ctx, tx, principal, cmd.LaunchRef, cmd.EventRef, ms(now))
+		if err != nil {
 			return core.Result{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE turn SET finishing_hook_at_ms = COALESCE(finishing_hook_at_ms, ?)
-			WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, cmd.HookAtMS, principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
-			return core.Result{}, err
+		if cmd.Fact == FactPromptSubmitted && (turn == "" || !latest) {
+			return OK(out)
 		}
 	case FactSessionEnded:
 		if live {

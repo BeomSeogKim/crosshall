@@ -3,7 +3,7 @@ package domain
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"slices"
 	"strconv"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -18,107 +18,246 @@ func placeholder(ref string, at int64) string {
 	return typedAheadPrefix + ref + "@" + strconv.FormatInt(at, 10)
 }
 
-// promptRow is the turn a prompt's id already opened in its launch.
-type promptRow struct {
-	found, open bool
+// turnFact is a recorded prompt or Stop of a launch.
+type turnFact struct {
+	prompt bool
+	ref    string
+	at     int64
+	event  string
+}
+
+// assignedTurn is a turn of a launch as its facts in hook order make it.
+type assignedTurn struct {
+	name        string
 	opened      int64
+	finishing   int64 // 0 while no Stop finished it
+	placeholder bool
 }
 
-func turnRow(ctx context.Context, tx store.Tx, principal int64, launch, ref string) (promptRow, error) {
-	var r promptRow
-	err := tx.QueryRowContext(ctx, `SELECT opened_hook_at_ms, finishing_hook_at_ms IS NULL AND superseded = 0
-		FROM turn WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, principal, launch, ref).Scan(&r.opened, &r.open)
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, nil
+// assignTurns applies a launch's prompts and Stops in hook-time order, so
+// the turns depend on what the hooks recorded, not on the order their
+// callbacks were delivered in. It returns the turns in the order they
+// opened, and for each prompt event the index of the turn it opened, or -1
+// for a prompt that repeats one already handled.
+//
+//   - A prompt with the id of the latest turn, still running, was typed
+//     ahead: Claude Code reports the running turn's id for it. It opens a
+//     placeholder. A later prompt with that id is merged into it and
+//     opens nothing.
+//   - A prompt with a new id while a placeholder is the only turn running
+//     since the latest turn with an id of its own: the id is the
+//     placeholder's, typed ahead in a chain. The placeholder takes it, and
+//     the prompt opens the next placeholder.
+//   - Any other prompt with a new id opens its turn; any other repeat
+//     opens nothing.
+//   - A Stop finishes its id's turn (the earliest Stop counts). A Stop with
+//     an id no turn has adopts the only running placeholder, if exactly one
+//     runs since the latest turn with an id of its own; otherwise nothing.
+func assignTurns(facts []turnFact) ([]assignedTurn, map[string]int) {
+	var turns []assignedTurn
+	byName := map[string]int{}
+	opened := map[string]int{}
+	sole := func() int {
+		start := 0
+		for i := len(turns) - 1; i >= 0; i-- {
+			if !turns[i].placeholder {
+				start = i
+				break
+			}
+		}
+		found := -1
+		for i := start; i < len(turns); i++ {
+			if turns[i].finishing != 0 {
+				continue
+			}
+			if found >= 0 || !turns[i].placeholder {
+				return -1
+			}
+			found = i
+		}
+		return found
 	}
-	r.found = err == nil
-	return r, err
-}
-
-// promptReplay says a prompt repeats one already handled: its id opened a
-// turn of the launch that is no longer running, or at the same time. Only a
-// prompt reporting a running turn's id is typed ahead; any other repeat
-// changes nothing, as a replay did before.
-func promptReplay(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) (bool, error) {
-	if cmd.Fact != FactPromptSubmitted || cmd.TurnRef == "" {
-		return false, nil
+	open := func(t assignedTurn) int {
+		turns = append(turns, t)
+		byName[t.name] = len(turns) - 1
+		return len(turns) - 1
 	}
-	r, err := turnRow(ctx, tx, principal, cmd.LaunchRef, cmd.TurnRef)
-	return r.found && (!r.open || r.opened == cmd.HookAtMS), err
+	rename := func(i int, ref string) {
+		delete(byName, turns[i].name)
+		turns[i].name, turns[i].placeholder = ref, false
+		byName[ref] = i
+	}
+	for _, f := range facts {
+		i, known := byName[f.ref]
+		switch {
+		case f.prompt && known:
+			opened[f.event] = -1
+			if i == len(turns)-1 && turns[i].finishing == 0 {
+				opened[f.event] = open(assignedTurn{name: placeholder(f.ref, f.at), opened: f.at, placeholder: true})
+			}
+		case f.prompt:
+			if j := sole(); j >= 0 {
+				rename(j, f.ref)
+				opened[f.event] = open(assignedTurn{name: placeholder(f.ref, f.at), opened: f.at, placeholder: true})
+			} else {
+				opened[f.event] = open(assignedTurn{name: f.ref, opened: f.at})
+			}
+		case known:
+			if turns[i].finishing == 0 {
+				turns[i].finishing = f.at
+			}
+		default:
+			if j := sole(); j >= 0 {
+				rename(j, f.ref)
+				turns[j].finishing = f.at
+			}
+		}
+	}
+	return turns, opened
 }
 
-// soleOpenPlaceholder is the typed-ahead placeholder of the launch when it
-// is the only unfinished turn opened before at since the latest prompt with
-// an id of its own: then which turn an unknown id stands for is unambiguous.
-// A turn before that prompt ended, with or without its Stop: a
-// prompt typed while a turn runs reports that turn's id, not a new one.
-func soleOpenPlaceholder(ctx context.Context, tx store.Tx, principal int64, launch string, at int64) (string, bool, error) {
-	var ref string
-	var n int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(turn_ref), '') FROM turn
-		WHERE principal_id = ?1 AND launch_ref = ?2 AND finishing_hook_at_ms IS NULL AND opened_hook_at_ms <= ?3
-			AND opened_hook_at_ms >= COALESCE((SELECT MAX(opened_hook_at_ms) FROM turn
-				WHERE principal_id = ?1 AND launch_ref = ?2 AND opened_hook_at_ms <= ?3
-					AND substr(turn_ref, 1, length(?4)) <> ?4), 0)`,
-		principal, launch, at, typedAheadPrefix).Scan(&n, &ref)
-	if err != nil || n != 1 || len(ref) <= len(typedAheadPrefix) || ref[:len(typedAheadPrefix)] != typedAheadPrefix {
+// launchFacts reads a launch's recorded prompts and Stops in hook-time
+// order. Within one millisecond, a Stop comes before the prompts (it ended
+// the turn they follow), except after a prompt with its own id: a Stop
+// never precedes its turn's first prompt. Remaining ties go by event, not
+// by delivery. A fact stamped beyond the dispatcher's clock slack is left
+// out until the clock reaches it.
+func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch string, nowMS int64) ([]turnFact, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT kind = ?, turn_ref, hook_at_ms, event_ref FROM observation
+		WHERE principal_id = ? AND launch_ref = ? AND kind IN (?, ?) AND turn_ref IS NOT NULL AND hook_at_ms <= ?
+		ORDER BY hook_at_ms, event_ref`,
+		FactPromptSubmitted, principal, launch, FactPromptSubmitted, FactTurnFinishing, nowMS+futureSlackMS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var facts []turnFact
+	for rows.Next() {
+		var f turnFact
+		if err := rows.Scan(&f.prompt, &f.ref, &f.at, &f.event); err != nil {
+			return nil, err
+		}
+		facts = append(facts, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	orderTies(facts)
+	return facts, nil
+}
+
+// orderTies orders the facts of each millisecond: Stops of other turns,
+// then prompts, then Stops of a turn prompted in that millisecond, keeping
+// the event order within each.
+func orderTies(facts []turnFact) {
+	rank := func(f turnFact, prompted map[string]bool) int {
+		switch {
+		case f.prompt:
+			return 1
+		case prompted[f.ref]:
+			return 2
+		}
+		return 0
+	}
+	for start := 0; start < len(facts); {
+		end := start + 1
+		for end < len(facts) && facts[end].at == facts[start].at {
+			end++
+		}
+		if end-start > 1 {
+			prompted := map[string]bool{}
+			for _, f := range facts[start:end] {
+				if f.prompt {
+					prompted[f.ref] = true
+				}
+			}
+			slices.SortStableFunc(facts[start:end], func(a, b turnFact) int { return rank(a, prompted) - rank(b, prompted) })
+		}
+		start = end
+	}
+}
+
+// reconcileTurns makes the launch's turn rows the hook-order assignment of
+// its recorded facts, and returns the turn the prompt event opened ("" for
+// a repeat) and whether that turn is the latest one opened. Rows are
+// matched by name. A turn that gave a turn-end notice keeps its name: it is
+// updated in place, or, when the assignment no longer has it, kept as a
+// superseded turn.
+func reconcileTurns(ctx context.Context, tx store.Tx, principal int64, launch, event string, nowMS int64) (string, bool, error) {
+	facts, err := launchFacts(ctx, tx, principal, launch, nowMS)
+	if err != nil {
 		return "", false, err
 	}
-	return ref, true, nil
-}
-
-// promptTurn is the turn a prompt opens, by hook entry time rather than
-// arrival:
-//   - its id opened a running turn earlier: it was typed ahead, and opens a
-//     placeholder that the next unknown Stop adopts;
-//   - its id opened a running turn later: that later packet was the typed-
-//     ahead one, delivered first; it becomes the placeholder, and this
-//     prompt opens its own turn;
-//   - its id is new while a typed-ahead placeholder is the only running
-//     turn: the id is that turn's, typed ahead in a chain; the
-//     placeholder is bound to it, and this prompt opens the next one;
-//   - otherwise its own id.
-func promptTurn(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) (string, error) {
-	r, err := turnRow(ctx, tx, principal, cmd.LaunchRef, cmd.TurnRef)
+	turns, opened := assignTurns(facts)
+	want := map[string]int{}
+	for i, t := range turns {
+		want[t.name] = i
+	}
+	type row struct {
+		name      string
+		opened    int64
+		finishing sql.NullInt64
+		old       bool
+		claimed   bool
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT t.turn_ref, t.opened_hook_at_ms, t.finishing_hook_at_ms, t.superseded,
+			EXISTS (SELECT 1 FROM turn_end_notice n WHERE n.principal_id = t.principal_id AND n.launch_ref = t.launch_ref AND n.turn_ref = t.turn_ref)
+		FROM turn t WHERE t.principal_id = ? AND t.launch_ref = ?`, principal, launch)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	switch {
-	case r.found && r.open && r.opened < cmd.HookAtMS:
-		return placeholder(cmd.TurnRef, cmd.HookAtMS), nil
-	case r.found && r.open && r.opened > cmd.HookAtMS:
-		_, err := tx.ExecContext(ctx, `UPDATE turn SET turn_ref = ? WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`,
-			placeholder(cmd.TurnRef, r.opened), principal, cmd.LaunchRef, cmd.TurnRef)
-		return cmd.TurnRef, err
-	case !r.found:
-		running, ok, err := soleOpenPlaceholder(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS)
-		if err != nil || !ok {
-			return cmd.TurnRef, err
+	var have []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.name, &r.opened, &r.finishing, &r.old, &r.claimed); err != nil {
+			rows.Close()
+			return "", false, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE turn SET turn_ref = ? WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`,
-			cmd.TurnRef, principal, cmd.LaunchRef, running); err != nil {
-			return "", err
+		have = append(have, r)
+	}
+	if err := rows.Close(); err != nil {
+		return "", false, err
+	}
+	finishing := func(t assignedTurn) sql.NullInt64 {
+		return sql.NullInt64{Int64: t.finishing, Valid: t.finishing != 0}
+	}
+	for _, r := range have {
+		i, ok := want[r.name]
+		switch {
+		case ok:
+			t := turns[i]
+			old := i != len(turns)-1
+			if r.opened != t.opened || r.finishing != finishing(t) || r.old != old {
+				if _, err := tx.ExecContext(ctx, `UPDATE turn SET opened_hook_at_ms = ?, finishing_hook_at_ms = ?, superseded = ?
+					WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, t.opened, finishing(t), old, principal, launch, r.name); err != nil {
+					return "", false, err
+				}
+			}
+			delete(want, r.name)
+		case r.claimed:
+			if _, err := tx.ExecContext(ctx, `UPDATE turn SET superseded = 1
+				WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, principal, launch, r.name); err != nil {
+				return "", false, err
+			}
+		default:
+			if _, err := tx.ExecContext(ctx, `DELETE FROM turn WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`,
+				principal, launch, r.name); err != nil {
+				return "", false, err
+			}
 		}
-		return placeholder(cmd.TurnRef, cmd.HookAtMS), nil
 	}
-	return cmd.TurnRef, nil
-}
-
-// adoptTypedAhead gives a turn end whose id opened no turn of the launch the
-// typed-ahead placeholder that is the only unfinished turn opened before it;
-// with any other history it adopts nothing.
-func adoptTypedAhead(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) error {
-	if cmd.TurnRef == "" {
-		return nil
+	for i, t := range turns {
+		if _, ok := want[t.name]; !ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, finishing_hook_at_ms, superseded)
+			VALUES (?, ?, ?, ?, ?, ?)`, principal, launch, t.name, t.opened, finishing(t), i != len(turns)-1); err != nil {
+			return "", false, err
+		}
 	}
-	if r, err := turnRow(ctx, tx, principal, cmd.LaunchRef, cmd.TurnRef); err != nil || r.found {
-		return err
+	i, ok := opened[event]
+	if !ok || i < 0 {
+		return "", false, nil
 	}
-	running, ok, err := soleOpenPlaceholder(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS)
-	if err != nil || !ok {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE turn SET turn_ref = ? WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`,
-		cmd.TurnRef, principal, cmd.LaunchRef, running)
-	return err
+	return turns[i].name, i == len(turns)-1, nil
 }

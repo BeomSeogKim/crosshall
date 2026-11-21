@@ -51,15 +51,15 @@ Antigravity's adapter handles the CLI's `SessionStart` with a single workspace a
 
 An adapter only checks the turn-end rule; it does not replace it. When a turn ends while a request addressed to the session is unread, the adapter continues that turn once with the `[crosshall] pending:` line. It does so only if the check is available for this build and mode. Claude Code receives the line as Stop hook context. On Codex the check is unavailable in this release, because a stock Codex session cannot be verified. Each request is announced this way once and stays unread in the inbox. Each continuation costs one more model request. `crosshall owner doctor` shows per adapter whether the turn-end notice is available, and how many continuations it committed today. It is available only when three things hold. The owner has imported tested evidence for that exact build and mode, recorded by a conformance run that observed the continuation. The adapter policy is on. The running session's build and mode can be verified.
 
-To make the check available for Claude Code in print mode (`claude -p`), work from the release checkout with `claude` and Go on PATH:
+To make the check available for Claude Code, work from the release checkout with `claude` and Go on PATH. Print mode (`claude -p`) and interactive sessions are separate modes with separate evidence, so do this for each mode you use:
 1. Create an output directory outside your home and resolve its physical path, so it contains no symbolic link: `out="$(cd "$(mktemp -d)" && pwd -P)"`.
-2. Run `CROSSHALL_CONFORMANCE_OUT="$out" go test -tags conformance -count=1 -run '^TestClaudeCodeTurnEndConformance$' ./test/conformance`. The run uses temporary homes and a local stand-in for the model, so it makes no billed requests.
+2. Run `CROSSHALL_CONFORMANCE_OUT="$out" go test -tags conformance -count=1 -run '^TestClaudeCodeTurnEndConformance$' ./test/conformance` for print mode, or the same command with `'^TestClaudeCodeInteractiveTurnEndConformance$'` for interactive sessions. The run uses temporary homes and a local stand-in for the model, so it makes no billed requests. The interactive run starts a real `claude` on a pseudo-terminal of its own and types into it; it opens no window and touches no session of yours.
 3. Import the file it writes to `"$out"` with `crosshall owner adapter evidence <file>`.
 4. Turn the adapter on with `crosshall owner adapter set claude --enabled on`.
 
 `crosshall owner doctor` then lists `turn_end tested` for that build. Its turn-end notice line reads available while a joined member runs a verified session of that build and mode. Its count is of committed continuation claims, not of confirmed model continuations. Evidence belongs to one hook manifest revision: after an upgrade that changes it (`claude-2` in this release), run the conformance test again and import the new file.
 
-Interactive Claude Code sessions report a verified build and the mode `interactive`, but no conformance run has tested the check there, so it stays unavailable. Stock Codex sessions cannot be verified, so the check stays unavailable for them too.
+In an interactive session the check covers a turn whose prompt was typed at an idle prompt. It does not cover a turn whose prompt was typed ahead, while the turn before it was still running: Claude Code reports such a prompt with the earlier turn's ID, so the adapter cannot tell that a new turn began (seen on 2.1.330). A request that arrives during such a turn is offered at a later prompt instead. Stock Codex sessions cannot be verified, so the check stays unavailable for them.
 
 ## The prompt line
 

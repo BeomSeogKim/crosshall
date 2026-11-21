@@ -40,6 +40,7 @@ type conformance struct {
 	repo, crosshall, claude   string
 	writerRoute               string
 	model                     *fixture
+	malformed                 sync.Once // reports a malformed callback record once
 }
 
 func newConformance(t *testing.T) *conformance {

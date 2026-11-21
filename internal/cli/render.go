@@ -142,7 +142,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	case domain.Note, domain.Log, domain.Leave, domain.Focus:
 		return renderNoteLog(cmd, data, w)
 	// end note-log
-	case domain.OwnerWho, domain.OwnerLog, domain.ChannelDefault:
+	case domain.OwnerWho, domain.OwnerLog, domain.ChannelDefault, domain.ChannelAuto:
 		return renderOwnerViews(cmd, data, w)
 	case domain.Who:
 		var r domain.WhoResult

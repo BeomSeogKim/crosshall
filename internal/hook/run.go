@@ -133,7 +133,8 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	leaf, gen, repo, outcome := resolveLeaf(ctx, rv, state.root, client, spec, e)
 	if outcome != "" {
-		if outcome == "unmatched" && spec.Enroll {
+		// With automatic joining on, such a start is outside Git: no line.
+		if outcome == "unmatched" && spec.Enroll && !autoJoin(ctx, rv) {
 			result := domain.UnmappedStart(e.Source, policy.Epoch)
 			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
 				return failure
@@ -297,7 +298,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	if err == nil {
 		var repo string
 		if spec.Enroll {
-			repo = startRoot(stateRoot, e)
+			repo = enrolTarget(ctx, rv, e, startRoot(stateRoot, e))
 		}
 		return leaf, gen, repo, ""
 	}
@@ -334,14 +335,10 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		return nil, "", "", "refused"
 	}
 	if spec.Enroll {
-		repo = startRoot(stateRoot, e)
+		repo = enrolTarget(ctx, rv, e, startRoot(stateRoot, e))
 	}
 	if newSession && spec.Enroll {
-		match, err := hasDefault(ctx, rv, repo)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, "", "", transportOutcome(ctx, err)
-		}
-		if !match {
+		if repo == "" {
 			return nil, "", "", "unmatched"
 		}
 		if hookExpired(ctx) {
@@ -366,6 +363,8 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	return leaf, gen, repo, ""
 }
 
+// enrollmentRoot names the repository the event's directory belongs to: the
+// same root for every linked worktree of one repository.
 func enrollmentRoot(e event) string {
 	if e.startupRepo != nil {
 		return *e.startupRepo
@@ -374,7 +373,29 @@ func enrollmentRoot(e event) string {
 		return ""
 	}
 	root, _ := cli.RepoRoot(e.CWD)
-	return root
+	if root == "" {
+		return ""
+	}
+	return cli.RepoCommonRoot(root)
+}
+
+// enrolTarget is the root whose channel the session joins: the worktree's
+// own default when the owner set one, else the repository's default, else
+// the repository itself while the owner's automatic joining is on, when the
+// dispatcher creates its channel.
+func enrolTarget(ctx context.Context, rv *os.Root, e event, repo string) string {
+	if repo == "" {
+		return ""
+	}
+	if worktree, _ := cli.RepoRoot(e.CWD); worktree != "" && worktree != repo {
+		if match, _ := hasDefault(ctx, rv, worktree); match {
+			return worktree
+		}
+	}
+	if match, _ := hasDefault(ctx, rv, repo); match || autoJoin(ctx, rv) {
+		return repo
+	}
+	return ""
 }
 
 // startRoot is the repository a start event may enrol the session in. A
@@ -403,10 +424,7 @@ func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e 
 	if repo == "" || startup != repoDigestRecord(repo) {
 		return ""
 	}
-	if match, _ := hasDefault(ctx, rv, repo); !match {
-		return ""
-	}
-	return repo
+	return enrolTarget(ctx, rv, e, repo)
 }
 
 func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo string, want bool, epoch uint64) wire.Request {

@@ -89,7 +89,10 @@ type HookResult struct {
 	ReminderText string           `json:"reminder_text,omitempty"`
 	Ack          *HookAck         `json:"ack,omitempty"`
 	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
-	Epoch        uint64           `json:"epoch"`
+	// ChannelCreated tells the dispatcher that this enrolment made the
+	// repository's channel, so the published repository set is stale.
+	ChannelCreated bool   `json:"channel_created,omitempty"`
+	Epoch          uint64 `json:"epoch"`
 }
 
 type HookJoinHintAck struct {

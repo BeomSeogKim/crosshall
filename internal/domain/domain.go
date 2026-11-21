@@ -118,6 +118,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[OwnerLog](args)
 	case VerbChannelDefault:
 		return decodeLedgerCommand[ChannelDefault](args)
+	case VerbChannelAuto:
+		return decodeLedgerCommand[ChannelAuto](args)
 	// end owner-views
 	case VerbAdapterSet:
 		return decodeLedgerCommand[AdapterSet](args)

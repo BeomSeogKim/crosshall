@@ -64,6 +64,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.ownerLog(ctx, tx, caller, cmd)
 	case ChannelDefault:
 		return s.channelDefault(ctx, tx, caller, req, cmd, now)
+	case ChannelAuto:
+		return s.channelAuto(ctx, tx, caller, req, cmd, now)
 	// end owner-views
 	case AdapterEvidence: // adapter-claude
 		return s.adapterEvidence(ctx, tx, caller, req, cmd, now)

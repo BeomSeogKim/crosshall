@@ -556,9 +556,11 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	if isHook || isWait {
 		req.Ack = 0 // Neither output acknowledges an ordinary roster.
 	}
-	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault || req.Verb == domain.VerbAdapterEvidence
+	refreshFiles := req.Verb == wire.VerbAdapterSet || req.Verb == domain.VerbChannelDefault || req.Verb == domain.VerbChannelAuto ||
+		req.Verb == domain.VerbAdapterEvidence
 	var result core.Result
 	var enrolledSession ident.Identity
+	var channelCreated bool
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
@@ -644,6 +646,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		}
 		if req.Verb == domain.VerbJoin || hookEnrolled(req, resolved.Caller, result) {
 			enrolledSession = ident.Identity{Vendor: resolved.Vendor, Key: resolved.SessionKey}
+			channelCreated = hookCreatedChannel(req, result)
 		}
 		if refreshFiles {
 			if err := s.invalidateAdapterFile(req.Verb); err != nil {
@@ -676,6 +679,11 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	}
 	if enrolledSession.Key != "" {
 		s.logFailure(hook.RemoveStartupRepo(s.state, enrolledSession))
+	}
+	if channelCreated {
+		// The repository set gained an entry; hooks tolerate the old one
+		// while automatic joining stays on.
+		s.logFailure(s.publishAdapterFiles(ctx))
 	}
 	if refreshFiles && result.Status == core.ExitOK {
 		if err := s.publishAdapterFiles(ctx); err != nil {

@@ -264,12 +264,22 @@ func UnmappedStart(source string, epoch uint64) wire.HookResult {
 
 // hookAutoJoin joins the repository's default channel: generated alias, zero tokens.
 func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cmd HookEnroll, principal int64, prompt *HookEvent, now time.Time) (core.Result, error) {
+	auto, err := autoJoinOn(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	// With automatic joining on, a start that joins nothing is outside Git
+	// or in an archived channel's repository, and says nothing.
+	unmapped := wire.HookResult{Enrollment: "none", Epoch: cmd.Epoch}
+	if !auto {
+		unmapped = UnmappedStart(cmd.Source, cmd.Epoch)
+	}
 	if cmd.RepoRoot == "" {
-		return OK(UnmappedStart(cmd.Source, cmd.Epoch))
+		return OK(unmapped)
 	}
 	ch, found, err := defaultChannel(ctx, tx, cmd.RepoRoot)
-	if err != nil || !found || ch.state != "active" {
-		return okOrErr(UnmappedStart(cmd.Source, cmd.Epoch), err)
+	if err != nil || (found && ch.state != "active") || (!found && !auto) {
+		return okOrErr(unmapped, err)
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}
 	if principal == 0 {
@@ -296,6 +306,12 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 				return core.Result{}, err
 			}
 		}
+	}
+	if !found {
+		if ch, err = createRepoChannel(ctx, tx, cmd.RepoRoot, principal, now); err != nil {
+			return core.Result{}, err
+		}
+		out.ChannelCreated = true
 	}
 	alias, err := generateAlias(ctx, tx, ch.id, req.Vendor)
 	if err != nil {

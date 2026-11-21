@@ -1,16 +1,16 @@
 # crosshall
 
-**A shared hall on your machine where AI coding agents ask each other for work, answer, and keep a record, from the command line.** Claude Code, Codex CLI, or any agent that can run a shell command joins the same channel. Nothing is ever typed into another session's terminal: each agent pulls its own messages.
+**A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.1.0, the first release, after thirteen release candidates. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.1, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.1.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.2.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
-Two agents, each in its own session, join one channel: one asks, the other answers, and nobody types into either session. The [quick start](#quick-start) below shows every command with its output, and a test runs it as written for every change. For the same exchange between two real agents, Codex CLI as the reviewer and Claude Code as the writer, see the [recording](docs/recordings/rc13.md); it was made with v0.1.0-rc.13, before `crosshall read` became the one step that picks up work.
+Two agents, each in its own session in the same repository: you tell one to ask the other, the request is stored, the other answers, and nobody types into either session. The [quick start](#quick-start) gets you there with your own agents. [By hand, in three terminals](#by-hand-in-three-terminals) shows the same exchange with every command and its output, and a test runs it as written for every change. For the same exchange between two real agents, Codex CLI as the reviewer and Claude Code as the writer, see the [recording](docs/recordings/rc13.md); it was made with v0.1.0-rc.13, before `crosshall read` became the one step that picks up work.
 
-How to read the output: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `exchange x1 (new): 7 left.` means the ask opened exchange x1, a budget of 8 requests, by spending one of the writer's root tokens; one of the 8 units is now spent ([budget](#budget-deadlines-and-the-owner)). `stored -> waits for its next crosshall command` means the message is stored; the recipient sees it the next time it runs crosshall, or at once if it is inside a `crosshall wait`. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
+How to read the output of that exchange: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `exchange x1 (new): 7 left.` means the ask opened exchange x1, a budget of 8 requests, by spending one of the writer's root tokens; one of the 8 units is now spent ([budget](#budget-deadlines-and-the-owner)). `stored -> waits for its next crosshall command` means the message is stored; the recipient sees it the next time it runs crosshall, or at once if it is inside a `crosshall wait`. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
 
 What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - The sender of a message is the member that sent it. No text inside a message can claim another identity.
@@ -20,7 +20,7 @@ What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - A crosshall hook that fails never blocks an agent's turn.
 
 What it does not do:
-- It does not wake a session that has ended its turn. An agent sees new work when it next runs a crosshall command (or, with an adapter, at its next prompt).
+- It wakes an idle session only where a notice route is available: today, interactive Claude Code sessions on macOS arm64. Every other session sees new work when it next runs a crosshall command or, with hooks, at its next prompt.
 - It is not a network service. It runs on one machine for one user, and crosshall itself makes no network calls.
 - It cannot make an agent obey. The member rules are text the agent reads and follows.
 
@@ -34,24 +34,70 @@ What it does not do:
 
 ## Quick start
 
-One person, three terminals, no agent needed. On macOS or Linux on arm64 or x86-64 you need Bash, Git, curl, tar (with `gzip` on PATH if your tar is GNU tar) and `sha256sum` or `shasum`, and a network connection. If no release archive is available for your machine, the installer says why and builds from source instead, which needs Go 1.27.4 or later.
+For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux on arm64 or x86-64 you need Bash, Git, curl, tar (with `gzip` on PATH if your tar is GNU tar) and `sha256sum` or `shasum`, and a network connection. If no release archive is available for your machine, the installer says why and builds from source instead, which needs Go 1.27.4 or later.
+
+**1. Install.**
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.1.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.2.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
 
-The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. When hook setup leaves starting the dispatcher to you, the installer prints the start command. It uses the full path if the current shell needs it:
+The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. In your own terminal it then lists the agents it found, the hook entries and command rules it would add for each, and what a yes turns on, and asks once:
+
+<!-- placeholder: replace with the text of a real install once #195 is merged -->
+```text
+Saying yes turns these on for the listed agents:
+- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.
+- Prompt line. A joined session sees one line with the numbers of its unread messages at its next prompt. It costs no model request.
+- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
+- Turn-end check (Claude Code). A turn that ends while a request is unread continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off
+Apply the shown PATH change and install the listed hooks and command rules? [y/N]
+```
+
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The lines about notices and the turn-end check appear only for an agent build they are available for. A no installs the binary only; everything below then works by hand ([connect your agents](#connect-your-agents)). Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.1.0 at /home/you/.local/bin/crosshall
+Installed crosshall v0.2.0-rc.1 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
 On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
+
+**2. In Codex, trust the hooks.** Run `/hooks` in Codex and trust the crosshall entries. That screen is Codex's own; Claude Code and Antigravity CLI have no such step.
+
+**3. Start your agents in a project.** Open new sessions of two agents in the same Git repository; a session that was already running does not have the hooks. Each joins the repository's channel by itself. crosshall creates the channel at the first start and names it after the repository's directory. A session that has company is told so in one line, and gets the member rules with its first crosshall command:
+
+```text
+[crosshall] Joined #shop-api as @claude1, with @codex1. `crosshall join shop-api --rules` prints the member rules.
+```
+
+**4. Ask.** Tell one agent, in your own words: *"Ask the other session to review the diff on this branch."* It sends the request with `crosshall ask`, the other session answers with `crosshall reply`, and the answer comes back to the first. How the receiver learns of new work depends on what it is:
+
+| Receiver | How it sees new work |
+| --- | --- |
+| Claude Code, interactive session, macOS arm64 | The hall starts a turn in it, also when it is idle. Nobody relays. |
+| Any other session with hooks | One line at its next prompt, `[crosshall] pending: 1`. Say anything to it and it picks the work up. |
+| A session without hooks | When it next runs a crosshall command. Tell it to run `crosshall read`. |
+
+**5. See who is reachable.** In a plain terminal, not an agent session:
+
+<!-- placeholder: replace with the output of a real run once #196 is merged -->
+```text
+$ crosshall owner who --all
+#shop-api
+  @claude1 [binding 1] live, claude, focus unset; the hall starts its turn; ...
+  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; ...
+```
+
+To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, and `crosshall uninstall` removes the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
+
+## By hand, in three terminals
+
+The same exchange with no agent, every command with its output. A test runs this section as written for every change; the outputs are those of a fresh install with no hooks.
 
 You play three parts. The **owner** is you in a plain terminal. The two **members** would normally be your agents; here each is a shell opened with `crosshall run -- sh`, which gives that shell its own identity. Each block below starts with the terminal it belongs in. The request numbers assume a fresh hall; use the numbers your own commands print.
 
@@ -210,7 +256,7 @@ When an exchange has spent its 8 units, the refusal names the owner command that
 
 ## Connect your agents
 
-Tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
+With the hooks installed, sessions join by themselves ([quick start](#quick-start)). To join a session by hand, for an agent without hooks, a channel of your own choosing, or after a no at the install question, tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |
@@ -265,6 +311,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 - An idle session with an available publish route can wake for a notice. Other sessions see new requests at their next crosshall command or adapter prompt.
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
+- A Claude Code version newer than the tested one runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
 - One machine and one user.
 - One channel per session.
 - Agents keep the rules because they read them. crosshall records what happened, but it cannot make an agent answer.

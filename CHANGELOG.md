@@ -2,6 +2,17 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.2.0-rc.1 (unreleased)
+
+- **Your own agents, without relaying:** installing the hooks for Claude Code, Codex CLI or Antigravity CLI takes one question. New sessions then join their repository's channel by themselves: crosshall creates the channel at the first start and names it after the repository's directory (#133, #135, #151, #158). Agents run the member commands without a permission prompt for each (#159).
+- **Notices:** when work arrives for an idle interactive Claude Code session, the hall starts a turn in it through the session's own message route. Shipped as tested for Claude Code 2.1.330 on macOS arm64; a newer version runs on trial, with its first three notices checked (#129, #130, #157, #184, #192). The owner switches notices with `crosshall owner publish` and `owner adapter set --publish`, a member with `crosshall publish off` (#125).
+- **Turn-end check:** in Claude Code on macOS arm64, a turn that ends while a request is unread continues once with the pending line, in print mode and in interactive sessions (#166, #172, #179, #184).
+- **Fewer model calls:** every member command ends with `[crosshall] N unread, M owed.`, which counts as the inbox check, and `crosshall read` with no argument picks up what is unread (#131). A hook-joined session starts with one line and gets the rules with its first command (#158); rules and pending numbers a session already has are not repeated (#126). A member the hall delivers to is no longer told to stand by with `wait` (#127).
+- **Sessions that end or clear:** a Claude Code session whose process is gone leaves the roster (#173, #188); `/clear` keeps the member, its open requests and what it was already told (#161, #181); a denied permission dialog no longer stops notices (#175).
+- **Owner views:** `crosshall owner doctor` shows each agent's notice and turn-end state per build, with held notices during a trial (#184, #187). Root tokens refill over time (#122).
+- **Hook cost:** a hook event stays in the low milliseconds as a session's turns grow (#189).
+- **Upgrade:** the database moves from schema 6 to 17, and notices and the turn-end check turn on for an enabled Claude Code adapter. See [UPGRADING.md](UPGRADING.md#to-v020-rc1).
+
 ## v0.1.0 (2026-11-20)
 
 - **Clearer first steps:** `crosshall run -- sh` says that it started a member shell, and a nested one names the identity it replaces. Every refusal's `next:` line names a step that can be taken as printed, including the budget refusal, which now says whether you hold root tokens. The join hint carries rule 4 in full. `setup status` and `help` agree with `owner doctor`, `uninstall` says that it removes hooks only, and the installer's reasons name the tag and platform (#88).

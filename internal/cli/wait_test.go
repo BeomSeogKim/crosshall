@@ -113,8 +113,9 @@ func TestWaitDeliversPendingWorkAfterDispatcherDowngrade(t *testing.T) {
 
 // A wait that times out has just checked the hall, so it names the next
 // step itself: the pickup when a note waits that a work-only wait ignored,
-// the wait again for a member that has to poll, nothing for one the hall
-// delivers to. It never sends the member to the inbox.
+// the wait again for a member that has to poll, and for one the hall
+// delivers to the line that no wait is needed. It never sends the member to
+// the inbox.
 func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 	for name, c := range map[string]struct {
 		snapshot domain.WaitSnapshot
@@ -124,7 +125,10 @@ func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 			"next: crosshall wait --existing --work-only --timeout 9m\n[crosshall] 0 unread, 0 owed.\n"},
 		"clear, the hall delivers": {domain.WaitSnapshot{InboxResult: domain.InboxResult{Delivers: true},
 			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{}}},
-			"crosshall: no new messages before the wait timeout\n[crosshall] 0 unread, 0 owed.\n"},
+			"crosshall: no new messages before the wait timeout\nThe hall brings new work to this session: no wait is needed.\n[crosshall] 0 unread, 0 owed.\n"},
+		"an unread note, the hall delivers": {domain.WaitSnapshot{InboxResult: domain.InboxResult{Delivers: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}}},
+			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
 		"an unread note": {domain.WaitSnapshot{MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}, OwedCount: 1}},
 			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 1 owed. Run crosshall read.\n"},
 	} {

@@ -248,15 +248,15 @@ func TestStatusLineEndsEveryMemberResult(t *testing.T) {
 	}
 }
 
-// One suggested wait length everywhere a wait is suggested, and no wait at
-// all for a member the hall delivers to.
+// One suggested wait length everywhere a wait is suggested, and for a member
+// the hall delivers to no wait, but the line that says none is needed.
 func TestEmptyInboxSuggestsTheStandardWait(t *testing.T) {
 	ft := &fakeTransport{result: okResult(t, domain.InboxResult{})}
-	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); !strings.Contains(out, "crosshall wait --existing --work-only --timeout 9m") {
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); !strings.Contains(out, "crosshall wait --existing --work-only --timeout 9m") || strings.Contains(out, domain.HallDelivers) {
 		t.Fatalf("empty inbox:\n%s", out)
 	}
 	ft = &fakeTransport{result: okResult(t, domain.InboxResult{Delivers: true})}
-	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); out != "Inbox is empty.\n" {
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); out != "Inbox is empty. The hall brings new work to this session: no wait is needed.\n" {
 		t.Fatalf("empty inbox of a member the hall delivers to:\n%s", out)
 	}
 }

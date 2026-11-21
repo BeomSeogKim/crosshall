@@ -37,7 +37,10 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		return
 	}
 	began := entry
-	startup := prepareStartupRepo(entry, args, stdin, locate)
+	lifecycle := prepareRepoLifecycle(args, stdin, locate)
+	if lifecycle != nil {
+		defer lifecycle.cancel()
+	}
 	entry, startedState := wake(entry, args, locate)
 	end := entry.Add(Budget)
 	var stateRoot string
@@ -56,17 +59,12 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 	var outcome atomic.Value
 	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, startup})
+		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if startup != nil && time.Now().Before(began.Add(Budget)) {
-		timer := time.NewTimer(time.Until(began.Add(Budget)))
-		defer timer.Stop()
-		select {
-		case <-startup.done:
-		case <-timer.C:
-		}
+	if lifecycle != nil && !lifecycle.waitUntil(began.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
 		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
@@ -89,8 +87,8 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 }
 
 type callbackState struct {
-	root    string
-	startup *parsedStartup
+	root      string
+	lifecycle *parsedLifecycle
 }
 
 func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hookTransport, args []string, stdin io.Reader, stdout io.Writer, lookup func(string) (string, bool)) string {
@@ -114,12 +112,12 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "refused"
 	}
 	var e event
-	if state.startup == nil {
+	if state.lifecycle == nil {
 		e, err = parseEvent(stdin, m, spec, lookup)
 	} else {
 		select {
-		case <-state.startup.done:
-			e, err = state.startup.event, state.startup.err
+		case <-state.lifecycle.done:
+			e, err = state.lifecycle.event, state.lifecycle.err
 		case <-ctx.Done():
 			return "deadline"
 		}

@@ -10,53 +10,71 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 const startupRepoDir = "hook-start-repos"
 
-type parsedStartup struct {
-	done  chan struct{}
-	event event
-	err   error
+// Local bookkeeping can finish after a delayed SessionStart loses its RPC budget.
+const startupRepoGrace = 25 * time.Millisecond
+
+type parsedLifecycle struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	event  event
+	err    error
 }
 
-func prepareStartupRepo(entry time.Time, args []string, input io.Reader, locate func() (Paths, error)) *parsedStartup {
-	if args[1] != "SessionStart" {
+func prepareRepoLifecycle(args []string, input io.Reader, locate func() (Paths, error)) *parsedLifecycle {
+	if args[1] != "SessionStart" && args[1] != "SessionEnd" {
 		return nil
 	}
 	m, ok := loadManifest(args[0])
-	start, known := m.event(args[1])
+	spec, known := m.event(args[1])
 	prompt, _ := m.event("UserPromptSubmit")
-	if !ok || !known || !start.Enroll || !prompt.RecoverEnroll {
+	if !ok || !known || !prompt.RecoverEnroll {
 		return nil
 	}
-	parsed := &parsedStartup{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	parsed := &parsedLifecycle{done: make(chan struct{}), cancel: cancel}
 	go func() {
 		defer close(parsed.done)
-		ctx, cancel := context.WithDeadline(context.Background(), entry.Add(Budget-counterAllowance))
-		defer cancel()
-		if hookExpired(ctx) {
-			parsed.err = context.DeadlineExceeded
+		parsed.event, parsed.err = parseEvent(input, m, spec, os.LookupEnv)
+		if parsed.err != nil || ctx.Err() != nil {
 			return
 		}
-		parsed.event, parsed.err = parseEvent(input, m, start, os.LookupEnv)
-		if parsed.err == nil && parsed.event.Source == "startup" && !hookExpired(ctx) {
-			if paths, err := locate(); err == nil {
-				parsed.event.startupRepo = recordStartupRepo(ctx, paths, parsed.event)
-			}
+		paths, err := locate()
+		if err != nil || ctx.Err() != nil {
+			return
+		}
+		state, err := ident.OpenPrivateDir(paths.State)
+		if err != nil {
+			return
+		}
+		defer state.Close()
+		if spec.Enroll {
+			parsed.event.startupRepo = recordStartupRepo(ctx, state, parsed.event)
+		} else if spec.Fact == wire.HookSessionEnded && ctx.Err() == nil {
+			_ = RemoveStartupRepo(state, parsed.event.Identity)
 		}
 	}()
 	return parsed
 }
 
-func recordStartupRepo(ctx context.Context, paths Paths, e event) *string {
-	state, err := ident.OpenPrivateDir(paths.State)
-	if err != nil {
-		return nil
+func (p *parsedLifecycle) waitUntil(deadline time.Time) bool {
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		return true
+	case <-timer.C:
+		return false
 	}
-	defer state.Close()
-	if !startupPolicyEnabled(paths, state, e.Identity.Vendor) || hookExpired(ctx) {
+}
+
+func recordStartupRepo(ctx context.Context, state *os.Root, e event) *string {
+	if ctx.Err() != nil {
 		return nil
 	}
 	if err := state.Mkdir(startupRepoDir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
@@ -72,7 +90,7 @@ func recordStartupRepo(ctx context.Context, paths Paths, e event) *string {
 		return nil
 	}
 	repo := enrollmentRoot(e)
-	if hookExpired(ctx) {
+	if ctx.Err() != nil {
 		return &repo
 	}
 	temp := wire.NewID() + ".part"
@@ -82,21 +100,10 @@ func recordStartupRepo(ctx context.Context, paths Paths, e event) *string {
 	}
 	defer records.Remove(temp)
 	_, err = file.WriteString(repoDigestRecord(repo))
-	if errors.Join(err, file.Close()) == nil && !hookExpired(ctx) {
+	if errors.Join(err, file.Close()) == nil && ctx.Err() == nil {
 		_ = records.Link(temp, name)
 	}
 	return &repo
-}
-
-func startupPolicyEnabled(paths Paths, state *os.Root, adapter string) bool {
-	if rv, err := ident.OpenPrivateDir(paths.Rendezvous); err == nil {
-		defer rv.Close()
-		if policy, err := readPolicy(rv, adapter); err == nil {
-			return policy.Enabled
-		}
-	}
-	policy, err := readPolicyFile(state, StatePolicyName, adapter)
-	return err == nil && policy.Enabled
 }
 
 func startupRepoDigest(stateRoot string, identity ident.Identity) string {
@@ -115,6 +122,31 @@ func startupRepoDigest(stateRoot string, identity ident.Identity) string {
 		return ""
 	}
 	return string(record)
+}
+
+// RemoveStartupRepo retires the local enrollment record for the session.
+func RemoveStartupRepo(state *os.Root, identity ident.Identity) error {
+	records, err := ident.OpenPrivateChild(state, startupRepoDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer records.Close()
+	name := identity.Digest()
+	file, err := spool.OpenServerFile(records, name, os.O_RDONLY)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := records.Remove(name); !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func repoDigestRecord(repo string) string {

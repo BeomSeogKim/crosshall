@@ -16,12 +16,24 @@ On a fresh install or upgrade in your own terminal, the installer shows the elig
 
 `crosshall owner start` starts the dispatcher and reports success only once it answers. Other ordinary commands also start it on demand; `crosshall wait` and `crosshall owner doctor` do not. An agent hook whose adapter is on starts it too after a crash or a reboot: a session start waits for it and joins, within 800 ms in all, inside the hook's 1 s timeout, so a session opened first after a reboot still joins; any other hook only launches it. A start the hook could not make, or one not ready in time (`start_pending`), is written to `dispatcher.log` in the state directory; after a failed start, hooks leave the dispatcher alone for 30 seconds. `crosshall owner stop` asks it to stop and waits until it has released the state directory's lock. It also withdraws the adapter policy, also when it finds the dispatcher already gone after a crash, so hooks start nothing until the next start publishes it again. An ordinary command that arrives meanwhile starts a new dispatcher, so stop your agents' commands first when you need it to stay stopped, for example to copy the state. `crosshall owner doctor` shows the state directory, the rendezvous directory and the dispatcher's PID.
 
+## State directory
+
+The state directory is `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`.
+
+- `store.sqlite3` is the hall database. SQLite may create `store.sqlite3-wal`, `store.sqlite3-shm` and `store.sqlite3-journal` alongside it. Upgrade backups are named `store-v<version>-*.sqlite3`.
+- `dispatcher.log` records dispatcher and hook startup activity. `dispatcher.lock` protects the hall from concurrent dispatchers, and `owner/` holds the owner's spool.
+- `install.lock` serializes setup. `install-journal.json` records hook edits for setup recovery and uninstall. `setup-offers.json` records installer setup choices.
+- `hook-policy` lets the hooks read adapter policy after a reboot. `hook-start-failed` marks the 30-second pause after a failed dispatcher start.
+- `hook-start-repos/` holds private startup records keyed by session digest. A record stores the repository digest or marks a start outside Git. A start hook can leave a record while the hall is stopped. The record allows later enrollment when the hall is running, and is removed when the session joins or ends.
+
+Member spools live in a private rendezvous directory under `/tmp`. Optional hooks live in your agent settings.
+
 ## Removing crosshall
 
-crosshall installs an executable in `~/.local/bin/crosshall` by default, runs a local dispatcher, and keeps its database, upgrade backups, log and owner spool in the state directory: `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/crosshall` when that variable is an absolute path, else `~/.local/state/crosshall`. Member spools live in a private rendezvous directory under `/tmp`. Optional hooks live in your agent settings.
+crosshall installs an executable in `~/.local/bin/crosshall` by default.
 
 1. In your own terminal, run `crosshall uninstall` for each installation that has hooks. From a script, use `crosshall uninstall --apply`. Review any edited or unmanaged hook entries it reports.
-2. In the owner terminal, record the two directory paths with `crosshall owner doctor`, stop your agents' crosshall commands, and run `crosshall owner stop` for each state directory in use. After it, hooks start nothing; `kill` instead would leave the policy, and the next hook would start the dispatcher again. For a dispatcher older than v0.1.0-rc.13, which has no `owner stop`, use the stop and wait steps in [upgrading](../UPGRADING.md).
+2. In the owner terminal, record the two directory paths with `crosshall owner doctor`, stop your agents' crosshall commands, and run `crosshall owner stop` for each state directory in use. After it, hooks leave the dispatcher stopped. Killing the dispatcher leaves the policy available for a later hook to start it. For a dispatcher older than v0.1.0-rc.13, which has no `owner stop`, use the stop and wait steps in [upgrading](../UPGRADING.md).
 3. Remove the installed binary and the recorded state and rendezvous directories. Copy the state first if you want to keep messages, member records or backups.
 4. To undo the PATH change, run `./scripts/install.sh --remove-path` from your checkout followed by the absolute startup file paths shown during installation. For example, `./scripts/install.sh --remove-path "$HOME/.profile" "$HOME/.bashrc"`. This removes the unchanged managed block and preserves other content, keeping a line break if you appended anything after the block. An unchanged startup file is deleted only when the ownership record beside the installed binary confirms it was created by the installer. If you edited a managed block, the command leaves the file for your review.
 

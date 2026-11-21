@@ -179,6 +179,91 @@ func TestInstalledPromptHookChecksStartupRepository(t *testing.T) {
 	}
 }
 
+func TestInstalledHookRecordsOtherStartSources(t *testing.T) {
+	for _, source := range []string{"resume", "clear", "compact"} {
+		t.Run(source, func(t *testing.T) {
+			f := newSetupWorld(t)
+			f.apply("", "setup", "claude", "--apply")
+			f.owner().must("owner", "channel", "create", "setup-check")
+			repo := filepath.Join(f.home, "later-mapped")
+			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.invokeHook(repo, "claude", "SessionStart", fmt.Sprintf(`"source":%q`, source)); got != "" {
+				t.Fatalf("unmapped %s produced %q", source, got)
+			}
+			f.owner().must("owner", "channel", "default", "setup-check", "--repo", repo)
+			if got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"first"`); !strings.Contains(got, "Joined #setup-check as @claude1") {
+				t.Fatalf("%s did not recover (%q); %s", source, got, f.enrollmentEvidence("claude"))
+			}
+		})
+	}
+}
+
+func TestInstalledHookKeepsAndPrunesStartupRecord(t *testing.T) {
+	for _, action := range []string{"join on start", "join after owner restart", "join by command", "end while owner stopped"} {
+		t.Run(action, func(t *testing.T) {
+			f := newSetupWorld(t)
+			f.apply("", "setup", "claude", "--apply")
+			repo := f.enrollmentRepo()
+			key := setupSessionPrefix + "claude"
+			id := ident.Identity{Vendor: "claude", Key: key}
+			marker := filepath.Join(f.state, "hook-start-repos", id.Digest())
+			owner := f.owner()
+			if action == "join after owner restart" || action == "end while owner stopped" {
+				owner.must("owner", "stop")
+			}
+			start := repo
+			if action == "join by command" {
+				start = f.home
+			}
+			out := f.invokeHook(start, "claude", "SessionStart", `"source":"startup"`)
+			if action == "join on start" {
+				if !strings.Contains(out, "Joined #setup-check as @claude1") {
+					t.Fatalf("mapped startup produced %q", out)
+				}
+			} else {
+				if strings.Contains(out, "Joined #") {
+					t.Fatalf("startup enrolled early: %q", out)
+				}
+				if _, err := os.Stat(marker); err != nil {
+					t.Fatalf("startup record missing: %v", err)
+				}
+			}
+			if action == "join after owner restart" || action == "end while owner stopped" {
+				if pids := f.dispatcherPIDs(); len(pids) != 0 {
+					t.Fatalf("start hook restarted the dispatcher: %v", pids)
+				}
+			}
+			switch action {
+			case "join after owner restart":
+				owner.must("owner", "start")
+				if got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"after-restart"`); !strings.Contains(got, "Joined #setup-check as @claude1") {
+					t.Fatalf("prompt after owner restart produced %q", got)
+				}
+			case "join by command":
+				env := append(slices.Clone(f.env), "CLAUDE_CODE_SESSION_ID="+key)
+				if got := f.command(env, "", "join", "setup-check"); got.exit != 0 {
+					t.Fatalf("manual join failed: %s", got.stdout)
+				}
+			case "end while owner stopped":
+				if got := f.invokeHook(repo, "claude", "SessionEnd", `"reason":"other"`); got != "" {
+					t.Fatalf("end with owner stopped produced %q", got)
+				}
+				if pids := f.dispatcherPIDs(); len(pids) != 0 {
+					t.Fatalf("end hook restarted the dispatcher: %v", pids)
+				}
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("startup record survived %s: %v", action, err)
+			}
+		})
+	}
+}
+
 func writeInterruptedClaudeLaunch(t *testing.T, w *world, key, pid string) {
 	t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: key}).Digest()

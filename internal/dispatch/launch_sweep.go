@@ -56,7 +56,12 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 		if err := ctx.Err(); err != nil {
 			return launchSweepResult{after: after, err: err}
 		}
-		if !sameLaunchPIDNamespace(runtime.GOOS, pidNamespace, launch.PIDNamespace) {
+		sameNamespace, previousBoot := compareLaunchPIDNamespaces(runtime.GOOS, pidNamespace, launch.PIDNamespace)
+		if previousBoot {
+			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true, PreviousBoot: true})
+			continue
+		}
+		if !sameNamespace {
 			continue
 		}
 		if launch.ProcessPID != 0 {
@@ -75,11 +80,15 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 	return result
 }
 
-func sameLaunchPIDNamespace(platform, dispatcher, launch string) bool {
-	if platform == "linux" {
-		return dispatcher != "" && dispatcher == launch
+func compareLaunchPIDNamespaces(platform, dispatcher, launch string) (sameNamespace, previousBoot bool) {
+	if platform != "linux" {
+		return platform == "darwin" && launch == "", false
 	}
-	return platform == "darwin" && launch == ""
+	dispatcherBoot, launchBoot := proc.PIDNamespaceBoot(dispatcher), proc.PIDNamespaceBoot(launch)
+	if dispatcherBoot == "" || launchBoot == "" {
+		return false, false
+	}
+	return dispatcher == launch, dispatcherBoot != launchBoot
 }
 
 func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepResult) error {

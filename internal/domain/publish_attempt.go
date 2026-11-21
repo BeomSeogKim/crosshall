@@ -461,8 +461,21 @@ func RetirePublishQueue(ctx context.Context, tx store.Tx, queue PublishQueue, no
 		queue.PID, queue.StartMS); err != nil {
 		return err
 	}
-	ids, err := selectIDs(ctx, tx, `SELECT id FROM publish_attempt WHERE process_pid = ? AND process_start_ms = ? AND state = 'reserved'`,
-		queue.PID, queue.StartMS)
+	return retirePublishAttempts(ctx, tx, now, `process_pid = ? AND process_start_ms = ?`, queue.PID, queue.StartMS)
+}
+
+func retireLaunchPublish(ctx context.Context, tx store.Tx, binding, principal int64, launchRef string, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM publish_route_proof WHERE binding_id = ? AND EXISTS (
+		SELECT 1 FROM publish_route r WHERE r.binding_id = publish_route_proof.binding_id
+		  AND r.generation = publish_route_proof.generation AND r.principal_id = ? AND r.launch_ref = ?)`,
+		binding, principal, launchRef); err != nil {
+		return err
+	}
+	return retirePublishAttempts(ctx, tx, now, `binding_id = ? AND principal_id = ? AND launch_ref = ?`, binding, principal, launchRef)
+}
+
+func retirePublishAttempts(ctx context.Context, tx store.Tx, now time.Time, scope string, args ...any) error {
+	ids, err := selectIDs(ctx, tx, `SELECT id FROM publish_attempt WHERE `+scope+` AND state = 'reserved'`, args...)
 	if err != nil {
 		return err
 	}
@@ -471,7 +484,7 @@ func RetirePublishQueue(ctx context.Context, tx store.Tx, queue PublishQueue, no
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE publish_attempt SET retired_at_ms = ? WHERE process_pid = ? AND process_start_ms = ? AND `+
-		openPublishLane, ms(now), queue.PID, queue.StartMS)
+	_, err = tx.ExecContext(ctx, `UPDATE publish_attempt SET retired_at_ms = ? WHERE `+scope+` AND `+
+		openPublishLane, append([]any{ms(now)}, args...)...)
 	return err
 }

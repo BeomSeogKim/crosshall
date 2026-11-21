@@ -16,7 +16,7 @@ type ClaudeLaunch struct {
 type ClaudeLaunchProbe struct {
 	ClaudeLaunch
 	PID, StartIdentity int64
-	Gone               bool
+	Gone, PreviousBoot bool
 }
 
 func LiveClaudeLaunches(ctx context.Context, tx store.Tx, afterRowID int64, limit int) ([]ClaudeLaunch, error) {
@@ -110,13 +110,17 @@ func ApplyClaudeLaunchProbes(ctx context.Context, tx store.Tx, results []ClaudeL
 		if l.StartedAtMS > member.last.StartedAtMS || l.StartedAtMS == member.last.StartedAtMS && l.RowID > member.last.RowID {
 			member.last = l
 		}
-		if err := endLaunchPublishRoutes(ctx, tx, l.PrincipalID, l.LaunchRef, now); err != nil {
-			return false, err
-		}
-		if l.ProcessPID > 0 && l.ProcessStartIdentity > 0 {
+		if result.PreviousBoot {
+			if err := retireLaunchPublish(ctx, tx, l.BindingID, l.PrincipalID, l.LaunchRef, now); err != nil {
+				return false, err
+			}
+		} else if l.ProcessPID > 0 && l.ProcessStartIdentity > 0 {
 			if err := RetirePublishQueue(ctx, tx, PublishQueue{PID: l.ProcessPID, StartMS: l.ProcessStartIdentity}, now); err != nil {
 				return false, err
 			}
+		}
+		if err := endLaunchPublishRoutes(ctx, tx, l.PrincipalID, l.LaunchRef, now); err != nil {
+			return false, err
 		}
 		changed = true
 	}

@@ -4,6 +4,7 @@ package proc
 
 import (
 	"os/exec"
+	"runtime"
 	"strconv"
 	"syscall"
 	"testing"
@@ -44,8 +45,12 @@ func TestProbeLaunchAndProcessGone(t *testing.T) {
 	if p, i, gone := ProbeLaunch(ref, 0); p != 0 || i != 0 || gone {
 		t.Errorf("live process with unknown hook time probed as (%d, %d, %t)", p, i, gone)
 	}
-	if p, i, gone := ProbeLaunch(ref, start.AtMS-1); p != pid || i != 0 || !gone {
-		t.Errorf("process born after hook probed as (%d, %d, %t)", p, i, gone)
+	wantLaterPID, wantLaterGone := int64(0), runtime.GOOS == "darwin"
+	if wantLaterGone {
+		wantLaterPID = pid
+	}
+	if p, i, gone := ProbeLaunch(ref, start.AtMS-1); p != wantLaterPID || i != 0 || gone != wantLaterGone {
+		t.Errorf("process with start after hook probed as (%d, %d, %t), want (%d, 0, %t)", p, i, gone, wantLaterPID, wantLaterGone)
 	}
 	if ProcessGone(pid, identity) || ProcessGone(pid, 0) || !ProcessGone(pid, identity+1) {
 		t.Fatal("death evidence did not distinguish the live process, a missing identity and a different process")

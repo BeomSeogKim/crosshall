@@ -6,6 +6,7 @@ package proc
 import (
 	"errors"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -57,7 +58,12 @@ func ProbeLaunch(ref string, startedHookAtMS int64) (pid, identity int64, gone b
 		return 0, 0, false
 	}
 	if start.AtMS > startedHookAtMS {
-		return pid, 0, true
+		// Linux estimates the boot time from the wall clock and uptime, so a
+		// clock step can make a live process appear newer than its hook.
+		if runtime.GOOS == "darwin" {
+			return pid, 0, true
+		}
+		return 0, 0, false
 	}
 	return pid, start.Identity, false
 }

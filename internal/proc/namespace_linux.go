@@ -16,10 +16,6 @@ func PIDNamespace() string {
 		return ""
 	}
 	bootID := strings.TrimSpace(string(raw))
-	digits := strings.ReplaceAll(bootID, "-", "")
-	if len(bootID) != 36 || len(digits) != 32 || strings.Trim(digits, "0123456789abcdef") != "" {
-		return ""
-	}
 	info, err := os.Stat("/proc/self/ns/pid")
 	if err != nil {
 		return ""
@@ -28,7 +24,11 @@ func PIDNamespace() string {
 	if !ok || stat.Ino == 0 {
 		return ""
 	}
-	return bootID + ":" + strconv.FormatUint(uint64(stat.Ino), 10)
+	tag := bootID + ":" + strconv.FormatUint(uint64(stat.Ino), 10)
+	if PIDNamespaceBoot(tag) == "" {
+		return ""
+	}
+	return tag
 }
 
 func probeProcessStart(pid int) (Start, error) {

@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 func liveClaudeLaunches(f *fixture, after int64, limit int) []ClaudeLaunch {
@@ -148,6 +151,60 @@ func TestClaudeProcessExitAppliesUnboundProofWithoutRetiringQueue(t *testing.T) 
 	p.state(id, "reserved")
 	if n := p.count(`SELECT COUNT(*) FROM publish_route_proof WHERE binding_id = ?`, launch.BindingID); n != 1 {
 		t.Fatal("the unbound exit retired a physical publish queue")
+	}
+}
+
+func TestClaudePreviousBootRetiresOnlyItsPublishLane(t *testing.T) {
+	for _, outcome := range []PublishOutcome{PublishNotSubmitted, PublishSubmitted} {
+		t.Run(string(outcome), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			p.turnEndAsk(p.writer, "reader", "old-boot")
+			attempt := p.reserve()
+			if attempt == 0 {
+				t.Fatal("fixture did not reserve the old notice")
+			}
+			if outcome == PublishSubmitted {
+				if ids := p.begin(attempt); len(ids) != 1 {
+					t.Fatalf("began %v, want the old notice", ids)
+				}
+				p.resolve(attempt, outcome)
+			} else {
+				p.mutate(`UPDATE adapter_launch SET process_pid = NULL, process_start_identity = NULL WHERE launch_ref = ?`, publishTestLaunch)
+			}
+			p.mutate(`UPDATE adapter_launch SET pid_namespace = '12345678-1234-1234-1234-123456789abc:100' WHERE launch_ref = ?`, publishTestLaunch)
+			old := liveClaudeLaunches(p.fixture, 0, 1)[0]
+
+			peer := p.newSession("claude")
+			wantOK(t, p.join(peer, Join{Channel: "checkout", Alias: "peer"}, "peer-join"))
+			p.now = p.now.Add(time.Second)
+			enrollAndRoute(t, p.fixture, peer, "pid-42-current", "startup", publishTestSocket, "default", p.now.UnixMilli(), 1)
+			p.mutate(`UPDATE adapter_launch SET pid_namespace = '12345678-1234-1234-1234-123456789def:100' WHERE launch_ref = 'pid-42-current'`)
+			peerID := bindingIDOf(t, p.fixture, p.principalOf(peer))
+			gen, _, _, _, _, _, _ := routeState(t, p.fixture, peerID)
+			p.update(func(ctx context.Context, tx store.Tx) error {
+				return ConfirmPublishRoute(ctx, tx, PublishBinding{ID: peerID, Generation: gen}, p.queue)
+			})
+			if n := p.count(`SELECT COUNT(*) FROM publish_route_proof WHERE process_pid = ? AND process_start_ms = ?`, p.queue.PID, p.queue.StartMS); n != 2 {
+				t.Fatalf("fixture proved %d queues, want two identical numeric identities", n)
+			}
+
+			probe := ClaudeLaunchProbe{ClaudeLaunch: old, Gone: true, PreviousBoot: true}
+			if !applyClaudeProbes(p.fixture, probe) || applyClaudeProbes(p.fixture, probe) {
+				t.Fatal("prior-boot exit did not commit exactly once")
+			}
+			p.state(attempt, string(outcome))
+			if n := p.count(`SELECT COUNT(*) FROM publish_attempt WHERE id = ? AND `+openPublishLane, attempt); n != 0 {
+				t.Fatal("the old attempt still held the queue")
+			}
+			if n := p.count(`SELECT COUNT(*) FROM publish_route_proof WHERE binding_id = ?`, old.BindingID); n != 0 {
+				t.Fatal("prior-boot route kept its proof")
+			}
+			if n := p.count(`SELECT COUNT(*) FROM publish_route_proof WHERE binding_id = ? AND generation = ? AND process_pid = ? AND process_start_ms = ?`,
+				peerID, gen, p.queue.PID, p.queue.StartMS); n != 1 {
+				t.Fatal("prior-boot exit removed the current queue's proof")
+			}
+		})
 	}
 }
 

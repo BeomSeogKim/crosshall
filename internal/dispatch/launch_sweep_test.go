@@ -2,23 +2,29 @@ package dispatch
 
 import "testing"
 
-func TestLaunchSweepRequiresMatchingPIDNamespace(t *testing.T) {
+func TestLaunchSweepComparesPIDNamespaceAndBoot(t *testing.T) {
+	const bootA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const bootB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 	for _, tc := range []struct {
 		name, platform, dispatcher, launch string
-		want                               bool
+		wantSame, wantPrevious             bool
 	}{
-		{"linux same", "linux", "boot-a:1", "boot-a:1", true},
-		{"linux different namespace", "linux", "boot-a:1", "boot-a:2", false},
-		{"linux different boot", "linux", "boot-a:1", "boot-b:1", false},
-		{"linux legacy", "linux", "boot-a:1", "", false},
-		{"linux unavailable", "linux", "", "", false},
-		{"darwin", "darwin", "", "", true},
-		{"darwin foreign launch", "darwin", "", "boot-a:1", false},
-		{"unsupported", "other", "", "", false},
+		{"linux same", "linux", bootA + ":1", bootA + ":1", true, false},
+		{"linux different namespace", "linux", bootA + ":1", bootA + ":2", false, false},
+		{"linux previous boot", "linux", bootA + ":1", bootB + ":1", false, true},
+		{"linux previous boot other namespace", "linux", bootA + ":1", bootB + ":2", false, true},
+		{"linux malformed boot", "linux", bootA + ":1", "invalid:1", false, false},
+		{"linux malformed inode", "linux", bootA + ":1", bootB + ":0", false, false},
+		{"linux legacy", "linux", bootA + ":1", "", false, false},
+		{"linux unavailable", "linux", "", "", false, false},
+		{"darwin", "darwin", "", "", true, false},
+		{"darwin foreign launch", "darwin", "", bootA + ":1", false, false},
+		{"unsupported", "other", "", "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sameLaunchPIDNamespace(tc.platform, tc.dispatcher, tc.launch); got != tc.want {
-				t.Fatalf("sameLaunchPIDNamespace = %t, want %t", got, tc.want)
+			same, previous := compareLaunchPIDNamespaces(tc.platform, tc.dispatcher, tc.launch)
+			if same != tc.wantSame || previous != tc.wantPrevious {
+				t.Fatalf("same namespace %t and previous boot %t, want %t and %t", same, previous, tc.wantSame, tc.wantPrevious)
 			}
 		})
 	}

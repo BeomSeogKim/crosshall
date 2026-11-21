@@ -49,7 +49,8 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 		SELECT t.turn_ref, t.finishing_hook_at_ms, t.opened_hook_at_ms, t.rowid FROM turn t JOIN adapter_launch l
 			ON l.principal_id = t.principal_id AND l.launch_ref = t.launch_ref
 		WHERE t.principal_id = ?1 AND t.launch_ref = ?2
-			AND t.opened_hook_at_ms BETWEEN l.started_hook_at_ms AND ?4
+			AND t.opened_hook_at_ms <= ?4 AND (t.opened_hook_at_ms >= l.started_hook_at_ms
+				OR t.finishing_hook_at_ms BETWEEN l.started_hook_at_ms AND ?4)
 	), last_turn AS (
 		SELECT turn_ref, finishing_hook_at_ms FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
 	)

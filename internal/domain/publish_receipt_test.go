@@ -278,6 +278,27 @@ func TestPublishReceiptAfterACompactInsideAnOpenTurnStaysUnknown(t *testing.T) {
 	}
 }
 
+// Fable #601: an auto-compact inside a long turn; the turn that opened before
+// that start and finished after it is the launch's last turn.
+func TestPublishReceiptAfterACompactedTurnFinishedIsItsOwnTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
+	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+60, 1)
+	p.proveRoute()
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+70))
+	ask := p.turnEndAsk(p.writer, "reader", "after-compacted-turn")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "own_turn")
+	p.verifyPromptOrigin(cmd, "crosshall_wake")
+}
+
 func TestPublishReceiptAfterAClearOfAnIdleSessionIsItsOwnTurn(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()

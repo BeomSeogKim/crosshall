@@ -685,6 +685,12 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, principal, cmd.LaunchRef, turn, cmd.HookAtMS, newer > 0); err != nil {
 				return core.Result{}, err
 			}
+			if err := applyRecordedStops(ctx, tx, principal, cmd.LaunchRef); err != nil {
+				return core.Result{}, err
+			}
+			if err := rebindTypedAhead(ctx, tx, principal, cmd.LaunchRef); err != nil {
+				return core.Result{}, err
+			}
 			if newer > 0 {
 				return OK(out) // a stale prompt is an observation: no offer, no acknowledgement
 			}
@@ -695,6 +701,9 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE turn SET finishing_hook_at_ms = COALESCE(finishing_hook_at_ms, ?)
 			WHERE principal_id = ? AND launch_ref = ? AND turn_ref = ?`, cmd.HookAtMS, principal, cmd.LaunchRef, cmd.TurnRef); err != nil {
+			return core.Result{}, err
+		}
+		if err := rebindTypedAhead(ctx, tx, principal, cmd.LaunchRef); err != nil {
 			return core.Result{}, err
 		}
 	case FactSessionEnded:

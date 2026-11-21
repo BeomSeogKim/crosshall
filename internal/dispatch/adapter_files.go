@@ -269,7 +269,7 @@ func (s *server) invalidateAdapterFile(verb string) error {
 		if err := s.state.Remove(hook.StatePolicyName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-	case domain.VerbChannelDefault:
+	case domain.VerbChannelDefault, domain.VerbChannelAuto:
 		name = adapterRepoSetName
 	case domain.VerbAdapterEvidence:
 		name = adapterTurnEndName
@@ -389,8 +389,17 @@ func adapterRepoSetText(ctx context.Context, tx store.Tx) (string, error) {
 		}
 		hashes = append(hashes, fmt.Sprintf("%x\n", sha256.Sum256([]byte(root))))
 	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
 	slices.Sort(hashes)
-	return strings.Join(hashes, ""), rows.Err()
+	set := strings.Join(hashes, "")
+	if auto, err := domain.AutoJoinOn(ctx, tx); err != nil {
+		return "", err
+	} else if auto {
+		set = hook.AutoJoinLine + "\n" + set
+	}
+	return set, nil
 }
 
 func publishAdapterText(root *os.Root, name, text string) error {

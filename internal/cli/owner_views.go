@@ -64,6 +64,13 @@ func ownerViewCall(args []string) (Call, error) {
 		}
 		call.Command = domain.OwnerLog{Channel: strings.TrimPrefix(args[1], "#"), Since: page.Since, Limit: page.Limit}
 	case "channel":
+		if len(args) >= 2 && args[1] == "auto" {
+			if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
+				return Call{}, fmt.Errorf("usage: crosshall owner channel auto on|off")
+			}
+			call.Command = domain.ChannelAuto{On: args[2] == "on"}
+			return call, nil
+		}
 		if len(args) < 3 {
 			return Call{}, fmt.Errorf("usage: crosshall owner channel default <channel> [--repo <directory>]")
 		}
@@ -79,7 +86,7 @@ func ownerViewCall(args []string) (Call, error) {
 			}
 			path = value
 		}
-		root, err := RepoRoot(path)
+		root, err := RepoDefaultRoot(path)
 		if err != nil {
 			return Call{}, err
 		}
@@ -152,6 +159,16 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		fmt.Fprintf(w, "#%s is the default for %s.\n", r.Channel, r.RepoRoot)
 		fmt.Fprintln(w, "Unjoined Claude Code and Codex CLI sessions that started here can join automatically on their next prompt in this repository.")
+	case domain.ChannelAuto:
+		var r domain.ChannelAutoResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if r.On {
+			fmt.Fprintln(w, "Automatic joining is on: a Claude Code or Codex CLI session that starts in a Git repository with no channel gets the repository's own channel.")
+		} else {
+			fmt.Fprintln(w, "Automatic joining is off: no channel is created for a repository. Repositories that already have a channel keep it.")
+		}
 	default:
 		return fmt.Errorf("no owner display for %T", cmd)
 	}

@@ -65,7 +65,7 @@ func enrollForRecovery(t *testing.T, c claudeSession) {
 	t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
 	db := c.w.db()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		c.fire("SessionStart", map[string]any{"source": "startup"})
 		var enrolled bool
@@ -79,11 +79,11 @@ func enrollForRecovery(t *testing.T, c claudeSession) {
 			t.Fatal(err)
 		}
 		if enrolled {
-			c.waitForConsumption()
+			c.waitForConsumption(deadline)
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("synthetic SessionStart did not commit a verified live binding")
+			t.Fatalf("synthetic SessionStart did not commit a verified live binding; last hook counter %q", c.lastCounter())
 		}
 	}
 }

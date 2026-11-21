@@ -28,7 +28,7 @@ func assertWaitFailure(t *testing.T, child <-chan waitExit, status int, code str
 				time.Since(changed), result.err, result.stdout, result.stderr, status, code)
 		}
 		t.Logf("wait after %v: exit %d, %s", time.Since(changed), status, result.stdout)
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureEventTimeout):
 		t.Fatal("wait did not report the change")
 	}
 }

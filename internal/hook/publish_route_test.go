@@ -41,7 +41,7 @@ func TestClaudeHookKeepsRuntimeProfileSeparateAndBuildsRouteRequest(t *testing.T
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
 	}
-	req := makeRequest(time.UnixMilli(1000), m, spec, e, "", true, 1)
+	req := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
 	var enrollArgs wire.HookEnrollArgs
 	if err := json.Unmarshal(req.Args, &enrollArgs); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestCodexHookExtractsThreadAndSessionLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseEvent: %v", err)
 	}
-	req := makeRequest(time.UnixMilli(1000), m, spec, e, "", true, 1)
+	req := makeRequest(time.UnixMilli(1000), m, spec, e, enrolment{}, true, 1)
 	var args wire.HookEnrollArgs
 	if err := json.Unmarshal(req.Args, &args); err != nil {
 		t.Fatal(err)
@@ -182,9 +182,7 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 	defer rv.Close()
 
 	var stdout bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	outcome := dispatchEvent(ctx, time.Now(), rv, contendedRouteTransport{
+	outcome := dispatchEvent(t.Context(), time.Now(), rv, contendedRouteTransport{
 		t:      t,
 		stdout: &stdout,
 		reply:  wire.HookResult{Epoch: 1, PendingLine: "[crosshall] pending: 42"},

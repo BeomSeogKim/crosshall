@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
@@ -23,73 +28,93 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(t.Context(), "git", "init", repo).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	owner.must("owner", "channel", "default", "checkout", "--repo", repo)
 	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
 
 	sessionID := "claude-e2e-route"
+	digest := (ident.Identity{Vendor: "claude", Key: sessionID}).Digest()
+	leaf := filepath.Join(w.rendezvous(), "m", digest[:16])
 	pid := fmt.Sprintf("%d", os.Getpid())
-	runHook := func(event, payload, socketPath string) {
+	runHook := func(event, payload, socketPath string, blockOutput bool) {
 		t.Helper()
-		cmd := exec.Command(binary, "hook", "claude", event)
+		ctx, cancel := context.WithTimeout(t.Context(), fixtureEventTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, "hook", "claude", event)
 		cmd.Dir = repo
 		cmd.Stdin = strings.NewReader(payload)
-		var env []string
-		for _, kv := range os.Environ() {
-			if strings.HasPrefix(kv, "ANTIGRAVITY_") || strings.HasPrefix(kv, "CLAUDE_") ||
-				strings.HasPrefix(kv, "CODEX_") || strings.HasPrefix(kv, "CROSSHALL_") ||
-				strings.HasPrefix(kv, "AI_AGENT=") {
-				continue
-			}
-			env = append(env, kv)
-		}
-		env = append(env,
-			"CROSSHALL_STATE_DIR="+w.state,
-			w.dispatcherLeaseEnv(),
+		cmd.Env = append(w.baseEnv(),
 			"CLAUDE_CODE_SESSION_ID="+sessionID,
 			"CLAUDE_PID="+pid,
 			"CLAUDE_CODE_ENTRYPOINT=cli",
 			"AI_AGENT=claude-code_2-1-327_harness",
 		)
 		if socketPath != "" {
-			env = append(env, "CLAUDE_CODE_MESSAGING_SOCKET="+socketPath)
+			cmd.Env = append(cmd.Env, "CLAUDE_CODE_MESSAGING_SOCKET="+socketPath)
 		}
-		cmd.Env = env
+		if blockOutput {
+			blockHookProcess(t, cmd)
+			return
+		}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("hook %s: %v\n%s", event, err, out)
 		}
 	}
 
-	runHook("SessionStart",
-		`{"hook_event_name":"SessionStart","session_id":"`+sessionID+`","source":"startup","cwd":"`+repo+`","permission_mode":"default"}`,
-		"/tmp/cc-socks/"+pid+".sock")
-
-	waitWhoPublish := func(wantState string) {
+	type route struct{ state, mode, socket string }
+	db := w.db()
+	awaitRoute := func(want route, wantWho string, fire func(int)) {
 		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(fixtureEventTimeout)
+		var last route
+		var lastErr error
+		var who outcome
+		var checkedWho bool
+		var queued []string
+		attempt := 0
 		for time.Now().Before(deadline) {
-			who := peer.must("who")
-			raw, _ := who.obj["members"].([]any)
-			for _, item := range raw {
-				m, _ := item.(map[string]any)
-				if m["vendor"] == "claude" {
-					if pub, ok := m["publish"].(map[string]any); ok && pub["state"] == wantState {
+			lastErr = db.QueryRow(`SELECT state, mode, COALESCE(socket_path, '')
+				FROM publish_route WHERE session_ref = ? AND adapter = 'claude'`, sessionID).Scan(&last.state, &last.mode, &last.socket)
+			if lastErr == nil && last == want {
+				who, checkedWho = peer.run("who"), true
+				members, _ := who.obj["members"].([]any)
+				for _, item := range members {
+					member, _ := item.(map[string]any)
+					if pub, ok := member["publish"].(map[string]any); who.exit == 0 && member["vendor"] == "claude" && ok && pub["state"] == wantWho {
 						return
 					}
+				}
+			} else if lastErr != nil && !errors.Is(lastErr, sql.ErrNoRows) {
+				break
+			} else {
+				queued = fixtureQueuedPackets(t, leaf)
+				if len(queued) == 0 {
+					attempt++
+					fire(attempt)
 				}
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
-		t.Fatalf("did not observe claude publish.state == %q in who", wantState)
+		if !checkedWho {
+			who = peer.run("who")
+		}
+		t.Fatalf("after %d callbacks wanted committed route %+v and who state %q, last route %+v (%v), queued packets %v\nwho exit %d, stdout %s, stderr %s",
+			attempt, want, wantWho, last, lastErr, queued, who.exit, who.stdout, who.stderr)
 	}
 
-	waitWhoPublish("candidate")
+	socket := "/tmp/cc-socks/" + pid + ".sock"
+	start := fmt.Sprintf(`{"hook_event_name":"SessionStart","session_id":%q,"source":"startup","cwd":%q,"permission_mode":"default"}`, sessionID, repo)
+	runHook("SessionStart", start, socket, true)
+	awaitRoute(route{state: "active", mode: "default", socket: socket}, "candidate", func(int) {
+		runHook("SessionStart", start, socket, false)
+	})
 
 	// Mode change through real spool client invalidates on bypassPermissions.
-	runHook("UserPromptSubmit",
-		`{"hook_event_name":"UserPromptSubmit","session_id":"`+sessionID+`","prompt_id":"p1","permission_mode":"bypassPermissions"}`,
-		"")
-	waitWhoPublish("off")
+	awaitRoute(route{state: "invalidated", mode: "bypassPermissions", socket: socket}, "off", func(attempt int) {
+		payload := fmt.Sprintf(`{"hook_event_name":"UserPromptSubmit","session_id":%q,"prompt_id":%q,"permission_mode":"bypassPermissions"}`,
+			sessionID, fmt.Sprintf("bypass-%d", attempt))
+		runHook("UserPromptSubmit", payload, "", false)
+	})
 }

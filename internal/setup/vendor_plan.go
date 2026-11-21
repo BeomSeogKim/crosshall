@@ -14,7 +14,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 )
 
-// ClaudeRules records the optional approval rule choices for Claude Code.
+// ClaudeRules reports the read and send approvals in a pending Claude Code plan.
 type ClaudeRules struct {
 	Read bool `json:"read"`
 	Send bool `json:"send"`
@@ -26,22 +26,20 @@ type RetainedPath = retainedFile
 // VendorPlan presents an installation or removal for confirmation. Its private
 // fields bind application to the observed configuration and journal.
 type VendorPlan struct {
-	Action       string          `json:"action"`
-	Adapter      string          `json:"adapter,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Path         string          `json:"path,omitempty"`
-	PathSource   string          `json:"path_source,omitempty"`
-	RecordedPath string          `json:"recorded_path,omitempty"`
-	Adapters     []string        `json:"adapters"`
-	Files        []PlanFile      `json:"files"`
-	Approvals    []ApprovalOffer `json:"approvals,omitempty"`
-	Retained     []RetainedPath  `json:"retained,omitempty"`
-	Resume       bool            `json:"resume,omitempty"`
-	Recovery     bool            `json:"recovery,omitempty"`
-	Err          error           `json:"-"`
+	Action       string         `json:"action"`
+	Adapter      string         `json:"adapter,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Path         string         `json:"path,omitempty"`
+	PathSource   string         `json:"path_source,omitempty"`
+	RecordedPath string         `json:"recorded_path,omitempty"`
+	Adapters     []string       `json:"adapters"`
+	Files        []PlanFile     `json:"files"`
+	Retained     []RetainedPath `json:"retained,omitempty"`
+	Resume       bool           `json:"resume,omitempty"`
+	Recovery     bool           `json:"recovery,omitempty"`
+	Err          error          `json:"-"`
 
 	op      operation
-	targets []installTarget
 	journal journal
 	digest  string
 }
@@ -131,7 +129,7 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 	s.completeTargets(ctx, j, targets)
 	for i, target := range targets {
 		single := targets[i : i+1]
-		op, err := makeInstall(j, single, false, false)
+		op, err := makeInstall(j, single)
 		if err != nil {
 			op = operation{Action: action, Adapters: []string{target.Spec.Adapter}}
 		}
@@ -213,8 +211,8 @@ func (p VendorPlan) resumedLegacyCodex() bool {
 func newVendorPlan(op operation, targets []installTarget, j journal, digest string, resume bool) VendorPlan {
 	view := displayPlan(Request{Action: op.Action}, op, targets, resume)
 	p := VendorPlan{
-		Action: op.Action, Adapters: view.Adapters, Files: view.Files, Approvals: view.Approvals,
-		Retained: view.Retained, Resume: resume, op: op, targets: targets, journal: j, digest: digest,
+		Action: op.Action, Adapters: view.Adapters, Files: view.Files,
+		Retained: view.Retained, Resume: resume, op: op, journal: j, digest: digest,
 	}
 	if len(op.Adapters) == 1 {
 		p.Adapter = op.Adapters[0]
@@ -242,6 +240,9 @@ func recordedPlanPath(j journal, adapter string) string {
 	if path := j.Files[adapter].Path; path != "" {
 		return path
 	}
+	if path := j.RuleFiles[adapter].Path; path != "" {
+		return path
+	}
 	if j.Pending != nil {
 		for _, e := range j.Pending.Edits {
 			if e.Adapter == adapter {
@@ -260,20 +261,20 @@ func recordedPlanPath(j journal, adapter string) string {
 // RenderVendorPlan writes the hook and approval preview for a prepared plan.
 func RenderVendorPlan(w io.Writer, p VendorPlan) error {
 	return printPlan(w, plan{Kind: p.Action, Adapters: p.Adapters, Files: p.Files,
-		Approvals: p.Approvals, Retained: p.Retained, Resume: p.Resume, Recovery: p.Recovery})
+		Retained: p.Retained, Resume: p.Resume, Recovery: p.Recovery})
 }
 
 // Install applies a confirmed plan. A resume always keeps the recorded rules.
-func (s Service) Install(ctx context.Context, p VendorPlan, rules ClaudeRules) error {
-	return s.applyVendorPlan(ctx, "setup", p, rules)
+func (s Service) Install(ctx context.Context, p VendorPlan) error {
+	return s.applyVendorPlan(ctx, "setup", p)
 }
 
 // Uninstall disables and removes entries only for the confirmed scope.
 func (s Service) Uninstall(ctx context.Context, p VendorPlan) error {
-	return s.applyVendorPlan(ctx, "uninstall", p, ClaudeRules{})
+	return s.applyVendorPlan(ctx, "uninstall", p)
 }
 
-func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPlan, rules ClaudeRules) error {
+func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPlan) error {
 	if p.Err != nil {
 		return p.Err
 	}
@@ -296,18 +297,13 @@ func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPla
 		return &PendingScopeError{Action: j.Pending.Action, Adapters: slices.Clone(j.Pending.Adapters), Rules: pendingClaudeRules(*j.Pending)}
 	}
 	vendor := p.op.Adapters[0]
-	if !reflect.DeepEqual(j.Files[vendor], p.journal.Files[vendor]) || j.Builds[vendor] != p.journal.Builds[vendor] ||
+	if !reflect.DeepEqual(j.Files[vendor], p.journal.Files[vendor]) ||
+		!reflect.DeepEqual(j.RuleFiles[vendor], p.journal.RuleFiles[vendor]) ||
+		j.Builds[vendor] != p.journal.Builds[vendor] ||
 		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) {
 		return errors.New("installation changed after planning; rerun to review the new plan")
 	}
-	op := p.op
-	if action == "setup" && vendor == "claude" && (rules.Read || rules.Send) {
-		op, err = makeInstall(j, p.targets, rules.Read, rules.Send)
-		if err != nil {
-			return err
-		}
-	}
-	return s.apply(ctx, digest, op)
+	return s.apply(ctx, digest, p.op)
 }
 
 func retainedFor(j journal, vendor string) []retainedFile {

@@ -8,9 +8,15 @@ In your own terminal, run `crosshall setup status` to check whether Claude Code,
 
 `crosshall setup codex` pins the selected crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
 
-`crosshall setup` shows the detected vendors and their plans, including each absolute settings path. It asks once before installing the listed base hooks. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup keeps your existing command approvals and hook trust settings. In Codex, review and trust the installed hooks in the hook review screen.
+`crosshall setup` shows the detected vendors, absolute settings paths, and exact command rules. One approval installs the listed hooks and rules. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup preserves existing command approvals. In Codex, review and trust the installed hooks with `/hooks`.
 
 Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. Set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute directory to select another location. Antigravity uses the shared `$HOME/.gemini/config/hooks.json`, where Crosshall owns its named hook group. Codex and Antigravity hook commands pin the Crosshall state directory selected when you install them. [Google's Antigravity hooks documentation](https://antigravity.google/docs/hooks/#managing-hooks-in-antigravity-cli)
+
+The user-level command rules cover routine member commands such as `read`, `reply`, and `wait`. The rules for the bare name `crosshall` trust the agent's PATH to select the executable. Claude Code and Antigravity CLI also match the installed absolute path. Claude Code stores the rules in the settings file's `permissions.allow` array. Antigravity CLI uses `permissions.allow` in `$HOME/.gemini/antigravity-cli/settings.json`.
+
+On supported Claude Code builds, the same setup approval adds a rule to `autoMode.allow`. It covers direct calls to those member commands, including display-only pipes into `head` or `tail` and `2>&1`. When setup creates the allow list, it includes `"$defaults"` to keep Claude's built-in rules. When the list already exists, setup preserves its contents and defaults behavior. Claude's explicit ask and deny rules and classifier hard blocks still take precedence. Run `claude auto-mode config` to see the effective rules. [Claude Code auto mode settings](https://code.claude.com/docs/en/auto-mode-config#override-the-block-and-allow-rules)
+
+Codex loads `rules/crosshall.rules` inside the selected Codex home when it starts and runs allowed commands outside its sandbox. Setup declares the installed `crosshall` path as a Codex host executable. Codex applies the same command rules to the bare name and the resolved absolute path, preserving existing bare-name prompt and forbid rules. Setup still installs hooks when it finds an existing user rule that may declare the `crosshall` host executable or when the binary has been renamed. The preview shows why command permissions are skipped.
 
 To revisit one vendor, run `crosshall setup claude`, `crosshall setup codex` or `crosshall setup antigravity`. An owner-run script can preview and apply the named vendors in two commands.
 
@@ -19,7 +25,7 @@ crosshall setup --dry-run claude codex
 crosshall setup claude codex --apply
 ```
 
-`--apply` reads no input. For a new setup, it installs only the named vendors' base hooks. If it can resume an interrupted setup for the same vendors, it applies the edits you already approved, including any Claude allow rules.
+`--apply` reads no input. For a new setup, it installs the named vendors' hooks and command rules. When it resumes an interrupted setup for the same vendors, it applies the previously approved edits.
 
 With input or output redirected, `crosshall setup claude` previews the plan, while bare `crosshall setup` prints the scripted form and exits with code 2.
 
@@ -104,7 +110,7 @@ A notice is an offer, not a delivery: the message is already stored, and a notic
 
 ## Turning adapters off and removing them
 
-`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove one adapter. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before starting a removal. Bare `crosshall uninstall` uses the previous approval when resuming an interrupted removal. With input or output redirected, it previews the removal. Add `--apply` to remove hooks without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
+`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove an adapter's managed hooks and command rules. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before starting a removal. Bare `crosshall uninstall` uses the previous approval when resuming an interrupted removal. With input or output redirected, it previews the removal. Add `--apply` to remove the managed entries without reading input. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
 
 ## What doctor reports
 

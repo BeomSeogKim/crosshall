@@ -29,8 +29,8 @@ func TestConfigEntriesPreserveUnrelatedBytes(t *testing.T) {
 	if err != nil || len(added) != 0 || !bytes.Equal(updated, idempotent) {
 		t.Fatalf("second setup changed config: %s, %v", idempotent, err)
 	}
-	restored, remaining, err := removeEntries(updated, []Entry{hook, allow})
-	if err != nil || len(remaining) != 0 || !bytes.Equal(restored, before) {
+	restored, removed, remaining, err := removeEntries(updated, []Entry{hook, allow})
+	if err != nil || len(removed) != 2 || len(remaining) != 0 || !bytes.Equal(restored, before) {
 		t.Fatalf("uninstall changed unrelated bytes: %s, %v", restored, err)
 	}
 }
@@ -64,8 +64,8 @@ func TestConfigEntriesDoNotClaimMixedGroups(t *testing.T) {
 	if err != nil || !slices.Equal(counts, []int{1}) {
 		t.Fatalf("installed counts %v: %v", counts, err)
 	}
-	updated, left, err := removeEntries(original, []Entry{entry})
-	if err != nil || len(left) != 1 || !bytes.Equal(updated, original) {
+	updated, removed, left, err := removeEntries(original, []Entry{entry})
+	if err != nil || len(removed) != 0 || len(left) != 1 || !bytes.Equal(updated, original) {
 		t.Fatalf("uninstall changed a mixed group: %s, %v", updated, err)
 	}
 }
@@ -76,8 +76,8 @@ func TestConfigEntriesLeaveEditedAndAmbiguousHooks(t *testing.T) {
 	entry := Entry{Event: "Stop", Value: json.RawMessage(value)}
 	for _, groups := range []string{edited, value + "," + value, value + "," + edited, ""} {
 		raw := []byte(`{"hooks":{"Stop":[` + groups + `]}}`)
-		updated, left, err := removeEntries(raw, []Entry{entry})
-		if err != nil || len(left) != 1 || !bytes.Equal(raw, updated) {
+		updated, removed, left, err := removeEntries(raw, []Entry{entry})
+		if err != nil || len(removed) != 0 || len(left) != 1 || !bytes.Equal(raw, updated) {
 			t.Fatalf("uninstall changed contested groups %s: %s, %v", groups, updated, err)
 		}
 		if groups != "" {

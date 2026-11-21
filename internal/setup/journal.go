@@ -16,14 +16,20 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
-const journalName = "install-journal.json"
+const (
+	journalName                = "install-journal.json"
+	legacyJournalVersion       = 1
+	commandRulesJournalVersion = 2
+	classifierJournalVersion   = 3
+)
 
 type journal struct {
-	Version  int                  `json:"v"`
-	Files    map[string]ownedFile `json:"files,omitempty"`
-	Builds   map[string]build     `json:"builds,omitempty"`
-	Pending  *operation           `json:"pending,omitempty"`
-	Retained []retainedFile       `json:"retained,omitempty"`
+	Version   int                  `json:"v"`
+	Files     map[string]ownedFile `json:"files,omitempty"`
+	RuleFiles map[string]ownedFile `json:"rule_files,omitempty"`
+	Builds    map[string]build     `json:"builds,omitempty"`
+	Pending   *operation           `json:"pending,omitempty"`
+	Retained  []retainedFile       `json:"retained,omitempty"`
 }
 
 type ownedFile struct {
@@ -33,6 +39,7 @@ type ownedFile struct {
 	Entries  []Entry            `json:"entries"`
 	Undo     [][]span           `json:"undo,omitempty"`
 	Dirs     []createdConfigDir `json:"created_dirs,omitempty"`
+	RuleText string             `json:"rule_text,omitempty"`
 }
 
 type createdConfigDir struct {
@@ -79,6 +86,9 @@ type retainedFile struct {
 type edit struct {
 	Adapter        string             `json:"adapter"`
 	Path           string             `json:"path"`
+	Rules          bool               `json:"rules,omitempty"`
+	AddText        string             `json:"add_text,omitempty"`
+	RemoveText     string             `json:"remove_text,omitempty"`
 	Before         fingerprint        `json:"before"`
 	After          fingerprint        `json:"after"`
 	Add            []Entry            `json:"add,omitempty"`
@@ -152,7 +162,33 @@ func readJournal(stateRoot string) (journal, string, error) {
 }
 
 func emptyJournal() journal {
-	return journal{Version: 1, Files: make(map[string]ownedFile), Builds: make(map[string]build)}
+	return journal{Version: legacyJournalVersion, Files: make(map[string]ownedFile), RuleFiles: make(map[string]ownedFile), Builds: make(map[string]build)}
+}
+
+func (j journal) formatVersion() int {
+	classifier := func(e Entry) bool { return e.AutoMode }
+	for _, file := range j.Files {
+		if slices.ContainsFunc(file.Entries, classifier) {
+			return classifierJournalVersion
+		}
+	}
+	version := legacyJournalVersion
+	if len(j.RuleFiles) != 0 {
+		version = commandRulesJournalVersion
+	}
+	// A pending edit can publish rules before their ownership is recorded.
+	if j.Pending != nil {
+		for _, e := range j.Pending.Edits {
+			if slices.ContainsFunc(e.Add, classifier) || slices.ContainsFunc(e.Remove, classifier) ||
+				(e.Record != nil && slices.ContainsFunc(e.Record.Entries, classifier)) {
+				return classifierJournalVersion
+			}
+			if e.Rules {
+				version = commandRulesJournalVersion
+			}
+		}
+	}
+	return version
 }
 
 func readJournalAt(state *os.Root) (journal, string, error) {
@@ -173,13 +209,15 @@ func readJournalAt(state *os.Root) (journal, string, error) {
 	// Require an explicit supported version; maps default to initialized.
 	j.Version = 0
 	if len(data) > maxJournal || json.Unmarshal(data, &j) != nil ||
-		j.Version != 1 || j.Files == nil || j.Builds == nil {
+		(j.Version < legacyJournalVersion || j.Version > classifierJournalVersion) ||
+		j.Files == nil || j.RuleFiles == nil || j.Builds == nil {
 		return j, "", errors.New("invalid install journal")
 	}
 	return j, sum(data), nil
 }
 
 func writeJournal(state *os.Root, j journal) error {
+	j.Version = j.formatVersion()
 	data, err := json.Marshal(j)
 	if err != nil {
 		return err
@@ -223,24 +261,18 @@ func (e edit) matchesAfter(now fingerprint) bool {
 }
 
 func (e edit) matchesCleanupAbsence(dir string) bool {
-	if e.Adapter != "agy" || !e.CleanupStarted {
+	if !e.ownsDirectories() || !e.CleanupStarted {
 		return false
 	}
 	for _, owned := range e.CleanupDirs {
-		missing := missingConfigDir + owned.Parent
-		switch owned.Name {
-		case ".gemini":
-			missing += "/.gemini/config"
-		case "config":
-		default:
-			continue
-		}
-		if dir == missing {
+		if configCleanupMatchesAbsence(e.Path, dir, owned) {
 			return true
 		}
 	}
 	return false
 }
+
+func (e edit) ownsDirectories() bool { return e.Adapter == "agy" || e.Rules }
 
 func (e edit) publicationDirectoryMatches(dir string) bool {
 	if e.StageDir != "" {
@@ -307,6 +339,16 @@ func (e edit) materialize(raw []byte) ([]byte, error) {
 	if !e.After.Exists {
 		return nil, nil
 	}
+	if e.AddText != "" || e.RemoveText != "" {
+		if e.RemoveText != "" {
+			var removed bool
+			raw, removed = removeRuleText(raw, e.RemoveText)
+			if !removed {
+				return nil, errors.New("managed command rule changed since planning")
+			}
+		}
+		return append(raw, e.AddText...), nil
+	}
 	if len(e.Restore) != 0 {
 		restored, err := undoInsertions(raw, e.Restore)
 		if err != nil || len(e.Add) == 0 {
@@ -318,7 +360,7 @@ func (e edit) materialize(raw []byte) ([]byte, error) {
 		updated, _, err := addEntries(raw, e.Add)
 		return updated, err
 	}
-	updated, _, err := removeEntries(raw, e.Remove)
+	updated, _, _, err := removeEntries(raw, e.Remove)
 	return updated, err
 }
 
@@ -346,10 +388,10 @@ func applyEdit(state *os.Root, j journal, e *edit) (fingerprint, error) {
 	}
 	current.DirIdentity = e.Before.Dir
 	var recordMkdir []func(createdConfigDir) error
-	if e.Adapter == "agy" && e.Record != nil {
+	if e.ownsDirectories() && e.Record != nil {
 		recordMkdir = append(recordMkdir, func(dir createdConfigDir) error {
 			e.Record.Dirs = slices.DeleteFunc(e.Record.Dirs, func(owned createdConfigDir) bool {
-				return owned.Name == dir.Name
+				return owned.Name == dir.Name && owned.Parent == dir.Parent
 			})
 			e.Record.Dirs = append(e.Record.Dirs, dir)
 			return writeJournal(state, j)
@@ -374,7 +416,7 @@ func applyEdit(state *os.Root, j journal, e *edit) (fingerprint, error) {
 }
 
 func finishEdit(state *os.Root, j journal, e *edit, observed fingerprint) (fingerprint, error) {
-	if e.Adapter != "agy" || observed.Exists || len(e.CleanupDirs) == 0 {
+	if !e.ownsDirectories() || observed.Exists || len(e.CleanupDirs) == 0 {
 		return observed, nil
 	}
 	if err := cleanupEditDirectories(state, j, e, e.CleanupDirs); err != nil {

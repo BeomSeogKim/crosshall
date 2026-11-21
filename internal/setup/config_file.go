@@ -178,20 +178,44 @@ func recordCreatedConfigDir(parent, child *os.Root, name string, record func(cre
 	return record(createdConfigDir{Name: name, Identity: configIdentity(childInfo), Parent: configIdentity(parentInfo)})
 }
 
+func missingConfigIdentity(parentID, relative string) string {
+	if strings.ContainsRune(relative, '/') {
+		return missingConfigDir + parentID + "/" + relative
+	}
+	return missingConfigDir + parentID
+}
+
+func configCleanupMatchesAbsence(path, dir string, owned createdConfigDir) bool {
+	for _, managed := range managedConfigDirectories(path) {
+		if filepath.Base(managed) != owned.Name {
+			continue
+		}
+		relative, err := filepath.Rel(filepath.Dir(managed), filepath.Dir(path))
+		if err == nil && dir == missingConfigIdentity(owned.Parent, relative) {
+			return true
+		}
+	}
+	return false
+}
+
 func removeCreatedConfigDir(path string, owned createdConfigDir) error {
-	config := filepath.Dir(path)
-	gemini := filepath.Dir(config)
-	if filepath.Base(path) != "hooks.json" || filepath.Base(config) != "config" || filepath.Base(gemini) != ".gemini" {
-		return errors.New("invalid Antigravity configuration path")
+	matched := false
+	for _, managed := range managedConfigDirectories(path) {
+		if filepath.Base(managed) != owned.Name {
+			continue
+		}
+		matched = true
+		if err := removeOwnedConfigDir(path, filepath.Dir(managed), owned); err != nil {
+			return err
+		}
 	}
-	parent := gemini
-	switch owned.Name {
-	case ".gemini":
-		parent = filepath.Dir(gemini)
-	case "config":
-	default:
-		return errors.New("invalid Antigravity configuration directory record")
+	if !matched {
+		return errors.New("invalid configuration directory record")
 	}
+	return nil
+}
+
+func removeOwnedConfigDir(path, parent string, owned createdConfigDir) error {
 	location, err := openConfigParent(path, parent)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -230,7 +254,7 @@ func removeCreatedConfigDir(path string, owned createdConfigDir) error {
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fmt.Errorf("lock Antigravity configuration directory %q for cleanup: %w", owned.Name, err)
+		return fmt.Errorf("lock configuration directory %q for cleanup: %w", owned.Name, err)
 	}
 	info, err = location.dir.Lstat(owned.Name)
 	if errors.Is(err, os.ErrNotExist) {
@@ -319,9 +343,12 @@ func openConfigParent(path, parent string) (location configLocation, err error) 
 		return location, err
 	}
 	configParent := parent == filepath.Dir(path)
+	nested := len(managedConfigDirectories(path)) != 0
 	parent = systemConfigDirectory(parent)
-	agyConfig := configParent && filepath.Base(path) == "hooks.json" && strings.HasSuffix(parent, "/.gemini/config")
 	parts := strings.Split(strings.TrimPrefix(parent, "/"), "/")
+	if parent == "/" {
+		parts = nil
+	}
 	location.dir, err = os.OpenRoot("/")
 	if err != nil {
 		return location, err
@@ -336,21 +363,20 @@ func openConfigParent(path, parent string) (location configLocation, err error) 
 			return location, err
 		}
 		final := i == len(parts)-1
-		mayBeMissing := final || agyConfig && i == len(parts)-2
+		managedAncestor := configParent && nested && i == len(parts)-2
+		mayBeMissing := final || managedAncestor
+		var relative string
 		if mayBeMissing {
+			relative = strings.Join(parts[i:], "/")
 			info, statErr := location.dir.Stat(".")
 			if statErr != nil {
 				return location, statErr
 			}
-			identity := missingConfigDir + configIdentity(info)
-			if !final {
-				identity += "/.gemini/config"
-			}
-			location.missingParents = append(location.missingParents, identity)
+			location.missingParents = append(location.missingParents, missingConfigIdentity(configIdentity(info), relative))
 		}
 		child, openErr := openConfigChild(location.dir, name, final && configParent)
 		if mayBeMissing && errors.Is(openErr, os.ErrNotExist) {
-			location.missing = strings.Join(parts[i:], "/")
+			location.missing = relative
 			return location, nil
 		}
 		if openErr != nil {

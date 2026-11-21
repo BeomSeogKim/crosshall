@@ -21,7 +21,6 @@ type fakeOps struct {
 	planErr   error
 	failing   map[string]error
 	installed []string
-	rules     map[string]ClaudeRules
 	removed   []string
 	planned   [][]string
 }
@@ -31,7 +30,7 @@ func newFakeOps() *fakeOps {
 		vp := VendorPlan{Action: "setup", Adapter: adapter, Name: name, Path: path, PathSource: "default"}
 		vp.Files = []PlanFile{{Adapter: adapter, Path: path, Add: []Entry{{Event: "Stop", Value: json.RawMessage(`"crosshall hook ` + adapter + ` Stop"`)}}}}
 		if adapter == "claude" {
-			vp.Approvals = []ApprovalOffer{{Adapter: "claude", Kind: "read"}, {Adapter: "claude", Kind: "send"}}
+			vp.Files[0].Add = append(vp.Files[0].Add, Entry{Value: json.RawMessage(`"Bash(/fixture/bin/crosshall read:*)"`)})
 		}
 		return vp
 	}
@@ -47,7 +46,6 @@ func newFakeOps() *fakeOps {
 			"agy":    plan("agy", "Antigravity", "/fixture/home/.gemini/config/hooks.json"),
 		},
 		failing: map[string]error{},
-		rules:   map[string]ClaudeRules{},
 	}
 }
 
@@ -65,12 +63,11 @@ func (f *fakeOps) PlanInstall(_ context.Context, names []string) ([]VendorPlan, 
 	return plans, nil
 }
 
-func (f *fakeOps) Install(_ context.Context, plan VendorPlan, rules ClaudeRules) error {
+func (f *fakeOps) Install(_ context.Context, plan VendorPlan) error {
 	if err := f.failing[plan.Adapter]; err != nil {
 		return err
 	}
 	f.installed = append(f.installed, plan.Adapter)
-	f.rules[plan.Adapter] = rules
 	return nil
 }
 
@@ -139,7 +136,7 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	question := strings.Index(r.out, "Install the listed hooks? [y/N]")
+	question := strings.Index(r.out, "Install the listed hooks and command rules? [y/N]")
 	if question < 0 || strings.Count(r.out, "[y/N]") != 1 {
 		t.Fatalf("expected one consent:\n%s", r.out)
 	}
@@ -158,8 +155,8 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 	if n := strings.Count(r.out, autoJoinNote); n != 1 {
 		t.Errorf("the hall-wide note is printed %d times:\n%s", n, r.out)
 	}
-	if !slices.Equal(ops.installed, []string{"claude", "codex", "agy"}) || ops.rules["claude"] != (ClaudeRules{}) {
-		t.Fatalf("installed %v rules %+v", ops.installed, ops.rules)
+	if !slices.Equal(ops.installed, []string{"claude", "codex", "agy"}) {
+		t.Fatalf("installed %v", ops.installed)
 	}
 }
 
@@ -212,13 +209,13 @@ func TestOverriddenAndChangedPathsAreShownWithTheirSource(t *testing.T) {
 	}
 }
 
-// --apply installs the named vendors, reads no input and adds no allow rules.
+// --apply installs the named vendors without reading input.
 func TestApplyInstallsTheNamedVendorsWithoutReadingInput(t *testing.T) {
 	ops := newFakeOps()
 	input := &countingReader{}
 	r := runPrompts(t, ops, Request{Apply: true, Adapters: []string{"claude", "codex"}, Input: input}, "")
-	if r.err != nil || input.reads != 0 || !slices.Equal(ops.installed, []string{"claude", "codex"}) || ops.rules["claude"] != (ClaudeRules{}) {
-		t.Fatalf("reads %d installed %v rules %+v: %v", input.reads, ops.installed, ops.rules, r.err)
+	if r.err != nil || input.reads != 0 || !slices.Equal(ops.installed, []string{"claude", "codex"}) {
+		t.Fatalf("reads %d installed %v: %v", input.reads, ops.installed, r.err)
 	}
 	if len(declined(t, r.s)) != 0 {
 		t.Fatal("--apply recorded a decision")
@@ -312,7 +309,7 @@ func TestJSONKeepsQuestionsOffStandardOutput(t *testing.T) {
 	r := runPrompts(t, ops, Request{Terminal: true, JSON: true, Adapters: []string{"codex"}}, "y\n")
 	var result promptResult
 	if r.err != nil || json.Unmarshal([]byte(r.out), &result) != nil || len(result.Vendors) != 1 || result.Vendors[0].Outcome != "installed" ||
-		!strings.Contains(r.prompt, "Install the listed hooks? [y/N]") {
+		!strings.Contains(r.prompt, "Install the listed hooks and command rules? [y/N]") {
 		t.Fatalf("stdout %q prompts %q: %v", r.out, r.prompt, r.err)
 	}
 }
@@ -405,7 +402,7 @@ func TestInstallerPathConsentPrecedesHookApplication(t *testing.T) {
 			}}
 			r := runPrompts(t, ops, req, tc.input)
 			if !errors.Is(r.err, tc.receiptErr) || !slices.Equal(decisions, tc.decisions) || !slices.Equal(ops.installed, tc.installed) ||
-				strings.Count(r.out, "[y/N]") != 1 || !strings.Contains(r.out, "Apply the shown PATH change and install the listed hooks?") {
+				strings.Count(r.out, "[y/N]") != 1 || !strings.Contains(r.out, "Apply the shown PATH change and install the listed hooks and command rules?") {
 				t.Fatalf("err %v, decisions %v, installed %v\n%s", r.err, decisions, ops.installed, r.out)
 			}
 		})
@@ -453,8 +450,8 @@ func TestAJSONPreviewCarriesEachPlan(t *testing.T) {
 			t.Errorf("%s preview without its plan: %+v", v.Adapter, v)
 		}
 	}
-	if result.Vendors[0].Plan == nil || len(result.Vendors[0].Plan.Approvals) != 2 {
-		t.Error("the Claude preview lacks its rule offers")
+	if !bytes.Contains(out.Bytes(), []byte("Bash(/fixture/bin/crosshall read:*)")) {
+		t.Error("the Claude preview lacks its command rule")
 	}
 }
 

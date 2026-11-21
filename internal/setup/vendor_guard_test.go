@@ -81,3 +81,28 @@ func TestVendorSentinelRecordsIgnoredConfigReads(t *testing.T) {
 		t.Fatalf("direct protected read = %+v, %v", contents, err)
 	}
 }
+
+func TestVendorSentinelGuardsCommandRules(t *testing.T) {
+	root := t.TempDir()
+	sentinel := t.TempDir()
+	codex := filepath.Join(root, ".codex")
+	agy := filepath.Join(root, ".gemini", "antigravity-cli")
+	if err := os.WriteFile(filepath.Join(sentinel, "protected"), []byte(codex+"\n"+agy+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(testVendorSentinel, sentinel)
+	var want strings.Builder
+	for _, path := range []string{filepath.Join(codex, "rules", "crosshall.rules"), filepath.Join(agy, "settings.json")} {
+		if _, err := readConfig(path); !errors.Is(err, errTestVendorPath) {
+			t.Fatalf("protected rule read error = %v", err)
+		}
+		if err := replaceConfig(path, fileSnapshot{}, []byte("test"), 0600, false); !errors.Is(err, errTestVendorPath) {
+			t.Fatalf("protected rule replacement error = %v", err)
+		}
+		fmt.Fprintf(&want, "protected vendor path accessed: %q\nprotected vendor path accessed: %q\n", path, path)
+	}
+	log, err := os.ReadFile(filepath.Join(sentinel, "violations"))
+	if err != nil || string(log) != want.String() {
+		t.Fatalf("rule guard log = %q, %v; want %q", log, err, want.String())
+	}
+}

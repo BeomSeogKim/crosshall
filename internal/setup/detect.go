@@ -145,6 +145,23 @@ func resolveConfigPath(spec hook.InstallSpec) (configTarget, error) {
 	return configTarget{Home: home, Path: filepath.Join(config, spec.File), Source: source}, nil
 }
 
+func resolveCommandRulePath(spec hook.InstallSpec) (configTarget, error) {
+	target, err := resolveConfigPath(spec)
+	if err != nil {
+		return configTarget{}, err
+	}
+	switch spec.Adapter {
+	case "claude":
+	case "codex":
+		target.Path = filepath.Join(filepath.Dir(target.Path), "rules", "crosshall.rules")
+	case "agy":
+		target.Path = filepath.Join(target.Home, ".gemini", "antigravity-cli", "settings.json")
+	default:
+		return configTarget{}, fmt.Errorf("no command rule path for adapter %s", spec.Adapter)
+	}
+	return target, nil
+}
+
 func validConfigHome(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/" && !strings.ContainsAny(path, "\r\n\x00")
 }

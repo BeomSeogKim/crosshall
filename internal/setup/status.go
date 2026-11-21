@@ -71,8 +71,9 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 			status.Policy = "default"
 		}
 		record, owned := j.Files[spec.Adapter]
+		rules, rulesOwned := j.RuleFiles[spec.Adapter]
 		_, hasBuild := j.Builds[spec.Adapter]
-		status.Owned = journalKnown && owned
+		status.Owned = journalKnown && (owned || rulesOwned)
 		// A pending operation reserves the setup journal for all adapters.
 		// Only the rows in its original scope expose the approved plan.
 		if j.Pending != nil && slices.Contains(j.Pending.Adapters, spec.Adapter) {
@@ -81,6 +82,9 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 			}
 		}
 		recorded := record.Path
+		if recorded == "" {
+			recorded = rules.Path
+		}
 		retained := false
 		for _, f := range j.Retained {
 			if f.Adapter == spec.Adapter {
@@ -104,7 +108,7 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 		}
 		if journalKnown && status.Install != unknown && status.Policy != unknown {
 			status.Footprint = "none"
-			if status.Install != "none" || owned || hasBuild || retained || j.Pending != nil || status.Policy != "default" {
+			if status.Install != "none" || owned || rulesOwned || hasBuild || retained || j.Pending != nil || status.Policy != "default" {
 				status.Footprint = "present"
 			}
 		}
@@ -137,7 +141,7 @@ func (s Service) noUninstallFootprint(ctx context.Context, adapters []string) (b
 	// Bare uninstall also reports journal records for unknown adapters,
 	// which have no status row.
 	j, _, err := readJournal(s.StateRoot)
-	return len(j.Files) == 0 && len(j.Retained) == 0 && j.Pending == nil, err
+	return len(j.Files) == 0 && len(j.RuleFiles) == 0 && len(j.Retained) == 0 && j.Pending == nil, err
 }
 
 func inspectStatusState(ctx context.Context, path string) (journal, bool, map[string]store.DoctorAdapterState, bool) {

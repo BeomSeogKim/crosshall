@@ -36,7 +36,7 @@ func TestCodexSetupPinsStateRootThroughShell(t *testing.T) {
 		t.Fatalf("preview created hooks.json: %v", err)
 	}
 	f.CheckTargets(t)
-	if err := service.Install(t.Context(), plan, ClaudeRules{}); err != nil {
+	if err := service.Install(t.Context(), plan); err != nil {
 		t.Fatal(err)
 	}
 	command := codexSessionStartCommand(t, configBytes(t, plan.Path))
@@ -64,7 +64,7 @@ func TestCodexSetupRefusesOneConfigForDifferentRoots(t *testing.T) {
 		t.Fatal(plan.Err)
 	}
 	f.CheckTargets(t)
-	if err := service.Install(t.Context(), plan, ClaudeRules{}); err != nil {
+	if err := service.Install(t.Context(), plan); err != nil {
 		t.Fatal(err)
 	}
 	first := configBytes(t, plan.Path)
@@ -75,7 +75,7 @@ func TestCodexSetupRefusesOneConfigForDifferentRoots(t *testing.T) {
 	if conflict.Err == nil || !strings.Contains(conflict.Err.Error(), "CODEX_HOME") {
 		t.Fatalf("shared configuration accepted a distinct root: %v", conflict.Err)
 	}
-	if err := other.Install(t.Context(), conflict, ClaudeRules{}); err == nil {
+	if err := other.Install(t.Context(), conflict); err == nil {
 		t.Fatal("applying a conflicted preview succeeded")
 	}
 	if got := configBytes(t, plan.Path); !bytes.Equal(got, first) {
@@ -91,7 +91,7 @@ func TestCodexSetupRefusesOneConfigForDifferentRoots(t *testing.T) {
 	t.Setenv("CODEX_HOME", filepath.Join(f.Home, "second codex"))
 	independent := codexInstallPlan(t, other)
 	f.CheckTargets(t)
-	if independent.Err != nil || other.Install(t.Context(), independent, ClaudeRules{}) != nil {
+	if independent.Err != nil || other.Install(t.Context(), independent) != nil {
 		t.Fatalf("different config refused: %v", independent.Err)
 	}
 	if got := configBytes(t, plan.Path); !bytes.Equal(got, first) {
@@ -116,7 +116,7 @@ func TestCodexSetupMigratesOwnedLegacyAndUninstallsExactly(t *testing.T) {
 	interruption := errors.New("interrupted before enabling policy")
 	service.SetPolicy = func(context.Context, string, bool) error { return interruption }
 	f.CheckTargets(t)
-	if err := service.Install(t.Context(), plan, ClaudeRules{}); !errors.Is(err, interruption) {
+	if err := service.Install(t.Context(), plan); !errors.Is(err, interruption) {
 		t.Fatalf("expected an interruption after replacing the config: %v", err)
 	}
 	current := configBytes(t, path)
@@ -135,7 +135,7 @@ func TestCodexSetupMigratesOwnedLegacyAndUninstallsExactly(t *testing.T) {
 		t.Fatalf("migration recovery preview: resume=%t, err=%v", resume.Resume, resume.Err)
 	}
 	f.CheckTargets(t)
-	if err := service.Install(t.Context(), resume, ClaudeRules{}); err != nil {
+	if err := service.Install(t.Context(), resume); err != nil {
 		t.Fatal(err)
 	}
 	j, _, err = readJournal(service.StateRoot)

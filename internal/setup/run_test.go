@@ -105,7 +105,7 @@ func TestSetupResumesAfterFileWriteBeforePolicyConfirmation(t *testing.T) {
 		}
 		return unavailable
 	}
-	if _, err := runSetupTest(t, service, "setup", "yes\nyes\nno\n", false); !errors.Is(err, unavailable) {
+	if _, err := runSetupTest(t, service, "setup", "yes\n", false); !errors.Is(err, unavailable) {
 		t.Fatalf("expected policy failure, got %v", err)
 	}
 	j, _, err := readJournal(service.StateRoot)
@@ -117,9 +117,10 @@ func TestSetupResumesAfterFileWriteBeforePolicyConfirmation(t *testing.T) {
 		t.Fatal("the journal retained unrelated configuration")
 	}
 	installed, err := readConfig(path)
-	if err != nil || installed.Mode != 0640 || !bytes.Contains(installed.Bytes, []byte("Bash(crosshall read:*)")) ||
-		bytes.Contains(installed.Bytes, []byte("Bash(crosshall note:*)")) {
-		t.Fatalf("installed config does not reflect separate approvals: %+v %v", installed, err)
+	prefix := "Bash(" + commandRuleShellPath(service.Executable)
+	if err != nil || installed.Mode != 0640 || !bytes.Contains(installed.Bytes, []byte(prefix+" read:*)")) ||
+		!bytes.Contains(installed.Bytes, []byte(prefix+" note:*)")) || bytes.Contains(installed.Bytes, []byte(prefix+" run:*)")) {
+		t.Fatalf("installed config does not reflect the approved rules: %s %v", installed.Bytes, err)
 	}
 	confirmed = true
 	if out, err := runSetupTest(t, service, "setup", "", false); err != nil || !strings.Contains(out, "Recovering") {
@@ -146,7 +147,7 @@ func TestSetupRecoveryLeavesMatchingConfigWithoutRecordedIdentity(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	op, err := makeInstall(j, targets, false, false)
+	op, err := makeInstall(j, targets)
 	if err != nil {
 		t.Fatal(err)
 	}

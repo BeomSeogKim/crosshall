@@ -597,6 +597,13 @@ func rosterChange(ctx context.Context, tx store.Tx, channel, principal int64, fi
 		`INSERT INTO roster_change (channel_id, seq, principal_id, field)
 		 VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM roster_change WHERE channel_id = ?), ?, ?)`,
 		channel, channel, principal, field)
+	if err == nil && field == "joined" {
+		// A member whose start line waits for company now has it.
+		_, err = tx.ExecContext(ctx, `INSERT INTO adapter_dirty(principal_id, notice)
+			SELECT principal_id, 1 FROM binding WHERE channel_id = ? AND principal_id <> ? AND state = 'live'
+				AND roster_baseline_seq IS NOT NULL AND hint_acked = 0 AND start_line_seen = 0
+			ON CONFLICT(principal_id) DO UPDATE SET notice = 1`, channel, principal)
+	}
 	if err == nil && field == "departed" {
 		_, err = tx.ExecContext(ctx, `INSERT INTO adapter_dirty(principal_id, notice, reminder) VALUES (?, 1, 1)
 			ON CONFLICT(principal_id) DO UPDATE SET notice = 1, reminder = 1`, principal)

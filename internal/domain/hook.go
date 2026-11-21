@@ -105,7 +105,7 @@ type hookBinding struct {
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
 	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms,
-			b.roster_baseline_seq IS NOT NULL
+			b.roster_baseline_seq IS NOT NULL AND b.hint_acked = 0 AND b.start_line_seen = 0
 		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
 		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence, &b.joinHintPending)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -362,11 +362,12 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	}
 	out.Enrollment = "joined"
 	b := hookBinding{id: bindingID, routeEpoch: 1, channel: ch.id, alias: alias, state: "live", channelName: ch.name}
-	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+	// The snapshot keeps the start line pending, also past an ordinary roster acknowledgement.
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq =
+		(SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = ?) WHERE id = ?`, ch.id, bindingID); err != nil {
 		return core.Result{}, err
 	}
-	// The snapshot also keeps the full welcome pending after an ordinary roster acknowledgement.
-	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq = ? WHERE id = ?`, out.JoinHintAck.RosterSeq, bindingID); err != nil {
+	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
 	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
@@ -375,6 +376,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	return OK(out)
 }
 
+// offerJoinHint offers a hook-enrolled member its start line. A member that
+// is alone is offered nothing and the line stays pending: it is told when it
+// first has someone to talk to.
 func offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBinding, now time.Time, out *wire.HookResult) error {
 	seq, err := rosterSeq(ctx, tx, b.channel)
 	if err != nil {
@@ -384,14 +388,17 @@ func offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBind
 	if err != nil {
 		return err
 	}
-	if len(members) > RosterCap {
-		out.Omitted = len(members) - RosterCap
-		members = members[:RosterCap]
+	var peers []string
+	for _, m := range members {
+		if !m.Self {
+			peers = append(peers, m.Alias)
+		}
 	}
-	if out.Roster, err = json.Marshal(members); err != nil {
-		return err
+	out.Alias, out.Channel = b.alias, b.channelName
+	if len(peers) == 0 {
+		return nil
 	}
-	out.Alias, out.Channel, out.Hint = b.alias, b.channelName, Hint(b.alias, b.channelName)
+	out.Hint = StartLine(b.alias, b.channelName, peers)
 	out.JoinHintAck = &wire.HookJoinHintAck{BindingID: b.id, RouteEpoch: b.routeEpoch, RosterSeq: seq}
 	return nil
 }

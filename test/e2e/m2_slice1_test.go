@@ -59,21 +59,27 @@ func (c claudeSession) waitForConsumption() {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
 	leaf := filepath.Join(c.w.rendezvous(), "m", digest[:16])
+	packets := func(section string) []string {
+		entries, err := os.ReadDir(filepath.Join(leaf, section))
+		if err != nil {
+			c.w.t.Fatal(err)
+		}
+		var published []string
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+				published = append(published, entry.Name())
+			}
+		}
+		return published
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		in, err := os.ReadDir(filepath.Join(leaf, "in"))
-		if err != nil {
-			c.w.t.Fatal(err)
-		}
-		work, err := os.ReadDir(filepath.Join(leaf, "work"))
-		if err != nil {
-			c.w.t.Fatal(err)
-		}
+		in, work := packets("in"), packets("work")
 		if len(in) == 0 && len(work) == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			c.w.t.Fatalf("one-way observations still queued: %d in, %d work", len(in), len(work))
+			c.w.t.Fatalf("one-way observations still queued: in %v, work %v", in, work)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

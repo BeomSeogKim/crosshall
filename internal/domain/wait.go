@@ -159,19 +159,30 @@ func WaitCursorInvalidated(summary *MemberInboxSummary) (core.Result, error) {
 	return waitFailure(core.ExitRefused, CodeWaitCursorInvalidated, "message history changed while waiting", "crosshall inbox", summary)
 }
 
+// HallDelivers is what a member the hall delivers to is told where a
+// member that has to poll is told to wait: an empty inbox and a wait
+// timeout with nothing unread.
+const HallDelivers = "The hall brings new work to this session: no wait is needed."
+
 // WaitTimeout adds the latest successful hall snapshot to a local timeout.
 // The snapshot is an inbox check, so the next step is the pickup when
 // something is unread, another wait for a member that has to poll, and
-// nothing for one the hall delivers to.
+// none for one the hall delivers to, which Delivers marks.
 func WaitTimeout(summary *MemberInboxSummary, delivers bool) (core.Result, error) {
 	next := "crosshall wait --existing --work-only --timeout 9m"
 	switch {
 	case summary != nil && len(summary.Pending) > 0:
-		next = "crosshall read"
+		next, delivers = "crosshall read", false
 	case delivers:
 		next = ""
 	}
-	return waitFailure(core.ExitWaitTimeout, core.CodeWaitTimeout, "no new messages before the wait timeout", next, summary)
+	result, err := OK(struct {
+		Refusal
+		*MemberInboxSummary
+		Delivers bool `json:"delivers,omitempty"`
+	}{Refusal{Message: "no new messages before the wait timeout", Hint: next}, summary, delivers})
+	result.Status, result.Code = core.ExitWaitTimeout, core.CodeWaitTimeout
+	return result, err
 }
 
 func waitFailure(status core.ExitCode, code core.Code, message, hint string, summary *MemberInboxSummary) (core.Result, error) {

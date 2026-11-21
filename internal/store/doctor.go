@@ -101,6 +101,13 @@ func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, ide
 // InspectDoctorStoreAt uses the caller's clock for the UTC diagnostics day.
 func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, identityVendor string, now time.Time) (DoctorSnapshot, error) {
 	var snapshot DoctorSnapshot
+	err := inspectStore(ctx, files, func(tx Tx) error {
+		return readDoctorSnapshot(ctx, tx, &snapshot, adapters, identityVendor, now)
+	})
+	return snapshot, err
+}
+
+func inspectStore(ctx context.Context, files fs.FS, read func(Tx) error) error {
 	// SQLite can interpret a failed sidecar lookup as absence. Check the
 	// database and sidecars before opening the diagnostic view.
 	for _, name := range []string{"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-journal"} {
@@ -109,13 +116,13 @@ func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, i
 			if name != "store.sqlite3" && errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return snapshot, err
+			return err
 		}
 		file.Close()
 	}
 	vfsName, readOnly, err := vfs.New(files)
 	if err != nil {
-		return snapshot, err
+		return err
 	}
 	defer readOnly.Close()
 	// Exclusive mode keeps the WAL index in memory. The read-only VFS has no
@@ -131,19 +138,23 @@ func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, i
 	}
 	db, err := sql.Open("sqlite", "file:store.sqlite3?"+query.Encode())
 	if err != nil {
-		return snapshot, err
+		return err
 	}
 	defer db.Close()
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return snapshot, err
+		return err
 	}
 	defer tx.Rollback()
+	return read(tx)
+}
+
+func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, adapters []string, identityVendor string, now time.Time) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&snapshot.SchemaVersion); err != nil {
-		return snapshot, err
+		return err
 	}
 	if snapshot.SchemaVersion != len(migrations) {
-		return snapshot, fmt.Errorf("schema version %d, expected %d", snapshot.SchemaVersion, len(migrations))
+		return fmt.Errorf("schema version %d, expected %d", snapshot.SchemaVersion, len(migrations))
 	}
 	snapshot.Adapters = make(map[string]DoctorAdapterState, len(adapters))
 	day := now.UTC().Truncate(24 * time.Hour)
@@ -157,19 +168,19 @@ func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, i
 		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(vendor_version, ''), 'unknown') AS version
 			FROM principal WHERE kind = 'session' AND vendor = ? ORDER BY version`, identityVendor)
 		if err != nil {
-			return snapshot, err
+			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var version string
 			if err := rows.Scan(&version); err != nil {
-				return snapshot, err
+				return err
 			}
 			snapshot.IdentityVersions = append(snapshot.IdentityVersions, version)
 		}
-		return snapshot, rows.Err()
+		return rows.Err()
 	}
-	return snapshot, nil
+	return nil
 }
 
 func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time.Time) (DoctorAdapterState, error) {

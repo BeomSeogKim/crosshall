@@ -7,6 +7,12 @@ import (
 
 const PublishBuildConfirmations = 3
 
+type BuiltinEvidence struct {
+	Vendor, Version, Platform, Mode, ManifestRev string
+	Capability, ResultRef                        string
+	CheckedAtMS                                  int64
+}
+
 // CapabilityCovered matches tested evidence by manifest revision unless the
 // exact build has evidence of its own. The arguments are SQL expressions
 // supplied by callers, which bind runtime values separately.

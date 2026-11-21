@@ -297,7 +297,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	if err == nil {
 		var repo string
 		if spec.Enroll {
-			repo = enrollmentRoot(e)
+			repo = startRoot(stateRoot, e)
 		}
 		return leaf, gen, repo, ""
 	}
@@ -334,7 +334,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		return nil, "", "", "refused"
 	}
 	if spec.Enroll {
-		repo = enrollmentRoot(e)
+		repo = startRoot(stateRoot, e)
 	}
 	if newSession && spec.Enroll {
 		match, err := hasDefault(ctx, rv, repo)
@@ -375,6 +375,20 @@ func enrollmentRoot(e event) string {
 	}
 	root, _ := cli.RepoRoot(e.CWD)
 	return root
+}
+
+// startRoot is the repository a start event may enrol the session in. A
+// session joins only where its first start was: a later resume, clear or
+// compact start from another place enrols nothing, as a prompt does not.
+func startRoot(stateRoot string, e event) string {
+	repo := enrollmentRoot(e)
+	if e.startupRepo != nil {
+		return repo // this start is the recorded one
+	}
+	if first := startupRepoDigest(stateRoot, e.Identity); first != "" && first != repoDigestRecord(repo) {
+		return ""
+	}
+	return repo
 }
 
 func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e event) string {

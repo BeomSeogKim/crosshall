@@ -143,8 +143,21 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if cmd.HookAtMS > ms(now)+futureSlackMS {
 		return OK(out)
 	}
+	tookOver := false
+	var clearedReceipts clearedReceipts
 	if caller.PrincipalID == nil {
-		return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
+		cleared, quiet, receipts, err := s.takeOverCleared(ctx, tx, req, cmd, now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if quiet {
+			out.Enrollment = "none"
+			return OK(out)
+		}
+		if cleared == 0 {
+			return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
+		}
+		caller.PrincipalID, tookOver, clearedReceipts = &cleared, true, receipts
 	}
 	principal := *caller.PrincipalID
 	b, found, err := bindingOf(ctx, tx, principal)
@@ -187,11 +200,23 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		}
 		// A member who left by hand is not brought back by a hook, and a
 		// compaction or any start older than the clean end is a stale callback.
-		if !b.byHook || cmd.Source == "compact" || (lastEnd.Valid && cmd.HookAtMS <= lastEnd.Int64) {
+		// A /clear takeover is not: its process still runs, and the end it
+		// may trail is the cleared conversation's.
+		if !b.byHook || cmd.Source == "compact" || (!tookOver && lastEnd.Valid && cmd.HookAtMS <= lastEnd.Int64) {
 			out.Enrollment = "none"
 			return OK(out)
 		}
 		if b.alias, err = rejoin(ctx, tx, b, principal, req.Vendor, now); err != nil {
+			return core.Result{}, err
+		}
+	}
+	// The binding is live again, whichever of the clear's end and start came
+	// first: the replaced conversation's receipts apply now.
+	if tookOver && found {
+		if err := clearedReceipts.apply(ctx, tx, b.id); err != nil {
+			return core.Result{}, err
+		}
+		if b, _, err = bindingOf(ctx, tx, principal); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -511,6 +536,14 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		return okOrErr(out, err)
 	}
 	if recoverEnrollment {
+		// A process whose member left by hand or was departed by the owner
+		// joins nobody until an explicit join, also after a /clear.
+		if cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
+			launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
+			if err != nil || (found && launch.away) {
+				return okOrErr(out, err)
+			}
+		}
 		profile := cmd.Profile
 		profile.Mode = "unverified"
 		enroll := HookEnroll{wire.HookEnrollArgs{

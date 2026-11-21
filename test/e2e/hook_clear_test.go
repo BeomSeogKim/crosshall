@@ -180,10 +180,24 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 func TestAReceiptRecordedAfterAClearIsKept(t *testing.T) {
 	w, _, c := m2World(t)
 	c.pid = strconv.Itoa(os.Getpid())
-	c.fire("SessionStart", map[string]any{"source": "startup"})
+	// A hook prints only within its budget, so each start is retried until
+	// it is recorded (#203): a busy machine can delay the dispatcher's reply.
+	db := w.db()
+	c.fireUntil("SessionStart", map[string]any{"source": "startup"}, "a live member and its launch", func(string) bool {
+		var registered bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM principal_key k
+			JOIN binding b ON b.principal_id = k.principal_id
+			JOIN adapter_launch l ON l.principal_id = k.principal_id
+			WHERE k.vendor = 'claude' AND k.key = ? AND k.state = 'live' AND b.state = 'live'
+				AND l.ended_hook_at_ms IS NULL AND l.launch_ref LIKE ?)`,
+			c.key, "pid-"+c.pid+"-%").Scan(&registered); err != nil {
+			t.Fatal(err)
+		}
+		return registered
+	})
 	w.member().must("join", "checkout", "--as", "latepeer")
 	cleared := claudeSession{w: w, key: c.key + "-cleared", pid: c.pid, repo: c.repo}
-	if got := hostContext(t, cleared.fire("SessionStart", map[string]any{"source": "clear"})); !strings.Contains(got, "You are @claude1 in #checkout") {
+	if got := cleared.startWithContext("clear"); !strings.Contains(got, "You are @claude1 in #checkout") {
 		t.Fatalf("the clear did not keep the member: %q", got)
 	}
 	// The old conversation's command finishes rendering now: it showed the

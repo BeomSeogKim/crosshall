@@ -65,6 +65,46 @@ func TestRepoIdentityIsOneForEveryCheckoutOfARepository(t *testing.T) {
 			t.Errorf("RepoIdentity(%s) = %s, %v; want %s, %v", root, identity, linked, want.identity, want.linked)
 		}
 	}
+	// Git's own directories are in no work tree, wherever they live.
+	inside := filepath.Join(apart, "inside")
+	write(filepath.Join(inside, "HEAD"), "ref: refs/heads/main\n")
+	within := filepath.Join(base, "within")
+	write(filepath.Join(within, ".git"), "gitdir: inside\n")
+	write(filepath.Join(within, "inside", "HEAD"), "ref: refs/heads/main\n")
+	for _, dir := range []string{
+		filepath.Join(main, ".git", "objects"), filepath.Join(main, "src"), filepath.Join(linked, "src"),
+		filepath.Join(within, "inside", "objects"), filepath.Join(within, "src"),
+	} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, want := range map[string]string{
+		main: main, filepath.Join(main, "src"): main, linked: linked, filepath.Join(linked, "src"): linked,
+		apart: apart, within: within, filepath.Join(within, "src"): within,
+		filepath.Join(main, ".git"):                        "",
+		filepath.Join(main, ".git", "objects"):             "",
+		filepath.Join(main, ".git", "worktrees", "linked"): "",
+		filepath.Join(within, "inside"):                    "",
+		filepath.Join(within, "inside", "objects"):         "",
+		metadata: "", bare: "", base: "",
+	} {
+		if got := WorkTree(path); got != want {
+			t.Errorf("WorkTree(%s) = %q, want %q", path, got, want)
+		}
+	}
+	// Git accepts a repository only with its objects and refs.
+	if HasObjectStore(main) || HasObjectStore(base) {
+		t.Error("a Git directory with only a HEAD passed as a repository")
+	}
+	for _, name := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(main, ".git", name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !HasObjectStore(main) || !HasObjectStore(linked) || HasObjectStore(apart) {
+		t.Error("HasObjectStore does not follow the common Git directory")
+	}
 	// A default is kept under the repository for a main checkout and under
 	// the worktree for a linked one.
 	for path, want := range map[string]string{main: main, linked: linked, apart: metadata, ofApart: ofApart} {

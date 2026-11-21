@@ -46,7 +46,7 @@ func RepoRoot(path string) (string, error) {
 // directory itself (a bare repository, or one made with --separate-git-dir).
 // linked reports a worktree added to another checkout's repository.
 func RepoIdentity(root string) (identity string, linked bool) {
-	common, linked, ok := commonGitDir(root)
+	_, common, linked, ok := gitDirs(root)
 	if !ok {
 		return root, false
 	}
@@ -56,68 +56,86 @@ func RepoIdentity(root string) (identity string, linked bool) {
 	return common, linked
 }
 
-// commonGitDir finds the canonical common Git directory of the worktree at root.
-func commonGitDir(root string) (common string, linked, ok bool) {
-	gitDir := filepath.Join(root, ".git")
-	info, err := os.Stat(gitDir)
+// gitDirs finds the canonical Git directories of the worktree at root: its
+// own, and the repository's common one (the same unless root is linked).
+func gitDirs(root string) (own, common string, linked, ok bool) {
+	own = filepath.Join(root, ".git")
+	info, err := os.Stat(own)
 	if err != nil {
-		return "", false, false
+		return "", "", false, false
 	}
+	common = own
 	if !info.IsDir() {
 		if !info.Mode().IsRegular() || info.Size() > 8192 {
-			return "", false, false
+			return "", "", false, false
 		}
-		data, err := os.ReadFile(gitDir)
+		data, err := os.ReadFile(own)
 		if err != nil {
-			return "", false, false
+			return "", "", false, false
 		}
 		target, found := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), "gitdir: ")
 		if !found || target == "" {
-			return "", false, false
+			return "", "", false, false
 		}
-		if gitDir = target; !filepath.IsAbs(gitDir) {
-			gitDir = filepath.Join(root, gitDir)
+		if own = target; !filepath.IsAbs(own) {
+			own = filepath.Join(root, own)
 		}
+		common = own
 		// Only a linked worktree's Git directory names a common directory.
-		if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil && len(data) <= 8192 {
+		if data, err := os.ReadFile(filepath.Join(own, "commondir")); err == nil && len(data) <= 8192 {
 			if dir := strings.TrimRight(string(data), "\r\n"); dir != "" {
 				if !filepath.IsAbs(dir) {
-					dir = filepath.Join(gitDir, dir)
+					dir = filepath.Join(own, dir)
 				}
-				gitDir, linked = dir, true
+				common, linked = dir, true
 			}
 		}
 	}
-	gitDir, err = filepath.EvalSymlinks(gitDir)
-	if err != nil {
-		return "", false, false
+	if own, err = filepath.EvalSymlinks(own); err != nil {
+		return "", "", false, false
 	}
-	if _, err := os.Stat(filepath.Join(gitDir, "HEAD")); err != nil {
-		return "", false, false
+	if common, err = filepath.EvalSymlinks(common); err != nil {
+		return "", "", false, false
 	}
-	return gitDir, linked, true
+	if _, err := os.Stat(filepath.Join(common, "HEAD")); err != nil {
+		return "", "", false, false
+	}
+	return own, common, linked, true
 }
 
-// IsWorkTree reports whether path lies in the work tree of a real
-// repository: its common Git directory holds objects and refs, as Git itself
-// requires, and path is not inside the checkout's own .git directory.
-func IsWorkTree(path string) bool {
+// WorkTree returns the root of the work tree that path lies in. It returns
+// "" outside a worktree and inside Git's own directories for one: the
+// checkout's Git directory and the repository's common one, wherever they
+// live. Nobody works there, so a session there is in no repository.
+func WorkTree(path string) string {
 	root, err := RepoRoot(path)
 	if err != nil {
-		return false
+		return ""
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return false
+		return ""
 	}
 	if absolute, err = filepath.EvalSymlinks(absolute); err != nil {
-		return false
+		return ""
 	}
-	admin := filepath.Join(root, ".git")
-	if absolute == admin || strings.HasPrefix(absolute, admin+string(filepath.Separator)) {
-		return false
+	dirs := []string{filepath.Join(root, ".git")}
+	if own, common, _, ok := gitDirs(root); ok {
+		dirs = append(dirs, own, common)
 	}
-	common, _, ok := commonGitDir(root)
+	for _, dir := range dirs {
+		if absolute == dir || strings.HasPrefix(absolute, dir+string(filepath.Separator)) {
+			return ""
+		}
+	}
+	return root
+}
+
+// HasObjectStore reports whether the worktree at root belongs to a
+// repository Git itself accepts: its common Git directory holds objects and
+// refs besides a HEAD.
+func HasObjectStore(root string) bool {
+	_, common, _, ok := gitDirs(root)
 	if !ok {
 		return false
 	}

@@ -374,13 +374,14 @@ type enrolment struct {
 func (t enrolment) none() bool { return t.worktree == "" }
 
 // place is where the event's directory lies: its worktree root, and the
-// root that names its repository, the same for every linked worktree.
+// root that names its repository, the same for every linked worktree. A
+// directory inside Git's own directories is in no worktree: it is recorded
+// and treated as outside Git.
 func place(e event) (worktree, repository string) {
 	if e.CWD == "" {
 		return "", ""
 	}
-	worktree, _ = cli.RepoRoot(e.CWD)
-	if worktree == "" {
+	if worktree = cli.WorkTree(e.CWD); worktree == "" {
 		return "", ""
 	}
 	repository, _ = cli.RepoIdentity(worktree)
@@ -413,15 +414,16 @@ func startedHere(stateRoot string, e event, need bool) bool {
 }
 
 // enrolTarget says where the event's directory may be enrolled, or nothing
-// when it has no default and may not get a channel: outside a real work
-// tree, or with the owner's automatic joining off.
+// when it is in no work tree, or has no default and may not get a channel:
+// in a directory Git does not accept as a repository, or with the owner's
+// automatic joining off.
 func enrolTarget(ctx context.Context, rv *os.Root, e event) enrolment {
 	worktree, repository := place(e)
 	if worktree == "" {
 		return enrolment{}
 	}
 	t := enrolment{worktree: worktree, repository: repository}
-	t.create = autoJoin(ctx, rv) && cli.IsWorkTree(e.CWD)
+	t.create = autoJoin(ctx, rv) && cli.HasObjectStore(worktree)
 	if t.create {
 		return t
 	}

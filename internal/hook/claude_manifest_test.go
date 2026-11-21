@@ -147,7 +147,7 @@ func TestPromptRequestsCarryTheHookEntryTime(t *testing.T) {
 	}
 }
 
-// Astra #794: only a manifest that asks for it adds the entry time; Codex
+// Only a manifest that asks for it adds the entry time; Codex
 // prompts keep their native reference, so a repeat stays a replay.
 func TestOnlyClaudePromptsCarryTheEntryTime(t *testing.T) {
 	m, _ := loadManifest("codex")

@@ -97,7 +97,7 @@ func turnEndFor(t *testing.T, r wire.HookResult, id int64) bool {
 	return strings.Contains(r.TurnEndLine, strconv.FormatInt(id, 10))
 }
 
-// Astra #794: a late duplicate of a finished prompt, from a fresh hook
+// A late duplicate of a finished prompt, from a fresh hook
 // process, is a replay: it opens no turn and supersedes nothing.
 func TestALateDuplicateOfAFinishedPromptIsAReplay(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")
@@ -119,7 +119,7 @@ func TestALateDuplicateOfAFinishedPromptIsAReplay(t *testing.T) {
 	}
 }
 
-// Astra #796, the native chained shape: B typed during A, C typed during B.
+// The native chained shape: B typed during A, C typed during B.
 // Callbacks Prompt A, Prompt A, Stop A, Prompt B, Stop B, Stop C.
 func TestAChainOfTypedAheadPromptsChecksTheLastTurn(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")
@@ -136,7 +136,7 @@ func TestAChainOfTypedAheadPromptsChecksTheLastTurn(t *testing.T) {
 	}
 }
 
-// Astra #798 (1): the older of two same-id prompt packets is delivered after
+// The older of two same-id prompt packets is delivered after
 // the newer; hook entry time, not arrival, decides which one typed ahead.
 func TestTypedAheadPacketsOrderByEntryTime(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")
@@ -151,7 +151,7 @@ func TestTypedAheadPacketsOrderByEntryTime(t *testing.T) {
 	}
 }
 
-// Astra #798 (2): an unknown Stop before its predecessor finished leaves the
+// An unknown Stop before its predecessor finished leaves the
 // history ambiguous: it adopts nothing.
 func TestAnUnknownStopBeforeItsPredecessorAdoptsNothing(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")

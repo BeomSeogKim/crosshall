@@ -38,7 +38,7 @@ func turnRow(ctx context.Context, tx store.Tx, principal int64, launch, ref stri
 // promptReplay says a prompt repeats one already handled: its id opened a
 // turn of the launch that is no longer running, or at the same time. Only a
 // prompt reporting a running turn's id is typed ahead; any other repeat
-// changes nothing, as a replay did before (Astra #794).
+// changes nothing, as a replay did before.
 func promptReplay(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) (bool, error) {
 	if cmd.Fact != FactPromptSubmitted || cmd.TurnRef == "" {
 		return false, nil
@@ -49,8 +49,8 @@ func promptReplay(ctx context.Context, tx store.Tx, principal int64, cmd HookEve
 
 // soleOpenPlaceholder is the typed-ahead placeholder of the launch when it
 // is the only unfinished turn opened before at since the latest prompt with
-// an id of its own: then which turn an unknown id stands for is unambiguous
-// (Astra #798). A turn before that prompt ended, with or without its Stop: a
+// an id of its own: then which turn an unknown id stands for is unambiguous.
+// A turn before that prompt ended, with or without its Stop: a
 // prompt typed while a turn runs reports that turn's id, not a new one.
 func soleOpenPlaceholder(ctx context.Context, tx store.Tx, principal int64, launch string, at int64) (string, bool, error) {
 	var ref string
@@ -73,9 +73,9 @@ func soleOpenPlaceholder(ctx context.Context, tx store.Tx, principal int64, laun
 //     placeholder that the next unknown Stop adopts;
 //   - its id opened a running turn later: that later packet was the typed-
 //     ahead one, delivered first; it becomes the placeholder, and this
-//     prompt opens its own turn (Astra #798);
+//     prompt opens its own turn;
 //   - its id is new while a typed-ahead placeholder is the only running
-//     turn: the id is that turn's, typed ahead in a chain (Astra #796); the
+//     turn: the id is that turn's, typed ahead in a chain; the
 //     placeholder is bound to it, and this prompt opens the next one;
 //   - otherwise its own id.
 func promptTurn(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) (string, error) {

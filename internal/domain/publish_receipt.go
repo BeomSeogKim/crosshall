@@ -52,7 +52,7 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 			AND t.opened_hook_at_ms <= ?4 AND (t.opened_hook_at_ms >= l.started_hook_at_ms
 				OR t.finishing_hook_at_ms BETWEEN l.started_hook_at_ms AND ?4)
 	), last_turn AS (
-		SELECT turn_ref, finishing_hook_at_ms FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
+		SELECT turn_ref, opened_hook_at_ms, finishing_hook_at_ms FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
 	)
 	SELECT CASE
 		WHEN EXISTS (SELECT 1 FROM previous WHERE turn_ref = ?3) THEN 'absorbed'
@@ -60,6 +60,16 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
 				AND o.hook_at_ms BETWEEN t.finishing_hook_at_ms AND ?4
 				AND (o.kind <> 'turn_finishing' OR o.turn_ref IS NOT t.turn_ref OR o.hook_at_ms <> t.finishing_hook_at_ms)
+		)) THEN 'own_turn'
+		-- A last turn with no Stop, and nothing observed since it opened but
+		-- its own facts, ended by the time a prompt with another id arrives:
+		-- Claude Code sends no Stop for a turn ended by a denied permission
+		-- dialog (#169), and a prompt typed while a turn runs reports that
+		-- turn's id, which the absorbed rule takes first. Any other turn's
+		-- activity since (a prompt whose callback was lost) leaves it unknown.
+		WHEN EXISTS (SELECT 1 FROM last_turn t WHERE t.finishing_hook_at_ms IS NULL AND NOT EXISTS (
+			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
+				AND o.hook_at_ms BETWEEN t.opened_hook_at_ms AND ?4 AND o.turn_ref IS NOT t.turn_ref
 		)) THEN 'own_turn'
 		WHEN NOT EXISTS (SELECT 1 FROM previous) AND NOT EXISTS (SELECT 1 FROM turn t
 			WHERE t.principal_id = ?1 AND t.launch_ref = ?2 AND t.opened_hook_at_ms <= ?4

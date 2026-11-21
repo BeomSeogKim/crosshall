@@ -486,3 +486,64 @@ func TestPublishRouteEndsWithALaunchThatOtherLaunchesOutlive(t *testing.T) {
 		}
 	})
 }
+
+// #180: a session whose start did not see the vendor's socket gets it from
+// a turn's callback. The same path again keeps the route's generation (and
+// so its proof); another path replaces it only from a start.
+func TestPublishRouteTakesTheSocketFromALaterCallback(t *testing.T) {
+	f, _ := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	bid := bindingIDOf(t, f, f.principalOf(s))
+	report := func(ref, socket string, at int64, fromStart bool) {
+		t.Helper()
+		cmd := claudeRoute("pid-1", ref, socket, "default", at, 1)
+		cmd.Start = fromStart
+		wantOK(t, f.exec(f.caller(s), Request{Command: cmd, Vendor: s.vendor, SessionKey: s.key, OpKey: "hook:route:claude:pid-1:" + ref}))
+	}
+	recorded := func() (socket, startSocket, attach string) {
+		t.Helper()
+		if err := f.db.QueryRow(`SELECT COALESCE(socket_path, ''), COALESCE(start_socket, ''), COALESCE(socket_attach, '')
+			FROM publish_route WHERE binding_id = ?`, bid).Scan(&socket, &startSocket, &attach); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	report("start", "", t0, true)
+	_, _, _, _, state, reason, _ := routeState(t, f, bid)
+	if _, startSocket, _ := recorded(); state != "invalidated" || reason != noSocketAtStart || startSocket != "missing" {
+		t.Fatalf("a start without the socket: state %q reason %q start_socket %q", state, reason, startSocket)
+	}
+
+	report("prompt-1", "/tmp/cc-socks/1.sock", t0+1_000, false)
+	gen, _, _, _, state, _, _ := routeState(t, f, bid)
+	if socket, _, attach := recorded(); state != "active" || socket != "/tmp/cc-socks/1.sock" || attach != "later" {
+		t.Fatalf("the prompt's socket: state %q socket %q attach %q", state, socket, attach)
+	}
+
+	report("prompt-2", "/tmp/cc-socks/1.sock", t0+2_000, false)
+	if again, _, _, _, _, _, _ := routeState(t, f, bid); again != gen {
+		t.Fatalf("the same path moved the generation %d -> %d", gen, again)
+	}
+	if _, _, attach := recorded(); attach != "same" {
+		t.Fatalf("the same path recorded %q", attach)
+	}
+
+	report("stop-1", "/tmp/cc-socks/9.sock", t0+3_000, false)
+	if again, _, _, _, _, _, _ := routeState(t, f, bid); again != gen {
+		t.Fatalf("another path from a Stop moved the generation %d -> %d", gen, again)
+	}
+	if socket, _, attach := recorded(); socket != "/tmp/cc-socks/1.sock" || attach != "ignored" {
+		t.Fatalf("another path from a Stop: socket %q attach %q", socket, attach)
+	}
+
+	report("start-2", "/tmp/cc-socks/2.sock", t0+4_000, true)
+	if again, _, _, _, _, _, _ := routeState(t, f, bid); again != gen+1 {
+		t.Fatalf("another path from a start: generation %d -> %d, want one more", gen, again)
+	}
+	if socket, startSocket, attach := recorded(); socket != "/tmp/cc-socks/2.sock" || startSocket != "seen" || attach != "start" {
+		t.Fatalf("another path from a start: socket %q start_socket %q attach %q", socket, startSocket, attach)
+	}
+}

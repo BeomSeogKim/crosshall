@@ -740,8 +740,10 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 }
 
 // clearedReceiptWindow bounds how long after a /clear the replaced
-// conversation's directory is still read: a command it was rendering then
-// records its receipt within seconds.
+// conversation's directory is still read. A command it was rendering then
+// records its receipt within seconds, but a background crosshall wait it
+// started before the clear (up to nine minutes) records its receipt only
+// when it returns.
 const clearedReceiptWindow = 10 * time.Minute
 
 // clearedReceipts reads the receipts in the directories of the member's keys

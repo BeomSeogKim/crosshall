@@ -194,3 +194,62 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 		t.Fatalf("base pending output dropped under route contention: %q", stdout.String())
 	}
 }
+
+// #180: a turn's callbacks report the vendor's socket too, and a start
+// reports even a missing one, marked as a start.
+func TestClaudeTurnCallbacksReportTheSocketAndAStartReportsItsAbsence(t *testing.T) {
+	m, ok := loadManifest("claude")
+	if !ok {
+		t.Fatal("missing claude manifest")
+	}
+	withSocket := func(name string) (string, bool) {
+		switch name {
+		case "CLAUDE_CODE_SESSION_ID":
+			return "sess-1", true
+		case "CLAUDE_CODE_MESSAGING_SOCKET":
+			return "/tmp/cc-socks/12345.sock", true
+		}
+		return "", false
+	}
+	withoutSocket := func(name string) (string, bool) {
+		if name == "CLAUDE_CODE_MESSAGING_SOCKET" {
+			return "", false
+		}
+		return withSocket(name)
+	}
+	route := func(name, input string, lookup func(string) (string, bool)) (wire.HookRouteArgs, bool) {
+		t.Helper()
+		spec, _ := m.event(name)
+		e, err := parseEvent(strings.NewReader(input), m, spec, lookup)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		req, ok := makeRouteRequest(time.UnixMilli(1000), m, e, 1)
+		var args wire.HookRouteArgs
+		if ok {
+			if err := json.Unmarshal(req.Args, &args); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return args, ok
+	}
+	for _, c := range []struct{ name, input string }{
+		{"UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","session_id":"sess-1","prompt_id":"p1"}`},
+		{"Stop", `{"hook_event_name":"Stop","session_id":"sess-1","prompt_id":"p1","stop_hook_active":false}`},
+	} {
+		if args, ok := route(c.name, c.input, withSocket); !ok || args.SocketPath != "/tmp/cc-socks/12345.sock" || args.Start {
+			t.Fatalf("%s: route %v %+v, want the socket, not as a start", c.name, ok, args)
+		}
+	}
+	start := `{"hook_event_name":"SessionStart","session_id":"sess-1","source":"startup"}`
+	if args, ok := route("SessionStart", start, withoutSocket); !ok || args.SocketPath != "" || !args.Start {
+		t.Fatalf("a start without the socket: route %v %+v, want a start report", ok, args)
+	}
+	if args, ok := route("SessionStart", start, withSocket); !ok || args.SocketPath == "" || !args.Start {
+		t.Fatalf("a start with the socket: route %v %+v", ok, args)
+	}
+	notification := `{"hook_event_name":"Notification","session_id":"sess-1","notification_type":"permission_prompt"}`
+	if _, ok := route("Notification", notification, withSocket); ok {
+		t.Fatal("a notification reported a route")
+	}
+}

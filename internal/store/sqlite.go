@@ -62,11 +62,14 @@ var launchProcessSchema string
 //go:embed migrations/016_capability_build.sql
 var capabilityBuildSchema string
 
+//go:embed migrations/017_route_socket_attach.sql
+var routeSocketAttachSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
-	capabilityBuildSchema,
+	capabilityBuildSchema, routeSocketAttachSchema,
 }
 
 // Store owns the dispatcher's single SQLite connection.

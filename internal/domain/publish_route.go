@@ -119,32 +119,62 @@ func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoc
 	return err
 }
 
-func attachPublishRouteSocket(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, cmd HookRoute, sessionRef string, now time.Time) error {
+// noSocketAtStart is the reason a route without a socket gives when its
+// session's start did not see one: a turn's callback can still attach it.
+const noSocketAtStart = "no socket at start; the next prompt attaches it"
+
+// attachPublishRouteSocket applies a hook's report of the vendor's socket to
+// the member's route for the same live launch, and says whether it updated
+// the route as a whole (else the report's mode still applies). A route
+// without a socket takes any report's path; the same path again changes
+// nothing, so the route keeps its generation and proof; another path
+// replaces it only from a session start (#180).
+func attachPublishRouteSocket(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, cmd HookRoute, sessionRef string, now time.Time) (bool, error) {
 	var (
 		curAdapter, curSession, curLaunch, curMode, curState string
 		curBindingEpoch                                      int64
-		curThread                                            sql.NullString
+		curSocket, curThread                                 sql.NullString
 		policyEpoch                                          uint64
 		modeAtMS, registeredAtMS                             int64
 	)
 	err := tx.QueryRowContext(ctx, `SELECT binding_epoch, adapter, session_ref, launch_ref, policy_epoch,
-		mode, mode_at_ms, thread_id, state, registered_at_ms
+		mode, mode_at_ms, socket_path, thread_id, state, registered_at_ms
 		FROM publish_route WHERE binding_id = ?`, bindingID).
 		Scan(&curBindingEpoch, &curAdapter, &curSession, &curLaunch, &policyEpoch,
-			&curMode, &modeAtMS, &curThread, &curState, &registeredAtMS)
+			&curMode, &modeAtMS, &curSocket, &curThread, &curState, &registeredAtMS)
 	if errors.Is(err, sql.ErrNoRows) {
-		return upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, cmd.Adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
-			cmd.Epoch, cmd.PermissionMode, cmd.SocketPath, "", cmd.HookAtMS, now)
+		if cmd.SocketPath == "" {
+			return false, nil
+		}
+		if err := upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, cmd.Adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
+			cmd.Epoch, cmd.PermissionMode, cmd.SocketPath, "", cmd.HookAtMS, now); err != nil {
+			return false, err
+		}
+		return true, recordSocketAttach(ctx, tx, bindingID, cmd, attachOutcome(cmd), now)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if curBindingEpoch != bindingEpoch || curAdapter != cmd.Adapter || curSession != sessionRef ||
-		curLaunch != cmd.LaunchRef || policyEpoch != cmd.Epoch || cmd.HookAtMS < registeredAtMS {
-		return nil
+		curLaunch != cmd.LaunchRef || policyEpoch != cmd.Epoch || cmd.HookAtMS < registeredAtMS || curState == "ended" {
+		return true, nil
 	}
-	if curState == "ended" {
-		return nil
+	if cmd.Start {
+		seen := "missing"
+		if cmd.SocketPath != "" {
+			seen = "seen"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route SET start_socket = ? WHERE binding_id = ?`, seen, bindingID); err != nil {
+			return false, err
+		}
+	}
+	switch {
+	case cmd.SocketPath == "":
+		return false, nil
+	case curSocket.String == cmd.SocketPath:
+		return false, recordSocketAttach(ctx, tx, bindingID, cmd, "same", now)
+	case curSocket.String != "" && !cmd.Start:
+		return false, recordSocketAttach(ctx, tx, bindingID, cmd, "ignored", now)
 	}
 	effectiveMode, effectiveModeAtMS := curMode, modeAtMS
 	if cmd.PermissionMode != "" && cmd.HookAtMS > modeAtMS {
@@ -157,11 +187,14 @@ func attachPublishRouteSocket(ctx context.Context, tx store.Tx, bindingID, bindi
 			SET socket_path = ?, mode = ?, mode_at_ms = ?, state = ?, reason = ?, generation = generation + 1, updated_at_ms = ?
 			WHERE binding_id = ?`,
 			cmd.SocketPath, effectiveMode, effectiveModeAtMS, newState, newReason, nowMS, bindingID)
-		return err
+		if err != nil {
+			return false, err
+		}
+		return true, recordSocketAttach(ctx, tx, bindingID, cmd, attachOutcome(cmd), now)
 	}
 	watermark, err := currentWatermark(ctx, tx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE publish_route
 		SET socket_path = ?, mode = ?, mode_at_ms = ?, state = 'active', reason = ?,
@@ -169,6 +202,22 @@ func attachPublishRouteSocket(ctx context.Context, tx store.Tx, bindingID, bindi
 		    generation = generation + 1, updated_at_ms = ?
 		WHERE binding_id = ?`,
 		cmd.SocketPath, effectiveMode, effectiveModeAtMS, newReason, watermark, nowMS, bindingID)
+	if err != nil {
+		return false, err
+	}
+	return true, recordSocketAttach(ctx, tx, bindingID, cmd, attachOutcome(cmd), now)
+}
+
+func attachOutcome(cmd HookRoute) string {
+	if cmd.Start {
+		return "start"
+	}
+	return "later"
+}
+
+func recordSocketAttach(ctx context.Context, tx store.Tx, bindingID int64, cmd HookRoute, outcome string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE publish_route SET socket_attach = ?, socket_attach_at_ms = ? WHERE binding_id = ?`,
+		outcome, ms(now), bindingID)
 	return err
 }
 
@@ -221,18 +270,23 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 	if claimed, err := claimHook(ctx, tx, principal, req.OpKey, cmd, now); err != nil || !claimed {
 		return okOrErr(out, err)
 	}
-	if cmd.SocketPath != "" {
-		if err := attachPublishRouteSocket(ctx, tx, b.id, b.routeEpoch, principal, cmd, sessionRef, now); err != nil {
+	if cmd.SocketPath != "" || cmd.Start {
+		done, err := attachPublishRouteSocket(ctx, tx, b.id, b.routeEpoch, principal, cmd, sessionRef, now)
+		if err != nil {
 			return core.Result{}, err
 		}
-		return OK(out)
+		if done {
+			return OK(out)
+		}
 	}
 	if cmd.PermissionMode != "" {
 		if err := updatePublishRouteMode(ctx, tx, b.id, b.routeEpoch, cmd.Adapter, sessionRef, cmd.LaunchRef, cmd.Epoch, cmd.PermissionMode, cmd.HookAtMS, now); err != nil {
 			return core.Result{}, err
 		}
 	}
-	return OK(out)
+	_, err = tx.ExecContext(ctx, `UPDATE publish_route SET reason = ?
+		WHERE binding_id = ? AND state = 'invalidated' AND reason = 'no socket' AND start_socket = 'missing'`, noSocketAtStart, b.id)
+	return okOrErr(out, err)
 }
 
 func updatePublishRouteMode(ctx context.Context, tx store.Tx, bindingID, bindingEpoch int64, adapter, sessionRef, launchRef string,

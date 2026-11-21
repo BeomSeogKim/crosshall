@@ -89,6 +89,7 @@ type event struct {
 	Source         string
 	Reason         string
 	SocketPath     string
+	Start          bool
 	PermissionMode string
 	LaunchRef      string
 	LaunchVerified bool
@@ -198,12 +199,15 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		if e.CWD != "" && (!filepath.IsAbs(e.CWD) || strings.IndexByte(e.CWD, 0) >= 0) {
 			return event{}, errHookInput
 		}
-		if m.SocketEnv != "" {
-			if sock, present := lookup(m.SocketEnv); present {
-				e.SocketPath = sock
-			}
+	}
+	// A start may run before the vendor's socket exists; a turn's callbacks
+	// report it too, so a route can get it later (#180).
+	if m.SocketEnv != "" && (spec.Enroll || spec.TurnRequired) {
+		if sock, present := lookup(m.SocketEnv); present {
+			e.SocketPath = sock
 		}
 	}
+	e.Start = spec.Enroll
 	if spec.RecoverEnroll && filepath.IsAbs(fields["cwd"]) && strings.IndexByte(fields["cwd"], 0) < 0 {
 		e.CWD = fields["cwd"]
 	}

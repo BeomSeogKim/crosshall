@@ -503,7 +503,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 }
 
 func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.Request, bool) {
-	if e.SocketPath == "" && e.PermissionMode == "" {
+	// A start reports whether it saw the socket, even when it did not.
+	if e.SocketPath == "" && e.PermissionMode == "" && !(e.Start && m.SocketEnv != "") {
 		return wire.Request{}, false
 	}
 	ref := e.reference(entry)
@@ -516,6 +517,7 @@ func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.
 		Epoch:          epoch,
 		PermissionMode: e.PermissionMode,
 		SocketPath:     e.SocketPath,
+		Start:          e.Start,
 	})
 	return wire.Request{
 		OpKey: "hook:route:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,

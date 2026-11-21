@@ -100,6 +100,9 @@ type HookRouteArgs struct {
 	Epoch          uint64 `json:"epoch"`
 	PermissionMode string `json:"permission_mode,omitempty"`
 	SocketPath     string `json:"socket_path,omitempty"`
+	// Start marks a session start's report: only a start replaces a
+	// different socket path, and it records whether it saw one.
+	Start bool `json:"start,omitempty"`
 }
 
 // HookResult contains only presentation owned by the core. An acknowledgement

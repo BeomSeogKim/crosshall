@@ -320,6 +320,9 @@ func TestClaudeStartAndEndCarryTheSameVerifiedReference(t *testing.T) {
 	}
 	var labels []string
 	transport := recordedTransport{call: func(_ ident.Identity, _ string, req wire.Request, oneWay bool) (spool.Reply, error) {
+		if req.Verb == wire.VerbHookRoute {
+			return spool.Reply{}, nil // the start's socket report carries no profile
+		}
 		var a struct {
 			Profile      wire.HookProfile `json:"profile"`
 			Launch       string           `json:"launch_ref"`

@@ -540,13 +540,18 @@ func TestCodexExecConformance(t *testing.T) {
 	}
 	codexLedger(t, db)
 	codexMust(t, db.Close())
+	codexMust(t, codexCLI(exe, env, "owner", "stop"))
 	stop()
 	if markers := codexTurn(t, prefix, env, other, model, "Say OK."); len(markers) != 0 {
-		t.Fatalf("dispatcher outage added context: %v", markers)
+		t.Fatalf("owner-stopped turn added context: %v", markers)
+	}
+	rendezvous := ident.Rendezvous(state, os.Geteuid())
+	if _, err := os.Lstat(rendezvous); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rendezvous %q did not stay absent after owner stop: %v", rendezvous, err)
 	}
 	e := codexEvidence{"codex", match[1], platform, "exec", manifest.Revision, time.Now().UnixMilli(), []codexResult{
 		{"enroll", "tested", "SessionStart enrolled once and supplied the hint and roster with developer role. Resume preserved membership."},
-		{"boundary", "tested", "One prompt offered one unread ID with developer role, without its body or pickup. Four resumed callbacks emitted zero bytes. Quiet and dispatcher-outage turns each made one model request."},
+		{"boundary", "tested", "One prompt offered one unread ID with developer role, without its body or pickup. Four resumed callbacks emitted zero bytes. Quiet and owner-stopped turns each made one model request."},
 		{"observe", "candidate", "Prompt, Stop and SessionEnd observations recorded. Approval was not exercised. The session-scoped end preserved membership."},
 		reminder,
 	}}

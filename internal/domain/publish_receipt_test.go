@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -207,10 +208,12 @@ func TestPublishReceiptValidatesListAndAuthenticatedScope(t *testing.T) {
 		Vendor: "claude", OpKey: hookKey(wrongSession)}))
 	p.verifyPromptOrigin(wrongSession, "unknown")
 	p.observation(id, "")
+	// The prompts above opened turns that never got a Stop; a matching
+	// receipt with an id of its own still counts as its own turn (#169).
 	right := p.promptReceipt("typed-matched", publishTestLaunch, at+500, []int64{ask})
 	p.hook(p.reader, right)
-	p.observation(id, "unknown")
-	p.verifyPromptOrigin(right, "unknown")
+	p.observation(id, "own_turn")
+	p.verifyPromptOrigin(right, "crosshall_wake")
 	if n := p.count(`SELECT COUNT(*) FROM recipient WHERE message_id = ? AND picked_up_at_ms IS NOT NULL`, ask); n != 0 {
 		t.Fatal("typed matching receipt marked a pickup")
 	}
@@ -240,19 +243,50 @@ func TestPublishReceiptInAFreshSessionIsItsOwnTurn(t *testing.T) {
 	}
 }
 
-func TestPublishReceiptInABusySessionStaysUnknown(t *testing.T) {
+// #169: a turn ended by a denied permission dialog gets no Stop. The notice
+// that waited for the dialog then runs with an id of its own, so it is its
+// own turn, and the route stays active.
+func TestPublishReceiptAfterADeniedTurnIsItsOwnTurn(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
-	p.hook(p.reader, prompt(publishTestLaunch, "user", p.now.UnixMilli()+50))
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "user:approval", "user", at+60, false))
+	ask := p.turnEndAsk(p.writer, "reader", "during the dialog")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "own_turn")
+	p.verifyPromptOrigin(cmd, "crosshall_wake")
+	if n := p.count(`SELECT COUNT(*) FROM publish_suspension`); n != 0 {
+		t.Fatalf("%d suspensions after a denied turn's notice", n)
+	}
+	p.resolve(id, PublishSubmitted)
+	p.turnEndAsk(p.writer, "reader", "after the notice")
+	if p.reserve() == 0 {
+		t.Fatal("the route stopped publishing after a denied turn")
+	}
+}
+
+// A notice that reports the open turn's id was taken into that turn: the
+// rule for a turn without a Stop does not apply to it.
+func TestPublishReceiptOnTheOpenTurnStaysAbsorbed(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 	ask := p.turnEndAsk(p.writer, "reader", "busy")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
-	cmd := p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli()+100, []int64{ask})
+	cmd := p.promptReceipt("user", publishTestLaunch, at+100, []int64{ask})
+	cmd.EventRef = "user:prompt@" + strconv.FormatInt(at+100, 10)
 	p.hook(p.reader, cmd)
-	p.observation(id, "unknown")
-	p.verifyPromptOrigin(cmd, "unknown")
+	p.observation(id, "absorbed")
 }
 
 // Fable #580: a later start of the same launch moves its start time and
@@ -360,6 +394,28 @@ func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
 	if n := p.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = ?`, unrecorded); n != 0 {
 		t.Fatal("fixture recorded the missing prompt")
 	}
+	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	cmd := p.promptReceipt(unrecorded, publishTestLaunch, at+100, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.observation(id, "unknown")
+	p.verifyPromptOrigin(cmd, "unknown")
+}
+
+// A prior turn without a Stop is not taken as ended when another turn's
+// activity was observed since it opened: here the next prompt's callback was
+// lost and only its approval arrived, so a receipt with that turn's id
+// stays unknown.
+func TestPublishReceiptAfterAnUnfinishedTurnWithLaterActivityStaysUnknown(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "prior", at+10)) // no Stop
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {

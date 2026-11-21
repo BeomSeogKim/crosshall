@@ -599,6 +599,7 @@ func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields
 		changes = []Member{}
 	}
 	fields["join_hint"], _ = json.Marshal(Hint(alias, member.name))
+	fields["rules_given"] = json.RawMessage(`true`)
 	fields["roster_seq"], _ = json.Marshal(seq)
 	fields["roster_changes"], err = json.Marshal(changes)
 	return err

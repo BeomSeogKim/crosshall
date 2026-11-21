@@ -85,6 +85,24 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 				t.Fatalf("submit hook added a start line after the rules: %q", got)
 			}
 		})
+		// The version before the start line left a roster cursor after a
+		// reply that carried no rules. It outlives the upgrade and must not
+		// settle the rules: the next command still prints them.
+		t.Run(adapter.name+" an older version's cursor", func(t *testing.T) {
+			f, repo, member := blocked(t)
+			digest := (ident.Identity{Vendor: adapter.name, Key: setupSessionPrefix + adapter.name}).Digest()
+			if err := os.WriteFile(filepath.Join(f.rendezvous(), "m", digest[:16], "ack"), []byte("1\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if out := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("upgraded")); !strings.Contains(hostContext(t, out), line) {
+				t.Fatalf("the start line is still owed after the upgrade: %q", out)
+			}
+			firstInbox := member.mustPlain("inbox")
+			secondInbox := member.mustPlain("inbox")
+			if !strings.Contains(firstInbox, rules) || strings.Contains(secondInbox, rules) {
+				t.Fatalf("unexpected inbox guidance: %q and %q", firstInbox, secondInbox)
+			}
+		})
 		// One command gave the rules: the leaf says so before the store does,
 		// and the next prompt must not add the start line.
 		for _, first := range []string{"inbox", "whoami"} {
@@ -216,5 +234,22 @@ func (f *setupWorld) blockHookOutput(repo, adapter, event, fields string) {
 	raw, err := io.ReadAll(read)
 	if err != nil || !bytes.Equal(raw, bytes.Repeat([]byte{'x'}, filled)) {
 		f.t.Fatalf("%s %s emitted unexpected stdout with its pipe full: %d bytes, %v", adapter, event, len(raw)-filled, err)
+	}
+}
+
+// whoami asks for the roster but shows none of it: it must leave a peer's
+// arrival for the next command to announce.
+func TestWhoamiLeavesRosterNewsForTheNextCommand(t *testing.T) {
+	w, _, c := m2World(t)
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	member := &participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key}}
+	member.mustPlain("inbox")
+	member.mustPlain("inbox")
+	(&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=late-peer-session"}}).must("join", "checkout", "--as", "latepeer")
+	if out := member.mustPlain("whoami"); strings.Contains(out, "latepeer") {
+		t.Fatalf("whoami announced the roster: %q", out)
+	}
+	if out := member.mustPlain("inbox"); !strings.Contains(out, "@latepeer joined") {
+		t.Fatalf("the peer's arrival was never announced: %q", out)
 	}
 }

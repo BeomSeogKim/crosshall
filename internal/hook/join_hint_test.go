@@ -102,3 +102,53 @@ func TestRevokedJoinHintDoesNotReachStdoutOrCreateALock(t *testing.T) {
 		t.Fatalf("revoked response left an output lock: %v", err)
 	}
 }
+
+// A /clear whose start line is due prints the line and, beside it, only what
+// is pending. When another callback holds the line's output, the clear still
+// says who the session is: it prints the whole reset cue.
+func TestAClearPrintsTheWholeCueWhenItCannotPrintTheStartLine(t *testing.T) {
+	rv, _, leafPath := runFixture(t)
+	leaf, err := ident.OpenPrivateDir(leafPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	m, _ := loadManifest("codex")
+	spec, _ := m.event("SessionStart")
+	ack := wire.HookJoinHintAck{Generation: "fixture-gen", BindingID: 5, RouteEpoch: 1, RosterSeq: 2, Offer: "offer-1"}
+	pending := "[crosshall] 0 unread, 1 owed."
+	result := wire.HookResult{Epoch: 7, Enrollment: "restored", Hint: "[crosshall] Joined #checkout as @codex1, with @peer.",
+		Cue: "[crosshall] You are @codex1 in #checkout.\n" + pending, CueWithStartLine: &pending, JoinHintAck: &ack}
+	projected, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.WriteFile(JoinHintOfferFile, projected, 0600); err != nil {
+		t.Fatal(err)
+	}
+	write := func() (string, bool) {
+		var output strings.Builder
+		failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, &output)
+		if failure != "" {
+			t.Fatal(failure)
+		}
+		return output.String(), seen
+	}
+	lock, err := spool.OpenServerFile(leaf, joinHintLock, os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if out, seen := write(); seen || strings.Contains(out, "Joined #checkout") || !strings.Contains(out, "You are @codex1") || !strings.Contains(out, pending) {
+		t.Fatalf("a clear behind another callback's start line: %q (seen %t)", out, seen)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if out, seen := write(); !seen || !strings.Contains(out, "Joined #checkout") || strings.Contains(out, "You are @codex1") || !strings.Contains(out, pending) {
+		t.Fatalf("a clear with its start line: %q (seen %t)", out, seen)
+	}
+}

@@ -259,12 +259,14 @@ func TestAClearWithItsStartLineDueIsToldWhoItIsOnce(t *testing.T) {
 	if got.JoinHintAck == nil || !strings.HasPrefix(got.Hint, "[crosshall] Joined #checkout as @claude1, with @") {
 		t.Fatalf("a clear with the start line due: %+v", got)
 	}
-	if got.Cue != StatusLine(0, 1) {
-		t.Fatalf("cue %q, want only what is pending", got.Cue)
+	// The whole cue stays for a hook that cannot print the line.
+	whole := ResetHint("claude1", "checkout") + "\n" + StatusLine(0, 1)
+	if got.Cue != whole || got.CueWithStartLine == nil || *got.CueWithStartLine != StatusLine(0, 1) {
+		t.Fatalf("cue %q with start line %v, want only what is pending beside the line", got.Cue, got.CueWithStartLine)
 	}
 	f.ackHookJoin(s, got.JoinHintAck.RosterSeq)
 	again := f.hook(s, start("pid-1", "clear", t0+2000))
-	if again.Hint != "" || again.Cue != ResetHint("claude1", "checkout")+"\n"+StatusLine(0, 1) {
+	if again.Hint != "" || again.CueWithStartLine != nil || again.Cue != whole {
 		t.Fatalf("a clear after the start line arrived: %+v", again)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -137,7 +138,7 @@ func TestWhoamiUnknownAntigravityWithoutDispatcher(t *testing.T) {
 	result := core.Result{Status: core.ExitUnavailable, Code: core.CodeUnsent}
 	for _, asJSON := range []bool{false, true} {
 		var out bytes.Buffer
-		if code := writeWhoami(&out, id, result, asJSON, false); code != core.ExitUnavailable ||
+		if code, _ := writeWhoami(&out, id, result, asJSON, false); code != core.ExitUnavailable ||
 			!strings.Contains(out.String(), "identity variable unverified on agy: CLI version unknown") ||
 			strings.Contains(out.String(), id.Key) {
 			t.Errorf("whoami (JSON %t): %d %s", asJSON, code, &out)
@@ -157,7 +158,7 @@ func TestWhoamiKnownEnrollmentStates(t *testing.T) {
 	} {
 		for _, asJSON := range []bool{true, false} {
 			var out bytes.Buffer
-			if code := writeWhoami(&out, id, tc.result, asJSON, false); code != tc.result.Status {
+			if code, _ := writeWhoami(&out, id, tc.result, asJSON, false); code != tc.result.Status {
 				t.Fatalf("returned %d, want %d", code, tc.result.Status)
 			}
 			if !strings.Contains(out.String(), "sha256:a1e9751ef75c") || !strings.Contains(out.String(), tc.state) || strings.Contains(out.String(), id.Key) {
@@ -173,7 +174,7 @@ func TestWhoamiFullExplainsHowToRestoreMembership(t *testing.T) {
 		Data: json.RawMessage(`{"message":"this session is not in a channel","hint":"crosshall join <channel>"}`)}
 	for _, asJSON := range []bool{false, true} {
 		var out bytes.Buffer
-		if code := writeWhoami(&out, id, result, asJSON, true); code != core.ExitNotEnrolled {
+		if code, _ := writeWhoami(&out, id, result, asJSON, true); code != core.ExitNotEnrolled {
 			t.Fatalf("exit %d, want %d", code, core.ExitNotEnrolled)
 		}
 		body := out.String()
@@ -253,5 +254,40 @@ func TestJoinVersionWarningsExplainTheReceipt(t *testing.T) {
 			!strings.HasSuffix(msg, "No action is needed for this warning.") || strings.Contains(msg, "crosshall whoami") {
 			t.Errorf("%s %s: unexpected warning %q", tc.vendor, tc.version, msg)
 		}
+	}
+}
+
+type failingWriter struct{ after int }
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.after <= 0 {
+		return 0, errors.New("closed")
+	}
+	w.after--
+	return len(p), nil
+}
+
+// whoami acknowledges a reply only when it wrote the member rules that came
+// with it: a reply without them showed no roster, and a failed write gave
+// nothing.
+func TestWhoamiReportsOnlyRulesItWrote(t *testing.T) {
+	id := ident.Identity{Vendor: "claude", Key: "private-session"}
+	plain := core.Result{Status: core.ExitOK, Data: []byte(`{"roster_seq":4,"roster_changes":[]}`)}
+	first := core.Result{Status: core.ExitOK, Data: []byte(`{"join_hint":"[crosshall] rules","roster_seq":4,
+		"roster_changes":[{"alias":"latepeer","vendor":"codex","change":"joined"}]}`)}
+	for _, asJSON := range []bool{false, true} {
+		var out bytes.Buffer
+		if code, rules := writeWhoami(&out, id, plain, asJSON, false); code != core.ExitOK || rules {
+			t.Errorf("a reply without rules (JSON %t): code %d, rules %t", asJSON, code, rules)
+		}
+		out.Reset()
+		code, rules := writeWhoami(&out, id, first, asJSON, false)
+		if code != core.ExitOK || !rules || !strings.Contains(out.String(), "[crosshall] rules") || !strings.Contains(out.String(), "latepeer") {
+			t.Errorf("a first reply (JSON %t): code %d, rules %t\n%s", asJSON, code, rules, &out)
+		}
+	}
+	// The identity line is written; the rules are not.
+	if code, rules := writeWhoami(&failingWriter{after: 1}, id, first, false, false); code != core.ExitError || rules {
+		t.Errorf("a failed rules write: code %d, rules %t", code, rules)
 	}
 }

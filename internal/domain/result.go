@@ -54,6 +54,8 @@ type JoinResult struct {
 	Changes []Member `json:"roster_changes,omitempty"`
 	// RosterSeq is the cursor the client acknowledges after rendering.
 	RosterSeq uint64 `json:"roster_seq"`
+	// RulesGiven says the hint carries the member rules in full.
+	RulesGiven bool `json:"rules_given,omitempty"`
 }
 
 // WhoResult is the data of a roster listing.

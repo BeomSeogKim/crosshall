@@ -147,15 +147,18 @@ func (t *Transport) whoami(stdout io.Writer, asJSON, full bool) core.ExitCode {
 		reply, _ = t.spool.Member(context.Background(), id, wire.Request{Verb: "who"})
 		result = reply.Result
 	}
-	status := writeWhoami(stdout, id, result, asJSON, full)
-	if status == core.ExitOK {
-		// The rules a first command carries were printed: they are not owed again.
+	status, rules := writeWhoami(stdout, id, result, asJSON, full)
+	if status == core.ExitOK && rules {
+		// The rules a first command carries were printed with the roster
+		// changes since the start: neither is owed again. Without them the
+		// reply's roster was not shown, and nothing is acknowledged.
 		_ = reply.Acknowledge()
 	}
 	return status
 }
 
-func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON, full bool) core.ExitCode {
+// writeWhoami also reports whether it wrote the member rules of a first command.
+func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON, full bool) (core.ExitCode, bool) {
 	state := "unknown"
 	switch {
 	case result.Status == core.ExitOK:
@@ -228,15 +231,15 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		_, err = fmt.Fprintln(stdout, warning)
 	}
 	if err == nil && !asJSON && message.JoinHint != "" {
-		cli.PrintFirstRules(stdout, result.Data)
+		err = cli.PrintFirstRules(stdout, result.Data)
 	}
 	if err == nil && !asJSON && message.OwedCount != nil {
 		err = cli.PrintInboxPointer(stdout, len(message.Pending), *message.OwedCount, false)
 	}
 	if err != nil {
-		return core.ExitError
+		return core.ExitError, false
 	}
-	return result.Status
+	return result.Status, message.JoinHint != ""
 }
 
 func identityFailure(err error) core.Result {

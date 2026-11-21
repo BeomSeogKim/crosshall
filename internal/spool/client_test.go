@@ -159,6 +159,20 @@ func TestMemberFirstContactAndRenderedAck(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(b)) != "12" {
 		t.Fatalf("cursor went backwards: %q %v", b, err)
 	}
+	// Only a reply that carried the member rules leaves the rules receipt,
+	// and it does so even when the cursor was already that far.
+	if _, err := os.Stat(filepath.Join(leaf, spool.RulesReceipt)); !os.IsNotExist(err) {
+		t.Fatalf("a reply without rules left a rules receipt: %v", err)
+	}
+	done = callMember(ctx, f, wire.Request{Verb: "inbox"})
+	rulesAttempt := claim(t, leaf, &req)
+	answer(t, leaf, rulesAttempt, rulesAttempt, core.ExitOK, "", `{"roster_seq":12,"rules_given":true}`)
+	if err := (<-done).reply.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(leaf, spool.RulesReceipt)); err != nil || strings.TrimSpace(string(b)) != "12" {
+		t.Fatalf("rules receipt: %q %v", b, err)
+	}
 }
 
 func TestTimeoutBeforeAndAfterClaim(t *testing.T) {

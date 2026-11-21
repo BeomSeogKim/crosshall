@@ -288,3 +288,38 @@ func TestUnknownOutcomeWithoutKeyNamesANextStep(t *testing.T) {
 		t.Fatalf("hint %q (%v)", refusal.Hint, err)
 	}
 }
+
+// A member a hook joined owes its rules until the CLI recorded printing
+// them. The roster cursor alone does not settle them: the version before the
+// start line wrote one after a reply that carried no rules, and that file
+// outlives the upgrade. A member that joined by hand got its rules from the
+// join, and its cursor settles them as before.
+func TestOnlyARulesReceiptSettlesAHookJoinedMembersRules(t *testing.T) {
+	s := reviewServer(t)
+	s.fixtureSQL(t, `INSERT INTO channel (name, created_at_ms) VALUES ('checkout', 1);
+		INSERT INTO principal (kind, vendor, created_at_ms) VALUES ('session', 'route', 1), ('session', 'route', 1);
+		INSERT INTO binding (principal_id, channel_id, alias, joined_at_ms, roster_baseline_seq) VALUES (1, 1, 'hooked', 1, 1);
+		INSERT INTO binding (principal_id, channel_id, alias, joined_at_ms) VALUES (2, 1, 'byhand', 1);
+		INSERT INTO roster_change (channel_id, seq, principal_id, field) VALUES (1, 1, 1, 'joined'), (1, 2, 2, 'joined');`)
+	apply := func(binding int64, cursor, rules uint64) (acked int64, given bool) {
+		t.Helper()
+		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+			if _, _, err := acknowledgeRoster(t.Context(), tx, &binding, cursor, rules); err != nil {
+				return err
+			}
+			return tx.QueryRowContext(t.Context(), "SELECT roster_ack_seq, hint_acked FROM binding WHERE id = ?", binding).Scan(&acked, &given)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return acked, given
+	}
+	if acked, given := apply(1, 2, 0); acked != 2 || given {
+		t.Fatalf("an older cursor for a hook-joined member: cursor %d, rules given %t", acked, given)
+	}
+	if acked, given := apply(1, 0, 2); acked != 2 || !given {
+		t.Fatalf("a rules receipt alone, as a hook request brings it: cursor %d, rules given %t", acked, given)
+	}
+	if acked, given := apply(2, 2, 0); acked != 2 || !given {
+		t.Fatalf("a cursor for a member that joined by hand: cursor %d, rules given %t", acked, given)
+	}
+}

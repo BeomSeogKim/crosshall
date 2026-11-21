@@ -517,7 +517,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	// them; after that a re-join says "Already in", prints the rules only on
 	// request and, of the roster, only what changed since the cursor.
 	if !restored || !(existing.hintAcked || req.Ack > 0) {
-		out.Hint = Hint(alias, ch.name)
+		out.Hint, out.RulesGiven = Hint(alias, ch.name), true
 		members, err := roster(ctx, tx, ch.id, principal, now)
 		if err != nil {
 			return core.Result{}, err
@@ -530,7 +530,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	} else {
 		out.Hint = RepeatHint(alias, ch.name)
 		if cmd.Rules {
-			out.Hint = RulesHint(alias, ch.name)
+			out.Hint, out.RulesGiven = RulesHint(alias, ch.name), true
 		}
 		changes, err := rosterChanges(ctx, tx, ch.id, effectiveAck(existing.rosterAck, req.Ack, seq), principal, now)
 		if err != nil {

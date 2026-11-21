@@ -125,7 +125,13 @@ func (d installDisclosure) notices(pickup string) string {
 }
 
 func (d installDisclosure) turnEnd() string {
-	const off = "Off: only with the adapter, crosshall owner adapter set claude --enabled off"
+	const off = "Off: crosshall owner adapter set claude --turn-end off"
+	covered := d.unknownBuild || d.TurnEndInteractive || d.TurnEndPrint
+	if covered && d.TurnEndSwitch == "off" {
+		// The owner's switch does not depend on the build; an uncovered
+		// build stays "not available" whatever the switch says.
+		return "- Turn-end check (Claude Code). Off by your setting; installing does not change it. On: crosshall owner adapter set claude --turn-end on"
+	}
 	if d.unknownBuild {
 		return "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. " + off
 	}

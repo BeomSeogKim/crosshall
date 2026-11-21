@@ -203,6 +203,50 @@ func TestInstalledHookRecordsOtherStartSources(t *testing.T) {
 	}
 }
 
+// A later start follows the rule of a prompt: it enrols a session only in
+// the repository of its first start. A start after the session ended is a
+// first start again.
+func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
+	for _, source := range []string{"resume", "clear", "compact"} {
+		for _, place := range []string{"outside git", "different repository", "same repository mapped later", "ended first"} {
+			t.Run(source+" "+place, func(t *testing.T) {
+				f := newSetupWorld(t)
+				f.apply("", "setup", "claude", "--apply")
+				mapped := f.enrollmentRepo()
+				other := filepath.Join(f.home, "other")
+				if err := os.MkdirAll(filepath.Join(other, ".git"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(other, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				start, later := other, mapped
+				if place == "outside git" {
+					start = f.home
+				}
+				if out := f.invokeHook(start, "claude", "SessionStart", `"source":"startup"`); strings.Contains(out, "Joined #") {
+					t.Fatalf("unmapped startup output %q", out)
+				}
+				wantJoin := false
+				switch place {
+				case "same repository mapped later":
+					f.owner().must("owner", "channel", "default", "setup-check", "--repo", other)
+					later, wantJoin = other, true
+				case "ended first":
+					f.invokeHook(start, "claude", "SessionEnd", `"reason":"other"`)
+					wantJoin = true
+				}
+				out := f.invokeHook(later, "claude", "SessionStart", fmt.Sprintf(`"source":%q`, source))
+				stage := f.enrollmentEvidence("claude")
+				if wantJoin && (!strings.Contains(out, "Joined #setup-check as @claude1") || !strings.Contains(stage, "live binding")) ||
+					!wantJoin && (out != "" || !strings.Contains(stage, "no registered leaf")) {
+					t.Fatalf("want join %v; %s start output %q, %s", wantJoin, source, out, stage)
+				}
+			})
+		}
+	}
+}
+
 func TestInstalledHookKeepsAndPrunesStartupRecord(t *testing.T) {
 	for _, action := range []string{"join on start", "join after owner restart", "join by command", "end while owner stopped"} {
 		t.Run(action, func(t *testing.T) {

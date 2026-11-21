@@ -3,7 +3,6 @@ package dispatch
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -440,10 +439,11 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 	}
 	if leaf.fenced {
 		s.logFailure(hook.RetireJoinHintFiles(dir))
-	} else if reap {
-		// A restart between a commit and its publication left the old
-		// generation on disk: the first pass after start publishes it.
-		s.logFailure(ident.RepublishGeneration(dir, leaf.generation))
+	} else if err := ident.RepublishGeneration(dir, leaf.generation); !errors.Is(err, ident.ErrDirectoryBusy) {
+		// A generation committed but not yet published (a renderer held the
+		// directory, or the dispatcher restarted in between) is published
+		// by the next pass.
+		s.logFailure(err)
 	}
 	watched.add(filepath.Join(path, "in"))
 	if reap {
@@ -621,7 +621,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack, leafRulesReceipt(arrival))
+		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack, leafRulesReceipt(arrival))
 		if err != nil {
 			return err
 		}
@@ -736,46 +736,6 @@ func leafRulesReceipt(arrival Arrival) uint64 {
 	}
 	cursor, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	return cursor
-}
-
-// Apply the acknowledgement before the handler reads the roster. The undo
-// restores just these fields on an enrolled refusal, leaving its audit intact.
-// A member a hook joined owes its rules until the CLI recorded printing them
-// (rules): a roster cursor alone, which an older version also wrote after a
-// reply without rules, settles them only for a member that joined by hand.
-func acknowledgeRoster(ctx context.Context, tx store.Tx, bindingID *int64, cursor, rules uint64) (uint64, func() error, error) {
-	if bindingID == nil || (cursor == 0 && rules == 0) {
-		return 0, nil, nil
-	}
-	var previous, latest int64
-	var hinted, hooked bool
-	err := tx.QueryRowContext(ctx, `SELECT roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL,
-		(SELECT COALESCE(max(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id)
-		FROM binding WHERE id = ? AND state = 'live'`, *bindingID).Scan(&previous, &hinted, &hooked, &latest)
-	if errors.Is(err, sql.ErrNoRows) && cursor == 0 {
-		return 0, nil, nil // only a receipt, and the binding it was for is not live
-	}
-	if err != nil {
-		return 0, nil, err
-	}
-	bounded := min(cursor, uint64(max(latest, 0)))
-	seen := bounded
-	if hooked {
-		seen = min(rules, uint64(max(latest, 0)))
-	}
-	acked, given := max(previous, int64(bounded), int64(seen)), hinted || seen > 0
-	if acked == previous && given == hinted {
-		return bounded, nil, nil
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = ? WHERE id = ?",
-		acked, given, *bindingID); err != nil {
-		return 0, nil, err
-	}
-	return bounded, func() error {
-		_, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = ? WHERE id = ?",
-			previous, hinted, *bindingID)
-		return err
-	}, nil
 }
 
 func unknownOutcome(message, key string) core.Result {

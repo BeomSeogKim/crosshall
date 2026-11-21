@@ -218,7 +218,9 @@ func serve(paths statePaths, pathErr error) int {
 				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
-				LaunchProcess: ident.LaunchProcess},
+				LaunchProcess: ident.LaunchProcess, LeafReceipts: func(vendor, key string) (uint64, uint64) {
+					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key})
+				}},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {
 				var hello wire.Hello
 				if err := json.Unmarshal(raw, &hello); err != nil {

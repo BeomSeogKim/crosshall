@@ -232,23 +232,26 @@ func (r Reply) Acknowledge() error {
 		return err
 	}
 	defer rv.Close()
-	leaf, generation, err := openLeaf(rv, r.digest)
+	leaf, _, err := openLeaf(rv, r.digest)
 	if err != nil {
 		return err
 	}
 	defer leaf.Close()
-	// A new generation starts without a cursor: the reply registered the
-	// directory again (a cleared conversation joining as a new member).
-	if generation != r.generation {
-		return nil
-	}
-	// Lock the directory inode, which remains stable across atomic ack replacements.
+	// Lock the directory inode, which remains stable across atomic ack
+	// replacements; the dispatcher takes it to rotate the generation.
 	lock, err := leaf.Open(".")
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return err
+	}
+	// Under the lock, a reply of another generation has nothing to record:
+	// the directory was registered again (a cleared conversation joining as
+	// a new member), or is about to be.
+	generation, err := ident.ReadPrivateFile(leaf, "gen", 1024)
+	if err != nil || strings.TrimSpace(string(generation)) != r.generation {
 		return err
 	}
 	if r.rules {

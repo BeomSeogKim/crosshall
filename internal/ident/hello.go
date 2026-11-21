@@ -206,7 +206,7 @@ func (reg Registration) Publish() error {
 			return err
 		}
 	}
-	return publishMetadata(leaf, "gen", reg.generation)
+	return publishGeneration(leaf, reg.generation, true)
 }
 
 func publishMetadata(leaf *os.Root, name, value string) error {

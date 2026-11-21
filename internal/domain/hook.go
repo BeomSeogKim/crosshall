@@ -528,7 +528,7 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		// A process whose member left by hand or was departed by the owner
 		// joins nobody until an explicit join, also after a /clear.
 		if cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
-			launch, found, err := s.processLaunchAt(ctx, tx, req.Vendor, cmd.LaunchRef, cmd.HookAtMS)
+			launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
 			if err != nil || (found && launch.away) {
 				return okOrErr(out, err)
 			}

@@ -25,7 +25,10 @@ type Service struct {
 	// LaunchAlive reports whether a bound adapter launch still runs, and
 	// LaunchProcess names the process a launch reference belongs to; nil
 	// LaunchAlive means no launch is known to run.
-	LaunchAlive   func(ref string, startedHookAtMS int64) bool
+	LaunchAlive func(ref string, startedHookAtMS int64) bool
+	// LeafReceipts reads the roster receipts a session key's member
+	// directory holds and has not sent yet (the cursor and the rules one).
+	LeafReceipts  func(vendor, key string) (cursor, rules uint64)
 	LaunchProcess func(ref string) (string, bool)
 }
 

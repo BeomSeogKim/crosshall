@@ -173,6 +173,38 @@ func TestMemberFirstContactAndRenderedAck(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(leaf, spool.RulesReceipt)); err != nil || strings.TrimSpace(string(b)) != "12" {
 		t.Fatalf("rules receipt: %q %v", b, err)
 	}
+
+	// The directory is registered again while a reply of the old generation
+	// waits to be rendered (a cleared conversation joining as a new member):
+	// that reply records nothing; one naming the new generation does.
+	done = callMember(ctx, f, wire.Request{Verb: "who"})
+	oldAttempt := claim(t, leaf, &req)
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if err := os.Remove(filepath.Join(leaf, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "gen"), []byte("generation-b"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	answer(t, leaf, oldAttempt, oldAttempt, core.ExitOK, "", `{"roster_seq":40,"rules_given":true}`)
+	if err := (<-done).reply.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ack", spool.RulesReceipt} {
+		if _, err := os.Stat(filepath.Join(leaf, name)); !os.IsNotExist(err) {
+			t.Fatalf("a reply of the old generation wrote %s into the new one: %v", name, err)
+		}
+	}
+	done = callMember(ctx, f, wire.Request{Verb: "join"})
+	freshAttempt := claim(t, leaf, &req)
+	answer(t, leaf, freshAttempt, freshAttempt, core.ExitOK, "", `{"roster_seq":3,"generation":"generation-b"}`)
+	if err := (<-done).reply.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(leaf, "ack")); err != nil || strings.TrimSpace(string(b)) != "3" {
+		t.Fatalf("the fresh join's cursor under the new generation: %q %v", b, err)
+	}
 }
 
 func TestTimeoutBeforeAndAfterClaim(t *testing.T) {

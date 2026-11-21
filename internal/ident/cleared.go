@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -97,22 +100,62 @@ func (r SQLResolver) clearedJoin(ctx context.Context, tx store.Tx, rendezvous st
 			return "", err
 		}
 		defer leaf.Close()
-		return generation, RepublishGeneration(leaf, generation)
+		if err := RepublishGeneration(leaf, generation); err != nil && !errors.Is(err, ErrDirectoryBusy) {
+			return generation, err
+		}
+		return generation, nil
 	}
 	return Resolution{Caller: core.Caller{Role: core.RoleUnenrolled}, Vendor: id.Vendor, Key: id.Key,
 		Enroll: enroll, AfterCommit: after}, true, nil
 }
 
+// ErrDirectoryBusy says a renderer holds the member directory's lock; the
+// dispatcher's next pass publishes the generation.
+var ErrDirectoryBusy = errors.New("member directory busy")
+
 // RepublishGeneration makes a member directory carry the generation the
-// store committed. A new generation starts without the old roster cursors,
-// which go first, so an interruption never leaves the old cursor under
-// the new generation. Calling it again changes nothing.
+// store committed, without waiting for a renderer: the dispatcher's next
+// pass retries. Calling it again changes nothing.
 func RepublishGeneration(leaf *os.Root, generation string) error {
-	current, err := ReadPrivateFile(leaf, "gen", 4096)
-	if err == nil && string(current) == generation {
-		return nil
+	return publishGeneration(leaf, generation, false)
+}
+
+// publishGeneration is the one way a generation reaches a member directory.
+// A new generation starts without the old roster cursors, which go first,
+// so an interruption never leaves an old cursor under the new generation.
+// It holds the directory lock the CLI holds to write those cursors, so a
+// renderer of the old membership cannot write into the new one; wait says
+// whether to wait briefly for that renderer.
+func publishGeneration(leaf *os.Root, generation string, wait bool) error {
+	current := func() (string, error) {
+		data, err := ReadPrivateFile(leaf, "gen", 4096)
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return strings.TrimSpace(string(data)), err
 	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if gen, err := current(); err != nil || gen == generation {
+		return err
+	}
+	lock, err := leaf.Open(".")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	for tries := 0; ; tries++ {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			break
+		}
+		if !wait || tries >= 100 {
+			return ErrDirectoryBusy
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		return err
+	}
+	if gen, err := current(); err != nil || gen == generation {
 		return err
 	}
 	// Both receipts hold roster cursors of the old membership: the
@@ -123,4 +166,29 @@ func RepublishGeneration(leaf *os.Root, generation string) error {
 		}
 	}
 	return publishMetadata(leaf, "gen", generation)
+}
+
+// LeafReceipts reads the roster receipts in the member directory of a session
+// key under rendezvous: the acknowledged cursor and the one with the rules.
+// A missing or unreadable receipt reads as 0.
+func LeafReceipts(rendezvous string, id Identity) (cursor, rules uint64) {
+	members, err := openMembers(rendezvous)
+	if err != nil {
+		return 0, 0
+	}
+	defer members.Close()
+	leaf, err := OpenPrivateChild(members, id.Digest()[:16])
+	if err != nil {
+		return 0, 0
+	}
+	defer leaf.Close()
+	read := func(name string) uint64 {
+		data, err := ReadPrivateFile(leaf, name, 32)
+		if err != nil {
+			return 0
+		}
+		n, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+		return n
+	}
+	return read("ack"), read("rules")
 }

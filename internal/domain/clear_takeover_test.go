@@ -391,3 +391,57 @@ func TestAFencedLatestLaunchEndsTheProcessOwnership(t *testing.T) {
 		t.Fatal("a clear took over a member of a process whose latest launch was fenced")
 	}
 }
+
+// Astra #730: a cross-vendor owner restore changes the principal's vendor;
+// its fenced Claude launch is still the process's latest, so an earlier
+// Claude member of that process is not taken over.
+func TestAFencedLaunchCountsAfterACrossVendorRestore(t *testing.T) {
+	f, _, first, _, _ := clearFixture(t, true)
+	f.hook(first, ended("pid-7-a", f.now.UnixMilli()+5))
+	second := f.newSession("claude")
+	f.hook(second, start("pid-7-b", "resume", f.now.UnixMilli()+10))
+	if _, err := f.db.Exec(`UPDATE adapter_launch SET fenced = 1, ended_hook_at_ms = ? WHERE launch_ref = 'pid-7-b'`,
+		f.now.UnixMilli()+15); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE principal SET vendor = 'codex' WHERE id = ?`, *f.caller(second).PrincipalID); err != nil {
+		t.Fatal(err)
+	}
+	cleared := f.newSession("claude")
+	f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+20))
+	if f.keyState(first) != "live" {
+		t.Fatal("a clear took over the process's earlier member past a restored one")
+	}
+}
+
+// Astra #735: the replaced conversation's directory recorded that it printed
+// the rules and saw the roster, and sent nothing since; the member keeps
+// that through the takeover.
+func TestAClearKeepsTheReceiptsTheReplacedConversationRecorded(t *testing.T) {
+	f, _, old, _, _ := clearFixture(t, true)
+	if _, err := f.db.Exec(`UPDATE binding SET hint_acked = 0, roster_ack_seq = 0, roster_baseline_seq = 0 WHERE alias = 'claude1'`); err != nil {
+		t.Fatal(err)
+	}
+	var latest uint64
+	if err := f.db.QueryRow(`SELECT COALESCE(max(seq), 0) FROM roster_change`).Scan(&latest); err != nil || latest == 0 {
+		t.Fatalf("no roster to acknowledge: %d %v", latest, err)
+	}
+	f.svc.LeafReceipts = func(vendor, key string) (uint64, uint64) {
+		if vendor == old.vendor && key == old.key {
+			return latest, latest
+		}
+		return 0, 0
+	}
+	cleared := f.newSession("claude")
+	if r := f.hook(cleared, start("pid-7-c", "clear", f.now.UnixMilli()+30)); r.Enrollment != "restored" {
+		t.Fatalf("clear: %+v", r)
+	}
+	var acked bool
+	var seen uint64
+	if err := f.db.QueryRow(`SELECT hint_acked, roster_ack_seq FROM binding WHERE alias = 'claude1' AND state = 'live'`).Scan(&acked, &seen); err != nil {
+		t.Fatal(err)
+	}
+	if !acked || seen != latest {
+		t.Fatalf("after the clear hint_acked=%v roster_ack_seq=%d, want true and %d", acked, seen, latest)
+	}
+}

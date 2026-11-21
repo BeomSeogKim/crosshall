@@ -22,7 +22,7 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 		req.Enroll == nil || s.LaunchProcess == nil || s.LaunchAlive == nil {
 		return 0, false, nil
 	}
-	launch, found, err := s.processLaunchAt(ctx, tx, req.Vendor, cmd.LaunchRef, cmd.HookAtMS)
+	launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
 	if err != nil || !found {
 		return 0, false, err
 	}
@@ -30,6 +30,9 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 		return 0, true, nil
 	}
 	principal = launch.principal
+	if err := s.applyClearedReceipts(ctx, tx, principal); err != nil {
+		return 0, false, err
+	}
 	// The replaced conversation's keys retire first, so that only the new
 	// key is live for the principal once it is enrolled.
 	if _, err := tx.ExecContext(ctx, `UPDATE principal_key SET state = 'retired', retired_at_ms = ?, retired_by = 'clear'
@@ -72,11 +75,11 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 	// A member that left by hand or was departed by the owner does not
 	// count either: this join is the explicit one that ends its absence.
 	rows, err := tx.QueryContext(ctx, `SELECT l.launch_ref, l.started_hook_at_ms FROM adapter_launch l
-		JOIN principal o ON o.id = l.principal_id AND o.vendor = ?1
 		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
-		WHERE l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?2 || '-%')
+		WHERE json_extract(l.profile, '$.adapter') = ?1 AND l.ended_hook_at_ms IS NULL AND l.fenced = 0
+			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?2 || '-%')
 			AND (b.state = 'live' OR b.departed_by_hook = 1) AND COALESCE(b.owner_hook_fence_ms < ?3, 1)`,
-		vendor, own, l.AtMS)
+		l.Profile.Adapter, own, l.AtMS)
 	if err != nil {
 		return nil, err
 	}
@@ -118,10 +121,11 @@ type processLaunch struct {
 }
 
 // processLaunchAt finds the latest launch the process of launchRef ran
-// before at, among members of vendor, if that process still runs (a reused
+// before at for adapter (as the launch recorded it, whatever a restore did
+// to its principal), if that process still runs (a reused
 // PID is a process born after the launch). When that launch was fenced by an
 // owner restore, the process belongs to no one.
-func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, launchRef string, at int64) (processLaunch, bool, error) {
+func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, adapter, launchRef string, at int64) (processLaunch, bool, error) {
 	var none processLaunch
 	if s.LaunchProcess == nil || s.LaunchAlive == nil {
 		return none, false, nil
@@ -138,10 +142,10 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, laun
 			b.state, b.departed_by_hook, COALESCE(b.owner_hook_fence_ms >= ?4, 0)
 		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
 		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
-		WHERE p.kind = 'session' AND p.vendor = ?1
+		WHERE p.kind = 'session' AND json_extract(l.profile, '$.adapter') = ?1
 			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?3 || '-%') AND l.started_hook_at_ms < ?4
 		ORDER BY l.started_hook_at_ms DESC, l.rowid DESC LIMIT 1`,
-		vendor, own, own, at).Scan(&l.principal, &ref, &began, &restored, &state, &byHook, &fenced)
+		adapter, own, own, at).Scan(&l.principal, &ref, &began, &restored, &state, &byHook, &fenced)
 	if errors.Is(err, sql.ErrNoRows) {
 		return none, false, nil
 	}
@@ -163,4 +167,46 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, vendor, laun
 	}
 	l.away = fenced || (state != "live" && !byHook)
 	return l, true, nil
+}
+
+// applyClearedReceipts applies what the replaced conversation's directories
+// recorded and have not sent yet: the member stays, so the rules it was given
+// and the roster it saw stay given and seen. A /clear right after a command
+// would otherwise repeat them.
+func (s *Service) applyClearedReceipts(ctx context.Context, tx store.Tx, principal int64) error {
+	if s.LeafReceipts == nil {
+		return nil
+	}
+	var binding int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM binding WHERE principal_id = ? AND state = 'live'`, principal).Scan(&binding)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT vendor, key FROM principal_key WHERE principal_id = ? AND state = 'live'`, principal)
+	if err != nil {
+		return err
+	}
+	type key struct{ vendor, key string }
+	var keys []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.vendor, &k.key); err != nil {
+			rows.Close()
+			return err
+		}
+		keys = append(keys, k)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		cursor, rules := s.LeafReceipts(k.vendor, k.key)
+		if _, _, err := AcknowledgeRoster(ctx, tx, &binding, cursor, rules); err != nil {
+			return err
+		}
+	}
+	return nil
 }

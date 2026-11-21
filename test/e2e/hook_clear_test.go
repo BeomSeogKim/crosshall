@@ -156,3 +156,40 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 		})
 	}
 }
+
+// Issue #164: a command of the replaced conversation still rendering when
+// /clear takes the member over records what it showed in its own directory
+// after the takeover read it. The member's next command applies it, so the
+// rules and the arrival it showed are not shown again.
+func TestAReceiptRecordedAfterAClearIsKept(t *testing.T) {
+	w, _, c := m2World(t)
+	c.pid = strconv.Itoa(os.Getpid())
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w.member().must("join", "checkout", "--as", "latepeer")
+	cleared := claudeSession{w: w, key: c.key + "-cleared", pid: c.pid, repo: c.repo}
+	if got := hostContext(t, cleared.fire("SessionStart", map[string]any{"source": "clear"})); !strings.Contains(got, "You are @claude1 in #checkout") {
+		t.Fatalf("the clear did not keep the member: %q", got)
+	}
+	// The old conversation's command finishes rendering now: it showed the
+	// rules and the roster up to the latest change.
+	var latest int64
+	if err := w.db().QueryRow(`SELECT MAX(seq) FROM roster_change`).Scan(&latest); err != nil {
+		t.Fatal(err)
+	}
+	oldLeaf := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
+	for _, receipt := range []string{"ack", "rules"} {
+		if err := os.WriteFile(filepath.Join(oldLeaf, receipt), []byte(strconv.FormatInt(latest, 10)+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := (&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + cleared.key}}).mustPlain("inbox")
+	if strings.Contains(next, "Before voluntarily ending any turn") || strings.Contains(next, "@latepeer") {
+		t.Fatalf("the cleared session's next command repeated what the old one showed:\n%s", next)
+	}
+	var acked bool
+	var seen int64
+	if err := w.db().QueryRow(`SELECT hint_acked, roster_ack_seq FROM binding WHERE alias = 'claude1' AND state = 'live'`).Scan(&acked, &seen); err != nil ||
+		!acked || seen < latest {
+		t.Fatalf("binding hint_acked=%v roster_ack_seq=%d (%v), want true and %d", acked, seen, err, latest)
+	}
+}

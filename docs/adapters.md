@@ -69,7 +69,7 @@ At a prompt, a joined session can see a `[crosshall] pending:` line with unread 
 
 ## Publish notices
 
-With an adapter's hooks installed, the hall can tell a session about new work without the session polling. It writes one line to the agent's own message route (for Claude Code, the session's messaging socket, which its `SessionStart` hook reports):
+With an adapter's hooks installed, the hall can tell a session about new work without the session polling. It writes one line to the agent's own message route (for Claude Code, the session's messaging socket, which its `SessionStart` hook reports; if the start ran before the socket existed, the session's next prompt or Stop reports it):
 
 ```text
 [crosshall] pending: 12 15. This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read.

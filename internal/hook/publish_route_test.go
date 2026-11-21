@@ -151,8 +151,10 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 	if err := json.Unmarshal(routeReq.Args, &routeArgs); err != nil {
 		t.Fatal(err)
 	}
-	if len(routeArgs.EventRef) != 128 {
-		t.Fatalf("EventRef len = %d, want 128", len(routeArgs.EventRef))
+	// The prompt's reference carries its entry time; past 128 bytes it is
+	// the same digest the prompt's own request carries.
+	if want := wire.PromptEventRef(e.EventRef, 1000); routeArgs.EventRef != want || len(want) > 128 {
+		t.Fatalf("EventRef = %q, want %q", routeArgs.EventRef, want)
 	}
 	if !strings.HasPrefix(routeReq.OpKey, "hook:route:") {
 		t.Fatalf("OpKey = %q, want hook:route: prefix", routeReq.OpKey)
@@ -192,5 +194,107 @@ func TestHookRoutePreserves128ByteEventRefAndBaseOutputUnderContention(t *testin
 	}
 	if !strings.Contains(stdout.String(), "[crosshall] pending: 42") {
 		t.Fatalf("base pending output dropped under route contention: %q", stdout.String())
+	}
+}
+
+// #180: a turn's callbacks report the vendor's socket too, and a start
+// reports even a missing one, marked as a start.
+func TestClaudeTurnCallbacksReportTheSocketAndAStartReportsItsAbsence(t *testing.T) {
+	m, ok := loadManifest("claude")
+	if !ok {
+		t.Fatal("missing claude manifest")
+	}
+	withSocket := func(name string) (string, bool) {
+		switch name {
+		case "CLAUDE_CODE_SESSION_ID":
+			return "sess-1", true
+		case "CLAUDE_CODE_MESSAGING_SOCKET":
+			return "/tmp/cc-socks/12345.sock", true
+		}
+		return "", false
+	}
+	withoutSocket := func(name string) (string, bool) {
+		if name == "CLAUDE_CODE_MESSAGING_SOCKET" {
+			return "", false
+		}
+		return withSocket(name)
+	}
+	route := func(name, input string, lookup func(string) (string, bool)) (wire.HookRouteArgs, bool) {
+		t.Helper()
+		spec, _ := m.event(name)
+		e, err := parseEvent(strings.NewReader(input), m, spec, lookup)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		req, ok := makeRouteRequest(time.UnixMilli(1000), m, e, 1)
+		var args wire.HookRouteArgs
+		if ok {
+			if err := json.Unmarshal(req.Args, &args); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return args, ok
+	}
+	for _, c := range []struct{ name, input string }{
+		{"UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","session_id":"sess-1","prompt_id":"p1"}`},
+		{"Stop", `{"hook_event_name":"Stop","session_id":"sess-1","prompt_id":"p1","stop_hook_active":false}`},
+	} {
+		if args, ok := route(c.name, c.input, withSocket); !ok || args.SocketPath != "/tmp/cc-socks/12345.sock" || args.Start {
+			t.Fatalf("%s: route %v %+v, want the socket, not as a start", c.name, ok, args)
+		}
+	}
+	start := `{"hook_event_name":"SessionStart","session_id":"sess-1","source":"startup"}`
+	if args, ok := route("SessionStart", start, withoutSocket); !ok || args.SocketPath != "" || !args.Start {
+		t.Fatalf("a start without the socket: route %v %+v, want a start report", ok, args)
+	}
+	if args, ok := route("SessionStart", start, withSocket); !ok || args.SocketPath == "" || !args.Start {
+		t.Fatalf("a start with the socket: route %v %+v", ok, args)
+	}
+	notification := `{"hook_event_name":"Notification","session_id":"sess-1","notification_type":"permission_prompt"}`
+	if _, ok := route("Notification", notification, withSocket); ok {
+		t.Fatal("a notification reported a route")
+	}
+}
+
+// #180: a prompt typed while its turn runs reports that turn's id; its
+// route report carries the hook's entry time like its own request, so it
+// is not taken for a repeat of the turn's first report.
+func TestClaudePromptRouteReportsCarryTheEntryTime(t *testing.T) {
+	m, ok := loadManifest("claude")
+	if !ok {
+		t.Fatal("missing claude manifest")
+	}
+	spec, _ := m.event("UserPromptSubmit")
+	lookup := func(name string) (string, bool) {
+		switch name {
+		case "CLAUDE_CODE_SESSION_ID":
+			return "sess-1", true
+		case "CLAUDE_CODE_MESSAGING_SOCKET":
+			return "/tmp/cc-socks/12345.sock", true
+		}
+		return "", false
+	}
+	e, err := parseEvent(strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"sess-1","prompt_id":"p1"}`), m, spec, lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]bool{}
+	for _, at := range []int64{1000, 2000, 2000} {
+		req, ok := makeRouteRequest(time.UnixMilli(at), m, e, 1)
+		var args wire.HookRouteArgs
+		if !ok || json.Unmarshal(req.Args, &args) != nil {
+			t.Fatalf("no route report at %d", at)
+		}
+		base := makeRequest(time.UnixMilli(at), m, spec, e, enrolment{}, true, 1)
+		var event struct {
+			EventRef string `json:"event_ref"`
+		}
+		if err := json.Unmarshal(base.Args, &event); err != nil || args.EventRef != event.EventRef {
+			t.Fatalf("at %d the route report's ref %q, the prompt's %q", at, args.EventRef, event.EventRef)
+		}
+		keys[req.OpKey] = true
+	}
+	if len(keys) != 2 {
+		t.Fatalf("route report keys %v, want one per hook entry time", keys)
 	}
 }

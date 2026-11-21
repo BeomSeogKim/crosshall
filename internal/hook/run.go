@@ -458,11 +458,19 @@ func mappedEnrollmentRoot(ctx context.Context, rv *os.Root, stateRoot string, e 
 	return enrolTarget(ctx, rv, e)
 }
 
-func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enrolment, want bool, epoch uint64) wire.Request {
+// requestRef is the event reference a hook's requests carry. A prompt's
+// carries the hook's entry time where the manifest asks for it: a prompt
+// typed while a turn runs reports that turn's id (#163).
+func requestRef(entry time.Time, m manifest, e event) string {
 	ref := e.reference(entry)
 	if m.PromptEntryRef && e.EventRef != "" && e.Fact == wire.HookPromptSubmitted {
 		ref = wire.PromptEventRef(ref, entry.UnixMilli())
 	}
+	return ref
+}
+
+func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enrolment, want bool, epoch uint64) wire.Request {
+	ref := requestRef(entry, m, e)
 	// The launch's build and mode, as the hook's environment states them;
 	// "unverified" where the manifest names no source or it does not parse.
 	profile := wire.HookProfile{
@@ -503,10 +511,13 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 }
 
 func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.Request, bool) {
-	if e.SocketPath == "" && e.PermissionMode == "" {
+	// A start reports whether it saw the socket, even when it did not.
+	if e.SocketPath == "" && e.PermissionMode == "" && !(e.Start && m.SocketEnv != "") {
 		return wire.Request{}, false
 	}
-	ref := e.reference(entry)
+	// The same reference as the hook's own request: a typed-ahead prompt's
+	// report is its own, not a repeat of its turn's first prompt (#180).
+	ref := requestRef(entry, m, e)
 	args, _ := json.Marshal(wire.HookRouteArgs{
 		Adapter:        m.Adapter,
 		LaunchRef:      e.LaunchRef,
@@ -516,6 +527,7 @@ func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.
 		Epoch:          epoch,
 		PermissionMode: e.PermissionMode,
 		SocketPath:     e.SocketPath,
+		Start:          e.Start,
 	})
 	return wire.Request{
 		OpKey: "hook:route:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,

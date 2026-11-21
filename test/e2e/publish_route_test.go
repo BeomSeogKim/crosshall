@@ -118,3 +118,60 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		runHook("UserPromptSubmit", payload, "", false)
 	})
 }
+
+// #180: a session whose start ran before the vendor's socket existed gets
+// its route from the next prompt, without a restart.
+func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
+	w := newWorld(t)
+	owner := w.owner()
+	owner.must("owner", "start")
+	owner.must("owner", "channel", "create", "checkout", "--pool", "0")
+	w.member().mustFixtureWrite("join", "checkout", "--as", "form")
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.CommandContext(t.Context(), "git", "init", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	owner.must("owner", "channel", "default", "checkout", "--repo", repo)
+	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
+
+	sessionID := "claude-e2e-late-socket"
+	pid := fmt.Sprintf("%d", os.Getpid())
+	socket := "/tmp/cc-socks/" + pid + ".sock"
+	runHook := func(event, payload, socketPath string) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", event)
+		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader(payload)
+		cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+sessionID, "CLAUDE_PID="+pid,
+			"CLAUDE_CODE_ENTRYPOINT=cli", "AI_AGENT=claude-code_2-1-327_harness")
+		if socketPath != "" {
+			cmd.Env = append(cmd.Env, "CLAUDE_CODE_MESSAGING_SOCKET="+socketPath)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hook %s: %v\n%s", event, err, out)
+		}
+	}
+	db := w.db()
+	await := func(what string, wantState, wantSocket, wantReason string) {
+		t.Helper()
+		var state, got, reason string
+		for deadline := time.Now().Add(fixtureEventTimeout); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+			err := db.QueryRow(`SELECT state, COALESCE(socket_path, ''), reason FROM publish_route WHERE session_ref = ?`, sessionID).
+				Scan(&state, &got, &reason)
+			if err == nil && state == wantState && got == wantSocket && (wantReason == "" || reason == wantReason) {
+				return
+			}
+		}
+		t.Fatalf("%s: route state %q socket %q reason %q, want %q %q %q", what, state, got, reason, wantState, wantSocket, wantReason)
+	}
+
+	runHook("SessionStart", fmt.Sprintf(`{"hook_event_name":"SessionStart","session_id":%q,"source":"startup","cwd":%q,"permission_mode":"default"}`,
+		sessionID, repo), "")
+	await("a start without the socket", "invalidated", "", "no socket at start; the next prompt attaches it")
+	runHook("UserPromptSubmit", fmt.Sprintf(`{"hook_event_name":"UserPromptSubmit","session_id":%q,"prompt_id":"first","permission_mode":"default"}`,
+		sessionID), socket)
+	await("the next prompt with the socket", "active", socket, "")
+}

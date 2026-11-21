@@ -367,7 +367,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		} else {
 			status := "unavailable"
 			if a.Policy != nil && a.Policy.TurnEnd == "off" {
-				status = fmt.Sprintf("off by the owner (on: crosshall owner adapter set %s --turn-end on)", a.Adapter)
+				status = fmt.Sprintf("off by the owner (undo: crosshall owner adapter set %s --turn-end default)", a.Adapter)
 			} else if notice.Available {
 				status = "available"
 				if notice.TrustedFrom != "" {

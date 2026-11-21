@@ -313,4 +313,10 @@ func TestTurnEndNoticeFollowsTheOwnersSwitch(t *testing.T) {
 	if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &[]string{"on"}[0]}}, "agy-on"); r.Status == core.ExitOK {
 		t.Fatal("Antigravity accepted --turn-end on")
 	}
+	// The way back that doctor names after an Antigravity off is accepted.
+	for _, value := range []string{"off", "default"} {
+		if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &value}}, "agy-"+value); r.Status != core.ExitOK {
+			t.Fatalf("Antigravity --turn-end %s: %+v", value, r)
+		}
+	}
 }

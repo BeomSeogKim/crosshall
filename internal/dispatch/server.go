@@ -649,6 +649,13 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return errRefusalRollback
 		}
 		request.Adapter = hook
+		if set, ok := request.Command.(domain.AdapterSet); ok && set.Enabled == nil && set.Reminder == nil {
+			// The hook policy file carries enabled, reminder and the epoch
+			// only. The publish and turn-end switches are read from the
+			// store, so a change to them leaves the file in place: hooks
+			// read during the change would otherwise find no policy.
+			refreshFiles = false
+		}
 		switch request.Command.Verb() {
 		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
 			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbPublish, domain.VerbOwnerPublish:

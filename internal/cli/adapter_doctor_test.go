@@ -52,7 +52,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		"reply reminder evidence unknown\n",
 		"extra model requests per reminder 1 — Fixed crosshall text sent to the model.",
 		"turn-end notice available (trusted from 2.1.330 evidence), committed claims 2 on 20261119 UTC, 1 extra model request per continuation",
-		"turn-end notice off by the owner (on: crosshall owner adapter set codex --turn-end on), committed claims 0 on 20261119 UTC, 1 extra model request per continuation",
+		"turn-end notice off by the owner (undo: crosshall owner adapter set codex --turn-end default), committed claims 0 on 20261119 UTC, 1 extra model request per continuation",
 		"publish build 2.1.330 (darwin-arm64 interactive claude-2): tested",
 		"publish build 2.1.331 (darwin-arm64 interactive claude-2): trusted 1 of 3, 2 held unobserved",
 		"publish build 2.1.332 (darwin-arm64 interactive claude-2): seen",

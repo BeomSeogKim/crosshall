@@ -379,9 +379,15 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	all := c.events()
 	cleared, ended := all[len(all)-1], all[len(all)-2]
 	term.turn("sixth synthetic prompt")
+	// The cleared conversation is still the one member the session was.
+	members := func() int {
+		return c.storeCount(`SELECT COUNT(*) FROM binding b JOIN principal p ON p.id = b.principal_id WHERE p.vendor = 'claude'`)
+	}
+	kept := members() == 1 && c.storeCount(`SELECT COUNT(*) FROM binding b JOIN principal p ON p.id = b.principal_id
+		WHERE p.vendor = 'claude' AND b.state = 'live' AND b.alias = 'claude1'`) == 1
 	lifecycle := first.Source == "startup" && compacted.Session == first.Session &&
 		ended.Name == "SessionEnd" && ended.Reason == "clear" && ended.Session == first.Session &&
-		cleared.Session != first.Session && cleared.Process == first.Process && first.Process != ""
+		cleared.Session != first.Session && cleared.Process == first.Process && first.Process != "" && kept
 
 	// /exit is a clean end: the member departs. Resuming restores it.
 	term.exit()
@@ -390,7 +396,7 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	departed := exit.Reason == "prompt_input_exit" && !joined()
 	resumed := c.interactive("--resume", cleared.Session)
 	all = c.events()
-	restored := all[len(all)-1].Source == "resume" && all[len(all)-1].Session == cleared.Session && joined()
+	restored := all[len(all)-1].Source == "resume" && all[len(all)-1].Session == cleared.Session && joined() && members() == 1
 	resumed.exit()
 
 	// Typed at an idle prompt, every prompt opens a turn of its own, and
@@ -428,7 +434,7 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	}
 	results := []evidenceResult{
 		{"enroll", level(enrolled && lifecycle && departed && restored),
-			"start line at start; /compact keeps the session, /clear starts a new one in the same process; /exit departs; resume restores"},
+			"start line at start; /compact keeps the session; /clear starts a new one in the same process, still the same member; /exit departs; resume restores"},
 		{"boundary", level(offered && quiet && ownTurns),
 			"pending line once at the prompt after the mail; quiet turn adds nothing; prompts typed at an idle prompt, each a turn of its own"},
 		{"observe", level(promptFact == "prompt_submitted" && approval && departed),

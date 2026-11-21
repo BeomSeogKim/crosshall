@@ -17,7 +17,7 @@ func TestRepublishGenerationDropsTheOldCursorOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer leaf.Close()
-	for name, value := range map[string]string{"gen": "old", "ack": "999999\n"} {
+	for name, value := range map[string]string{"gen": "old", "ack": "999999\n", "rules": "999999\n"} {
 		if err := os.WriteFile(dir+"/"+name, []byte(value), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -28,8 +28,10 @@ func TestRepublishGenerationDropsTheOldCursorOnce(t *testing.T) {
 	if gen, err := ReadPrivateFile(leaf, "gen", 64); err != nil || string(gen) != "new" {
 		t.Fatalf("gen %q (%v), want new", gen, err)
 	}
-	if _, err := os.Stat(dir + "/ack"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("the old cursor survived: %v", err)
+	for _, receipt := range []string{"ack", "rules"} {
+		if _, err := os.Stat(dir + "/" + receipt); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the old %s cursor survived: %v", receipt, err)
+		}
 	}
 	if err := os.WriteFile(dir+"/ack", []byte("7\n"), 0600); err != nil {
 		t.Fatal(err)

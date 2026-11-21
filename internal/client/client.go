@@ -165,16 +165,25 @@ func (t *Transport) WhoamiJSON(stdout io.Writer, full bool) core.ExitCode {
 func (t *Transport) whoami(stdout io.Writer, asJSON, full bool) core.ExitCode {
 	id, err := ident.ResolveEnvironment(t.lookup)
 	var result core.Result
+	var reply spool.Reply
 	if err != nil {
 		result = identityFailure(err)
 	} else {
-		reply, _ := t.spool.Member(context.Background(), id, wire.Request{Verb: "who"})
+		reply, _ = t.spool.Member(context.Background(), id, wire.Request{Verb: "who"})
 		result = reply.Result
 	}
-	return writeWhoami(stdout, id, result, asJSON, full)
+	status, rules := writeWhoami(stdout, id, result, asJSON, full)
+	if status == core.ExitOK && rules {
+		// The rules a first command carries were printed with the roster
+		// changes since the start: neither is owed again. Without them the
+		// reply's roster was not shown, and nothing is acknowledged.
+		_ = reply.Acknowledge()
+	}
+	return status
 }
 
-func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON, full bool) core.ExitCode {
+// writeWhoami also reports whether it wrote the member rules of a first command.
+func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON, full bool) (core.ExitCode, bool) {
 	state := "unknown"
 	switch {
 	case result.Status == core.ExitOK:
@@ -184,8 +193,10 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 	}
 	var message struct {
 		Message, Hint string
-		Pending       []int64 `json:"pending"`
-		OwedCount     *int    `json:"owed_count"`
+		Pending       []int64         `json:"pending"`
+		OwedCount     *int            `json:"owed_count"`
+		JoinHint      string          `json:"join_hint"`
+		Changes       json.RawMessage `json:"roster_changes"`
 	}
 	_ = json.Unmarshal(result.Data, &message)
 	restoreHint := ""
@@ -224,6 +235,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		if message.OwedCount != nil {
 			data["pending"], data["owed_count"] = message.Pending, *message.OwedCount
 		}
+		if message.JoinHint != "" {
+			data["join_hint"], data["roster_changes"] = message.JoinHint, message.Changes
+		}
 		err = json.NewEncoder(stdout).Encode(data)
 	} else if id.Vendor == "" {
 		_, err = fmt.Fprintf(stdout, "%s: %s\n", result.Code, message.Message)
@@ -241,13 +255,16 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 	if err == nil && !asJSON && warning != "" {
 		_, err = fmt.Fprintln(stdout, warning)
 	}
+	if err == nil && !asJSON && message.JoinHint != "" {
+		err = cli.PrintFirstRules(stdout, result.Data)
+	}
 	if err == nil && !asJSON && message.OwedCount != nil {
 		err = cli.PrintInboxPointer(stdout, len(message.Pending), *message.OwedCount, false)
 	}
 	if err != nil {
-		return core.ExitError
+		return core.ExitError, false
 	}
-	return result.Status
+	return result.Status, message.JoinHint != ""
 }
 
 func identityFailure(err error) core.Result {

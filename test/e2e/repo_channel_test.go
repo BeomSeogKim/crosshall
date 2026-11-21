@@ -50,6 +50,73 @@ func linkedWorktree(t *testing.T, repo, dir string) string {
 	return dir
 }
 
+// Installing an agent's hooks turns automatic joining on, once: a later
+// install keeps what the owner chose since.
+func TestInstallingHooksTurnsAutomaticJoiningOnOnce(t *testing.T) {
+	f := newSetupWorld(t)
+	enabled := func() (on int) {
+		t.Helper()
+		err := f.db().QueryRow(`SELECT enabled FROM hall_auto_join`).Scan(&on)
+		if err == sql.ErrNoRows {
+			return -1
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return on
+	}
+	plan := f.apply("", "setup", "claude")
+	f.owner().must("owner", "channel", "create", "any") // the hall exists from here
+	if plan.obj["dry_run"] != true || enabled() != -1 {
+		t.Fatalf("a preview set the switch to %d: %s", enabled(), plan.stdout)
+	}
+	f.apply("", "setup", "claude", "--apply")
+	if enabled() != 1 {
+		t.Fatalf("installing left the switch at %d", enabled())
+	}
+	f.owner().must("owner", "channel", "auto", "off")
+	f.apply("", "setup", "codex", "--apply")
+	if enabled() != 0 {
+		t.Fatalf("a later install overrode the owner's choice: %d", enabled())
+	}
+}
+
+// An owner who turned automatic joining off on a hall that never had it on
+// keeps it off through a yes to the installer and through a setup command.
+func TestInstallingHooksKeepsAnOffSetOnAFreshHall(t *testing.T) {
+	enabled := func(f *setupWorld) (on int) {
+		t.Helper()
+		if err := f.db().QueryRow(`SELECT enabled FROM hall_auto_join`).Scan(&on); err != nil {
+			t.Fatalf("the owner's off left no record: %v", err)
+		}
+		return on
+	}
+	t.Run("installer", func(t *testing.T) {
+		f := newSetupWorld(t)
+		f.owner().must("owner", "channel", "auto", "off")
+		code, out := f.inTerminal(f.env, "y\n", nil, "setup")
+		if code != 0 || !strings.Contains(out, "claude: installed") ||
+			strings.Count(out, "Installing turns on automatic joining for this hall, unless you already set it") != 1 {
+			t.Fatalf("exit %d:\n%s", code, out)
+		}
+		if enabled(f) != 0 {
+			t.Fatal("a yes to the installer turned automatic joining on against the owner's off")
+		}
+	})
+	t.Run("antigravity setup", func(t *testing.T) {
+		f := newSetupWorld(t)
+		vendor := filepath.Join(filepath.Dir(f.executable), "agy")
+		if err := os.WriteFile(vendor, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 9\nprintf '1.5.13\\n'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		f.owner().must("owner", "channel", "auto", "off")
+		f.apply("", "setup", "antigravity", "--apply")
+		if enabled(f) != 0 {
+			t.Fatal("an Antigravity setup turned automatic joining on against the owner's off")
+		}
+	})
+}
+
 // With the owner's switch on, a session that starts in a Git repository
 // with no channel gets the repository's own channel, and a session in a
 // linked worktree of that repository joins the same one.
@@ -66,11 +133,20 @@ func TestAutomaticJoiningGivesARepositoryItsChannel(t *testing.T) {
 	if got := f.invokeHook(f.home, "claude", "SessionStart", `"source":"startup"`); got != "" {
 		t.Fatalf("a start outside Git printed %q", got)
 	}
-	if got := startAs(f, "claude", "one", repo); !strings.Contains(got, "Joined #shop-api as @claude1") {
-		t.Fatalf("first start in the repository printed %q", got)
+	// The first session is alone: it joins and is told nothing.
+	if got := startAs(f, "claude", "one", repo); got != "" || joinedChannel(f, "claude", "one") != "shop-api" {
+		t.Fatalf("first start in the repository printed %q and joined %q", got, joinedChannel(f, "claude", "one"))
 	}
-	if got := startAs(f, "codex", "two", worktree); !strings.Contains(got, "Joined #shop-api as @codex1") {
+	if got := startAs(f, "codex", "two", worktree); !strings.Contains(got, "Joined #shop-api as @codex1, with @claude1. ") ||
+		strings.Contains(got, "Before voluntarily ending any turn") {
 		t.Fatalf("start in a linked worktree printed %q", got)
+	}
+	// Now it has company, and its next prompt says so, once.
+	if got := nextPrompt(f, "claude", "one", repo); !strings.Contains(got, "Joined #shop-api as @claude1, with @codex1. ") {
+		t.Fatalf("the first session's prompt with company printed %q", got)
+	}
+	if got := fireHook(f, "claude", "one", repo, "UserPromptSubmit", `"prompt_id":"last","turn_id":"last","prompt":"synthetic"`); got != "" {
+		t.Fatalf("the first session's later prompt printed %q", got)
 	}
 	var channels, defaults int
 	var root string
@@ -95,11 +171,13 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 	owner.must("owner", "channel", "create", "review-team")
 	owner.must("owner", "channel", "default", "review-team", "--repo", worktree)
 
-	if got := startAs(f, "claude", "one", repo); !strings.Contains(got, "Joined #api-2 as @claude1") {
-		t.Fatalf("a repository whose name is taken printed %q", got)
+	startAs(f, "claude", "one", repo)
+	if got := joinedChannel(f, "claude", "one"); got != "api-2" {
+		t.Fatalf("a repository whose name is taken joined %q", got)
 	}
-	if got := startAs(f, "codex", "two", worktree); !strings.Contains(got, "Joined #review-team as @codex1") {
-		t.Fatalf("a worktree with its own default printed %q", got)
+	startAs(f, "codex", "two", worktree)
+	if got := joinedChannel(f, "codex", "two"); got != "review-team" {
+		t.Fatalf("a worktree with its own default joined %q", got)
 	}
 	owner.must("owner", "channel", "auto", "off")
 	fresh := gitRepository(t, filepath.Join(f.home, "fresh"))
@@ -215,8 +293,9 @@ func TestAutomaticJoiningSeesOneRepositoryBehindASeparateGitDirectory(t *testing
 			}
 			continue
 		}
-		if got := startAs(f, "codex", "two", linked); !strings.Contains(got, "Joined #"+want+" as @codex1") {
-			t.Fatalf("%q: the linked worktree printed %q", explicit, got)
+		startAs(f, "codex", "two", linked)
+		if got := joinedChannel(f, "codex", "two"); got != want {
+			t.Fatalf("%q: the linked worktree joined %q", explicit, got)
 		}
 		if got := startAs(f, "claude", "one", main); !strings.Contains(got, "Joined #"+want+" as @claude1") {
 			t.Fatalf("%q: the main checkout printed %q", explicit, got)
@@ -320,8 +399,9 @@ func TestAutomaticJoiningNeedsARealWorkTree(t *testing.T) {
 	if channels, members := state(); channels != 0 || members != 0 {
 		t.Fatalf("starts outside a work tree made %d channels and %d members", channels, members)
 	}
-	if got := startAs(f, "claude", "work", repo); !strings.Contains(got, "Joined #real as @claude1") {
-		t.Fatalf("the work tree printed %q", got)
+	startAs(f, "claude", "work", repo)
+	if got := joinedChannel(f, "claude", "work"); got != "real" {
+		t.Fatalf("the work tree joined %q", got)
 	}
 	// The repository has its channel now; inside .git is still no place to join it.
 	if got := startAs(f, "claude", "late", objects); got != "" {
@@ -385,6 +465,7 @@ func TestAWorktreeStartRecordFromAnOlderVersionStillEnrols(t *testing.T) {
 	f := newSetupWorld(t)
 	f.apply("", "setup", "claude", "--apply")
 	owner := f.owner()
+	owner.must("owner", "channel", "auto", "off") // the older version had no automatic joining
 	repo := gitRepository(t, filepath.Join(f.home, "shop"))
 	linked := linkedWorktree(t, repo, filepath.Join(f.home, "shop-side"))
 	fireHook(f, "claude", "older", linked, "SessionStart", `"source":"startup"`)
@@ -430,6 +511,19 @@ func joinedChannel(f *setupWorld, adapter, session string) string {
 		f.t.Fatal(err)
 	}
 	return name
+}
+
+// nextPrompt returns what the session's next prompt prints. A prompt hook
+// that passes its deadline prints nothing and the following one tries again.
+func nextPrompt(f *setupWorld, adapter, session, dir string) string {
+	f.t.Helper()
+	for turn := range 3 {
+		fields := fmt.Sprintf(`"prompt_id":"next%d","turn_id":"next%d","prompt":"synthetic"`, turn, turn)
+		if out := fireHook(f, adapter, session, dir, "UserPromptSubmit", fields); out != "" {
+			return out
+		}
+	}
+	return ""
 }
 
 func fireHook(f *setupWorld, adapter, session, dir, event, fields string) string {

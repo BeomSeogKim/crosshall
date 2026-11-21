@@ -55,31 +55,13 @@ func (c claudeSession) fire(event string, fields map[string]any) string {
 // the hooks that have returned. A packet moves from in to work before handling
 // and leaves work after handling. An expired, unclaimed packet can disappear
 // from in without committing an observation.
-func (c claudeSession) waitForConsumption() {
+func (c claudeSession) waitForConsumption(deadline time.Time) {
 	c.w.t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
 	leaf := filepath.Join(c.w.rendezvous(), "m", digest[:16])
-	packets := func(section string) []string {
-		entries, err := os.ReadDir(filepath.Join(leaf, section))
-		if err != nil {
-			c.w.t.Fatal(err)
-		}
-		var published []string
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-				published = append(published, entry.Name())
-			}
-		}
-		return published
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		in, work := packets("in"), packets("work")
-		if len(in) == 0 && len(work) == 0 {
-			return
-		}
+	for queued := fixtureQueuedPackets(c.w.t, leaf); len(queued) != 0; queued = fixtureQueuedPackets(c.w.t, leaf) {
 		if time.Now().After(deadline) {
-			c.w.t.Fatalf("one-way observations still queued: in %v, work %v", in, work)
+			c.w.t.Fatalf("one-way observations still queued: %v", queued)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -107,12 +89,12 @@ func (c claudeSession) fireAndRecord(event, fact string, fields map[string]any) 
 		return recorded
 	}
 	before := count()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(fixtureEventTimeout)
 	for {
 		if out := c.fire(event, fields); out != "" {
 			c.w.t.Fatalf("quiet %s printed %q", event, out)
 		}
-		c.waitForConsumption()
+		c.waitForConsumption(deadline)
 		if count() > before {
 			return
 		}
@@ -252,7 +234,7 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 			t.Fatalf("replayed stop %s printed %q", p, got)
 		}
 	}
-	c.waitForConsumption()
+	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
 	if after := tableCounts(t, w); !reflect.DeepEqual(before, after) {
 		t.Fatalf("replay changed rows: %v -> %v", before, after)
 	}
@@ -286,7 +268,7 @@ func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	if got := c.fire("UserPromptSubmit", fields); got != "" {
 		t.Fatalf("duplicate typed prompt produced output: %q", got)
 	}
-	c.waitForConsumption()
+	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
 	assertWorkUnread(t, db, id)
 	var observations int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE event_ref = ? AND kind = ?`,
@@ -348,7 +330,7 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	} else if ms, _ := strconv.Atoi(last[3]); ms >= int(hook.Budget.Milliseconds()) {
 		t.Errorf("the call without a dispatcher waited %d ms", ms)
 	}
-	for deadline := time.Now().Add(3 * time.Second); len(w.dispatcherPIDs()) == 0; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(fixtureEventTimeout); len(w.dispatcherPIDs()) == 0; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the hook did not launch a dispatcher")
 		}

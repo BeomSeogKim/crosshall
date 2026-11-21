@@ -87,19 +87,22 @@ type HookRouteArgs struct {
 // is scoped to one output path and is independent of the roster cursor. Cue is
 // the short text for a restored session whose context was reset.
 type HookResult struct {
-	Enrollment   string           `json:"enrollment,omitempty"`
-	Alias        string           `json:"alias,omitempty"`
-	Channel      string           `json:"channel,omitempty"`
-	Hint         string           `json:"hint,omitempty"`
-	Cue          string           `json:"cue,omitempty"`
-	Roster       json.RawMessage  `json:"roster,omitempty"`
-	Omitted      int              `json:"omitted,omitempty"`
-	OfferID      int64            `json:"offer_id,omitempty"`
-	PendingLine  string           `json:"pending_line,omitempty"`
-	TurnEndLine  string           `json:"turn_end_line,omitempty"`
-	ReminderText string           `json:"reminder_text,omitempty"`
-	Ack          *HookAck         `json:"ack,omitempty"`
-	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
+	Enrollment string `json:"enrollment,omitempty"`
+	Alias      string `json:"alias,omitempty"`
+	Channel    string `json:"channel,omitempty"`
+	Hint       string `json:"hint,omitempty"`
+	Cue        string `json:"cue,omitempty"`
+	// CueWithStartLine replaces Cue in an output that also prints the start
+	// line (Hint), which already says who the session is.
+	CueWithStartLine *string          `json:"cue_with_start_line,omitempty"`
+	Roster           json.RawMessage  `json:"roster,omitempty"`
+	Omitted          int              `json:"omitted,omitempty"`
+	OfferID          int64            `json:"offer_id,omitempty"`
+	PendingLine      string           `json:"pending_line,omitempty"`
+	TurnEndLine      string           `json:"turn_end_line,omitempty"`
+	ReminderText     string           `json:"reminder_text,omitempty"`
+	Ack              *HookAck         `json:"ack,omitempty"`
+	JoinHintAck      *HookJoinHintAck `json:"join_hint_ack,omitempty"`
 	// ChannelCreated tells the dispatcher that this enrolment made the
 	// repository's channel, so the published repository set is stale.
 	ChannelCreated bool   `json:"channel_created,omitempty"`

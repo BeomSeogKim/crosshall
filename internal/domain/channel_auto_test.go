@@ -75,3 +75,42 @@ func TestHookEnrolmentResolvesItsChannelInTheTransaction(t *testing.T) {
 		t.Fatalf("an unknown repository with the switch off: %+v, %d channels", got, channels())
 	}
 }
+
+// Installing an agent's hooks turns automatic joining on once; it never
+// overrides what the owner chose since.
+func TestInitialAutomaticJoiningYieldsToTheOwnersChoice(t *testing.T) {
+	f := newFixture(t)
+	set := func(cmd ChannelAuto, key string) ChannelAutoResult {
+		t.Helper()
+		r := f.owner(cmd, key)
+		wantOK(t, r)
+		return decode[ChannelAutoResult](t, r)
+	}
+	if got := set(ChannelAuto{On: true, Initial: true}, "first"); !got.On || !got.Changed {
+		t.Fatalf("the first install: %+v", got)
+	}
+	if got := set(ChannelAuto{On: true, Initial: true}, "second"); !got.On || got.Changed {
+		t.Fatalf("a second install: %+v", got)
+	}
+	set(ChannelAuto{On: false}, "off")
+	if got := set(ChannelAuto{On: true, Initial: true}, "third"); got.On || got.Changed {
+		t.Fatalf("an install after the owner turned it off: %+v", got)
+	}
+	if f.count(`SELECT enabled FROM hall_auto_join`) != 0 {
+		t.Fatal("an install overrode the owner's choice")
+	}
+
+	// "off" on a hall that never set the switch changes nothing and is a
+	// choice all the same.
+	fresh := newFixture(t)
+	r := fresh.owner(ChannelAuto{On: false}, "off-first")
+	wantOK(t, r)
+	if got := decode[ChannelAutoResult](t, r); got.On || got.Changed || fresh.count(`SELECT COUNT(*) FROM hall_auto_join WHERE enabled = 0`) != 1 {
+		t.Fatalf("off on a fresh hall: %+v", got)
+	}
+	r = fresh.owner(ChannelAuto{On: true, Initial: true}, "install")
+	wantOK(t, r)
+	if got := decode[ChannelAutoResult](t, r); got.On || got.Changed || fresh.count(`SELECT enabled FROM hall_auto_join`) != 0 {
+		t.Fatalf("an install after off on a fresh hall: %+v", got)
+	}
+}

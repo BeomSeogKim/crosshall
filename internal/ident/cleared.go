@@ -104,8 +104,8 @@ func (r SQLResolver) clearedJoin(ctx context.Context, tx store.Tx, rendezvous st
 }
 
 // RepublishGeneration makes a member directory carry the generation the
-// store committed. A new generation starts without the old roster cursor,
-// which goes first, so an interruption never leaves the old cursor under
+// store committed. A new generation starts without the old roster cursors,
+// which go first, so an interruption never leaves the old cursor under
 // the new generation. Calling it again changes nothing.
 func RepublishGeneration(leaf *os.Root, generation string) error {
 	current, err := ReadPrivateFile(leaf, "gen", 4096)
@@ -115,8 +115,12 @@ func RepublishGeneration(leaf *os.Root, generation string) error {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := leaf.Remove("ack"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+	// Both receipts hold roster cursors of the old membership: the
+	// acknowledged one and the one with the rules (spool.RulesReceipt).
+	for _, receipt := range []string{"ack", "rules"} {
+		if err := leaf.Remove(receipt); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 	}
 	return publishMetadata(leaf, "gen", generation)
 }

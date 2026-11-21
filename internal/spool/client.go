@@ -44,7 +44,12 @@ type Reply struct {
 	digest     string
 	generation string
 	cursor     uint64
+	rules      bool // the reply carries the member rules
 }
+
+// RulesReceipt names the file in a member's directory that holds the roster
+// cursor of the last reply the CLI rendered with the member rules in it.
+const RulesReceipt = "rules"
 
 // Member sends a command through the registered member leaf. The caller may
 // set a deadline at CLI entry so discovery and startup use the same budget.
@@ -110,6 +115,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
 	var trailer struct {
 		Cursor uint64 `json:"roster_seq"`
+		Rules  bool   `json:"rules_given"`
 		// Generation is set when the request registered the directory again
 		// (a cleared conversation joining as a new member).
 		Generation string `json:"generation"`
@@ -119,6 +125,7 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 			generation = trailer.Generation
 		}
 		reply.cursor, reply.rendezvous, reply.digest, reply.generation = trailer.Cursor, c.Rendezvous, digest, generation
+		reply.rules = trailer.Rules
 	}
 	return reply, nil
 }
@@ -243,6 +250,13 @@ func (r Reply) Acknowledge() error {
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return err
+	}
+	if r.rules {
+		// Before the cursor, which an older version may already have set as far.
+		record := []byte(strconv.FormatUint(r.cursor, 10) + "\n")
+		if err := publishFile(context.Background(), leaf, wire.NewID()+".part", RulesReceipt, record); err != nil {
+			return err
+		}
 	}
 	last, err := readSequence(leaf, "ack")
 	if err != nil || last >= r.cursor {

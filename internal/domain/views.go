@@ -573,11 +573,10 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	return result, err
 }
 
-// bootstrapRoster serves a member that a hook enrolled: its hint and roster
-// were only offered, so its first ordinary command names the member again,
-// names the command that prints the rules, and carries the changes since the
-// snapshot the hook showed. The CLI acknowledges after rendering, which ends
-// the bootstrap.
+// bootstrapRoster serves a member that a hook enrolled: the hook told it at
+// most who it is, so its first ordinary command carries the member rules and
+// the changes since the snapshot the hook showed. The CLI acknowledges after
+// rendering, which ends the bootstrap.
 func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields map[string]json.RawMessage, now time.Time) error {
 	var baseline sql.NullInt64
 	var alias string
@@ -599,7 +598,8 @@ func bootstrapRoster(ctx context.Context, tx store.Tx, member memberView, fields
 	if changes == nil {
 		changes = []Member{}
 	}
-	fields["join_hint"], _ = json.Marshal(BootstrapHint(alias, member.name))
+	fields["join_hint"], _ = json.Marshal(Hint(alias, member.name))
+	fields["rules_given"] = json.RawMessage(`true`)
 	fields["roster_seq"], _ = json.Marshal(seq)
 	fields["roster_changes"], err = json.Marshal(changes)
 	return err

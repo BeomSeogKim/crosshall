@@ -183,6 +183,7 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 	}
 	result := promptResult{Kind: "setup", DryRun: !p.req.Apply}
 	var previewed []string
+	fresh := false // a previewed plan that is not an interrupted one, which prints the note itself
 	for _, plan := range plans {
 		o := outcomeOf(plan)
 		switch {
@@ -191,6 +192,7 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 		case !p.req.Apply:
 			o.Outcome, o.Plan = "previewed", &plan
 			previewed = append(previewed, scopeOf(plan)...)
+			fresh = fresh || (!plan.Resume && !plan.Recovery)
 			if err := p.printPlan(plan); err != nil {
 				return err
 			}
@@ -201,6 +203,11 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 			o = p.apply(ctx, choice{plan: plan, answer: answerYes})
 		}
 		result.Vendors = append(result.Vendors, o)
+	}
+	if fresh {
+		if _, err := fmt.Fprintln(p.out, autoJoinNote); err != nil {
+			return err
+		}
 	}
 	note := ""
 	if !p.req.DryRun && len(previewed) > 0 {
@@ -249,6 +256,9 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 	}
 	if len(eligible) == 0 {
 		return p.finish(result, "")
+	}
+	if _, err := fmt.Fprintln(p.out, autoJoinNote); err != nil {
+		return err
 	}
 	if p.req.Offer {
 		if _, err := fmt.Fprintln(p.out, "A no skips future installer offers for the listed agents. Enter skips this offer."); err != nil {
@@ -411,7 +421,7 @@ func (p *prompter) printPlan(vp VendorPlan) error {
 	}
 	return printPlan(p.out, plan{Version: 1, OK: true, Kind: vp.Action, DryRun: p.req.DryRun,
 		Resume: vp.Resume, Recovery: vp.Recovery, Adapters: adapters, Files: vp.Files,
-		Approvals: vp.Approvals, Retained: vp.Retained})
+		Approvals: vp.Approvals, Retained: vp.Retained, quietJoin: !vp.Resume && !vp.Recovery})
 }
 
 // finish reports each vendor's outcome and fails when any vendor failed.

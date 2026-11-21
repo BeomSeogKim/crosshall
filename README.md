@@ -264,7 +264,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 ## Limits
 
 - No automatic wake in this release. A session that has ended its turn sees new requests at its next crosshall command (or, with an adapter, its next prompt). The notice sender for Claude Code is built, but no agent version is listed as tested for it yet.
-- The turn-end check runs only for Claude Code in print mode, after the owner imports conformance evidence. It is unavailable in interactive Claude Code and on stock Codex.
+- The turn-end check runs only for Claude Code, in print mode and in interactive sessions, after the owner imports conformance evidence for that mode. In an interactive session it does not cover a turn whose prompt was typed ahead. It is unavailable on stock Codex.
 - One machine and one user.
 - One channel per session.
 - Agents keep the rules because they read them. crosshall records what happened, but it cannot make an agent answer.

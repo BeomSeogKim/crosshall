@@ -22,17 +22,33 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 		t.Run(how, func(t *testing.T) {
 			w, writer, c := m2World(t)
 			c.pid = strconv.Itoa(os.Getpid()) // a running process stands for Claude Code
+			db := w.db()
+			startBound := func(source string) {
+				t.Helper()
+				c.fireUntil("SessionStart", map[string]any{"source": source}, "a live member and its verified launch", func(string) bool {
+					var registered bool
+					if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM principal_key k
+						JOIN binding b ON b.principal_id = k.principal_id
+						JOIN adapter_launch l ON l.principal_id = k.principal_id
+						WHERE k.vendor = 'claude' AND k.key = ? AND k.state = 'live' AND b.state = 'live'
+						  AND l.verified = 1 AND l.ended_hook_at_ms IS NULL AND l.launch_ref LIKE ?)`,
+						c.key, "pid-"+c.pid+"-%").Scan(&registered); err != nil {
+						t.Fatal(err)
+					}
+					return registered
+				})
+			}
 			alias := "claude1"
 			switch how {
 			case "auto-joined":
-				c.fire("SessionStart", map[string]any{"source": "startup"})
+				startBound("startup")
 			case "resumed outside the repository":
 				// Joined by hand outside the default's repository, then resumed:
 				// the resumed start binds the process.
 				c.repo = w.home
 				alias = "worker"
 				(&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key}}).must("join", "checkout", "--as", alias)
-				c.fire("SessionStart", map[string]any{"source": "resume"})
+				startBound("resume")
 			default:
 				// No start was seen: the join inside the session binds its process,
 				// and the session's next prompt reports that launch.
@@ -41,7 +57,7 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 				(&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key, "CLAUDE_PID=" + c.pid}}).must("join", "checkout", "--as", alias)
 				c.fireAndRecord("UserPromptSubmit", "prompt_submitted", map[string]any{"prompt_id": "after-join"})
 				var launch string
-				if err := w.db().QueryRow(`SELECT launch_ref FROM observation WHERE turn_ref = 'after-join' AND kind = 'prompt_submitted'`).Scan(&launch); err != nil ||
+				if err := db.QueryRow(`SELECT launch_ref FROM observation WHERE turn_ref = 'after-join' AND kind = 'prompt_submitted'`).Scan(&launch); err != nil ||
 					!strings.HasPrefix(launch, "pid-"+c.pid+"-") {
 					t.Fatalf("the prompt after the join reported launch %q (%v), want the joined process", launch, err)
 				}
@@ -52,7 +68,7 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 
 			c.fireAndRecord("SessionEnd", "session_ended", map[string]any{"reason": "clear"})
 			cleared := claudeSession{w: w, key: c.key + "-cleared", pid: c.pid, repo: c.repo}
-			got := hostContext(t, cleared.fire("SessionStart", map[string]any{"source": "clear"}))
+			got := cleared.startWithContext("clear")
 			if !strings.Contains(got, "You are @"+alias+" in #checkout") {
 				t.Fatalf("the cleared session was not told who it is: %q", got)
 			}
@@ -65,7 +81,7 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 				t.Fatalf("the asker sees @%s departed", alias)
 			}
 			var live int
-			if err := w.db().QueryRow(`SELECT COUNT(*) FROM binding WHERE state = 'live'`).Scan(&live); err != nil || live != 2 {
+			if err := db.QueryRow(`SELECT COUNT(*) FROM binding WHERE state = 'live'`).Scan(&live); err != nil || live != 2 {
 				t.Fatalf("live bindings %d (%v), want the writer and the one member", live, err)
 			}
 
@@ -154,5 +170,42 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 				t.Fatalf("a repeat join did not say Already in:\n%s", again)
 			}
 		})
+	}
+}
+
+// Issue #164: a command of the replaced conversation still rendering when
+// /clear takes the member over records what it showed in its own directory
+// after the takeover read it. The member's next command applies it, so the
+// rules and the arrival it showed are not shown again.
+func TestAReceiptRecordedAfterAClearIsKept(t *testing.T) {
+	w, _, c := m2World(t)
+	c.pid = strconv.Itoa(os.Getpid())
+	c.fire("SessionStart", map[string]any{"source": "startup"})
+	w.member().must("join", "checkout", "--as", "latepeer")
+	cleared := claudeSession{w: w, key: c.key + "-cleared", pid: c.pid, repo: c.repo}
+	if got := hostContext(t, cleared.fire("SessionStart", map[string]any{"source": "clear"})); !strings.Contains(got, "You are @claude1 in #checkout") {
+		t.Fatalf("the clear did not keep the member: %q", got)
+	}
+	// The old conversation's command finishes rendering now: it showed the
+	// rules and the roster up to the latest change.
+	var latest int64
+	if err := w.db().QueryRow(`SELECT MAX(seq) FROM roster_change`).Scan(&latest); err != nil {
+		t.Fatal(err)
+	}
+	oldLeaf := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
+	for _, receipt := range []string{"ack", "rules"} {
+		if err := os.WriteFile(filepath.Join(oldLeaf, receipt), []byte(strconv.FormatInt(latest, 10)+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := (&participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + cleared.key}}).mustPlain("inbox")
+	if strings.Contains(next, "Before voluntarily ending any turn") || strings.Contains(next, "@latepeer") {
+		t.Fatalf("the cleared session's next command repeated what the old one showed:\n%s", next)
+	}
+	var acked bool
+	var seen int64
+	if err := w.db().QueryRow(`SELECT hint_acked, roster_ack_seq FROM binding WHERE alias = 'claude1' AND state = 'live'`).Scan(&acked, &seen); err != nil ||
+		!acked || seen < latest {
+		t.Fatalf("binding hint_acked=%v roster_ack_seq=%d (%v), want true and %d", acked, seen, err, latest)
 	}
 }

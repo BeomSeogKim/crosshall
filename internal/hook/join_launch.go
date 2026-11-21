@@ -39,6 +39,7 @@ func JoinLaunch(id ident.Identity, lookup func(string) (string, bool), at time.T
 		AtMS: at.UnixMilli(),
 		Profile: wire.HookProfile{Adapter: m.Adapter, ManifestRev: m.Revision, VendorVersion: version,
 			Platform: runtime.GOOS + "-" + runtime.GOARCH, Mode: mode},
+		PIDNamespace: proc.PIDNamespace(),
 	}
 }
 

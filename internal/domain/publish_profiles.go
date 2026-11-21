@@ -6,32 +6,31 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-// PublishProfile is a vendor profile that an interactive conformance run
-// proved for publish (design section 8), with that run's reference and time.
-type PublishProfile struct {
+type BuiltinEvidence struct {
 	Vendor, Version, Platform, Mode, ManifestRev string
-	ResultRef                                    string
+	Capability, ResultRef                        string
 	CheckedAtMS                                  int64
 }
 
-// TestedPublishProfiles ships with the binary, so a stock install needs no
-// import; an owner's evidence import only adds to it. It is empty until a
-// sender passes its interactive conformance run.
-var TestedPublishProfiles []PublishProfile
+var BuiltinCapabilityEvidence = []BuiltinEvidence{
+	{Vendor: "claude", Version: "2.1.330", Platform: "darwin-arm64", Mode: "print", ManifestRev: "claude-2",
+		Capability: "turn_end", ResultRef: "conformance:TestClaudeCodeTurnEndConformance@a2d52cb", CheckedAtMS: 1795241413595},
+	{Vendor: "claude", Version: "2.1.330", Platform: "darwin-arm64", Mode: "interactive", ManifestRev: "claude-2",
+		Capability: "turn_end", ResultRef: "conformance:TestClaudeCodeInteractiveTurnEndConformance@a2d52cb", CheckedAtMS: 1795241385990},
+	{Vendor: "claude", Version: "2.1.330", Platform: "darwin-arm64", Mode: "interactive", ManifestRev: "claude-2",
+		Capability: "publish", ResultRef: "trial:publish-matrix@c1db3a4", CheckedAtMS: 1795242199565},
+}
 
-// SeedPublishProfiles records the shipped profiles as tested publish
-// evidence, marked as shipped and dated by their conformance run, so a
-// restart never makes them look newer. Shipped rows this binary no longer
-// ships are removed; an owner's row for the same profile is kept as it is.
-func SeedPublishProfiles(ctx context.Context, tx store.Tx, profiles []PublishProfile) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM capability_evidence WHERE cap = 'publish' AND source = 'builtin'`); err != nil {
+// SeedBuiltinEvidence keeps run dates and owner overrides across restarts.
+func SeedBuiltinEvidence(ctx context.Context, tx store.Tx, rows []BuiltinEvidence) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM capability_evidence WHERE source = 'builtin'`); err != nil {
 		return err
 	}
-	for _, p := range profiles {
+	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
 			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms, source)
-			VALUES (?, ?, ?, ?, ?, 'publish', 'tested', ?, ?, 'builtin') ON CONFLICT DO NOTHING`,
-			p.Vendor, p.Version, p.Platform, p.Mode, p.ManifestRev, p.ResultRef, p.CheckedAtMS); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, 'tested', ?, ?, 'builtin') ON CONFLICT DO NOTHING`,
+			row.Vendor, row.Version, row.Platform, row.Mode, row.ManifestRev, row.Capability, row.ResultRef, row.CheckedAtMS); err != nil {
 			return err
 		}
 	}

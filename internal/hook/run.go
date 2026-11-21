@@ -153,6 +153,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "refused"
 	}
 	if spec.Enroll && e.LaunchVerified {
+		e.PIDNamespace = proc.PIDNamespace()
 		markLaunch(rv, pid)
 		// Only a /clear may continue the process's member; it must come from
 		// that process, not from a session nested under it.
@@ -165,7 +166,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	// The continuation needs a concrete profile. Unknown builds still
 	// publish their lifecycle observation without waiting for a reply.
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
-		turnEndListed(rv, m.Adapter, e.VendorVersion, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
+		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
@@ -479,7 +480,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, LaunchHosted: e.LaunchHosted, EventRef: ref,
-			Source: e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
+			PIDNamespace: e.PIDNamespace,
+			Source:       e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
 			HookAtMS: entry.UnixMilli(), Epoch: epoch,
 		})
 	} else {

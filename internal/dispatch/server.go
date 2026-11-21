@@ -142,7 +142,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	pub := &publisher{db: db, profiles: domain.TestedPublishProfiles}
+	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence}
 	sends := len(publish.Adapters().Senders()) > 0
 	if err := pub.recover(ctx, time.Now()); err != nil {
 		return err
@@ -161,6 +161,8 @@ func Serve(ctx context.Context, cfg Config) error {
 	if sends {
 		logPublishFailure(pub.tick(ctx, time.Now(), true))
 	}
+	var launches launchSweep
+	launches.start(ctx, db, time.Now())
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -168,6 +170,11 @@ func Serve(ctx context.Context, cfg Config) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case result := <-launches.pending:
+			if err := launches.apply(ctx, &s, result); err != nil && !errors.Is(err, context.Canceled) {
+				s.logFailure(fmt.Errorf("reconcile Claude launches: %w", err))
+			}
+			continue
 		case <-tick.C:
 			publishTick = true
 		case _, ok := <-events:
@@ -184,8 +191,12 @@ func Serve(ctx context.Context, cfg Config) error {
 		if err := s.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logFailure(err)
 		}
-		if publishTick && sends {
-			logPublishFailure(pub.tick(ctx, time.Now(), false))
+		if publishTick {
+			now := time.Now()
+			launches.start(ctx, db, now)
+			if sends {
+				logPublishFailure(pub.tick(ctx, now, false))
+			}
 		}
 	}
 }
@@ -622,8 +633,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return err
 		}
 		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)
+		clearedAck, clearedRules, err := s.clearedReceipts(ctx, tx, resolved.Caller, time.Now())
+		if err != nil {
+			return err
+		}
 		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID,
-			max(req.Ack, pendingAck), max(leafRulesReceipt(arrival), pendingRules))
+			max(req.Ack, pendingAck, clearedAck), max(leafRulesReceipt(arrival), pendingRules, clearedRules))
 		if err != nil {
 			return err
 		}
@@ -722,6 +737,40 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		s.withdrawReady()
 	}
 	return result, nil
+}
+
+// clearedReceiptWindow bounds how long after a /clear the replaced
+// conversation's directory is still read: a command it was rendering then
+// records its receipt within seconds.
+const clearedReceiptWindow = 10 * time.Minute
+
+// clearedReceipts reads the receipts in the directories of the member's keys
+// that a /clear retired recently. A command of the replaced conversation
+// may still have been rendering when the clear took the member over, and
+// records what it showed after the takeover read those directories; the
+// member's next request applies it, so nothing it saw is shown again.
+func (s *server) clearedReceipts(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (cursor, rules uint64, err error) {
+	if caller.PrincipalID == nil || caller.BindingID == nil {
+		return 0, 0, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT k.vendor, k.key, l.file_identity, l.generation
+		FROM principal_key k JOIN leaf l ON l.vendor = k.vendor AND l.key = k.key
+		WHERE k.principal_id = ? AND k.state = 'retired' AND k.retired_by = 'clear' AND k.retired_at_ms >= ?`,
+		*caller.PrincipalID, now.Add(-clearedReceiptWindow).UnixMilli())
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id ident.Identity
+		var fileID, generation string
+		if err := rows.Scan(&id.Vendor, &id.Key, &fileID, &generation); err != nil {
+			return 0, 0, err
+		}
+		c, r := ident.LeafReceipts(s.cfg.Rendezvous, id, fileID, generation)
+		cursor, rules = max(cursor, c), max(rules, r)
+	}
+	return cursor, rules, rows.Err()
 }
 
 // leafPendingReceipt reads the receipts a renderer left pending for the

@@ -22,8 +22,11 @@ func processStart(pid int) (Start, error) {
 	if errno != 0 {
 		return Start{}, errno
 	}
-	if size < 44 || int32(binary.LittleEndian.Uint32(buf[40:44])) != int32(pid) {
+	if size == 0 {
 		return Start{}, errProcessGone
+	}
+	if size < 44 || int32(binary.LittleEndian.Uint32(buf[40:44])) != int32(pid) {
+		return Start{}, errors.New("malformed process status")
 	}
 	if buf[36] == 5 /* SZOMB */ {
 		return Start{}, errProcessGone

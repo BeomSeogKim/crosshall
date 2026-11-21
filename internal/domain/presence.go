@@ -80,12 +80,14 @@ func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFac
 			                 AND t.launch_ref = o.launch_ref AND t.turn_ref = o.turn_ref), o.hook_at_ms) AS position
 			FROM observation o JOIN latest ON o.launch_ref = latest.launch_ref
 			WHERE o.principal_id = ?1 AND o.kind <> 'command'
-			  AND o.hook_at_ms <= o.observed_at_ms + ?2)
-		SELECT c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM candidate c
+			  AND o.hook_at_ms <= o.observed_at_ms + ?2),
+		staged AS (
+			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c)
+		SELECT c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
 		-- A turn-bound fact belongs to the start its turn opened after, whatever
-		-- its own clock says; any other fact is placed by its own time.
-		WHERE c.position >= (SELECT started_hook_at_ms FROM latest) AND NOT EXISTS (SELECT 1 FROM candidate s
-		                  WHERE c.turn_ref IS NOT NULL AND s.turn_ref = c.turn_ref AND s.stage > c.stage)
+		-- its own clock says; any other fact is placed by its own time. Within
+		-- a turn only its latest stage counts.
+		WHERE c.position >= (SELECT started_hook_at_ms FROM latest) AND (c.turn_ref IS NULL OR c.stage = c.top)
 		ORDER BY c.position DESC, c.stage DESC, c.hook_at_ms DESC, c.seq DESC
 		LIMIT 1`, principal, futureSlackMS).
 		Scan(&o.Fact, &adapter, &o.AtMS, &fresh)

@@ -56,6 +56,9 @@ func renderPublishSwitch(data []byte, w io.Writer) error {
 		action = "Resume recorded" // the state line below says what follows
 	}
 	fmt.Fprintf(w, "%s for %s.\n", action, subject)
+	if r.BuildStopLifted {
+		fmt.Fprintln(w, "  lifted the publish stop for this build across all members")
+	}
 	if r.Publish != nil {
 		fmt.Fprintf(w, "  publish: %s\n", publishWords(*r.Publish))
 	}

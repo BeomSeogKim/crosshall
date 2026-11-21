@@ -33,6 +33,8 @@ func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 	version := c.version()
 	if tested {
 		c.importTurnEnd(version, "print", "tested", "loopback run before the check: bootstraps the exact profile it measures")
+	} else {
+		c.importTurnEnd(version, "print", "candidate", "no tested evidence for this fixture")
 	}
 	return c, version
 }
@@ -204,14 +206,18 @@ func (c *conformance) carries(n int, id int64) int {
 // member already read, the turn ends as it did before.
 func TestClaudeCodeTurnEndConformance(t *testing.T) {
 	gated := func(t *testing.T) string {
-		c, _ := turnEndWorld(t, false)
+		c, version := turnEndWorld(t, false)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request during the turn") }
 		c.claudeRun("first synthetic prompt")
 		if c.model.count() != 1 || c.carries(1, id) != 0 || c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`) != 0 {
 			t.Fatalf("without evidence: %d requests, %d claims", c.model.count(), c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`))
 		}
-		return c.observedBuild("print")
+		observed := c.observedBuild("print")
+		if observed != version {
+			t.Fatalf("observed build %q, want the candidate fixture build %q", observed, version)
+		}
+		return observed
 	}
 	continued := func(t *testing.T) string {
 		c, _ := turnEndWorld(t, true)

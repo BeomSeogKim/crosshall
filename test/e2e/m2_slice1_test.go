@@ -184,7 +184,7 @@ func m2World(t *testing.T) (*world, *participant, claudeSession) {
 	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
 	writer := w.member()
 	writer.must("join", "checkout", "--as", "writer")
-	return w, writer, claudeSession{w: w, key: "synthetic-m2-session", pid: "4242", repo: repo}
+	return w, writer, claudeSession{w: w, key: "synthetic-m2-session", pid: strconv.Itoa(os.Getpid()), repo: repo}
 }
 
 func notes(t *testing.T, from *participant, alias string, n int) []string {
@@ -319,14 +319,14 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	other.key = "synthetic-other"
 	cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"synthetic-m2-session","prompt_id":"x"}`)
-	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID=synthetic-other", "CLAUDE_PID=4242")
+	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID=synthetic-other", "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {
 		t.Fatalf("conflicting identity: %q, %v", out, err)
 	}
 	// Malformed input.
 	cmd = exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"broken"`)
-	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key, "CLAUDE_PID=4242")
+	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key, "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {
 		t.Fatalf("malformed input: %q, %v", out, err)
 	}
@@ -335,40 +335,63 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "off-1"}); got != "" {
 		t.Fatalf("switched-off adapter printed %q", got)
 	}
-	// No dispatcher: the adapter is on, the dispatcher is gone. The hook
-	// launches a new one without waiting for it, so the call itself either
-	// finds none yet or already reaches it.
-	w.owner().must("owner", "adapter", "set", "claude", "--enabled", "on")
-	w.kill()
-	if got := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "dead-1"}); got != "" {
-		t.Fatalf("no dispatcher printed %q", got)
+	readCounters := func() string {
+		t.Helper()
+		dir := filepath.Join(w.rendezvous(), "hooks")
+		logs, err := os.ReadDir(dir)
+		if err != nil || len(logs) == 0 {
+			t.Fatalf("no hook counters: %v", err)
+		}
+		var counters strings.Builder
+		for _, log := range logs {
+			raw, err := os.ReadFile(filepath.Join(dir, log.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			counters.Write(raw)
+		}
+		return counters.String()
 	}
-	logs, err := os.ReadDir(filepath.Join(w.rendezvous(), "hooks"))
-	if err != nil || len(logs) == 0 {
-		t.Fatalf("no hook counters: %v", err)
-	}
-	raw, err := os.ReadFile(filepath.Join(w.rendezvous(), "hooks", logs[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := readCounters()
 	for _, outcome := range []string{" identity ", " refused ", " off "} {
-		if !strings.Contains(string(raw), outcome) {
-			t.Errorf("counter outcome %q missing from\n%s", strings.TrimSpace(outcome), raw)
+		if !strings.Contains(before, outcome) {
+			t.Errorf("counter outcome %q missing from\n%s", strings.TrimSpace(outcome), before)
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	last := strings.Fields(lines[len(lines)-1])
-	if len(last) != 4 || (last[2] != "no_dispatcher" && last[2] != "rpc") {
-		t.Errorf("the call without a dispatcher was counted as %v", last)
-	} else if ms, _ := strconv.Atoi(last[3]); ms >= int(hook.Budget.Milliseconds()) {
-		t.Errorf("the call without a dispatcher waited %d ms", ms)
+
+	// The prompt may reach the new dispatcher before its callback deadline.
+	w.owner().must("owner", "adapter", "set", "claude", "--enabled", "on")
+	w.kill()
+	out := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "dead-1"})
+	raw := readCounters()
+	added, appended := strings.CutPrefix(raw, before)
+	last := strings.Fields(added)
+	if !appended || len(last) != 4 || last[0] != "claude" || last[1] != "UserPromptSubmit" {
+		t.Fatalf("the restart prompt did not append one counter: %q", added)
+	}
+	switch last[2] {
+	case "no_dispatcher", "refused":
+		// The adapter policy can be replaced while the hook opens it at restart.
+		if out != "" {
+			t.Errorf("restart prompt counted as %s printed %q", last[2], out)
+		}
+	case "rpc":
+		const welcome = "[crosshall] Joined #checkout as @claude1, with @writer. `crosshall join checkout --rules` prints the member rules."
+		if got := hostContext(t, out); got != "" && got != welcome {
+			t.Errorf("restart prompt context %q, want silence or %q", got, welcome)
+		}
+	default:
+		t.Errorf("unexpected restart prompt counter: %v", last)
+	}
+	if ms, err := strconv.Atoi(last[3]); err != nil || ms < 0 || ms >= int(hook.Budget.Milliseconds()) {
+		t.Errorf("restart prompt counter has elapsed time %q, want less than %d ms", last[3], hook.Budget.Milliseconds())
 	}
 	for deadline := time.Now().Add(fixtureEventTimeout); len(w.dispatcherPIDs()) == 0; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the hook did not launch a dispatcher")
 		}
 	}
-	if strings.Contains(string(raw), c.key) || strings.Contains(string(raw), "synthetic note") {
+	if strings.Contains(raw, c.key) || strings.Contains(raw, "synthetic note") {
 		t.Fatal("a counter record carries an identity or content")
 	}
 }

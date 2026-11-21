@@ -60,21 +60,21 @@ func readPolicyFile(dir *os.Root, name, adapter string) (adapterPolicy, error) {
 	return policy, nil
 }
 
-// turnEndListed reports whether the dispatcher lists this exact profile as
-// having tested turn_end evidence. Any read or format problem means not
-// listed: the Stop then publishes one-way, which can only skip a wait.
-func turnEndListed(rv *os.Root, profile ...string) bool {
+// turnEndListed is a wait hint. The dispatcher applies the version override
+// before deciding whether the Stop may continue the turn.
+func turnEndListed(rv *os.Root, adapter, platform, mode, manifestRev string) bool {
 	data, err := ident.ReadPrivateFile(rv, "turn_end", 64<<10)
 	if err != nil {
 		return false
 	}
-	want := strings.Join(profile, " ")
 	rows, complete := strings.CutSuffix(string(data), "\n")
 	if !complete {
 		return false
 	}
 	for _, line := range strings.Split(rows, "\n") {
-		if line == want {
+		fields := strings.Split(line, " ")
+		if len(fields) == 5 && fields[1] != "" && fields[0] == adapter && fields[2] == platform &&
+			fields[3] == mode && fields[4] == manifestRev {
 			return true
 		}
 	}

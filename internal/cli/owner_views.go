@@ -296,8 +296,9 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		TurnEndNotice      *struct {
 			Available                         bool
 			Date                              string
-			CommittedClaims                   int `json:"committed_claims"`
-			ExtraModelRequestsPerContinuation int `json:"extra_model_requests_per_continuation"`
+			TrustedFrom                       string `json:"trusted_from,omitempty"`
+			CommittedClaims                   int    `json:"committed_claims"`
+			ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
 		} `json:"turn_end_notice"`
 		Publish *struct {
 			State        string
@@ -306,6 +307,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			TotalRoutes  int `json:"total_routes"`
 			Counters     *store.DoctorPublishCounters
 			Members      []store.DoctorPublishMember
+			Builds       []store.DoctorPublishBuild
 		} `json:"publish"`
 		Hooks *struct {
 			Date            string
@@ -365,6 +367,9 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			status := "unavailable"
 			if notice.Available {
 				status = "available"
+				if notice.TrustedFrom != "" {
+					status += fmt.Sprintf(" (trusted from %s evidence)", notice.TrustedFrom)
+				}
 			}
 			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
 				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)
@@ -372,6 +377,21 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		if a.Publish != nil {
 			fmt.Fprintf(&output, "  publish: %s (%s, %d active / %d total routes)\n",
 				a.Publish.State, a.Publish.Reason, a.Publish.ActiveRoutes, a.Publish.TotalRoutes)
+			for _, build := range a.Publish.Builds {
+				words := build.State
+				switch build.State {
+				case "trusted":
+					words = fmt.Sprintf("trusted %d of %d", build.Confirmed, store.PublishBuildConfirmations)
+					if build.HeldUnobserved != nil {
+						words += fmt.Sprintf(", %d held unobserved", *build.HeldUnobserved)
+					}
+				case "stopped":
+					words = fmt.Sprintf("stopped at %s (notice %d, %s)", clock(build.StoppedAtMS), build.Notice, build.Reason)
+				case "candidate":
+					words = fmt.Sprintf("candidate (%s)", build.Reason)
+				}
+				fmt.Fprintf(&output, "  publish build %s (%s %s %s): %s\n", build.Version, build.Platform, build.Mode, build.ManifestRev, words)
+			}
 			if c := a.Publish.Counters; c != nil {
 				fmt.Fprintf(&output, "  publish notices on %s UTC: %d submitted, %d uncertain, %d not submitted; observed %d own turn, %d absorbed, %d unknown\n",
 					c.Date, c.Submitted, c.Uncertain, c.NotSubmitted, c.OwnTurn, c.Absorbed, c.Unknown)

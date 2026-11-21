@@ -285,19 +285,14 @@ func TestPublishThirdSuspensionLastsForTheLaunch(t *testing.T) {
 	}
 }
 
-func TestPublishVersionSuspension(t *testing.T) {
-	for _, by := range []string{"evidence import", "resume"} {
-		t.Run(by, func(t *testing.T) {
+func TestPublishManifestEvidenceHonorsExactOverride(t *testing.T) {
+	for _, level := range []string{"candidate", "unavailable"} {
+		t.Run(level, func(t *testing.T) {
 			p := newPublishFixture(t)
 			p.proveRoute()
 			p.turnEndAsk(p.writer, "reader", "work")
 			p.mutate(`UPDATE capability_evidence SET vendor_version = 'other' WHERE cap = 'publish'`)
-			p.requirePublish("version not listed", "suspended", `version "`)
-			if by == "resume" {
-				wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
-				p.requirePublish("resume does not add the version", "suspended", `version "`)
-				return
-			}
+			p.requirePublish("another version covers this manifest", "available", "trusted from")
 			var e AdapterEvidence
 			p.update(func(ctx context.Context, tx store.Tx) error {
 				return tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
@@ -305,25 +300,35 @@ func TestPublishVersionSuspension(t *testing.T) {
 					publishTestLaunch).Scan(&e.VendorVersion, &e.Platform, &e.Mode, &e.ManifestRev)
 			})
 			e.Vendor, e.RunAtMS, e.ResultRef = "claude", p.now.UnixMilli(), "sha256:01"
+			e.Results = []EvidenceResult{{Cap: "publish", Level: level, Check: "exact version follow-up"}}
+			wantOK(t, p.owner(e, "import-negative"))
+			p.requirePublish("exact version overrides the manifest", "candidate", "exact evidence is "+level)
+			wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+			p.requirePublish("resume leaves exact evidence in force", "candidate", "exact evidence is "+level)
+			e.RunAtMS++
+			e.ResultRef = "sha256:02"
 			e.Results = []EvidenceResult{{Cap: "publish", Level: "tested", Check: "interactive conformance"}}
-			wantOK(t, p.owner(e, "import"))
+			wantOK(t, p.owner(e, "import-tested"))
 			p.requirePublish("the imported evidence holds the version", "available", "")
 		})
 	}
 }
 
-func TestPublishShippedProfilesAreSeededAndOwnerRowsKept(t *testing.T) {
+func TestBuiltinEvidenceIsSeededAndOwnerRowsKept(t *testing.T) {
 	p := newPublishFixture(t)
-	shipped := []PublishProfile{{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r", ResultRef: "sha256:aa", CheckedAtMS: 5}}
-	seed := func(profiles []PublishProfile) {
-		p.update(func(ctx context.Context, tx store.Tx) error { return SeedPublishProfiles(ctx, tx, profiles) })
+	shipped := []BuiltinEvidence{
+		{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r", Capability: "publish", ResultRef: "sha256:aa", CheckedAtMS: 5},
+		{Vendor: "claude", Version: "1", Platform: "p", Mode: "m", ManifestRev: "r", Capability: "turn_end", ResultRef: "sha256:aa", CheckedAtMS: 5},
+	}
+	seed := func(evidence []BuiltinEvidence) {
+		p.update(func(ctx context.Context, tx store.Tx) error { return SeedBuiltinEvidence(ctx, tx, evidence) })
 	}
 	seed(shipped)
 	p.now = p.now.Add(time.Hour)
 	seed(shipped)
 	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE source = 'builtin' AND level = 'tested'
-		AND result_ref = 'sha256:aa' AND checked_at_ms = 5`); n != 1 {
-		t.Fatalf("shipped rows with the run's own time: %d, want 1 after a restart", n)
+		AND result_ref = 'sha256:aa' AND checked_at_ms = 5`); n != 2 {
+		t.Fatalf("shipped rows with the run's own time: %d, want both after a restart", n)
 	}
 
 	// An owner import cannot claim to be shipped, even with the same
@@ -339,6 +344,9 @@ func TestPublishShippedProfilesAreSeededAndOwnerRowsKept(t *testing.T) {
 		t.Fatalf("a restart outranked newer owner evidence: %d", n)
 	}
 	seed(nil)
+	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE source = 'builtin'`); n != 0 {
+		t.Fatalf("seeding an empty list left %d built-in rows", n)
+	}
 	if n := p.count(`SELECT COUNT(*) FROM capability_evidence WHERE vendor_version IN ('1', '2') AND result_ref = 'builtin'`); n != 2 {
 		t.Fatalf("seeding removed owner rows that used the builtin reference: %d left, want 2", n)
 	}

@@ -60,7 +60,8 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 // launch, or nil.
 func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int64, l JoinLaunch, now time.Time) (*JoinLaunch, error) {
 	if s.LaunchProcess == nil || s.LaunchAlive == nil || !validProfile(l.Profile) || !validRef(l.Ref) ||
-		l.AtMS > ms(now)+futureSlackMS || l.AtMS < ms(now)-joinLaunchAgeMS {
+		l.AtMS > ms(now)+futureSlackMS || l.AtMS < ms(now)-joinLaunchAgeMS ||
+		l.PIDNamespace != "" && (s.LaunchPIDNamespace == nil || l.PIDNamespace != s.LaunchPIDNamespace()) {
 		return nil, nil
 	}
 	own, ok := s.LaunchProcess(l.Ref)
@@ -98,13 +99,13 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil || occupied {
 		return nil, err
 	}
-	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.AtMS); err != nil {
+	if err := registerLaunch(ctx, tx, principal, l.Profile, l.Ref, true, l.PIDNamespace, l.AtMS); err != nil {
 		return nil, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, l.Ref, l.AtMS, now); err != nil {
 		return nil, err
 	}
-	return &l, refreshMemberAdapterCapabilities(ctx, tx, principal, l.Profile.Adapter)
+	return &JoinLaunch{Ref: l.Ref, AtMS: l.AtMS, Profile: l.Profile}, refreshMemberAdapterCapabilities(ctx, tx, principal, l.Profile.Adapter)
 }
 
 // joinLaunchAgeMS bounds how old a join's launch time may be when the

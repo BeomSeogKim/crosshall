@@ -109,7 +109,7 @@ func refreshAdapterCapabilities(ctx context.Context, tx store.Tx, adapter string
 		UNION ALL
 		SELECT id FROM principal WHERE ?2 IS NULL AND kind = 'session' AND vendor = ?1
 	), live_profile AS (
-		SELECT l.principal_id,
+		SELECT l.principal_id, l.profile,
 			json_extract(l.profile, '$.vendor_version') AS version,
 			json_extract(l.profile, '$.platform') AS platform,
 			json_extract(l.profile, '$.mode') AS mode,
@@ -125,17 +125,26 @@ func refreshAdapterCapabilities(ctx context.Context, tx store.Tx, adapter string
 		VALUES ('enroll'), ('observe'), ('boundary'), ('wake')
 	), live_evidence AS (
 		SELECT p.principal_id, n.cap, p.version, p.platform, p.mode,
-			CASE WHEN n.cap = 'wake' THEN 'unavailable' ELSE COALESCE(e.level, 'candidate') END AS level,
-			COALESCE(e.checked_at_ms, p.started_at_ms) AS checked_at_ms
+			e.level AS exact_level, e.checked_at_ms AS exact_checked_at_ms, p.started_at_ms,
+			`+store.CapabilityCovered("?1", "p.profile", "n.cap")+` AS covered,
+			(SELECT MAX(shared.checked_at_ms) FROM capability_evidence shared WHERE shared.vendor = ?1
+				AND shared.platform = p.platform AND shared.mode = p.mode AND shared.manifest_rev = p.manifest_rev
+				AND shared.cap = n.cap AND shared.level = 'tested') AS shared_checked_at_ms
 		FROM live_profile p CROSS JOIN capability_names n
 		LEFT JOIN capability_evidence e ON e.vendor = ?1 AND e.vendor_version = p.version
 			AND e.platform = p.platform AND e.mode = p.mode AND e.manifest_rev = p.manifest_rev AND e.cap = n.cap
+	), projected AS (
+		SELECT principal_id, cap, version, platform, mode, covered,
+			CASE WHEN cap = 'wake' THEN 'unavailable' WHEN exact_level IS NOT NULL THEN exact_level
+				WHEN covered THEN 'tested' ELSE 'candidate' END AS level,
+			COALESCE(exact_checked_at_ms, CASE WHEN covered THEN shared_checked_at_ms END, started_at_ms) AS checked_at_ms
+		FROM live_evidence
 	)
 	INSERT INTO capability (principal_id, cap, level, available, vendor_version, platform, mode, checked_at_ms)
-	SELECT principal_id, cap, level, level <> 'unavailable' AND
+	SELECT principal_id, cap, level, level <> 'unavailable' AND (level <> 'tested' OR covered) AND
 		COALESCE((SELECT enabled FROM adapter_policy WHERE adapter = ?1), 0),
 		version, platform, mode, checked_at_ms
-	FROM live_evidence
+	FROM projected
 	UNION ALL
 	SELECT c.principal_id, c.cap, CASE WHEN c.cap = 'wake' THEN 'unavailable' ELSE c.level END, 0,
 		c.vendor_version, c.platform, c.mode, c.checked_at_ms

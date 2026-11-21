@@ -144,7 +144,14 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return OK(out)
 	}
 	if caller.PrincipalID == nil {
-		return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
+		cleared, err := s.takeOverCleared(ctx, tx, req, cmd, now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if cleared == 0 {
+			return s.hookAutoJoin(ctx, tx, req, cmd, 0, nil, now)
+		}
+		caller.PrincipalID = &cleared
 	}
 	principal := *caller.PrincipalID
 	b, found, err := bindingOf(ctx, tx, principal)

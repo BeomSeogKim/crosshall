@@ -145,9 +145,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
+	pid := e.LaunchRef
 	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
 	if err != nil {
 		return "refused"
+	}
+	if spec.Enroll && e.LaunchVerified {
+		markLaunch(rv, pid)
 	}
 	notice := spec.Enroll || spec.Notice
 	// The continuation needs a concrete profile. Unknown builds still
@@ -337,7 +341,9 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		repo = enrolTarget(ctx, rv, e)
 	}
 	if newSession && spec.Enroll {
-		if repo.none() {
+		// A /clear in a process that ran a member may continue that member
+		// wherever it joined.
+		if repo.none() && (e.Source != "clear" || e.LaunchRef == "" || !launchMarked(rv, e.LaunchRef)) {
 			return nil, "", enrolment{}, "unmatched"
 		}
 		if hookExpired(ctx) {

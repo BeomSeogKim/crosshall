@@ -295,3 +295,28 @@ func (c *hookCounter) append(outcome string, entry time.Time) {
 		_, _ = io.WriteString(c.file, record)
 	}
 }
+
+// launchMarks names, by PID, the processes in which a member's session
+// started, so that a /clear start of a new session there is asked about.
+const launchMarks = "launches"
+
+func markLaunch(rv *os.Root, pid string) {
+	dir, err := spool.OpenServerChild(rv, launchMarks, true)
+	if err != nil {
+		return
+	}
+	defer dir.Close()
+	if f, err := spool.OpenServerFile(dir, pid, os.O_WRONLY|os.O_CREATE); err == nil {
+		_ = f.Close()
+	}
+}
+
+func launchMarked(rv *os.Root, pid string) bool {
+	dir, err := spool.OpenServerChild(rv, launchMarks, false)
+	if err != nil {
+		return false
+	}
+	defer dir.Close()
+	_, err = dir.Lstat(pid)
+	return err == nil
+}

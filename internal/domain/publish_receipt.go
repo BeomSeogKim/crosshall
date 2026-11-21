@@ -60,6 +60,7 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
 				AND o.hook_at_ms BETWEEN t.finishing_hook_at_ms AND ?4
 				AND (o.kind <> 'turn_finishing' OR o.turn_ref IS NOT t.turn_ref OR o.hook_at_ms <> t.finishing_hook_at_ms)
+				AND NOT `+duplicatePrompt+`
 		)) THEN 'own_turn'
 		-- A last turn with no Stop, and nothing observed since it opened but
 		-- its own facts, ended by the time a prompt with another id arrives:
@@ -70,6 +71,7 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 		WHEN EXISTS (SELECT 1 FROM last_turn t WHERE t.finishing_hook_at_ms IS NULL AND NOT EXISTS (
 			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
 				AND o.hook_at_ms BETWEEN t.opened_hook_at_ms AND ?4 AND o.turn_ref IS NOT t.turn_ref
+				AND NOT `+duplicatePrompt+`
 		)) THEN 'own_turn'
 		WHEN NOT EXISTS (SELECT 1 FROM previous) AND NOT EXISTS (SELECT 1 FROM turn t
 			WHERE t.principal_id = ?1 AND t.launch_ref = ?2 AND t.opened_hook_at_ms <= ?4
@@ -97,6 +99,12 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	}
 	return true, nil
 }
+
+// duplicatePrompt holds for a recorded prompt o that opened no turn: one
+// repeating a prompt already handled (#174). It is no activity of the
+// session's.
+const duplicatePrompt = `(o.kind = 'prompt_submitted' AND NOT EXISTS (SELECT 1 FROM turn r
+	WHERE r.principal_id = o.principal_id AND r.launch_ref = o.launch_ref AND r.opened_hook_at_ms = o.hook_at_ms))`
 
 func rejectPublishReceipt(ctx context.Context, tx store.Tx, binding, principal int64, reason string, now time.Time) error {
 	return audit(ctx, tx, "publish_receipt_rejected", "binding:"+strconv.FormatInt(binding, 10), principal,

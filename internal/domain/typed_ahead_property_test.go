@@ -19,7 +19,7 @@ func launchShape(r *rand.Rand) []HookEvent {
 	at := orderBase
 	var events []HookEvent
 	next := 0
-	id := func() string { next++; return fmt.Sprintf("turn-%d", next) }
+	id := func() string { next++; return fmt.Sprintf("shape-%d", next) } // apart from the fixture's turn-1
 	prompt := func(ref string) { at++; events = append(events, typedPrompt(ref, at)) }
 	stopOf := func(ref string) { at++; events = append(events, stop("launch", ref, at)) }
 	if r.IntN(4) == 0 {
@@ -60,7 +60,8 @@ type turnState struct {
 }
 
 // deliverShape delivers events in order, asking the session before every
-// Stop, and returns which Stops ran the check on their ask, the final turns,
+// Stop and reading it after, and returns which Stops ran the check on
+// their ask, the final turns,
 // and which Stops arrived exactly after the events before them in hook
 // order.
 func deliverShape(t *testing.T, order []HookEvent) (claims map[string]bool, turns []turnState, settled map[string]bool) {
@@ -77,6 +78,9 @@ func deliverShape(t *testing.T, order []HookEvent) (claims map[string]bool, turn
 			settled[e.EventRef] = before && i == int(e.HookAtMS-orderBase-1)
 			ask := f.turnEndAsk(writer, "reader", e.EventRef)
 			claims[e.EventRef] = turnEndFor(t, f.hook(reader, e), ask)
+			// Each Stop is judged on its own ask: a backlog of unclaimed asks
+			// would push it past the notice's ID cap.
+			wantOK(t, f.run(reader, Read{IDs: []int64{ask}}, "read-"+e.EventRef))
 		} else {
 			f.hook(reader, e)
 		}

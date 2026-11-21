@@ -211,3 +211,27 @@ func TestADuplicateAfterTheLatestTurnEndedIsAReplay(t *testing.T) {
 		t.Fatalf("the duplicate opened %d turns", n-turns)
 	}
 }
+
+// #174: a Stop recorded in the same millisecond as its turn's first prompt
+// comes after that prompt, whichever arrives first: the prompt binds the
+// chain's placeholder and opens the next one, which the next Stop takes.
+func TestAStopInItsPromptsMillisecondFollowsIt(t *testing.T) {
+	for _, stopFirst := range []bool{false, true} {
+		f, reader, writer := turnEndFixture(t, "launch")
+		wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+		f.hook(reader, typedPrompt("turn-z", orderBase+1))
+		f.hook(reader, typedPrompt("turn-z", orderBase+2))
+		f.hook(reader, stop("launch", "turn-z", orderBase+3))
+		same := []HookEvent{typedPrompt("turn-a", orderBase+5), stop("launch", "turn-a", orderBase+5)}
+		if stopFirst {
+			same[0], same[1] = same[1], same[0]
+		}
+		for _, e := range same {
+			f.hook(reader, e)
+		}
+		ask := f.turnEndAsk(writer, "reader", "during c")
+		if r := f.hook(reader, stop("launch", "turn-c", orderBase+6)); !turnEndFor(t, r, ask) {
+			t.Fatalf("stop delivered first %v: Stop C %q, want the check to run", stopFirst, r.TurnEndLine)
+		}
+	}
+}

@@ -444,6 +444,15 @@ type ledgerTrailer struct {
 	JoinHint string `json:"join_hint"`
 }
 
+// PrintFirstRules prints the member rules a first command carries and the
+// roster changes that come with them, for a command rendered elsewhere.
+func PrintFirstRules(w io.Writer, data []byte) {
+	var trailer ledgerTrailer
+	_ = json.Unmarshal(data, &trailer)
+	trailer.OwedCount = nil
+	printLedgerTrailer(w, domain.Who{}, trailer, true)
+}
+
 func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, success bool) {
 	if _, isJoin := cmd.(domain.Join); !isJoin {
 		if trailer.JoinHint != "" {

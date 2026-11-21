@@ -85,6 +85,25 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 				t.Fatalf("submit hook added a start line after the rules: %q", got)
 			}
 		})
+		// One command gave the rules: the leaf says so before the store does,
+		// and the next prompt must not add the start line.
+		for _, first := range []string{"inbox", "whoami"} {
+			t.Run(adapter.name+" one "+first+", then a prompt", func(t *testing.T) {
+				f, repo, member := blocked(t)
+				if out := member.mustPlain(first); !strings.Contains(out, rules) {
+					t.Fatalf("the first %s carried no rules: %q", first, out)
+				}
+				if got := f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt("after-one-command")); got != "" {
+					t.Fatalf("submit hook added a start line after the rules: %q", got)
+				}
+				if command, hook := hookJoinAcknowledgements(t, f.db(), adapter.name); !command || hook {
+					t.Fatalf("the prompt should record the rules the command printed: command %t, hook %t", command, hook)
+				}
+				if out := member.mustPlain("inbox"); strings.Contains(out, rules) {
+					t.Fatalf("the rules were printed again: %q", out)
+				}
+			})
+		}
 	}
 }
 

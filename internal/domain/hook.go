@@ -225,7 +225,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		return core.Result{}, err
 	}
 	if cmd.Source == "clear" || cmd.Source == "compact" {
-		if out.Cue, err = resetCue(ctx, tx, principal, b, cmd.Source, out.PendingLine); err != nil {
+		// A start line due at the same start already says who the session
+		// is and where the rules are.
+		if out.Cue, err = resetCue(ctx, tx, principal, b, cmd.Source, out.PendingLine, out.JoinHintAck != nil); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -235,9 +237,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 // resetCue is what a session gets back after its context was reset. Nothing
 // already offered is listed again: a cleared session is told who it is and
 // where the rules are, and work that this start does not offer is one count.
-func resetCue(ctx context.Context, tx store.Tx, principal int64, b hookBinding, source, offered string) (string, error) {
+func resetCue(ctx context.Context, tx store.Tx, principal int64, b hookBinding, source, offered string, named bool) (string, error) {
 	var lines []string
-	if source == "clear" {
+	if source == "clear" && !named {
 		lines = append(lines, ResetHint(b.alias, b.channelName))
 	}
 	if !b.dnd {

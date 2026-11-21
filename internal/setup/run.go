@@ -47,7 +47,14 @@ type plan struct {
 	Files     []PlanFile      `json:"files"`
 	Approvals []ApprovalOffer `json:"approvals,omitempty"`
 	Retained  []retainedFile  `json:"retained,omitempty"`
+	// quietJoin leaves autoJoinNote to a caller that prints several plans.
+	quietJoin bool
 }
+
+// autoJoinNote states, once per consent, what installing changes for the
+// whole hall, whichever agents are listed.
+const autoJoinNote = "Installing turns on automatic joining for this hall, unless you already set it: a session of any agent " +
+	"with crosshall hooks then joins its repository's channel when it starts. `crosshall owner channel auto off` turns it off."
 
 type PlanFile struct {
 	Adapter    string                 `json:"adapter"`
@@ -504,10 +511,12 @@ func printPlan(out io.Writer, p plan) error {
 	if p.Kind == "setup" {
 		for _, adapter := range p.Adapters {
 			fmt.Fprintf(&contents, "Enable %s adapter policy after installation.\n", adapter)
-			fmt.Fprintln(&contents, "  Its sessions then join their repository's channel when they start, unless you turned that off (`crosshall owner channel auto off`).")
 			if adapter == "codex" {
 				fmt.Fprintln(&contents, "Review and trust these hooks with Codex /hooks.")
 			}
+		}
+		if len(p.Adapters) > 0 && !p.quietJoin {
+			fmt.Fprintln(&contents, autoJoinNote)
 		}
 	} else {
 		for _, adapter := range p.Adapters {

@@ -245,6 +245,30 @@ func TestHookStartLineIsDroppedOnceACommandGaveTheRules(t *testing.T) {
 	}
 }
 
+// A /clear that comes while the start line is still due gets that line, which
+// already says who the session is and where the rules are: the reset cue adds
+// only what is pending.
+func TestAClearWithItsStartLineDueIsToldWhoItIsOnce(t *testing.T) {
+	f, writer := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	owed := decode[AskResult](t, f.ask(writer, Ask{To: []string{"claude1"}, Body: "owed"}, "k1")).ID
+	f.pickUp(s, owed)
+	got := f.hook(s, start("pid-1", "clear", t0+1000))
+	if got.JoinHintAck == nil || !strings.HasPrefix(got.Hint, "[crosshall] Joined #checkout as @claude1, with @") {
+		t.Fatalf("a clear with the start line due: %+v", got)
+	}
+	if got.Cue != StatusLine(0, 1) {
+		t.Fatalf("cue %q, want only what is pending", got.Cue)
+	}
+	f.ackHookJoin(s, got.JoinHintAck.RosterSeq)
+	again := f.hook(s, start("pid-1", "clear", t0+2000))
+	if again.Hint != "" || again.Cue != ResetHint("claude1", "checkout")+"\n"+StatusLine(0, 1) {
+		t.Fatalf("a clear after the start line arrived: %+v", again)
+	}
+}
+
 // A member that is alone at its start is told nothing. Its start line waits
 // until the channel has someone else, and a peer's arrival marks it so that
 // its next prompt asks.

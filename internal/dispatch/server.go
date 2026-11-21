@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -609,11 +611,23 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack)
+		// A hook's own output acknowledges no roster, but what the CLI
+		// rendered before it counts: the leaf's record says whether a
+		// command already gave the session its rules.
+		ack := req.Ack
+		if isHook {
+			ack = leafRosterAck(arrival)
+		}
+		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, ack)
+		if isHook && errors.Is(err, sql.ErrNoRows) {
+			err = nil // the caller's binding is not live: nothing to acknowledge
+		}
 		if err != nil {
 			return err
 		}
-		req.Ack = boundedAck
+		if !isHook {
+			req.Ack = boundedAck
+		}
 		request, err := s.cfg.Decode(req, resolved)
 		if err != nil {
 			result = commandError(core.ExitUsage, "", "invalid command arguments")
@@ -700,6 +714,20 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		s.withdrawReady()
 	}
 	return result, nil
+}
+
+// leafRosterAck reads the roster cursor the CLI recorded in the member's
+// directory after it rendered a reply.
+func leafRosterAck(arrival Arrival) uint64 {
+	if arrival.Owner || arrival.Dir == nil {
+		return 0
+	}
+	data, err := ident.ReadPrivateFile(arrival.Dir, "ack", 32)
+	if err != nil {
+		return 0
+	}
+	cursor, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	return cursor
 }
 
 // Apply the acknowledgement before the handler reads the roster. The undo

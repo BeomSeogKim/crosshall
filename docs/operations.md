@@ -24,7 +24,7 @@ The state directory is `CROSSHALL_STATE_DIR` when set, else `$XDG_STATE_HOME/cro
 - `dispatcher.log` records dispatcher and hook startup activity. `dispatcher.lock` protects the hall from concurrent dispatchers, and `owner/` holds the owner's spool.
 - `install.lock` serializes setup. `install-journal.json` records hook edits for setup recovery and uninstall. `setup-offers.json` records installer setup choices.
 - `hook-policy` lets the hooks read adapter policy after a reboot. `hook-start-failed` marks the 30-second pause after a failed dispatcher start.
-- `hook-start-repos/` holds private startup records keyed by session digest. A record stores the repository digest or marks a start outside Git. A start hook can leave a record while the hall is stopped or the adapter is off. The record allows later enrollment when the hall is running, and is removed when the session joins or ends.
+- `hook-start-repos/` holds private startup records keyed by session digest. A record stores the repository digest or marks a start outside Git. A start hook can leave a record while the hall is stopped or the adapter is off. The record allows later enrollment when the hall is running, and is removed when the session joins or ends. Antigravity has no end event, so a conversation that never joins keeps its record.
 
 Member spools live in a private rendezvous directory under `/tmp`. Optional hooks live in your agent settings.
 

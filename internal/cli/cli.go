@@ -65,6 +65,8 @@ Owner commands (from a separate owner terminal):
   owner depart <binding-id> --seen <token>           Mark a binding departed
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
   owner channel default <channel> [--repo <dir>]     Set a repository's default channel
+  owner channel auto on|off                         Give each Git repository its own channel
+                                                    at a session's start, or stop doing so
   owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
@@ -299,7 +301,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 		}
 		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
 	case args[0] == "who" || args[0] == "log" || args[0] == "doctor" ||
-		(len(args) >= 2 && args[0] == "channel" && args[1] == "default"):
+		(len(args) >= 2 && args[0] == "channel" && (args[1] == "default" || args[1] == "auto")):
 		return runOwnerViews(ctx, env, opts, args, stdout, stderr)
 	case len(args) >= 2 && args[0] == "adapter" && args[1] == "evidence": // adapter-claude
 		return runAdapterEvidence(ctx, env, opts, args, stdout, stderr)
@@ -432,7 +434,7 @@ func parseJoin(args []string) (domain.Join, error) {
 		}
 	}
 	if cmd.Channel == "" {
-		root, err := RepoRoot("")
+		root, err := RepoDefaultRoot("")
 		if err != nil {
 			return cmd, fmt.Errorf("%w; or specify a channel with crosshall join <channel>", err)
 		}

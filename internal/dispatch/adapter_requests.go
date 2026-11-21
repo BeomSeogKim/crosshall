@@ -22,6 +22,14 @@ func hookEnrolled(req wire.Request, caller core.Caller, result core.Result) bool
 	return json.Unmarshal(result.Data, &output) == nil && (output.Enrollment == "joined" || output.Enrollment == "restored")
 }
 
+func hookCreatedChannel(req wire.Request, result core.Result) bool {
+	if req.Verb != wire.VerbHookEnroll && req.Verb != wire.VerbHookEvent {
+		return false
+	}
+	var output wire.HookResult
+	return json.Unmarshal(result.Data, &output) == nil && output.ChannelCreated
+}
+
 func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, r Resolution) (*domain.AdapterContext, core.Result, error) {
 	var adapter, launch, event string
 	var epoch uint64

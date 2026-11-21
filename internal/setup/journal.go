@@ -16,7 +16,11 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
-const journalName = "install-journal.json"
+const (
+	journalName                = "install-journal.json"
+	legacyJournalVersion       = 1
+	commandRulesJournalVersion = 2
+)
 
 type journal struct {
 	Version   int                  `json:"v"`
@@ -157,7 +161,15 @@ func readJournal(stateRoot string) (journal, string, error) {
 }
 
 func emptyJournal() journal {
-	return journal{Version: 1, Files: make(map[string]ownedFile), RuleFiles: make(map[string]ownedFile), Builds: make(map[string]build)}
+	return journal{Version: legacyJournalVersion, Files: make(map[string]ownedFile), RuleFiles: make(map[string]ownedFile), Builds: make(map[string]build)}
+}
+
+func (j journal) formatVersion() int {
+	// A pending edit can publish rules before their ownership is recorded.
+	if len(j.RuleFiles) != 0 || j.Pending != nil && slices.ContainsFunc(j.Pending.Edits, func(e edit) bool { return e.Rules }) {
+		return commandRulesJournalVersion
+	}
+	return legacyJournalVersion
 }
 
 func readJournalAt(state *os.Root) (journal, string, error) {
@@ -178,13 +190,15 @@ func readJournalAt(state *os.Root) (journal, string, error) {
 	// Require an explicit supported version; maps default to initialized.
 	j.Version = 0
 	if len(data) > maxJournal || json.Unmarshal(data, &j) != nil ||
-		j.Version != 1 || j.Files == nil || j.RuleFiles == nil || j.Builds == nil {
+		(j.Version != legacyJournalVersion && j.Version != commandRulesJournalVersion) ||
+		j.Files == nil || j.RuleFiles == nil || j.Builds == nil {
 		return j, "", errors.New("invalid install journal")
 	}
 	return j, sum(data), nil
 }
 
 func writeJournal(state *os.Root, j journal) error {
+	j.Version = j.formatVersion()
 	data, err := json.Marshal(j)
 	if err != nil {
 		return err

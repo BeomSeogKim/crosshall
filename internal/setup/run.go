@@ -317,7 +317,8 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 			}
 		}
 	}
-	if j.Pending == nil {
+	prepared := j.Pending != nil
+	if !prepared {
 		for _, e := range op.Edits {
 			current, err := readConfig(e.Path)
 			if err != nil {
@@ -327,10 +328,12 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 				return errors.New("configuration changed after planning; rerun to review the new plan")
 			}
 		}
-		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) {
+		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) && j.Version == j.formatVersion() {
 			return s.setPolicies(ctx, op.Adapters, true)
 		}
 		j.Pending = &op
+	}
+	if !prepared || j.Version != j.formatVersion() {
 		if err := writeJournal(state, j); err != nil {
 			return err
 		}

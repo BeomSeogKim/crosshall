@@ -100,7 +100,7 @@ What the owner controls:
 | `crosshall owner publish member <binding-id> on\|off\|default` | Notices for one member; this switch beats the adapter's, which beats the hall's |
 | `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension and any stop of its current build |
 
-`crosshall owner who --all` and `crosshall owner doctor` show each member's reason. Doctor also shows the publish status of each live build and the day's notice outcomes per adapter.
+`crosshall owner who --all` and `crosshall owner doctor` show each member's reason. Doctor also shows the publish status of each live build and the day's notice outcomes per adapter. For a build inheriting evidence with fewer than three confirmations, doctor counts notices that entered submission and remain held without a receipt.
 
 The hall stops by itself, toward pull, in these cases:
 

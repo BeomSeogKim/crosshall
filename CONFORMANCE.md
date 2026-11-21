@@ -59,9 +59,21 @@ The hook reads the session's build and mode from the environment Claude Code giv
 | Session | `AI_AGENT` | `CLAUDE_CODE_ENTRYPOINT` | Profile |
 | --- | --- | --- | --- |
 | `claude -p` (2.1.327) | `claude-code_2-1-327_harness` | `sdk-cli` | `2.1.327`, `print` |
-| interactive (2.1.329, macOS) | `claude-code_2-1-329_agent` | `cli` | `2.1.329`, `interactive` |
+| interactive, a person's session (2.1.329, macOS) | `claude-code_2-1-329_agent` | `cli` | `2.1.329`, `interactive` |
+| interactive, the conformance run's scratch home (2.1.330, macOS) | `claude-code_2-1-330_harness` | `cli` | `2.1.330`, `interactive` |
 
-`claude-1` accepted only the first row, so an interactive session was unverified. The profile carries no permission mode: tested evidence for an interactive build covers its permission modes except bypass, whose sessions never receive notices.
+The last part of `AI_AGENT` is not the mode: both forms were seen in interactive sessions. The build comes from `AI_AGENT` and the mode from `CLAUDE_CODE_ENTRYPOINT` alone. `claude-1` accepted only the first row, so an interactive session was unverified. The profile carries no permission mode: tested evidence for an interactive build covers its permission modes except bypass, whose sessions never receive notices.
+
+### The interactive run
+
+`go test -tags conformance -run '^TestClaudeCodeInteractive' -v ./test/conformance/` drives a real interactive session on a pseudo-terminal, in temporary homes against the local stand-in for the model, with the adapter installed. Its scratch configuration marks the first-run steps done, so the session starts without a dialog; the run sets neither the build nor the mode. On Claude Code 2.1.330 (macOS arm64) it observed:
+
+- `SessionStart` with `startup`, `resume`, `compact` and `clear`; `UserPromptSubmit` and `Stop` for every turn; `Notification` with `permission_prompt` when an approval dialog opens, and the approved turn goes on to its `Stop`.
+- `/compact` keeps the session ID. `/clear` ends the session (`SessionEnd`, reason `clear`) and starts one with a new ID in the same process. `/exit` ends it with reason `prompt_input_exit`, the member departs, and resuming the session restores it.
+- A prompt typed at an idle prompt opens a turn of its own: its `UserPromptSubmit` and its `Stop` carry one prompt ID that no other turn has.
+- A prompt typed ahead, while the turn before it is still running, is reported with that earlier turn's prompt ID, before the earlier turn's `Stop`; its own turn then ends with a `Stop` whose ID no prompt carried. The adapter takes the prompt ID as the turn, so such a turn gets no prompt line and no turn-end check.
+- A notice the hall publishes while a turn is with the model does not take that shape: it runs after the turn's `Stop` as a turn of its own, with its own prompt ID.
+- With tested evidence for the build, a request stored during a turn continues that turn once with the pending line, as in print mode.
 
 ## Publish profiles
 

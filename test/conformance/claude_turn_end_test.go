@@ -31,16 +31,16 @@ func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 	c.install()
 	version := c.version()
 	if tested {
-		c.importTurnEnd(version, "tested", "loopback run before the check: bootstraps the exact profile it measures")
+		c.importTurnEnd(version, "print", "tested", "loopback run before the check: bootstraps the exact profile it measures")
 	}
 	return c, version
 }
 
-// importTurnEnd records one turn_end result for this build in print mode.
-func (c *conformance) importTurnEnd(version, level, check string) string {
+// importTurnEnd records one turn_end result for this build and mode.
+func (c *conformance) importTurnEnd(version, mode, level, check string) string {
 	c.t.Helper()
 	evidence, _ := json.MarshalIndent(map[string]any{"vendor": "claude", "vendor_version": version,
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-2",
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": mode, "manifest_rev": "claude-2",
 		"run_at_ms": time.Now().UnixMilli(), "results": []evidenceResult{{"turn_end", level, check}}}, "", "  ")
 	file := filepath.Join(c.root, fmt.Sprintf("turn-end-%d.json", time.Now().UnixNano()))
 	if err := os.WriteFile(file, append(evidence, '\n'), 0600); err != nil {

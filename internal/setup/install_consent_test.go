@@ -63,7 +63,7 @@ func TestInstallerDisclosesPossibleCostsWhenTheClaudeVersionProbeFails(t *testin
 				}
 			}
 			out, err := realRun(t, s, f, Request{Offer: true, Terminal: true}, "\n")
-			turnEnd := "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off"
+			turnEnd := "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off"
 			if err != nil || !strings.Contains(out, tc.notice+"\n"+turnEnd+"\nA no skips future installer offers") ||
 				strings.Contains(out, "not available for these builds") {
 				t.Fatalf("offer: %v\n%s", err, out)
@@ -75,7 +75,7 @@ func TestInstallerDisclosesPossibleCostsWhenTheClaudeVersionProbeFails(t *testin
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 	const noticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
 	const probation = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
-	const turnEndBody = "When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: only with the adapter, crosshall owner adapter set claude --enabled off"
+	const turnEndBody = "When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off"
 	const turnEndOn = "- Turn-end check (Claude Code, interactive sessions and print mode). " + turnEndBody
 	const unavailable = "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read."
 	for _, tc := range []struct {
@@ -106,6 +106,14 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, stopped_at_ms, stop_reason, stop_ref)
 				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-2', 'publish', 1, 'absorbed', 41)`,
 			notice: "- Notices (Claude Code, interactive sessions). Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."},
+		{name: "turn-end switch off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn,
+			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 0)`,
+			turnEnd:  "- Turn-end check (Claude Code). Off by your setting; installing does not change it. On: crosshall owner adapter set claude --turn-end on"},
+		{name: "turn-end switch on", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn,
+			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 1)`},
+		{name: "turn-end switch off, uncovered", version: "2.1.327", publishLevel: "tested", turnEndLevel: "candidate", notice: noticeOn,
+			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 0)`,
+			turnEnd:  "- Turn-end check. Not available for these builds."},
 		{name: "exact candidate", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "candidate", notice: unavailable},
 		{name: "publish unavailable", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "tested", turnEnd: turnEndOn,
 			notice: "- Notices. Not available for these builds: a session sees new work at its next prompt or its next crosshall read."},
@@ -160,7 +168,8 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			offer := tc.name != "owner adapter off" && tc.name != "owner adapter on" && tc.name != "unreadable"
+			offer := tc.name != "owner adapter off" && tc.name != "owner adapter on" && tc.name != "unreadable" &&
+				!strings.HasPrefix(tc.name, "turn-end switch")
 			out, err := realRun(t, s, f, Request{Offer: offer, Terminal: true}, "\n")
 			if err != nil {
 				t.Fatal(err)

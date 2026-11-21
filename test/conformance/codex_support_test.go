@@ -149,7 +149,7 @@ func codexCommand(t *testing.T, bin string, env []string, port string) []string 
 		if packaged {
 			profile += fmt.Sprintf("(allow file-read* (literal %q))", executable)
 		}
-		return []string{"/usr/bin/sandbox-exec", "-p", profile, executable}
+		return append([]string{"/usr/bin/sandbox-exec", "-p", profile}, vendorLaunch(t, executable)...)
 	case "linux":
 		interfaces, err := net.Interfaces()
 		if err != nil || len(interfaces) != 1 || interfaces[0].Name != "lo" || interfaces[0].Flags&net.FlagLoopback == 0 {
@@ -160,11 +160,42 @@ func codexCommand(t *testing.T, bin string, env []string, port string) []string 
 				t.Fatal("use a disposable Linux account or container with no real vendor homes mounted")
 			}
 		}
-		return []string{executable}
+		return vendorLaunch(t, executable)
 	default:
 		t.Fatal("Codex conformance requires macOS or a loopback-only Linux namespace")
 		return nil
 	}
+}
+
+// vendorLaunch is the command that starts the vendor executable. Some
+// installs ship a launcher script that finds its interpreter through env
+// ("#!/usr/bin/env node"); the scratch PATH holds system directories only,
+// so env would not find it. The interpreter is then resolved on the caller's
+// PATH and named by its real path, which keeps every other host directory
+// off the vendor's PATH.
+func vendorLaunch(t *testing.T, executable string) []string {
+	t.Helper()
+	file, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	head := make([]byte, 256)
+	n, _ := io.ReadFull(file, head)
+	line, _, _ := strings.Cut(string(head[:n]), "\n")
+	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	if !strings.HasPrefix(line, "#!") || len(fields) != 2 || fields[0] != "/usr/bin/env" {
+		return []string{executable}
+	}
+	found, err := exec.LookPath(fields[1])
+	if err != nil {
+		t.Fatalf("the vendor launcher needs %s, which is not on PATH: %v", fields[1], err)
+	}
+	interpreter, err := filepath.EvalSymlinks(found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{interpreter, executable}
 }
 
 // macOS cannot stack sandbox-exec profiles. The outer vendor-home and network
@@ -177,7 +208,7 @@ func codexToolCommand(t *testing.T, bin string, env []string, port, root string)
 		t.Fatal("tool sandbox root differs from the validated fixture home")
 	}
 	if runtime.GOOS == "darwin" {
-		if len(prefix) != 4 || prefix[0] != "/usr/bin/sandbox-exec" || prefix[1] != "-p" {
+		if len(prefix) < 4 || prefix[0] != "/usr/bin/sandbox-exec" || prefix[1] != "-p" {
 			t.Fatal("tool fixture requires the outer macOS sandbox")
 		}
 		physicalTmp, err := filepath.EvalSymlinks("/tmp")

@@ -304,7 +304,7 @@ func TestOnlyARulesReceiptSettlesAHookJoinedMembersRules(t *testing.T) {
 	apply := func(binding int64, cursor, rules uint64) (acked int64, given bool) {
 		t.Helper()
 		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
-			if _, _, err := acknowledgeRoster(t.Context(), tx, &binding, cursor, rules); err != nil {
+			if _, _, err := domain.AcknowledgeRoster(t.Context(), tx, &binding, cursor, rules); err != nil {
 				return err
 			}
 			return tx.QueryRowContext(t.Context(), "SELECT roster_ack_seq, hint_acked FROM binding WHERE id = ?", binding).Scan(&acked, &given)

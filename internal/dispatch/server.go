@@ -3,7 +3,6 @@ package dispatch
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,6 +45,9 @@ type Resolution struct {
 	SessionKey string
 	Enroll     func(context.Context, store.Tx, int64) error
 	Refusal    *core.Result
+	// AfterCommit, when set, runs once the request's transaction committed.
+	// It returns the member directory's new generation when it published one.
+	AfterCommit func() (string, error)
 }
 
 // Services connects the dispatcher to identity and domain handlers.
@@ -213,9 +215,10 @@ func openRendezvous(path string) (*os.Root, error) {
 }
 
 type memberLeaf struct {
-	digest   string
-	identity string
-	fenced   bool
+	digest     string
+	identity   string
+	generation string
+	fenced     bool
 }
 
 // Only startup runs this, while holding the dispatcher lock and before
@@ -436,6 +439,11 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 	}
 	if leaf.fenced {
 		s.logFailure(hook.RetireJoinHintFiles(dir))
+	} else if err := ident.RepublishGeneration(dir, leaf.generation); !errors.Is(err, ident.ErrDirectoryBusy) {
+		// A generation committed but not yet published (a renderer held the
+		// directory, or the dispatcher restarted in between) is published
+		// by the next pass.
+		s.logFailure(err)
 	}
 	watched.add(filepath.Join(path, "in"))
 	if reap {
@@ -451,14 +459,14 @@ func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		// A client may still have its old leaf after a key rotation. Drain
 		// that directory so the resolver can return the retirement refusal.
-		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, state = 'fenced' FROM leaf ORDER BY digest")
+		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, generation, state = 'fenced' FROM leaf ORDER BY digest")
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var leaf memberLeaf
-			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.fenced); err != nil {
+			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.generation, &leaf.fenced); err != nil {
 				return err
 			}
 			leaves = append(leaves, leaf)
@@ -564,11 +572,13 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var result core.Result
 	var enrolledSession ident.Identity
 	var channelCreated bool
+	var afterCommit func() (string, error)
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
 			return err
 		}
+		afterCommit = resolved.AfterCommit
 		if resolved.Refusal != nil {
 			result = *resolved.Refusal
 			return errRefusalRollback
@@ -611,7 +621,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		boundedAck, undoAck, err := acknowledgeRoster(ctx, tx, resolved.Caller.BindingID, req.Ack, leafRulesReceipt(arrival))
+		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)
+		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID,
+			max(req.Ack, pendingAck), max(leafRulesReceipt(arrival), pendingRules))
 		if err != nil {
 			return err
 		}
@@ -680,6 +692,14 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		}
 		return commandError(core.ExitError, "", "command failed; see dispatcher.log"), nil
 	}
+	if afterCommit != nil {
+		generation, err := afterCommit()
+		s.logFailure(err)
+		// The reply is acknowledged under the directory's new generation.
+		if generation != "" && err == nil && result.Status == core.ExitOK {
+			result.Data = withGeneration(result.Data, generation)
+		}
+	}
 	if enrolledSession.Key != "" {
 		s.logFailure(hook.RemoveStartupRepo(s.state, enrolledSession))
 	}
@@ -704,6 +724,15 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	return result, nil
 }
 
+// leafPendingReceipt reads the receipts a renderer left pending for the
+// request's generation, which the resolver checked is the published one.
+func leafPendingReceipt(arrival Arrival, generation string) (cursor, rules uint64) {
+	if arrival.Owner || arrival.Dir == nil {
+		return 0, 0
+	}
+	return ident.PendingReceipt(arrival.Dir, generation)
+}
+
 // leafRulesReceipt reads the roster cursor of the reply with which the CLI
 // printed the member rules, as it recorded it in the member's directory. A
 // hook's own output acknowledges nothing, but its request finds this record
@@ -718,46 +747,6 @@ func leafRulesReceipt(arrival Arrival) uint64 {
 	}
 	cursor, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	return cursor
-}
-
-// Apply the acknowledgement before the handler reads the roster. The undo
-// restores just these fields on an enrolled refusal, leaving its audit intact.
-// A member a hook joined owes its rules until the CLI recorded printing them
-// (rules): a roster cursor alone, which an older version also wrote after a
-// reply without rules, settles them only for a member that joined by hand.
-func acknowledgeRoster(ctx context.Context, tx store.Tx, bindingID *int64, cursor, rules uint64) (uint64, func() error, error) {
-	if bindingID == nil || (cursor == 0 && rules == 0) {
-		return 0, nil, nil
-	}
-	var previous, latest int64
-	var hinted, hooked bool
-	err := tx.QueryRowContext(ctx, `SELECT roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL,
-		(SELECT COALESCE(max(seq), 0) FROM roster_change WHERE channel_id = binding.channel_id)
-		FROM binding WHERE id = ? AND state = 'live'`, *bindingID).Scan(&previous, &hinted, &hooked, &latest)
-	if errors.Is(err, sql.ErrNoRows) && cursor == 0 {
-		return 0, nil, nil // only a receipt, and the binding it was for is not live
-	}
-	if err != nil {
-		return 0, nil, err
-	}
-	bounded := min(cursor, uint64(max(latest, 0)))
-	seen := bounded
-	if hooked {
-		seen = min(rules, uint64(max(latest, 0)))
-	}
-	acked, given := max(previous, int64(bounded), int64(seen)), hinted || seen > 0
-	if acked == previous && given == hinted {
-		return bounded, nil, nil
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = ? WHERE id = ?",
-		acked, given, *bindingID); err != nil {
-		return 0, nil, err
-	}
-	return bounded, func() error {
-		_, err := tx.ExecContext(ctx, "UPDATE binding SET roster_ack_seq = ?, hint_acked = ? WHERE id = ?",
-			previous, hinted, *bindingID)
-		return err
-	}, nil
 }
 
 func unknownOutcome(message, key string) core.Result {
@@ -775,4 +764,19 @@ func commandError(status core.ExitCode, code core.Code, message string) core.Res
 		Message string `json:"message"`
 	}{message})
 	return core.Result{Status: status, Code: code, Data: data}
+}
+
+// withGeneration adds the member directory's new generation to a reply's
+// data object, for the client to acknowledge the reply under it.
+func withGeneration(data json.RawMessage, generation string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil || fields == nil {
+		return data
+	}
+	fields["generation"], _ = json.Marshal(generation)
+	patched, err := json.Marshal(fields)
+	if err != nil {
+		return data
+	}
+	return patched
 }

@@ -28,6 +28,15 @@ type Transport struct {
 	pending     spool.Reply
 	entry       time.Time
 	startMember func(context.Context) (bool, error)
+	joinLaunch  func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch
+	bindLaunch  func(ident.Identity, domain.JoinLaunch) error
+}
+
+// EnableJoinLaunch lets a join name the agent process it runs in, and records
+// the launch the dispatcher bound where the session's hooks read it.
+func (t *Transport) EnableJoinLaunch(propose func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch,
+	bind func(ident.Identity, domain.JoinLaunch) error) {
+	t.joinLaunch, t.bindLaunch = propose, bind
 }
 
 func New(s spool.Client) *Transport {
@@ -67,6 +76,14 @@ func (t *Transport) memberCommandContext(parent context.Context) (context.Contex
 // Do returns enrollment and delivery outcomes through the command result.
 func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) {
 	t.pending = spool.Reply{}
+	var launch *domain.JoinLaunch
+	if join, ok := call.Command.(domain.Join); ok && !call.Owner && t.joinLaunch != nil {
+		if id, err := ident.ResolveEnvironment(t.lookup); err == nil {
+			launch = t.joinLaunch(id, t.lookup, time.Now())
+			join.Launch = launch
+			call.Command = join
+		}
+	}
 	req, err := request(call.Command)
 	if err != nil {
 		return core.Result{}, err
@@ -114,6 +131,14 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 			}
 		}
 		t.pending = reply
+		if launch != nil {
+			var bound domain.JoinResult
+			// A replayed join returns the launch its first call bound. Without
+			// the record the hooks keep the session's unbound launch.
+			if json.Unmarshal(result.Data, &bound) == nil && bound.Launch != nil && sameProcess(bound.Launch.Ref, launch.Ref) {
+				_ = t.bindLaunch(id, *bound.Launch)
+			}
+		}
 	}
 	return result, nil
 }
@@ -354,4 +379,12 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 	}
 	result["warnings"], _ = json.Marshal(details.Warnings)
 	return json.Marshal(result)
+}
+
+// sameProcess compares the process part of two "pid-<pid>-<digest>" launch
+// references.
+func sameProcess(a, b string) bool {
+	pa, _, okA := strings.Cut(strings.TrimPrefix(a, "pid-"), "-")
+	pb, _, okB := strings.Cut(strings.TrimPrefix(b, "pid-"), "-")
+	return okA && okB && strings.HasPrefix(a, "pid-") && pa == pb
 }

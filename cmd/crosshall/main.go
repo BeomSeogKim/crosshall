@@ -92,6 +92,9 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	if pathErr == nil {
 		transport := client.New(spool.Client{StateRoot: paths.state, Rendezvous: paths.rendezvous})
 		transport.EnableMemberStart(entry, paths.launch(false).Start)
+		transport.EnableJoinLaunch(hook.JoinLaunch, func(id ident.Identity, l domain.JoinLaunch) error {
+			return hook.BindJoinLaunch(paths.rendezvous, id, l)
+		})
 		env.Transport = transport
 		env.Doctor = paths.launch(false).Doctor
 		env.Whoami = transport.Whoami
@@ -196,14 +199,16 @@ func serve(paths statePaths, pathErr error) int {
 			Resolve: func(ctx context.Context, tx store.Tx, a dispatch.Arrival, req wire.Request) (dispatch.Resolution, error) {
 				r, err := resolver.Resolve(ctx, tx,
 					ident.Ingress{Path: a.Path, Owner: a.Owner, Dir: a.Dir},
-					ident.Proof{Generation: req.Generation, KeyDigest: req.KeyDigest, VendorVersion: req.VendorVersion})
+					ident.Proof{Generation: req.Generation, KeyDigest: req.KeyDigest, VendorVersion: req.VendorVersion,
+						Join: req.Verb == domain.VerbJoin})
 				if refusal, ok := identityRefusal(err); ok {
 					return dispatch.Resolution{Refusal: &refusal}, nil
 				}
 				if err != nil {
 					return dispatch.Resolution{}, err
 				}
-				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, SessionKey: r.Key, Enroll: r.Enroll}, nil
+				return dispatch.Resolution{Caller: r.Caller, Vendor: r.Vendor, SessionKey: r.Key, Enroll: r.Enroll,
+					AfterCommit: r.AfterCommit}, nil
 			},
 			Decode: func(req wire.Request, r dispatch.Resolution) (domain.Request, error) {
 				cmd, err := domain.Decode(req.Verb, req.Args)
@@ -213,7 +218,9 @@ func serve(paths statePaths, pathErr error) int {
 				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
-				LaunchProcess: ident.LaunchProcess},
+				LaunchProcess: ident.LaunchProcess, LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
+					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation)
+				}},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {
 				var hello wire.Hello
 				if err := json.Unmarshal(raw, &hello); err != nil {
@@ -248,8 +255,11 @@ func identityRefusal(err error) (core.Result, bool) {
 		status = core.ExitRefused
 	}
 	hint := "crosshall join <channel>"
-	if e.Code == core.CodeKeyRetired {
+	switch e.Code {
+	case core.CodeKeyRetired:
 		hint = "ask the owner to restore this session"
+	case core.CodeKeyCleared:
+		hint = "crosshall join <channel> makes this conversation a new member"
 	}
 	return domain.Fail(status, e.Code, e.Message, hint), true
 }

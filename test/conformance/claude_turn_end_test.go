@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -106,6 +107,90 @@ func (c *conformance) committedClaims() int {
 
 const stopContext = "Stop hook additional context: [crosshall] pending: "
 
+// observedBuild is the build the hall verified for every launch of this
+// world's session, which must all be in the given mode. Evidence names this
+// build, read from what the session itself reported.
+func (c *conformance) observedBuild(mode string) string {
+	c.t.Helper()
+	profiles := c.launchProfiles()
+	if len(profiles) == 0 {
+		c.t.Fatal("the hall recorded no launch of the session")
+	}
+	for _, p := range profiles {
+		if p.Mode != mode || p.VendorVersion != profiles[0].VendorVersion {
+			c.t.Fatalf("launch profile %s in %s mode, want every launch on %s in %s mode", p.VendorVersion, p.Mode, profiles[0].VendorVersion, mode)
+		}
+	}
+	return profiles[0].VendorVersion
+}
+
+// evidenceRun runs the cases one evidence row stands on. go test counts a
+// case that -run filtered out, and a case that skipped, as passed; so each
+// case reports the build it observed when it has run to its end, and the row
+// is written only when every case reported the same one.
+type evidenceRun struct {
+	t      *testing.T
+	cases  []string
+	builds map[string]string
+}
+
+func (r *evidenceRun) run(name string, check func(*testing.T) string) {
+	r.cases = append(r.cases, name)
+	r.t.Run(name, func(t *testing.T) {
+		if build := check(t); !t.Failed() {
+			if r.builds == nil {
+				r.builds = map[string]string{}
+			}
+			r.builds[name] = build
+		}
+	})
+}
+
+var releaseBuild = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// build is the one build every case completed on, or the reason why no
+// evidence can be written for this run.
+func (r *evidenceRun) build() (string, error) {
+	var build string
+	var missing []string
+	for _, name := range r.cases {
+		got, ok := r.builds[name]
+		switch {
+		case !ok:
+			missing = append(missing, name)
+		case !releaseBuild.MatchString(got):
+			return "", fmt.Errorf("case %q observed the build %q, which is not a release version", name, got)
+		case build != "" && got != build:
+			return "", fmt.Errorf("the cases observed different builds, %s and %s", build, got)
+		default:
+			build = got
+		}
+	}
+	if len(missing) > 0 || build == "" {
+		return "", fmt.Errorf("these cases did not run to their end: %s", strings.Join(missing, ", "))
+	}
+	return build, nil
+}
+
+// evidenceBuild decides what a run may write after its cases ran. A failed
+// case has already failed the test. A run that was not asked for evidence
+// only says when it was partial. A run that was asked for evidence and
+// cannot give it fails.
+func (r *evidenceRun) evidenceBuild(asked bool) (string, bool) {
+	r.t.Helper()
+	build, err := r.build()
+	switch {
+	case r.t.Failed():
+		return "", false
+	case err == nil:
+		return build, asked
+	case asked:
+		r.t.Fatalf("no evidence is written: %v", err)
+	}
+	r.t.Logf("partial run, nothing to write: %v", err)
+	return "", false
+}
+
 // carries counts the Stop context for id in the model request n.
 func (c *conformance) carries(n int, id int64) int {
 	return strings.Count(c.model.request(n), stopContext+fmt.Sprint(id))
@@ -118,8 +203,7 @@ func (c *conformance) carries(n int, id int64) int {
 // next Stop adds nothing. Without evidence, for a note, or for a request the
 // member already read, the turn ends as it did before.
 func TestClaudeCodeTurnEndConformance(t *testing.T) {
-	var version string
-	gated := func(t *testing.T) {
+	gated := func(t *testing.T) string {
 		c, _ := turnEndWorld(t, false)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request during the turn") }
@@ -127,10 +211,10 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		if c.model.count() != 1 || c.carries(1, id) != 0 || c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`) != 0 {
 			t.Fatalf("without evidence: %d requests, %d claims", c.model.count(), c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`))
 		}
+		return c.observedBuild("print")
 	}
-	continued := func(t *testing.T) {
-		c, v := turnEndWorld(t, true)
-		version = v
+	continued := func(t *testing.T) string {
+		c, _ := turnEndWorld(t, true)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request during the turn") }
 		c.claudeRun("first synthetic prompt")
@@ -155,16 +239,18 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		if n := c.committedClaims(); n != 1 {
 			t.Errorf("doctor counts %d claims, want 1", n)
 		}
+		return c.observedBuild("print")
 	}
-	note := func(t *testing.T) {
+	note := func(t *testing.T) string {
 		c, _ := turnEndWorld(t, true)
 		c.model.during[1] = func() { c.writerSends("note", "synthetic note during the turn") }
 		c.claudeRun("first synthetic prompt")
 		if c.model.count() != 1 || strings.Contains(c.model.request(1), stopContext) || c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`) != 0 {
 			t.Fatalf("a note continued the turn: %d requests", c.model.count())
 		}
+		return c.observedBuild("print")
 	}
-	alreadyRead := func(t *testing.T) {
+	alreadyRead := func(t *testing.T) string {
 		c, _ := turnEndWorld(t, true)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request read during the turn") }
@@ -181,16 +267,18 @@ func TestClaudeCodeTurnEndConformance(t *testing.T) {
 		if c.model.count() != 2 || c.carries(2, id) != 0 || c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`) != 0 {
 			t.Fatalf("a request already read continued the turn: %d requests", c.model.count())
 		}
+		return c.observedBuild("print")
 	}
-	for name, run := range map[string]func(*testing.T){"no evidence": gated, "tested": continued, "note": note, "already read": alreadyRead} {
-		if !t.Run(name, run) {
-			t.Fatalf("%s: no turn_end evidence is written", name)
-		}
-	}
+	run := &evidenceRun{t: t}
+	run.run("no evidence", gated)
+	run.run("tested", continued)
+	run.run("note", note)
+	run.run("already read", alreadyRead)
 
-	// Every check held for this build and mode: write the evidence row.
+	// Every case ran to its end on one build: write the evidence row.
 	dir := os.Getenv("CROSSHALL_CONFORMANCE_OUT")
-	if dir == "" {
+	version, write := run.evidenceBuild(dir != "")
+	if !write {
 		return
 	}
 	if err := safeOutputDir(dir); err != nil {

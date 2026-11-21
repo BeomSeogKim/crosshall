@@ -98,9 +98,11 @@ if ! go vet -tags e2e,testvendorhome ./test/e2e/ || ! go test -tags e2e,testvend
 fi
 # The conformance suite drives real vendor binaries, so CI cannot run it.
 # Compile it, so that a change it no longer builds against fails here, and
-# compile the SQL it reads the store with against the migrated schema.
+# run its checks that need no vendor binary: the SQL it reads the store with
+# compiles against the migrated schema, a partial run writes no evidence, and
+# callbacks that run at the same time are all recorded.
 if ! go vet -tags conformance ./test/conformance/... ||
-  ! go test -tags conformance -count=1 -run '^TestTheSuitesSQLCompilesAgainstTheSchema$' ./test/conformance/; then
+  ! go test -tags conformance -count=1 -run '^(TestTheSuitesSQLCompilesAgainstTheSchema|TestEvidenceNeedsEveryCase|TestConcurrentCallbacksAreAllRecorded)$' ./test/conformance/; then
   fail=1
 fi
 if ! bash scripts/install_test.sh; then

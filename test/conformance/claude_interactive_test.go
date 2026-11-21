@@ -49,6 +49,20 @@ type terminal struct {
 // eventLog is where the probe hook appends every callback's environment and payload.
 func (c *conformance) eventLog() string { return filepath.Join(c.root, "events.log") }
 
+// writeProbe writes the hook command that logs a callback and returns its
+// path. One callback is one line. Callbacks can run at the same time, so
+// each takes the lock and appends its whole record with one command.
+func (c *conformance) writeProbe() string {
+	c.t.Helper()
+	probe := filepath.Join(c.root, "events.sh")
+	script := "#!/bin/sh\nrecord=$(cat)\nuntil mkdir '" + c.eventLog() + ".lock' 2>/dev/null; do sleep 0.01; done\n" +
+		"printf '%s\\t%s\\n' \"$CLAUDE_PID\" \"$record\" >> '" + c.eventLog() + "'\nrmdir '" + c.eventLog() + ".lock'\n"
+	if err := os.WriteFile(probe, []byte(script), 0700); err != nil {
+		c.t.Fatal(err)
+	}
+	return probe
+}
+
 // installInteractive installs the adapter as install does, adds a probe to
 // every event that logs its payload, and prepares the scratch configuration
 // so that an interactive session starts without a first-run dialog: the
@@ -67,11 +81,7 @@ func (c *conformance) installInteractive() {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		c.t.Fatal(err)
 	}
-	probe := filepath.Join(c.root, "events.sh")
-	script := "#!/bin/sh\n{ printf '%s\\t' \"$CLAUDE_PID\"; cat; echo; } >> " + c.eventLog() + "\n"
-	if err := os.WriteFile(probe, []byte(script), 0700); err != nil {
-		c.t.Fatal(err)
-	}
+	probe := c.writeProbe()
 	for event := range settings.Hooks {
 		settings.Hooks[event] = append(settings.Hooks[event],
 			map[string]any{"hooks": []any{map[string]any{"type": "command", "command": probe, "timeout": 5}}})
@@ -97,20 +107,75 @@ func (c *conformance) installInteractive() {
 	}
 }
 
-// events reads the callbacks logged so far.
+// events reads the callbacks logged so far. A record that is still being
+// written has no newline yet and is left for the next read; a complete
+// record that does not parse fails the test, so a lost callback cannot pass
+// for one that never came.
 func (c *conformance) events() []hookEvent {
 	raw, _ := os.ReadFile(c.eventLog())
+	complete := string(raw[:bytes.LastIndexByte(raw, '\n')+1])
 	var out []hookEvent
-	for _, line := range strings.Split(string(raw), "\n") {
+	for _, line := range strings.Split(strings.TrimSuffix(complete, "\n"), "\n") {
+		if complete == "" {
+			break
+		}
 		process, payload, ok := strings.Cut(line, "\t")
 		var e hookEvent
-		if !ok || json.Unmarshal([]byte(payload), &e) != nil {
+		if !ok || json.Unmarshal([]byte(payload), &e) != nil || e.Name == "" {
+			c.malformed.Do(func() { c.t.Errorf("malformed callback record: %q", line) })
 			continue
 		}
 		e.Process = process
 		out = append(out, e)
 	}
 	return out
+}
+
+// inSession keeps one session's callbacks.
+func inSession(events []hookEvent, session string) []hookEvent {
+	var out []hookEvent
+	for _, e := range events {
+		if e.Session == session {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// turnShape renders the prompt and Stop callbacks in order, naming each
+// prompt ID by a letter in order of first appearance. A callback without a
+// prompt ID gets "?" and no letter, so it matches no expected shape.
+func turnShape(events []hookEvent) string {
+	var shape []string
+	letters := map[string]string{}
+	for _, e := range events {
+		if e.Name != "UserPromptSubmit" && e.Name != "Stop" {
+			continue
+		}
+		name, letter := e.Name, "?"
+		if e.StopActive {
+			name = "ContinuedStop"
+		}
+		if e.Prompt != "" {
+			if letters[e.Prompt] == "" {
+				letters[e.Prompt] = string(rune('A' + len(letters)))
+			}
+			letter = letters[e.Prompt]
+		}
+		shape = append(shape, name+" "+letter)
+	}
+	return strings.Join(shape, ", ")
+}
+
+// idleTurns is the shape of n turns typed at an idle prompt: each prompt is
+// followed by its own Stop, under an ID no other turn has.
+func idleTurns(n int) string {
+	var shape []string
+	for i := range n {
+		letter := string(rune('A' + i))
+		shape = append(shape, "UserPromptSubmit "+letter, "Stop "+letter)
+	}
+	return strings.Join(shape, ", ")
 }
 
 // interactive starts `claude` on a pseudo-terminal in the temporary homes
@@ -370,8 +435,17 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	_, err := os.Stat(approved)
 	approval := approvalFact == "approval_requested" && err == nil
 
+	// member is the principal a session ID is the live key of, and that
+	// principal's live binding; zero where there is none.
+	member := func(session string) (principal, binding int) {
+		principal = c.storeCount(`SELECT COALESCE(MAX(principal_id), 0) FROM principal_key WHERE vendor = 'claude' AND key = ? AND state = 'live'`, session)
+		binding = c.storeCount(`SELECT COALESCE(MAX(id), 0) FROM binding WHERE principal_id = ? AND state = 'live' AND alias = 'claude1'`, principal)
+		return principal, binding
+	}
+
 	// /compact keeps the session; /clear starts a new one in the same process.
 	first := c.events()[0]
+	principal, binding := member(first.Session)
 	term.submit("/compact", func(e hookEvent) bool { return e.Name == "SessionStart" && e.Source == "compact" }, "the start after /compact")
 	compacted := c.events()[len(c.events())-1]
 	term.turn("fifth synthetic prompt")
@@ -379,12 +453,12 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	all := c.events()
 	cleared, ended := all[len(all)-1], all[len(all)-2]
 	term.turn("sixth synthetic prompt")
-	// The cleared conversation is still the one member the session was.
-	members := func() int {
-		return c.storeCount(`SELECT COUNT(*) FROM binding b JOIN principal p ON p.id = b.principal_id WHERE p.vendor = 'claude'`)
-	}
-	kept := members() == 1 && c.storeCount(`SELECT COUNT(*) FROM binding b JOIN principal p ON p.id = b.principal_id
-		WHERE p.vendor = 'claude' AND b.state = 'live' AND b.alias = 'claude1'`) == 1
+	// The cleared conversation is the member the session was: its new ID is
+	// the live key of the same principal, which keeps its binding, and the
+	// old ID is no longer a live key.
+	clearedPrincipal, clearedBinding := member(cleared.Session)
+	oldPrincipal, _ := member(first.Session)
+	kept := principal != 0 && binding != 0 && clearedPrincipal == principal && clearedBinding == binding && oldPrincipal == 0
 	lifecycle := first.Source == "startup" && compacted.Session == first.Session &&
 		ended.Name == "SessionEnd" && ended.Reason == "clear" && ended.Session == first.Session &&
 		cleared.Session != first.Session && cleared.Process == first.Process && first.Process != "" && kept
@@ -396,21 +470,17 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	departed := exit.Reason == "prompt_input_exit" && !joined()
 	resumed := c.interactive("--resume", cleared.Session)
 	all = c.events()
-	restored := all[len(all)-1].Source == "resume" && all[len(all)-1].Session == cleared.Session && joined() && members() == 1
+	resumedPrincipal, resumedBinding := member(cleared.Session)
+	restored := all[len(all)-1].Source == "resume" && all[len(all)-1].Session == cleared.Session &&
+		resumedPrincipal == principal && resumedBinding == binding
 	resumed.exit()
 
-	// Typed at an idle prompt, every prompt opens a turn of its own, and
-	// that turn's Stop carries the same ID.
-	turns, ownTurns := map[string]int{}, true
-	for _, e := range c.events() {
-		switch e.Name {
-		case "UserPromptSubmit":
-			turns[e.Prompt]++
-		case "Stop":
-			ownTurns = ownTurns && turns[e.Prompt] == 1
-		}
-	}
-	ownTurns = ownTurns && len(turns) == 6
+	// Typed at an idle prompt, every prompt opens a turn of its own: in
+	// each session, a prompt and then its Stop under one ID that no other
+	// turn has. Five turns ran before /clear and one after it.
+	all = c.events()
+	ownTurns := first.Session != "" && cleared.Session != "" && turnShape(all) == idleTurns(6) &&
+		turnShape(inSession(all, first.Session)) == idleTurns(5) && turnShape(inSession(all, cleared.Session)) == idleTurns(1)
 
 	probe, _ := os.ReadFile(filepath.Join(c.root, "probe.env"))
 	t.Logf("claude %s; hook environment: %s", version, strings.ReplaceAll(strings.TrimSpace(string(probe)), "\n", ", "))
@@ -464,6 +534,10 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	}
 }
 
+// typedAheadShape is what Claude Code reports for a turn and a prompt typed
+// while that turn runs.
+const typedAheadShape = "UserPromptSubmit A, UserPromptSubmit A, Stop A, Stop B"
+
 // A prompt typed while the previous turn has not ended (typed ahead, the way
 // people queue the next thing) is reported with the previous turn's prompt
 // ID, before that turn's Stop, and its own turn ends with a Stop whose ID no
@@ -487,20 +561,15 @@ func TestClaudeCodeInteractiveTypedAheadPrompt(t *testing.T) {
 	}
 	term.keys("first synthetic prompt\r")
 	term.await("the Stop of both turns", func() bool { return c.count(named("Stop")) == 2 })
-	var shape []string
-	ids := map[string]string{}
-	for _, e := range c.events() {
-		if e.Name != "UserPromptSubmit" && e.Name != "Stop" {
-			continue
-		}
-		if ids[e.Prompt] == "" {
-			ids[e.Prompt] = string(rune('A' + len(ids)))
-		}
-		shape = append(shape, e.Name+" "+ids[e.Prompt])
-	}
-	got := strings.Join(shape, ", ")
+	all := c.events()
+	session := all[0].Session
+	got := turnShape(inSession(all, session))
 	t.Logf("callbacks: %s; %d model requests", got, c.model.count())
-	if want := "UserPromptSubmit A, UserPromptSubmit A, Stop A, Stop B"; got != want || c.model.count() != 2 {
+	if session == "" || turnShape(all) != got {
+		t.Fatalf("callbacks of more than one session, or of none: %q", turnShape(all))
+	}
+	if got != typedAheadShape || c.model.count() != 2 {
+		want := typedAheadShape
 		t.Fatalf("typed-ahead prompt: callbacks %q with %d model requests, want %q with 2: the shape issue #163 describes has changed", got, c.model.count(), want)
 	}
 	term.exit()
@@ -540,41 +609,37 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	term.await("the Stop of the idle notice's turn", func() bool { return c.count(named("Stop")) > stops })
 
 	// While a turn is with the model: the model's answer waits until the
-	// hall has submitted the notice.
-	submitted := func() int {
-		return c.storeCount(`SELECT COUNT(*) FROM publish_attempt WHERE submitting_at_ms IS NOT NULL`)
-	}
+	// hall is submitting the notice that carries this request.
 	var during int64
+	var submittedInTurn bool
 	c.model.during[c.model.count()+1] = func() {
-		before := submitted()
 		during = c.writerSends("ask", "synthetic request during the turn")
-		for deadline := time.Now().Add(interactiveWait); submitted() == before && time.Now().Before(deadline); {
-			time.Sleep(20 * time.Millisecond)
+		for deadline := time.Now().Add(interactiveWait); !submittedInTurn && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			submittedInTurn = c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
+				WHERE i.message_id = ? AND a.submitting_at_ms IS NOT NULL`, during) == 1
 		}
 	}
 	term.idle()
 	stops = c.count(named("Stop"))
 	term.keys("second synthetic prompt\r")
-	term.await("the Stop of the typed turn and of the notice's turn", func() bool { return c.count(named("Stop")) >= stops+2 })
+	term.await("the Stop of the typed turn", func() bool { return c.count(named("Stop")) > stops })
+	if !submittedInTurn {
+		t.Fatalf("the hall did not submit the notice for request %d while the turn was with the model", during)
+	}
+	term.await("the Stop of the notice's turn", func() bool { return c.count(named("Stop")) >= stops+2 })
 	term.idle()
 
-	var shape []string
-	ids := map[string]string{}
-	for _, e := range c.events() {
-		if e.Name != "UserPromptSubmit" && e.Name != "Stop" {
-			continue
-		}
-		if ids[e.Prompt] == "" {
-			ids[e.Prompt] = string(rune('A' + len(ids)))
-		}
-		shape = append(shape, e.Name+" "+ids[e.Prompt])
+	all := c.events()
+	session := all[0].Session
+	got := turnShape(inSession(all, session))
+	if session == "" || turnShape(all) != got {
+		t.Fatalf("callbacks of more than one session, or of none: %q", turnShape(all))
 	}
-	got := strings.Join(shape, ", ")
 	// The first such line of the doctor report is the Claude Code adapter's.
 	_, observed, _ := strings.Cut(c.owner("owner", "doctor"), "publish notices on")
 	observed, _, _ = strings.Cut(observed, "\n")
 	t.Logf("requests %d (idle) and %d (during a turn); callbacks: %s; %d model requests; publish notices%s", idle, during, got, c.model.count(), observed)
-	want := "UserPromptSubmit A, Stop A, UserPromptSubmit B, Stop B, UserPromptSubmit C, Stop C, UserPromptSubmit D, Stop D"
+	want := idleTurns(4)
 	if got != want || c.model.count() != 4 || !strings.Contains(observed, "2 submitted") || !strings.Contains(observed, "observed 2 own turn, 0 absorbed, 0 unknown") {
 		t.Fatalf("publish notices: callbacks %q, %d model requests, notices%s; want %q, 4 requests and both notices observed as their own turn", got, c.model.count(), observed, want)
 	}
@@ -591,7 +656,6 @@ const interactiveTurnEndCheck = "an unread request stored during a turn typed at
 // a typed-ahead prompt is not checked, because Claude Code reports no prompt
 // with that turn's ID (issue #163).
 func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
-	var version string
 	world := func(t *testing.T, tested bool) *conformance {
 		t.Helper()
 		c := newConformance(t)
@@ -603,14 +667,13 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		c.writer("join", "checkout", "--as", "writer")
 		c.owner("owner", "budget", "grant", "checkout/@writer", "--roots", "1")
 		c.installInteractive()
-		version = c.version()
 		if tested {
-			c.importTurnEnd(version, "interactive", "tested", "loopback run before the check: bootstraps the exact profile it measures")
+			c.importTurnEnd(c.version(), "interactive", "tested", "loopback run before the check: bootstraps the exact profile it measures")
 		}
 		return c
 	}
 	claims := func(c *conformance) int { return c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`) }
-	gated := func(t *testing.T) {
+	gated := func(t *testing.T) string {
 		c := world(t, false)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request during the turn") }
@@ -620,8 +683,9 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		if c.model.count() != 1 || c.carries(1, id) != 0 || claims(c) != 0 {
 			t.Fatalf("without evidence: %d requests, %d claims", c.model.count(), claims(c))
 		}
+		return c.observedBuild("interactive")
 	}
-	continued := func(t *testing.T) {
+	continued := func(t *testing.T) string {
 		c := world(t, true)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request during the turn") }
@@ -648,9 +712,10 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 			t.Errorf("doctor counts %d claims, want 1", n)
 		}
 		// The owner's import accepts the text the evidence file will carry.
-		c.importTurnEnd(version, "interactive", "tested", interactiveTurnEndCheck)
+		c.importTurnEnd(c.version(), "interactive", "tested", interactiveTurnEndCheck)
+		return c.observedBuild("interactive")
 	}
-	note := func(t *testing.T) {
+	note := func(t *testing.T) string {
 		c := world(t, true)
 		c.model.during[1] = func() { c.writerSends("note", "synthetic note during the turn") }
 		term := c.interactive()
@@ -659,8 +724,9 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		if c.model.count() != 1 || strings.Contains(c.model.request(1), stopContext) || claims(c) != 0 {
 			t.Fatalf("a note continued the turn: %d requests", c.model.count())
 		}
+		return c.observedBuild("interactive")
 	}
-	alreadyRead := func(t *testing.T) {
+	alreadyRead := func(t *testing.T) string {
 		c := world(t, true)
 		var id int64
 		c.model.during[1] = func() { id = c.writerSends("ask", "synthetic request read during the turn") }
@@ -675,8 +741,9 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		if c.model.count() != 2 || c.carries(2, id) != 0 || claims(c) != 0 {
 			t.Fatalf("a request already read continued the turn: %d requests", c.model.count())
 		}
+		return c.observedBuild("interactive")
 	}
-	typedAhead := func(t *testing.T) {
+	typedAhead := func(t *testing.T) string {
 		c := world(t, true)
 		term := c.interactive()
 		c.model.during[1] = func() {
@@ -688,23 +755,36 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		c.model.during[2] = func() { id = c.writerSends("ask", "synthetic request during the typed-ahead turn") }
 		term.keys("first synthetic prompt\r")
 		term.await("the Stop of both turns", func() bool { return c.count(named("Stop")) >= 2 })
+		// The limit is certified only for a turn that took the typed-ahead
+		// shape, whose request was stored, and whose own Stop the hall
+		// processed for this session: a callback that never reached the
+		// hall must not pass for a turn the hall left unchecked.
+		all := c.events()
+		if got := turnShape(inSession(all, all[0].Session)); all[0].Session == "" || got != typedAheadShape || turnShape(all) != got || id == 0 {
+			t.Fatalf("not a typed-ahead turn with a stored request: callbacks %q, request %d", turnShape(all), id)
+		}
+		stop := all[len(all)-1]
+		term.await("the hall's record of the typed-ahead turn's Stop", func() bool {
+			return c.storeCount(`SELECT COUNT(*) FROM observation o JOIN principal_key k ON k.principal_id = o.principal_id
+				WHERE k.vendor = 'claude' AND k.key = ? AND o.kind = 'turn_finishing' AND o.turn_ref = ?`, stop.Session, stop.Prompt) == 1
+		})
 		term.exit()
-		if c.model.count() != 2 || claims(c) != 0 || id == 0 {
+		if c.model.count() != 2 || claims(c) != 0 {
 			t.Fatalf("the typed-ahead turn was checked (%d requests, %d claims, request %d): the limit the evidence states no longer holds (issue #163)",
 				c.model.count(), claims(c), id)
 		}
+		return c.observedBuild("interactive")
 	}
-	for _, run := range []struct {
-		name string
-		run  func(*testing.T)
-	}{{"no evidence", gated}, {"tested", continued}, {"note", note}, {"already read", alreadyRead}, {"typed ahead", typedAhead}} {
-		if !t.Run(run.name, run.run) {
-			t.Fatalf("%s: no turn_end evidence is written", run.name)
-		}
-	}
+	run := &evidenceRun{t: t}
+	run.run("no evidence", gated)
+	run.run("tested", continued)
+	run.run("note", note)
+	run.run("already read", alreadyRead)
+	run.run("typed ahead", typedAhead)
 
-	// Every check held for this build and mode: write the evidence row.
-	if os.Getenv("CROSSHALL_CONFORMANCE_OUT") == "" {
+	// Every case ran to its end on one build: write the evidence row.
+	version, write := run.evidenceBuild(os.Getenv("CROSSHALL_CONFORMANCE_OUT") != "")
+	if !write {
 		return
 	}
 	c := &conformance{t: t}

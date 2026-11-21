@@ -50,13 +50,20 @@ type terminal struct {
 func (c *conformance) eventLog() string { return filepath.Join(c.root, "events.log") }
 
 // writeProbe writes the hook command that logs a callback and returns its
-// path. One callback is one line. Callbacks can run at the same time, so
-// each takes the lock and appends its whole record with one command.
+// path. Callbacks can run at the same time, so they share nothing but the
+// log: each writes its payload to a file of its own and then names that file
+// in one short line, which a single append writes whole. A lock made with
+// mkdir is no alternative: the mkdir of Ubuntu 26.04 reports success to two
+// callers at once.
 func (c *conformance) writeProbe() string {
 	c.t.Helper()
+	records := c.eventLog() + ".d"
+	if err := os.Mkdir(records, 0700); err != nil {
+		c.t.Fatal(err)
+	}
 	probe := filepath.Join(c.root, "events.sh")
-	script := "#!/bin/sh\nrecord=$(cat)\nuntil mkdir '" + c.eventLog() + ".lock' 2>/dev/null; do sleep 0.01; done\n" +
-		"printf '%s\\t%s\\n' \"$CLAUDE_PID\" \"$record\" >> '" + c.eventLog() + "'\nrmdir '" + c.eventLog() + ".lock'\n"
+	script := "#!/bin/sh\nrecord=$(mktemp '" + records + "/XXXXXXXX') && cat > \"$record\" &&\n" +
+		"\tprintf '%s\\t%s\\n' \"$CLAUDE_PID\" \"$record\" >> '" + c.eventLog() + "'\n"
 	if err := os.WriteFile(probe, []byte(script), 0700); err != nil {
 		c.t.Fatal(err)
 	}
@@ -107,10 +114,10 @@ func (c *conformance) installInteractive() {
 	}
 }
 
-// events reads the callbacks logged so far. A record that is still being
-// written has no newline yet and is left for the next read; a complete
-// record that does not parse fails the test, so a lost callback cannot pass
-// for one that never came.
+// events reads the callbacks logged so far, in the order of the log. A line
+// that is still being written has no newline yet and is left for the next
+// read; a complete line whose record does not parse fails the test, so a
+// lost callback cannot pass for one that never came.
 func (c *conformance) events() []hookEvent {
 	raw, _ := os.ReadFile(c.eventLog())
 	complete := string(raw[:bytes.LastIndexByte(raw, '\n')+1])
@@ -119,10 +126,11 @@ func (c *conformance) events() []hookEvent {
 		if complete == "" {
 			break
 		}
-		process, payload, ok := strings.Cut(line, "\t")
+		process, record, ok := strings.Cut(line, "\t")
+		payload, err := os.ReadFile(record)
 		var e hookEvent
-		if !ok || json.Unmarshal([]byte(payload), &e) != nil || e.Name == "" {
-			c.malformed.Do(func() { c.t.Errorf("malformed callback record: %q", line) })
+		if !ok || err != nil || json.Unmarshal(payload, &e) != nil || e.Name == "" {
+			c.malformed.Do(func() { c.t.Errorf("malformed callback record: %q (%v)", line, err) })
 			continue
 		}
 		e.Process = process

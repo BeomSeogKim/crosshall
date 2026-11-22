@@ -294,6 +294,14 @@ func (w *world) kill() {
 	if len(pids) == 0 {
 		w.t.Fatal("no dispatcher holds the lock")
 	}
+	w.killAndWait(pids)
+}
+
+// killAndWait sends SIGKILL to pids and waits until the lock is free: a
+// dispatcher started while a killed one still holds it gives way, and the
+// launcher can then find the lock free and report that none became ready.
+func (w *world) killAndWait(pids []int) {
+	w.t.Helper()
 	lock, err := os.Open(filepath.Join(w.state, "dispatcher.lock"))
 	if err != nil {
 		w.t.Fatal(err)
@@ -323,11 +331,7 @@ func (w *world) kill() {
 }
 
 func (w *world) stop() {
-	for _, pid := range w.dispatcherPIDs() {
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Kill()
-		}
-	}
+	w.killAndWait(w.dispatcherPIDs())
 	_ = os.RemoveAll(w.rendezvous())
 }
 

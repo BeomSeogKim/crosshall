@@ -116,15 +116,19 @@ type HookResult struct {
 	Cue        string `json:"cue,omitempty"`
 	// CueWithStartLine replaces Cue in an output that also prints the start
 	// line (Hint), which already says who the session is.
-	CueWithStartLine *string          `json:"cue_with_start_line,omitempty"`
-	Roster           json.RawMessage  `json:"roster,omitempty"`
-	Omitted          int              `json:"omitted,omitempty"`
-	OfferID          int64            `json:"offer_id,omitempty"`
-	PendingLine      string           `json:"pending_line,omitempty"`
-	TurnEndLine      string           `json:"turn_end_line,omitempty"`
-	ReminderText     string           `json:"reminder_text,omitempty"`
-	Ack              *HookAck         `json:"ack,omitempty"`
-	JoinHintAck      *HookJoinHintAck `json:"join_hint_ack,omitempty"`
+	CueWithStartLine *string         `json:"cue_with_start_line,omitempty"`
+	Roster           json.RawMessage `json:"roster,omitempty"`
+	Omitted          int             `json:"omitted,omitempty"`
+	OfferID          int64           `json:"offer_id,omitempty"`
+	PendingLine      string          `json:"pending_line,omitempty"`
+	TurnEndLine      string          `json:"turn_end_line,omitempty"`
+	// ReachLine says whether the hall brings new work to the session;
+	// ReachAck stores it as told once the hook has printed it.
+	ReachLine    string           `json:"reach_line,omitempty"`
+	ReachAck     *HookReachAck    `json:"reach_ack,omitempty"`
+	ReminderText string           `json:"reminder_text,omitempty"`
+	Ack          *HookAck         `json:"ack,omitempty"`
+	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
 	// ChannelCreated tells the dispatcher that this enrolment made the
 	// repository's channel, so the published repository set is stale.
 	ChannelCreated bool   `json:"channel_created,omitempty"`
@@ -147,6 +151,25 @@ func (a HookJoinHintAck) ValidFor(generation string) bool {
 func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
 	return a.Offer != "" && a.Offer == b.Offer && a.BindingID == b.BindingID &&
 		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation
+}
+
+// HookReachAck identifies a reach line offered to a binding: Told is the
+// value stored once the line was printed (1 brings, 0 cannot reach).
+type HookReachAck struct {
+	BindingID  int64  `json:"binding_id"`
+	RouteEpoch int64  `json:"route_epoch"`
+	Told       int    `json:"told"`
+	Generation string `json:"gen"`
+	Offer      string `json:"offer,omitempty"`
+}
+
+func (a HookReachAck) ValidFor(generation string) bool {
+	return generation != "" && a.Generation == generation && a.BindingID > 0 && a.RouteEpoch > 0 &&
+		(a.Told == 0 || a.Told == 1) && a.Offer != ""
+}
+
+func (a HookReachAck) SameOffer(b HookReachAck) bool {
+	return a.Offer != "" && a == b
 }
 
 type HookAck struct {

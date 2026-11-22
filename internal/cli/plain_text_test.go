@@ -77,7 +77,7 @@ func TestJoinHintStatesTheHistoryContract(t *testing.T) {
 // it with crosshall read alone.
 func TestJoinHintStatesTheTurnEndRule(t *testing.T) {
 	hint := domain.Hint("tax", "checkout")
-	const rule = "- Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once. Later arrivals belong to the next turn."
+	const rule = "- Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once, unless the hall's last word to this session was that it brings new work to it: then a turn that showed no `[crosshall] pending:` line needs no check. Later arrivals belong to the next turn."
 	if strings.Count(hint, rule) != 1 {
 		t.Fatalf("hint lacks the turn-end rule exactly once:\n%s", hint)
 	}

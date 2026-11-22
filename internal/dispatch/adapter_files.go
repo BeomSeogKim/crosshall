@@ -185,11 +185,11 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 	if err := json.Unmarshal(result.Data, &output); err != nil {
 		return err
 	}
-	if output.Ack == nil && output.JoinHintAck == nil {
+	if output.Ack == nil && output.JoinHintAck == nil && output.ReachAck == nil {
 		return nil
 	}
 	if req.Reply != nil && !*req.Reply {
-		output.Ack, output.JoinHintAck = nil, nil
+		output.Ack, output.JoinHintAck, output.ReachAck = nil, nil, nil
 	} else {
 		if arrival.Dir == nil || req.Generation == "" {
 			return errors.New("hook acknowledgement has no authenticated generation")
@@ -197,6 +197,10 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 		if output.JoinHintAck != nil {
 			output.JoinHintAck.Generation = req.Generation
 			s.logFailure(publishJoinHintOffer(arrival.Dir, output.JoinHintAck))
+		}
+		if output.ReachAck != nil {
+			output.ReachAck.Generation = req.Generation
+			s.logFailure(publishReachOffer(arrival.Dir, output.ReachAck))
 		}
 		if ack := output.Ack; ack != nil {
 			stamp, ok := s.adapterStamp(arrival.Dir, req.Generation)
@@ -240,6 +244,38 @@ func publishJoinHintOffer(leaf *os.Root, ack *wire.HookJoinHintAck) error {
 		return err
 	}
 	return publishAdapterText(leaf, hook.JoinHintOfferFile, string(raw)+"\n")
+}
+
+// publishReachOffer keeps the offer of an unchanged line, so a line printed
+// once is stored even if a later output offered it again.
+func publishReachOffer(leaf *os.Root, ack *wire.HookReachAck) error {
+	if prior, ok := hook.ReadReachOffer(leaf, ack.Generation); ok && prior.BindingID == ack.BindingID &&
+		prior.RouteEpoch == ack.RouteEpoch && prior.Told == ack.Told {
+		ack.Offer = prior.Offer
+		return nil
+	}
+	ack.Offer = wire.NewID()
+	raw, err := json.Marshal(ack)
+	if err != nil {
+		return err
+	}
+	return publishAdapterText(leaf, hook.ReachOfferFile, string(raw)+"\n")
+}
+
+// acknowledgeHookReach stores the reach line the hook printed, while it is
+// still the line offered last.
+func acknowledgeHookReach(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, caller core.Caller) error {
+	if arrival.Owner || arrival.Dir == nil || caller.Role != core.RoleMember || caller.BindingID == nil || caller.PrincipalID == nil {
+		return nil
+	}
+	ack, ok := hook.ReadReachAck(arrival.Dir, req.Generation)
+	if !ok || ack.BindingID != *caller.BindingID || !hook.CurrentReachOffer(arrival.Dir, ack) {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE binding SET reach_told = ?
+		WHERE id = ? AND principal_id = ? AND route_epoch = ? AND state = 'live'`,
+		ack.Told, ack.BindingID, *caller.PrincipalID, ack.RouteEpoch)
+	return err
 }
 
 func acknowledgeHookJoinHint(ctx context.Context, tx store.Tx, arrival Arrival, req wire.Request, caller core.Caller) error {

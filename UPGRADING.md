@@ -8,14 +8,14 @@ From v0.2.0-rc.1, the next release migrates the database from schema 18 to schem
 
 1. Stop your agents' crosshall commands, including a `crosshall wait` running in the background.
 2. Run `crosshall owner stop`. A dispatcher that keeps running is still the old program: the database is not migrated and nothing below changes until it is stopped and started again.
-3. Install the new release as the [README](README.md#quick-start) shows. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
+3. Install the new release as the [README](README.md#quick-start) shows, with the new release's tag in place of `v0.2.0-rc.1` in the clone command. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
 4. Run `crosshall owner start`.
 
 Your agents' sessions need no new start and the hooks need not be installed again: the hook manifests and the installed entries are those of v0.2.0-rc.1.
 
 What changes without a new question:
 
-- **A session the hall can start a turn in makes no check before ending a turn.** A session with an available notice route is told so once, at a prompt: `[crosshall] The hall brings new work to this session: no check is needed before ending a turn.` While that was the hall's last word, a turn that showed no `[crosshall] pending:` line ends without a `crosshall read`. When the hall stops reaching the session, the next prompt says `[crosshall] The hall cannot reach this session now: check before ending a turn (crosshall read).`, and the first line comes back when the route does. Each is one line in the session's context and costs no model request. The lines follow the notice route and have no switch of their own: with notices off (`crosshall owner publish hall off`) no session is told that the hall brings new work. See [adapters](docs/adapters.md).
+- **A session the hall can start a turn in makes no check before ending a turn.** A session with an available notice route is told so once, at a prompt: `[crosshall] The hall brings new work to this session: no check is needed before ending a turn.` While that was the hall's last word, a turn that showed no `[crosshall] pending:` line ends without a `crosshall read`. When the hall stops reaching the session, the next prompt says `[crosshall] The hall cannot reach this session now: check before ending a turn (crosshall read).`, and the first line comes back when the route does. Each is one line in the session's context and costs no model request. The lines follow the notice route and have no switch of their own. A session whose effective notice setting is off is not told that the hall brings new work. See [adapters](docs/adapters.md).
 - **Rule 1 of the member rules is looser by one sentence.** "If no command of this turn printed that line, run `crosshall read` once" now ends: "unless the hall's last word to this session was that it brings new work to it: then a turn that showed no `[crosshall] pending:` line needs no check." An agent that keeps checking before every turn end still follows the rules.
 - **Every other session is unchanged.** Codex CLI, Antigravity CLI and a Claude Code session without a notice route (print mode, Linux, an Intel Mac) get neither line and keep the check.
 

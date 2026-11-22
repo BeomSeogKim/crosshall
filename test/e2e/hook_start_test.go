@@ -23,10 +23,13 @@ func TestHookStartsAStoppedDispatcherAndEnrolls(t *testing.T) {
 		t.Fatalf("the starting hook took %v", took)
 	}
 	if out == "" {
-		// A loaded machine can miss the start deadline: the hook then says
-		// so and leaves the start running, and the next session start joins.
-		if log := readLog(t, w); !strings.Contains(log, "hook claude SessionStart: start_pending: ") {
-			t.Fatalf("the session start neither joined nor logged start_pending:\n%s", log)
+		// A loaded machine can miss the start deadline, before the dispatcher
+		// was ready or while its answer was on the way: the hook then says so
+		// and leaves the start running, and the next session start joins (a
+		// start line not yet seen is offered again).
+		if log := readLog(t, w); !strings.Contains(log, "hook claude SessionStart: start_pending: ") &&
+			!strings.Contains(log, "hook claude SessionStart: started the dispatcher, but the session start was not answered in time") {
+			t.Fatalf("the session start neither joined nor logged a missed deadline:\n%s", log)
 		}
 		if len(w.dispatcherPIDs()) == 0 {
 			t.Fatal("start_pending without a launched dispatcher")

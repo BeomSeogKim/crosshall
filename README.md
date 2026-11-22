@@ -48,6 +48,7 @@ cd crosshall
 The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. In your own terminal it then lists the agents it found, the hook entries and command rules it would add for each, and what a yes turns on, and asks once:
 
 <!-- from a real install of main 76091dc with Claude Code 2.1.330 and Codex CLI 0.171.0; the list of entries above it is left out -->
+<!-- readme-check: install-question -->
 ```text
 Saying yes turns these on for the listed agents:
 - Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.
@@ -87,6 +88,7 @@ On a default install in your own terminal, the installer can add `~/.local/bin` 
 **5. See who is reachable.** In a plain terminal, not an agent session:
 
 <!-- from the same real run: one Claude Code and one Codex CLI session in one repository -->
+<!-- readme-check: owner-who -->
 ```text
 $ crosshall owner who --all
 #shop-api

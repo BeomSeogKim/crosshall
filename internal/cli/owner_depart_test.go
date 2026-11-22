@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 )
 
 const departureToken = "0123456789abcdef01234567"
@@ -92,6 +94,33 @@ func TestWaitingMarksDepartedRecipientWithoutReplacingPickup(t *testing.T) {
 	out, stderr, code := run(t, env, "waiting")
 	if code != core.ExitOK || !strings.Contains(out, "@writer picked up ") || !strings.Contains(out, "(1m ago), recipient departed") {
 		t.Fatalf("exit %d: stdout %q, stderr %q", code, out, stderr)
+	}
+}
+
+func TestReadmeOwnerWhoMatchesTheCommand(t *testing.T) {
+	result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{
+		Name: "shop-api",
+		Members: []domain.OwnerMember{
+			{Member: domain.Member{Alias: "claude1", Vendor: "claude", BindingID: 1, LastCommandAgoS: 1,
+				Publish: &domain.PublishStatus{State: "available"}},
+				BindingState: "live", Reach: "notice", DepartToken: departureToken},
+			{Member: domain.Member{Alias: "codex1", Vendor: "codex", BindingID: 2,
+				Publish:  &domain.PublishStatus{State: "candidate", Reason: "no sender for codex"},
+				Observed: &domain.Observed{Fact: domain.FactPromptSubmitted, Source: "codex", Current: true}},
+				BindingState: "live", Reach: "prompt", DepartToken: strings.Repeat("a", 24)},
+		},
+	}}}
+	env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
+	args := []string{"owner", "who", "--all"}
+	out, stderr, code := run(t, env, args...)
+	if code != core.ExitOK || stderr != "" {
+		t.Fatalf("owner who exited %d: stdout %q, stderr %q", code, out, stderr)
+	}
+	token := regexp.MustCompile(`(; depart token: )[0-9a-f]{24}\n`)
+	got := token.ReplaceAllString("$ crosshall "+strings.Join(args, " ")+"\n"+out, "${1}<token>\n")
+	want := token.ReplaceAllString(setuptest.ReadmeBlock(t, "owner-who"), "${1}<token>\n")
+	if got != want {
+		t.Fatalf("README owner view differs from the command\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
 

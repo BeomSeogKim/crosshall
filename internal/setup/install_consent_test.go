@@ -170,16 +170,29 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			}
 			offer := tc.name != "owner adapter off" && tc.name != "owner adapter on" && tc.name != "unreadable" &&
 				!strings.HasPrefix(tc.name, "turn-end switch")
-			out, err := realRun(t, s, f, Request{Offer: offer, Terminal: true}, "\n")
+			req := Request{Offer: offer, Terminal: true}
+			if tc.name == "exact" {
+				req.PathConsent = func(bool) error { return nil }
+			}
+			out, err := realRun(t, s, f, req, "\n")
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, block, found := strings.Cut(out, "Saying yes turns these on for the listed agents:\n")
+			const heading = "Saying yes turns these on for the listed agents:\n"
+			_, disclosure, found := strings.Cut(out, heading)
+			if tc.name == "exact" {
+				question, _, asked := strings.Cut(disclosure, "[y/N]")
+				got := strings.ReplaceAll(heading+question+"[y/N]\n", f.Home, "/home/you")
+				want := setuptest.ReadmeBlock(t, "install-question")
+				if !found || !asked || got != want {
+					t.Fatalf("README install question differs from the terminal offer\ngot:\n%s\nwant:\n%s", got, want)
+				}
+			}
 			end := "Install the listed hooks and command rules?"
 			if offer {
 				end = "A no skips future installer offers"
 			}
-			block, _, ends := strings.Cut(block, end)
+			block, _, ends := strings.Cut(disclosure, end)
 			joining := "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on."
 			if tc.name == "owner hall off" {
 				joining = "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. You turned automatic joining off, so a repository without a channel gets none. On: crosshall owner channel auto on"

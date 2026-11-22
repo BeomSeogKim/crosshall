@@ -5,9 +5,35 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
 )
+
+var owedReadRetryHint = regexp.MustCompile(`(?m)^crosshall: outcome_unknown\nnext: retry with --key ([0-9a-f]{32})\.`)
+
+func readOwedExchangeHint(t *testing.T, member *participant, hint string) string {
+	t.Helper()
+	args := strings.Fields(strings.TrimPrefix(hint, "crosshall "))
+	run := func(args ...string) ([]byte, error) {
+		cmd := exec.Command(binary, args...)
+		cmd.Dir, cmd.Env = member.w.home, member.env()
+		return cmd.CombinedOutput()
+	}
+	out, err := run(args...)
+	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == int(core.ExitUnavailable) {
+		if match := owedReadRetryHint.FindStringSubmatch(string(out)); match != nil {
+			t.Logf("crosshall %v had an unknown outcome: %s", args, out)
+			out, err = run(append([]string{"--key", match[1]}, args...)...)
+		}
+	}
+	if err != nil {
+		t.Fatalf("crosshall %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
 
 func TestOwedExchangeHintRunsAsShown(t *testing.T) {
 	w, _, members := setup(t)
@@ -30,7 +56,7 @@ func TestOwedExchangeHintRunsAsShown(t *testing.T) {
 	if refused.exit != 3 || refused.obj["code"] != "must_answer_first" || refused.obj["hint"] != hint {
 		t.Fatalf("unexpected JSON refusal: %s", refused.stdout)
 	}
-	if read := tax.mustPlain(strings.Fields(strings.TrimPrefix(hint, "crosshall "))...); !strings.Contains(read, "Check the totals.") {
+	if read := readOwedExchangeHint(t, tax, hint); !strings.Contains(read, "Check the totals.") {
 		t.Fatalf("suggested command did not read the owed ask: %s", read)
 	}
 
@@ -40,7 +66,7 @@ func TestOwedExchangeHintRunsAsShown(t *testing.T) {
 	if ambiguous.exit != 3 || ambiguous.obj["code"] != "ambiguous_root" || ambiguous.obj["hint"] != hint {
 		t.Fatalf("unexpected ambiguous exchange refusal: %s", ambiguous.stdout)
 	}
-	if read := tax.mustPlain(strings.Fields(strings.TrimPrefix(hint, "crosshall "))...); !strings.Contains(read, "Check the totals.") || !strings.Contains(read, "Check the receipts.") {
+	if read := readOwedExchangeHint(t, tax, hint); !strings.Contains(read, "Check the totals.") || !strings.Contains(read, "Check the receipts.") {
 		t.Fatalf("suggested command did not read both owed asks: %s", read)
 	}
 }

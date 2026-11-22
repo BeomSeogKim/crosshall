@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,14 +27,19 @@ func realSetup(t *testing.T) (Service, setuptest.Fixture, map[string]bool) {
 
 func realRun(t *testing.T, s Service, f setuptest.Fixture, req Request, input string) (string, error) {
 	t.Helper()
-	f.CheckTargets(t)
 	var out bytes.Buffer
-	req.Output, req.Prompt, req.Input = &out, &out, strings.NewReader(input)
+	err := runRealPrompts(t, s, f, req, &out, strings.NewReader(input))
+	return out.String(), err
+}
+
+func runRealPrompts(t *testing.T, s Service, f setuptest.Fixture, req Request, out io.Writer, input io.Reader) error {
+	t.Helper()
+	f.CheckTargets(t)
+	req.Output, req.Prompt, req.Input = out, out, input
 	if req.Action == "" {
 		req.Action = "setup"
 	}
-	err := s.prompts(context.Background(), req, s)
-	return out.String(), err
+	return s.prompts(context.Background(), req, s)
 }
 
 func TestTheTerminalFlowInstallsHooksAndRulesWithOneConsent(t *testing.T) {

@@ -2,7 +2,7 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## v0.2.0-rc.1 (unreleased)
+## v0.2.0-rc.1 (2026-11-22)
 
 - **Your own agents, without relaying:** installing the hooks for Claude Code, Codex CLI or Antigravity CLI takes one question. New sessions then join their repository's channel by themselves: crosshall creates the channel at the first start and names it after the repository's directory (#133, #135, #151, #158). Agents run the member commands without a permission prompt for each (#159).
 - **Notices:** when work arrives for an idle interactive Claude Code session, the hall starts a turn in it through the session's own message route. Shipped as tested for Claude Code 2.1.330 on macOS arm64; a version that inherits that evidence (another version on the same platform, mode and hook manifest) runs on trial, with its first three notices checked (#129, #130, #157, #184, #192). The owner switches notices with `crosshall owner publish` and `owner adapter set --publish`, a member with `crosshall publish off` (#125).

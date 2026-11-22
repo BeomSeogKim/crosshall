@@ -108,7 +108,7 @@ func TestTurnEndRuleShellOnlyMember(t *testing.T) {
 	form, tax := w.member(), w.member()
 	form.must("join", "checkout", "--as", "form")
 	joined := tax.mustPlain("join", "checkout", "--as", "tax")
-	const rule = "Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once. Later arrivals belong to the next turn."
+	const rule = "Before voluntarily ending any turn while joined, leave no request addressed to you unread. The last `[crosshall] N unread, M owed.` line you got in this turn counts: at `0 unread` you may end the turn; otherwise run `crosshall read` and act on what it shows. If no command of this turn printed that line, run `crosshall read` once, unless the hall's last word to this session was that it brings new work to it: then a turn that showed no `[crosshall] pending:` line needs no check. Later arrivals belong to the next turn."
 	if !strings.Contains(joined, rule) {
 		t.Fatalf("join does not state the turn-end rule:\n%s", joined)
 	}

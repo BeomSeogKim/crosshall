@@ -142,7 +142,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence}
+	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence, stamps: s.applyAdapterStamps}
 	sends := len(publish.Adapters().Senders()) > 0
 	if err := pub.recover(ctx, time.Now()); err != nil {
 		return err
@@ -615,7 +615,10 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				result = commandError(core.ExitRefused, "", "hook join acknowledgement requires member ingress")
 				return errRefusalRollback
 			}
-			return acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller)
+			if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+				return err
+			}
+			return acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller)
 		}
 		var hook *domain.AdapterContext
 		if isHook {
@@ -630,6 +633,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			}
 		}
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+			return err
+		}
+		if err := acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
 		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)

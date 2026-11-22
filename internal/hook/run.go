@@ -202,10 +202,12 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if failure != "" {
 		return failure
 	}
-	if joinHintSeen && !hookExpired(ctx) {
+	reachSeen := confirmReach(ctx, leaf, gen, spec, result)
+	// The one acknowledgement request applies the start line and the reach line.
+	if (joinHintSeen || reachSeen) && !hookExpired(ctx) {
 		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
 	}
-	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && !hookExpired(ctx) {
+	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {
@@ -252,6 +254,22 @@ func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, gener
 	}
 	raw, _ := json.Marshal(ack)
 	return "", writeRecord(leaf, seenJoinHint, string(raw)+"\n") == nil
+}
+
+// confirmReach records a printed reach line for the dispatcher to store as
+// told. A line that was not printed stays offered.
+func confirmReach(ctx context.Context, leaf *os.Root, generation string, spec eventSpec, result wire.HookResult) bool {
+	ack := result.ReachAck
+	if ack == nil || !reachShown(spec, result) || !ack.ValidFor(generation) || !CurrentReachOffer(leaf, *ack) || hookExpired(ctx) {
+		return false
+	}
+	raw, _ := json.Marshal(ack)
+	return writeRecord(leaf, seenReach, string(raw)+"\n") == nil
+}
+
+func reachShown(spec eventSpec, result wire.HookResult) bool {
+	return result.ReachLine != "" && !spec.Stop && (spec.Output == "context" || spec.Output == "inject_steps") &&
+		(spec.Enroll && result.Enrollment == "restored" || !spec.Enroll && spec.Notice)
 }
 
 func withoutJoinHint(result wire.HookResult) wire.HookResult {
@@ -582,6 +600,9 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		default:
 			return nil, nil
 		}
+	}
+	if reachShown(spec, result) {
+		parts = append(parts, result.ReachLine)
 	}
 	if result.PendingLine != "" {
 		parts = append(parts, result.PendingLine)

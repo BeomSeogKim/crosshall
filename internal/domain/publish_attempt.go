@@ -427,6 +427,10 @@ func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason stri
 				AND s.launch_ref = a.launch_ref AND s.id > b.publish_resume_suspension) + 1 >= ?5 THEN NULL ELSE ?4 END
 		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id WHERE a.id = ?1`,
 		attempt, reason, ms(now), ms(now.Add(publishSuspension)), publishLastingSuspension)
+	if err != nil {
+		return err
+	}
+	_, err = MarkReachChanges(ctx, tx, now)
 	return err
 }
 

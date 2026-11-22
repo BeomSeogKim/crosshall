@@ -92,6 +92,9 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		if err := audit(ctx, tx, "adapter_policy_set", scope, owner, after, now); err != nil {
 			return core.Result{}, err
 		}
+		if _, err := MarkReachChanges(ctx, tx, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	result, err := OK(after)
 	if err != nil {

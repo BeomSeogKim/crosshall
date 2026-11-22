@@ -75,6 +75,9 @@ func (s *Service) publish(ctx context.Context, tx store.Tx, caller core.Caller, 
 			map[string]string{"by": "member", "switch": out.Switch}, now); err != nil {
 			return core.Result{}, err
 		}
+		if _, err := MarkReachChanges(ctx, tx, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	status, err := publishStatusOf(ctx, tx, m.binding, now)
 	if err != nil {
@@ -151,8 +154,11 @@ func (s *Service) ownerPublish(ctx context.Context, tx store.Tx, caller core.Cal
 			return core.Result{}, err
 		}
 	}
-	if out.Changed {
+	if out.Changed || out.BuildStopLifted {
 		if err := audit(ctx, tx, "publish_switch", scope, owner, map[string]string{"by": "owner", "switch": cmd.Switch}, now); err != nil {
+			return core.Result{}, err
+		}
+		if _, err := MarkReachChanges(ctx, tx, now); err != nil {
 			return core.Result{}, err
 		}
 	}

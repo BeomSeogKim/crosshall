@@ -36,6 +36,41 @@ func (p *publishFixture) wantReach(step string, got wire.HookResult, line string
 	p.mutate(`UPDATE binding SET reach_told = ? WHERE id = ?`, got.ReachAck.Told, got.ReachAck.BindingID)
 }
 
+// sweep runs the dispatcher tick's reach check.
+func (p *publishFixture) sweep() {
+	p.t.Helper()
+	p.update(func(ctx context.Context, tx store.Tx) error {
+		_, err := MarkReachChanges(ctx, tx, p.now)
+		return err
+	})
+}
+
+func (p *publishFixture) marked() bool {
+	p.t.Helper()
+	return p.count(`SELECT COUNT(*) FROM adapter_dirty WHERE principal_id = ? AND notice = 1`, p.principalOf(p.reader)) == 1
+}
+
+func (p *publishFixture) clearStamps() {
+	p.t.Helper()
+	p.mutate(`DELETE FROM adapter_dirty`)
+}
+
+// wantStampMove checks that what happened since clearStamps moved the
+// reader's notice stamp, at its own event or at the next sweep, and that a
+// further sweep does not move it again.
+func (p *publishFixture) wantStampMove(step string, moved bool) {
+	p.t.Helper()
+	p.sweep()
+	if got := p.marked(); got != moved {
+		p.t.Fatalf("%s: stamp moved %t, want %t", step, got, moved)
+	}
+	p.clearStamps()
+	p.sweep()
+	if p.marked() {
+		p.t.Fatalf("%s: the stamp moved again with nothing changed", step)
+	}
+}
+
 func (p *publishFixture) told() any {
 	p.t.Helper()
 	var told any
@@ -51,7 +86,10 @@ func TestReachLineIsSaidWhenItChangesAndOfferedUntilPrinted(t *testing.T) {
 	if told := p.told(); told != nil {
 		t.Fatalf("nothing said, stored %v", told)
 	}
+	p.clearStamps()
+	p.wantStampMove("never reached, never told", false)
 	p.proveRoute()
+	p.wantStampMove("proven", true)
 	if got := p.turn(); got.ReachLine != ReachBringsLine {
 		t.Fatalf("first reachable prompt: %q", got.ReachLine)
 	}
@@ -70,26 +108,39 @@ func TestReachLineIsSaidWhenItChangesAndOfferedUntilPrinted(t *testing.T) {
 	if s := p.publishState(); s.State != "held" {
 		t.Fatalf("publish %+v, want held", s)
 	}
+	p.clearStamps()
+	p.wantStampMove("held", false)
 	p.wantReach("held", p.turn(), "")
 	p.now = heldAt.Add(HeldReachBound - 2*time.Second)
+	p.wantStampMove("held just under the bound", false)
 	p.wantReach("held just under the bound", p.turn(), "")
+	p.now = heldAt.Add(HeldReachBound)
+	p.wantStampMove("held for the bound", true)
 	p.wantReach("held for the bound", p.turn(), ReachLostLine)
 	p.wantReach("said once", p.turn(), "")
 
 	// The notice's own prompt sees the state after its receipt.
 	p.now = p.now.Add(time.Second)
+	p.clearStamps()
 	got := p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli(), ids))
 	p.observation(id, "own_turn")
 	p.wantReach("the receipt ends the hold", got, ReachBringsLine)
+	p.wantStampMove("told by the receipt's own prompt", false)
 }
 
 func TestReachLineFlipsWithEachWayTheHallStopsReaching(t *testing.T) {
+	setAdapter := func(p *publishFixture, publish, key string) {
+		wantOK(p.t, p.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude", Publish: &publish}}, key))
+	}
+	// event marks a change that has a site of its own: it must move the
+	// stamp in that transaction, before any sweep.
 	for _, test := range []struct {
 		name    string
 		off, on func(p *publishFixture)
+		event   bool
 	}{
 		{"absorbed receipt, lapsing", func(p *publishFixture) { p.observed("absorbed") },
-			func(p *publishFixture) { p.now = p.now.Add(30 * time.Minute) }},
+			func(p *publishFixture) { p.now = p.now.Add(30 * time.Minute) }, true},
 		{"build stop", func(p *publishFixture) {
 			p.mutate(`INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, stopped_at_ms, stop_reason, stop_ref)
 				SELECT 'claude', json_extract(profile, '$.vendor_version'), json_extract(profile, '$.platform'),
@@ -97,7 +148,7 @@ func TestReachLineFlipsWithEachWayTheHallStopsReaching(t *testing.T) {
 				FROM adapter_launch WHERE launch_ref = ?`, p.now.UnixMilli(), publishTestLaunch)
 		}, func(p *publishFixture) {
 			p.mutate(`UPDATE capability_build SET lifted_at_ms = ?`, p.now.UnixMilli()+1)
-		}},
+		}, false},
 		{"hourly cap", func(p *publishFixture) {
 			at := p.now.UnixMilli()
 			p.mutate(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
@@ -107,42 +158,47 @@ func TestReachLineFlipsWithEachWayTheHallStopsReaching(t *testing.T) {
 					policy_epoch, 42, ?, 'submitted', ?, ?, ?, ?, 'own_turn'
 				FROM publish_route CROSS JOIN seq WHERE binding_id = ?`,
 				store.PublishHourlyCap, p.queue.StartMS, at, at, at, at, p.binding.ID)
-		}, func(p *publishFixture) { p.now = p.now.Add(time.Hour) }},
+		}, func(p *publishFixture) { p.now = p.now.Add(time.Hour) }, false},
 		{"owner hall switch", func(p *publishFixture) {
 			wantOK(p.t, p.owner(OwnerPublish{Hall: true, Switch: "off"}, "hall-off"))
 		}, func(p *publishFixture) {
 			wantOK(p.t, p.owner(OwnerPublish{Hall: true, Switch: "on"}, "hall-on"))
-		}},
-		{"owner adapter switch", func(p *publishFixture) {
-			p.mutate(`UPDATE adapter_policy SET publish = 0 WHERE adapter = 'claude'`)
-		}, func(p *publishFixture) {
-			p.mutate(`UPDATE adapter_policy SET publish = NULL WHERE adapter = 'claude'`)
-		}},
+		}, true},
+		{"owner adapter switch", func(p *publishFixture) { setAdapter(p, "off", "adapter-off") },
+			func(p *publishFixture) { setAdapter(p, "default", "adapter-default") }, true},
 		{"owner member switch", func(p *publishFixture) {
 			wantOK(p.t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "off"}, "member-off"))
 		}, func(p *publishFixture) {
 			wantOK(p.t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "default"}, "member-default"))
-		}},
+		}, true},
 		{"member's own switch", func(p *publishFixture) {
 			wantOK(p.t, p.run(p.reader, Publish{}, "self-off"))
 		}, func(p *publishFixture) {
 			wantOK(p.t, p.run(p.reader, Publish{On: true}, "self-on"))
-		}},
+		}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := newPublishFixture(t)
 			p.proveRoute()
+			p.wantStampMove("proven", true)
 			p.wantReach("reachable", p.turn(), ReachBringsLine)
+			p.clearStamps()
 			test.off(p)
 			if s := p.publishState(); ReachesForNewWork(s, p.now) {
 				t.Fatalf("publish %+v still reaches", s)
 			}
+			if test.event && !p.marked() {
+				t.Fatal("the change did not move the stamp in its own transaction")
+			}
+			p.wantStampMove("stopped reaching", true)
 			p.wantReach("stopped reaching", p.turn(), ReachLostLine)
 			p.wantReach("said once", p.turn(), "")
+			p.clearStamps()
 			test.on(p)
 			if s := p.publishState(); s.State != "available" {
 				t.Fatalf("publish %+v, want available again", s)
 			}
+			p.wantStampMove("back", true)
 			p.wantReach("back", p.turn(), ReachBringsLine)
 		})
 	}
@@ -224,5 +280,31 @@ func TestReachLineNeverReachesAMemberWithoutARoute(t *testing.T) {
 			t.Fatalf("prompt %d of a member the hall never reaches: %+v", i, got)
 		}
 		f.hook(codex, stop("pid-77-start", ref, at+int64(10*(i+1))+1))
+	}
+}
+
+// A member the hall never reached and never told keeps the hook's clean path
+// through every change: none of them moves its stamp.
+func TestReachNeverMovesTheStampOfAMemberNeverReachedOrTold(t *testing.T) {
+	p := newPublishFixture(t) // a route that is never proven
+	p.clearStamps()
+	off := "off"
+	for i, change := range []func(){
+		func() { wantOK(t, p.owner(OwnerPublish{Hall: true, Switch: "off"}, "hall-off")) },
+		func() { wantOK(t, p.owner(OwnerPublish{Hall: true, Switch: "on"}, "hall-on")) },
+		func() {
+			wantOK(t, p.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude", Publish: &off}}, "adapter-off"))
+		},
+		func() { wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "off"}, "member-off")) },
+		func() { wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "default"}, "member-default")) },
+		func() { wantOK(t, p.run(p.reader, Publish{}, "self-off")) },
+		func() { wantOK(t, p.run(p.reader, Publish{On: true}, "self-on")) },
+		func() { p.now = p.now.Add(time.Hour) },
+	} {
+		change()
+		p.wantStampMove(fmt.Sprintf("change %d", i), false)
+	}
+	if told := p.told(); told != nil {
+		t.Fatalf("a member never reached was told %v", told)
 	}
 }

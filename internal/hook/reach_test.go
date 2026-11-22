@@ -87,10 +87,9 @@ func TestReachLineIsPrintedBeforePendingAndRecordedOnlyWhenPrinted(t *testing.T)
 	}
 }
 
-// Whether the hall still reaches a session changes without a notice for the
-// stamp to record, so a Claude Code prompt with a messaging socket always
-// waits for the dispatcher's answer.
-func TestAPromptWithAMessagingSocketAlwaysAsks(t *testing.T) {
+// The dispatcher moves the notice stamp when a session's reach changes, so a
+// Claude Code prompt with a messaging socket keeps the clean path (#121).
+func TestAPromptWithAMessagingSocketKeepsTheCleanPath(t *testing.T) {
 	for _, socket := range []bool{false, true} {
 		t.Run(fmt.Sprintf("socket %t", socket), func(t *testing.T) {
 			rv, dir, oldLeaf := runFixture(t)
@@ -134,8 +133,8 @@ func TestAPromptWithAMessagingSocketAlwaysAsks(t *testing.T) {
 				dispatchEvent(t.Context(), time.UnixMilli(200+int64(i)), rv, transport, []string{"claude", "UserPromptSubmit"},
 					strings.NewReader(input), &out, lookup)
 			}
-			// The first prompt asks either way and records the notice stamp.
-			want := []bool{false, !socket, !socket}
+			// The first prompt asks and records the notice stamp.
+			want := []bool{false, true, true}
 			if fmt.Sprint(oneWays) != fmt.Sprint(want) {
 				t.Fatalf("one-way prompts %v, want %v", oneWays, want)
 			}

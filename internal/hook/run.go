@@ -167,9 +167,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	// publish their lifecycle observation without waiting for a reply.
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
-	// A session the hall can publish to asks at every prompt: whether the
-	// hall still reaches it changes without a notice to stamp (#121).
-	clean := !spec.Enroll && notice && e.SocketPath == "" && stampClean(rv, leaf, gen, "notice", "")
+	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
 	}
@@ -209,7 +207,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if (joinHintSeen || reachSeen) && !hookExpired(ctx) {
 		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
 	}
-	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && !hookExpired(ctx) {
+	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {

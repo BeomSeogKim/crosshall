@@ -31,6 +31,8 @@ type publisher struct {
 	// time a failed proof may be retried (publishProveRetry).
 	proving sync.Map
 	workers sync.WaitGroup
+	// stamps publishes the notice stamps a tick invalidated.
+	stamps func(context.Context, store.Tx) error
 }
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
@@ -82,6 +84,16 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		}
 		if proofs, err = domain.UnprovenPublishRoutes(ctx, tx, now); err != nil {
 			return err
+		}
+		// The sweep is the net under the event sites, and flushes the stamps
+		// that a worker's transaction (a third failed submission) marked.
+		if _, err := domain.MarkReachChanges(ctx, tx, now); err != nil {
+			return err
+		}
+		if p.stamps != nil {
+			if err := p.stamps(ctx, tx); err != nil {
+				return err
+			}
 		}
 		attempts, err = domain.ReservedPublishAttempts(ctx, tx)
 		if err == nil {

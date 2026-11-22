@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **No end-of-turn check where the hall reaches you:** a session the hall can start a turn in is told so at a prompt, and then ends a turn that showed no pending line without a `crosshall read`. When the hall stops reaching it, the next prompt says so and the check applies again. The database moves to schema 19 (#121).
+
 ## v0.2.0-rc.1 (2026-11-22)
 
 - **Your own agents, without relaying:** installing the hooks for Claude Code, Codex CLI or Antigravity CLI takes one question. New sessions then join their repository's channel by themselves: crosshall creates the channel at the first start and names it after the repository's directory (#133, #135, #151, #158). Agents run the member commands without a permission prompt for each (#159).

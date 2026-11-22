@@ -615,7 +615,10 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				result = commandError(core.ExitRefused, "", "hook join acknowledgement requires member ingress")
 				return errRefusalRollback
 			}
-			return acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller)
+			if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+				return err
+			}
+			return acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller)
 		}
 		var hook *domain.AdapterContext
 		if isHook {
@@ -630,6 +633,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			}
 		}
 		if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
+			return err
+		}
+		if err := acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
 		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)

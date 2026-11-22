@@ -252,6 +252,11 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 			return core.Result{}, err
 		}
 	}
+	if cmd.Source == "clear" || cmd.Source == "compact" || cmd.Source == "resume" {
+		if err := offerReach(ctx, tx, b, true, &out, now); err != nil {
+			return core.Result{}, err
+		}
+	}
 	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
@@ -738,6 +743,9 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 				if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 					return core.Result{}, err
 				}
+			}
+			if err := offerReach(ctx, tx, b, false, &out, now); err != nil {
+				return core.Result{}, err
 			}
 			if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
 				return core.Result{}, err

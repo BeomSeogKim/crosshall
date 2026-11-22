@@ -217,6 +217,33 @@ func readJoinHintRecord(leaf *os.Root, name, generation string) (wire.HookJoinHi
 	return ack, ack.ValidFor(generation)
 }
 
+const seenReach = "seen-reach"
+
+const ReachOfferFile = "reach-offer"
+
+func ReadReachOffer(leaf *os.Root, generation string) (wire.HookReachAck, bool) {
+	return readReachRecord(leaf, ReachOfferFile, generation)
+}
+
+func CurrentReachOffer(leaf *os.Root, ack wire.HookReachAck) bool {
+	offer, ok := ReadReachOffer(leaf, ack.Generation)
+	return ok && offer.SameOffer(ack)
+}
+
+// ReadReachAck is the reach line the hook last printed.
+func ReadReachAck(leaf *os.Root, generation string) (wire.HookReachAck, bool) {
+	return readReachRecord(leaf, seenReach, generation)
+}
+
+func readReachRecord(leaf *os.Root, name, generation string) (wire.HookReachAck, bool) {
+	var ack wire.HookReachAck
+	data, err := ident.ReadPrivateFile(leaf, name, 512)
+	if err != nil || json.Unmarshal(data, &ack) != nil {
+		return ack, false
+	}
+	return ack, ack.ValidFor(generation)
+}
+
 func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookAck) error {
 	// Hold the same stable inode across the comparison and atomic publication.
 	// Losing a lock costs a future check; no hook waits on another hook's disk I/O.

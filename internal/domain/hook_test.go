@@ -54,7 +54,7 @@ func (f *fixture) hook(s session, cmd Command) wire.HookResult {
 // quiet reports whether a hook result has nothing to print and nothing to acknowledge.
 func quiet(r wire.HookResult) bool {
 	return r.Hint == "" && r.PendingLine == "" && len(r.Roster) == 0 && r.ReminderText == "" && r.TurnEndLine == "" && r.Ack == nil &&
-		r.JoinHintAck == nil && (r.Enrollment == "" || r.Enrollment == "none")
+		r.JoinHintAck == nil && r.ReachLine == "" && r.ReachAck == nil && (r.Enrollment == "" || r.Enrollment == "none")
 }
 
 func rosterOf(t *testing.T, r wire.HookResult) []Member {

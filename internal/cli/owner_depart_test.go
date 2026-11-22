@@ -117,8 +117,13 @@ func TestReadmeOwnerWhoMatchesTheCommand(t *testing.T) {
 		t.Fatalf("owner who exited %d: stdout %q, stderr %q", code, out, stderr)
 	}
 	token := regexp.MustCompile(`(; depart token: )[0-9a-f]{24}\n`)
-	got := token.ReplaceAllString("$ crosshall "+strings.Join(args, " ")+"\n"+out, "${1}<token>\n")
-	want := token.ReplaceAllString(setuptest.ReadmeBlock(t, "owner-who"), "${1}<token>\n")
+	got := "$ crosshall " + strings.Join(args, " ") + "\n" + out
+	want := setuptest.ReadmeBlock(t, "owner-who")
+	if len(token.FindAllString(got, -1)) != 2 || len(token.FindAllString(want, -1)) != 2 {
+		t.Fatalf("expected two 24-hex departure tokens in the owner view and the README\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	got = token.ReplaceAllString(got, "${1}<token>\n")
+	want = token.ReplaceAllString(want, "${1}<token>\n")
 	if got != want {
 		t.Fatalf("README owner view differs from the command\ngot:\n%s\nwant:\n%s", got, want)
 	}

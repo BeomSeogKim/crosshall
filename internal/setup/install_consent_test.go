@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +14,16 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
+
+type readmeTerminal struct {
+	bytes.Buffer
+	beforeInput string
+}
+
+func (t *readmeTerminal) Read([]byte) (int, error) {
+	t.beforeInput = t.String()
+	return 0, io.EOF
+}
 
 func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 	for _, tc := range []struct {
@@ -171,20 +183,26 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			offer := tc.name != "owner adapter off" && tc.name != "owner adapter on" && tc.name != "unreadable" &&
 				!strings.HasPrefix(tc.name, "turn-end switch")
 			req := Request{Offer: offer, Terminal: true}
+			var out string
+			var err error
+			var terminal readmeTerminal
 			if tc.name == "exact" {
 				req.PathConsent = func(bool) error { return nil }
+				err = runRealPrompts(t, s, f, req, &terminal, &terminal)
+				out = terminal.String()
+			} else {
+				out, err = realRun(t, s, f, req, "\n")
 			}
-			out, err := realRun(t, s, f, req, "\n")
 			if err != nil {
 				t.Fatal(err)
 			}
 			const heading = "Saying yes turns these on for the listed agents:\n"
 			_, disclosure, found := strings.Cut(out, heading)
 			if tc.name == "exact" {
-				question, _, asked := strings.Cut(disclosure, "[y/N]")
-				got := strings.ReplaceAll(heading+question+"[y/N]\n", f.Home, "/home/you")
+				_, question, asked := strings.Cut(terminal.beforeInput, heading)
+				got := strings.ReplaceAll(strings.TrimRight(heading+question, " \t\r\n"), f.Home, "/home/you") + "\n"
 				want := setuptest.ReadmeBlock(t, "install-question")
-				if !found || !asked || got != want {
+				if !asked || got != want {
 					t.Fatalf("README install question differs from the terminal offer\ngot:\n%s\nwant:\n%s", got, want)
 				}
 			}

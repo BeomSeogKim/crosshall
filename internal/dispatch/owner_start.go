@@ -81,7 +81,19 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 		case <-wait.Done():
 		}
 	}
-	return fmt.Errorf("dispatcher did not become ready while %s (see dispatcher.log): %w", stage, wait.Err())
+	// The owner may have been descheduled since it last observed this stage.
+	lock := "the state lock was free"
+	if held, err := lockState(state); err != nil {
+		lock = fmt.Sprintf("the state lock could not be checked (%v)", err)
+	} else if held {
+		lock = "the state lock was held"
+	}
+	marker := "no valid readiness marker was observed"
+	if candidate := cfg.readinessCandidate(); candidate.Instance != "" {
+		marker = fmt.Sprintf("a valid readiness marker named PID %d", candidate.PID)
+	}
+	return fmt.Errorf("dispatcher readiness was not confirmed (%w). Last observed stage was %s. "+
+		"At the final check, %s and %s. See dispatcher.log.", wait.Err(), stage, lock, marker)
 }
 
 func (cfg LaunchConfig) startCandidate(state *os.Root) (<-chan bool, error) {

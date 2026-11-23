@@ -111,7 +111,7 @@ func TestLastingSuspensionReachesTheOwnerOnce(t *testing.T) {
 		t.Fatalf("a member command carried the owner line: %q", r.OwnerAlerts)
 	}
 	want := []string{
-		fmt.Sprintf("crosshall: notices to @reader in #checkout are off until its session restarts (third suspension, notice %d absorbed at %s).", notice, at),
+		fmt.Sprintf("crosshall: notices to @reader in #checkout are off until its launch ends (third suspension, notice %d absorbed at %s).", notice, at),
 		fmt.Sprintf("next: crosshall owner publish resume %d turns them on again.", p.binding.ID),
 	}
 	if got := p.owner(OwnerStatus{}, "").OwnerAlerts; !reflect.DeepEqual(got, want) {
@@ -127,7 +127,7 @@ func TestLastingSuspensionReachesTheOwnerOnce(t *testing.T) {
 		return err
 	})
 	wantAlert := DesktopAlert{Title: "crosshall: notices off in #checkout",
-		Body: fmt.Sprintf("Notices to @reader stay off until its session restarts: notice %d absorbed, the third suspension. Run: crosshall owner publish resume %d",
+		Body: fmt.Sprintf("Notices to @reader stay off until its launch ends: notice %d absorbed, the third suspension. Run: crosshall owner publish resume %d",
 			notice, p.binding.ID)}
 	if len(alerts) != 1 || alerts[0].Title != wantAlert.Title || alerts[0].Body != wantAlert.Body {
 		t.Fatalf("desktop alerts %+v, want %+v", alerts, wantAlert)
@@ -194,5 +194,37 @@ func TestOnlyTheSuspensionInForceIsReported(t *testing.T) {
 	lines := p.owner(OwnerStatus{}, "").OwnerAlerts
 	if len(lines) != 2 || !strings.Contains(lines[0], fmt.Sprintf("notice %d absorbed", second)) {
 		t.Fatalf("owner line %q, want only notice %d's suspension", lines, second)
+	}
+}
+
+// A hand join from a newer process starts a new launch but can leave the
+// route naming the old one. The old launch's lasting suspension keeps its
+// audit event and stops reaching the owner, on the line and the desktop.
+func TestALastingSuspensionOfAnEarlierLaunchIsNotReported(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.lastingSuspension()
+	p.now = p.now.Add(time.Minute)
+	p.svc.LaunchProcess = testProcess
+	p.svc.LaunchAlive = func(string, int64) bool { return true } // the old process too
+	joined := decode[JoinResult](t, p.join(p.reader, Join{Channel: "checkout", Alias: "reader",
+		Launch: joinLaunch("pid-43-join", p.now.UnixMilli())}, "hand-join"))
+	if joined.Launch == nil || joined.Launch.Ref != "pid-43-join" {
+		t.Fatalf("the hand join bound no new launch: %+v", joined.Launch)
+	}
+	if got := p.owner(OwnerStatus{}, "").OwnerAlerts; got != nil {
+		t.Fatalf("an earlier launch's suspension reached the owner: %q", got)
+	}
+	p.mutate(`UPDATE owner_alert SET shown_at_ms = NULL`)
+	var alerts []DesktopAlert
+	p.update(func(ctx context.Context, tx store.Tx) (err error) {
+		alerts, err = ClaimDesktopAlerts(ctx, tx, p.now, true)
+		return err
+	})
+	if len(alerts) != 0 {
+		t.Fatalf("an earlier launch's suspension was shown: %+v", alerts)
+	}
+	if events := p.suspensionEvents(); len(events) != 3 || !events[2].detail.Lasting || !events[2].alerted {
+		t.Fatalf("the audit event was lost: %+v", events)
 	}
 }

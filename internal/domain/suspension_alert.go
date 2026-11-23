@@ -52,9 +52,17 @@ func recordSuspension(ctx context.Context, tx store.Tx, suspension int64, now ti
 }
 
 // open holds while this lasting suspension is what keeps the member's
-// notices off: not lifted by the owner or by a new launch, and the member
-// live with notices otherwise on.
+// notices off: its launch is still the member's current one, it was not
+// lifted by the owner, and the member is live with notices otherwise on. The
+// publish state alone is not enough: a hand join from a newer process starts
+// a new launch while the route can still name the old one.
 func (d publishSuspended) open(ctx context.Context, tx store.Tx, now time.Time) (bool, error) {
+	var current bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM binding b JOIN `+currentBindingLaunch+`
+		JOIN publish_suspension s ON s.id = ?1 AND s.launch_ref = l.launch_ref WHERE b.id = ?2)`,
+		d.Suspension, d.BindingID).Scan(&current); err != nil || !current {
+		return false, err
+	}
 	state, found, err := store.ReadPublishState(ctx, tx, d.BindingID, now)
 	return found && state.RecoveryHint.SuspensionID == d.Suspension, err
 }
@@ -63,13 +71,13 @@ func (d publishSuspended) reason() string { return strings.ReplaceAll(d.Reason, 
 
 func (d publishSuspended) desktopAlert(seq int64) DesktopAlert {
 	return DesktopAlert{Seq: seq, Title: "crosshall: notices off in #" + d.Channel,
-		Body: fmt.Sprintf("Notices to @%s stay off until its session restarts: notice %d %s, the third suspension. Run: crosshall owner publish resume %d",
+		Body: fmt.Sprintf("Notices to @%s stay off until its launch ends: notice %d %s, the third suspension. Run: crosshall owner publish resume %d",
 			d.Alias, d.Notice, d.reason(), d.BindingID)}
 }
 
 func (d publishSuspended) ownerLines(atMS int64) []string {
 	return []string{
-		fmt.Sprintf("crosshall: notices to @%s in #%s are off until its session restarts (third suspension, notice %d %s at %s).",
+		fmt.Sprintf("crosshall: notices to @%s in #%s are off until its launch ends (third suspension, notice %d %s at %s).",
 			d.Alias, d.Channel, d.Notice, d.reason(), time.UnixMilli(atMS).Format("15:04")),
 		fmt.Sprintf("next: crosshall owner publish resume %d turns them on again.", d.BindingID),
 	}

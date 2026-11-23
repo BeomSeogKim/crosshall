@@ -22,17 +22,18 @@ type Service struct {
 }
 
 type Request struct {
-	Action      string
-	DryRun      bool
-	JSON        bool
-	Input       io.Reader
-	Output      io.Writer
-	Prompt      io.Writer
-	Adapters    []string
-	Apply       bool
-	Offer       bool
-	Terminal    bool
-	PathConsent func(bool) error
+	Action         string
+	DryRun         bool
+	JSON           bool
+	Input          io.Reader
+	Output         io.Writer
+	Prompt         io.Writer
+	Adapters       []string
+	Apply          bool
+	Offer          bool
+	Terminal       bool
+	PathConsent    func(bool) error
+	OfferTelemetry func(*bufio.Reader) error
 	// Installed is told that at least one agent's hooks were installed.
 	Installed func()
 }

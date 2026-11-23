@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -147,7 +148,7 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 
 func (cfg LaunchConfig) dispatcherEnv() []string {
 	env := []string{"CROSSHALL_STATE_DIR=" + cfg.StateRoot}
-	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME"}
+	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME", telemetryconfig.TelemetryEnv, telemetryconfig.DoNotTrackEnv}
 	if allowsTestClock(cfg.Version) {
 		keys = append(keys, clockOffsetEnv)
 	}

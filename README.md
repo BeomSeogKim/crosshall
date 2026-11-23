@@ -2,7 +2,7 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.2.0-rc.2, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session; since v0.2.0-rc.1, usage statistics you are asked about once and members that leave when their session exits. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.2, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session; since v0.2.0-rc.1, usage statistics you are asked about once and members that leave when their agent process exits. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
 Install: `git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
@@ -69,7 +69,7 @@ Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 
 On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
 
-When a usage statistics receiver is configured, the installer asks separately in your own terminal. The question also appears at your first eligible owner command if you skipped it. This build leaves the receiver unconfigured.
+The installer asks about usage statistics separately in your own terminal. The question also appears at your first eligible owner command if you skipped it. A build not made from a release tag has no receiver and does not ask.
 
 <!-- readme-check: telemetry-question -->
 ```text

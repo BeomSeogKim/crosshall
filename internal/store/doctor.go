@@ -43,6 +43,19 @@ type DoctorPublishCounters struct {
 	OwnTurn      int    `json:"own_turn"`
 	Absorbed     int    `json:"absorbed"`
 	Unknown      int    `json:"unknown"`
+	// UnknownCauses splits Unknown by the condition that left each
+	// receipt unknown.
+	UnknownCauses DoctorUnknownCauses `json:"unknown_causes"`
+}
+
+// DoctorUnknownCauses counts unknown receipts by cause; NotRecorded counts
+// those observed before causes were recorded.
+type DoctorUnknownCauses struct {
+	OpenPlaceholder   int `json:"open_placeholder"`
+	UnfinishedTurn    int `json:"unfinished_turn"`
+	ActivitySinceStop int `json:"activity_since_stop"`
+	NoTurnButFacts    int `json:"no_turn_but_facts"`
+	NotRecorded       int `json:"not_recorded"`
 }
 
 // DoctorPublishMember is one live member's publish state.
@@ -337,10 +350,15 @@ func readDoctorPublish(ctx context.Context, tx Tx, adapter string, day, now time
 	if err := tx.QueryRowContext(ctx, `SELECT
 			COALESCE(SUM(state = 'submitted'), 0), COALESCE(SUM(state = 'uncertain'), 0),
 			COALESCE(SUM(state = 'not_submitted'), 0), COALESCE(SUM(observation = 'own_turn'), 0),
-			COALESCE(SUM(observation = 'absorbed'), 0), COALESCE(SUM(observation = 'unknown'), 0)
+			COALESCE(SUM(observation = 'absorbed'), 0), COALESCE(SUM(observation = 'unknown'), 0),
+			COALESCE(SUM(unknown_cause = 'open_placeholder'), 0), COALESCE(SUM(unknown_cause = 'unfinished_turn'), 0),
+			COALESCE(SUM(unknown_cause = 'activity_since_stop'), 0), COALESCE(SUM(unknown_cause = 'no_turn_but_facts'), 0),
+			COALESCE(SUM(observation = 'unknown' AND unknown_cause IS NULL), 0)
 		FROM publish_attempt WHERE adapter = ? AND reserved_at_ms >= ? AND reserved_at_ms < ?`,
 		adapter, day.UnixMilli(), day.AddDate(0, 0, 1).UnixMilli()).
-		Scan(&c.Submitted, &c.Uncertain, &c.NotSubmitted, &c.OwnTurn, &c.Absorbed, &c.Unknown); err != nil {
+		Scan(&c.Submitted, &c.Uncertain, &c.NotSubmitted, &c.OwnTurn, &c.Absorbed, &c.Unknown,
+			&c.UnknownCauses.OpenPlaceholder, &c.UnknownCauses.UnfinishedTurn, &c.UnknownCauses.ActivitySinceStop,
+			&c.UnknownCauses.NoTurnButFacts, &c.UnknownCauses.NotRecorded); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT c.name, b.alias, b.id FROM publish_route r

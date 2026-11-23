@@ -18,19 +18,24 @@ const (
 	ownerLineStops     = 3
 )
 
-// DesktopAlert is a round stop the dispatcher shows as a notification.
+// DesktopAlert is a round stop or a lasting notice suspension the
+// dispatcher shows as a notification.
 type DesktopAlert struct {
 	Seq   int64
 	Title string
 	Body  string
 }
 
+// alertedStop is an alerted event: a round stop, or with kind
+// publish_suspended a lasting notice suspension, whose detail is suspension.
 type alertedStop struct {
-	seq     int64
-	subject string
-	atMS    int64
-	open    bool
-	detail  guardStop
+	seq        int64
+	kind       string
+	subject    string
+	atMS       int64
+	open       bool
+	detail     guardStop
+	suspension publishSuspended
 }
 
 // A stop is open while its flag is set and no later stop replaced it.
@@ -39,8 +44,24 @@ const openStop = `COALESCE(CASE
         ELSE (SELECT guard_told FROM principal WHERE id = CAST(substr(e.subject, 11) AS INTEGER)) END, 0) = 1
     AND NOT EXISTS (SELECT 1 FROM event later WHERE later.kind = e.kind AND later.subject = e.subject AND later.seq > e.seq)`
 
-func alertedStops(ctx context.Context, tx store.Tx, where string) ([]alertedStop, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT a.event_seq, e.subject, e.at_ms, `+openStop+`, e.detail
+func alertedStops(ctx context.Context, tx store.Tx, where string, now time.Time) ([]alertedStop, error) {
+	out, err := scanAlertedStops(ctx, tx, where)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].kind == publishSuspendedEvent {
+			if out[i].open, err = out[i].suspension.open(ctx, tx, now); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+func scanAlertedStops(ctx context.Context, tx store.Tx, where string) ([]alertedStop, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT a.event_seq, e.kind, e.subject, e.at_ms,
+        CASE WHEN e.kind = '`+guardStopped+`' THEN (`+openStop+`) ELSE 0 END, e.detail
         FROM owner_alert a JOIN event e ON e.seq = a.event_seq WHERE `+where+` ORDER BY a.event_seq`)
 	if err != nil {
 		return nil, err
@@ -50,10 +71,14 @@ func alertedStops(ctx context.Context, tx store.Tx, where string) ([]alertedStop
 	for rows.Next() {
 		var stop alertedStop
 		var detail string
-		if err := rows.Scan(&stop.seq, &stop.subject, &stop.atMS, &stop.open, &detail); err != nil {
+		if err := rows.Scan(&stop.seq, &stop.kind, &stop.subject, &stop.atMS, &stop.open, &detail); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(detail), &stop.detail); err != nil {
+		into := any(&stop.detail)
+		if stop.kind == publishSuspendedEvent {
+			into = &stop.suspension
+		}
+		if err := json.Unmarshal([]byte(detail), into); err != nil {
 			return nil, err
 		}
 		out = append(out, stop)
@@ -66,7 +91,7 @@ func alertedStops(ctx context.Context, tx store.Tx, where string) ([]alertedStop
 // within a minute of the last notification is skipped; without a command
 // the rest are unavailable.
 func ClaimDesktopAlerts(ctx context.Context, tx store.Tx, now time.Time, available bool) ([]DesktopAlert, error) {
-	stops, err := alertedStops(ctx, tx, `a.desktop_state = 'pending'`)
+	stops, err := alertedStops(ctx, tx, `a.desktop_state = 'pending'`, now)
 	if err != nil || len(stops) == 0 {
 		return nil, err
 	}
@@ -123,6 +148,9 @@ func FailUnfinishedDesktopAlerts(ctx context.Context, tx store.Tx) error {
 }
 
 func (s alertedStop) desktopAlert() DesktopAlert {
+	if s.kind == publishSuspendedEvent {
+		return s.suspension.desktopAlert(s.seq)
+	}
 	d := s.detail
 	opening := fmt.Sprintf("@%s's new threads stopped. ", d.Sender)
 	if exchange, ok := strings.CutPrefix(s.subject, "exchange:"); ok {
@@ -159,7 +187,7 @@ func bestEffortOwnerAlerts(ctx context.Context, tx store.Tx, now time.Time) []st
 // lines for the first three that are still open. The command's own effect
 // is already applied, so a grant never reports the stop it closed.
 func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string, error) {
-	stops, err := alertedStops(ctx, tx, `a.shown_at_ms IS NULL`)
+	stops, err := alertedStops(ctx, tx, `a.shown_at_ms IS NULL`, now)
 	if err != nil || len(stops) == 0 {
 		return nil, err
 	}
@@ -167,12 +195,17 @@ func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string,
 		return nil, err
 	}
 	var lines []string
-	open := 0
+	open, moreStops, moreSuspensions := 0, 0, 0
 	for _, stop := range stops {
 		if !stop.open {
 			continue
 		}
 		if open++; open > ownerLineStops {
+			if stop.kind == publishSuspendedEvent {
+				moreSuspensions++
+			} else {
+				moreStops++
+			}
 			continue
 		}
 		more, err := stop.ownerLines(ctx, tx)
@@ -182,12 +215,29 @@ func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string,
 		lines = append(lines, more...)
 	}
 	if open > ownerLineStops {
-		lines = append(lines, fmt.Sprintf("and %d more: crosshall owner status", open-ownerLineStops))
+		lines = append(lines, moreAlertsLine(moreStops, moreSuspensions))
 	}
 	return lines, nil
 }
 
+// moreAlertsLine counts the open alerts past the first three and names the
+// views that show them: owner status lists round stops, owner who --all a
+// member's notice suspension.
+func moreAlertsLine(stops, suspensions int) string {
+	var views []string
+	if stops > 0 {
+		views = append(views, "crosshall owner status")
+	}
+	if suspensions > 0 {
+		views = append(views, "crosshall owner who --all")
+	}
+	return fmt.Sprintf("and %d more: %s", stops+suspensions, strings.Join(views, " and "))
+}
+
 func (s alertedStop) ownerLines(ctx context.Context, tx store.Tx) ([]string, error) {
+	if s.kind == publishSuspendedEvent {
+		return s.suspension.ownerLines(s.atMS), nil
+	}
 	d := s.detail
 	at := time.UnixMilli(s.atMS).Format("15:04")
 	refused := fmt.Sprintf("request to %s was refused: it would be round %d of %d.", RecipientList(d.Recipients), d.Round, d.RoundLimit)

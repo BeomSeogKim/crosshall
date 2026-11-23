@@ -473,7 +473,16 @@ func TestDoctorReportsPublishStatePerMemberAndCounters(t *testing.T) {
 		VALUES (1, 1, 1, 1, 'claude', 's1', 'one', 1, 11, 1, 'submitted', ?1, ?1, ?1, ?1, 'own_turn'),
 		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 12, 1, 'submitted', ?1, ?1, ?1, ?1, 'absorbed'),
 		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 13, 1, 'not_submitted', ?1, ?1, ?1, NULL, NULL),
-		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 14, 1, 'submitted', ?2, ?2, ?2, ?2, 'own_turn');
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 14, 1, 'submitted', ?2, ?2, ?2, ?2, 'own_turn'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 15, 1, 'submitted', ?2, ?2, ?2, ?2, 'unknown');
+		INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
+			policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, resolved_at_ms, observed_at_ms, observation,
+			unknown_cause)
+		VALUES (1, 1, 1, 1, 'claude', 's1', 'one', 1, 16, 1, 'submitted', ?1, ?1, ?1, ?1, 'unknown', 'open_placeholder'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 17, 1, 'submitted', ?1, ?1, ?1, ?1, 'unknown', 'open_placeholder'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 18, 1, 'submitted', ?1, ?1, ?1, ?1, 'unknown', 'no_turn_but_facts'),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 19, 1, 'submitted', ?1, ?1, ?1, ?1, 'unknown', NULL),
+		       (1, 1, 1, 1, 'claude', 's1', 'one', 1, 20, 1, 'submitted', ?2, ?2, ?2, ?2, 'unknown', 'unfinished_turn');
 		INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
 		VALUES (1, 'one', 'absorbed', 2, ?1, ?3)`,
 			at, day.UnixMilli()-1, at+30*60*1000)
@@ -495,8 +504,9 @@ func TestDoctorReportsPublishStatePerMemberAndCounters(t *testing.T) {
 		t.Fatalf("doctor JSON: %s (%v)", raw, err)
 	}
 	p := got.Adapters[0].Publish
-	if want := (store.DoctorPublishCounters{Date: "20261121", Submitted: 2, NotSubmitted: 1, OwnTurn: 1, Absorbed: 1}); p.Counters != want {
-		t.Errorf("counters %+v, want %+v (the previous day's notice is not counted)", p.Counters, want)
+	if want := (store.DoctorPublishCounters{Date: "20261121", Submitted: 6, NotSubmitted: 1, OwnTurn: 1, Absorbed: 1, Unknown: 4,
+		UnknownCauses: store.DoctorUnknownCauses{OpenPlaceholder: 2, NoTurnButFacts: 1, NotRecorded: 1}}); p.Counters != want {
+		t.Errorf("counters %+v, want %+v (the previous day's notices are not counted)", p.Counters, want)
 	}
 	if len(p.Members) != 2 {
 		t.Fatalf("members %+v", p.Members)

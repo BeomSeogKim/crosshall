@@ -31,6 +31,9 @@ type publisher struct {
 	// time a failed proof may be retried (publishProveRetry).
 	proving sync.Map
 	workers sync.WaitGroup
+	// homes names the configuration home setup installed an adapter's
+	// hooks into, which a proof checks the listener against; nil names none.
+	homes func(adapter string) string
 	// stamps publishes the notice stamps a tick invalidated.
 	stamps func(context.Context, store.Tx) error
 }
@@ -232,6 +235,9 @@ func (p *publisher) prove(ctx context.Context, proof domain.PublishProof,
 	// Like a probe, the guard outlives an abandoned proof: it is released
 	// only when the callback returns.
 	release := func() { p.proving.Store(proof.Binding, at.Add(publishProveRetry)) }
+	if p.homes != nil {
+		proof.Probe.InstalledHome = p.homes(proof.Probe.Adapter)
+	}
 	call, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
 	defer cancel()
 	if call.Err() != nil {

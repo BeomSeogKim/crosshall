@@ -87,12 +87,15 @@ var publishRecoveryHintSchema string
 //go:embed migrations/024_owner_alert.sql
 var ownerAlertSchema string
 
+//go:embed migrations/025_thread_lanes.sql
+var threadLanesSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
-	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema,
+	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

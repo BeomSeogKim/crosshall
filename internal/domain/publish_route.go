@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
@@ -59,7 +62,8 @@ func resolveSessionKey(ctx context.Context, tx store.Tx, sessionKey string, prin
 	return key
 }
 
-func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, joinedAtMS, principal int64, sessionKey string, cmd HookEnroll, now time.Time) error {
+func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, joinedAtMS, principal int64, sessionKey string,
+	cmd HookEnroll, server publish.Route, now time.Time) error {
 	if bindingEpoch > 1 && cmd.HookAtMS < joinedAtMS {
 		return nil
 	}
@@ -72,13 +76,27 @@ func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID,
 	if sessionRef == "" {
 		return nil
 	}
-	route := a.SessionRoute(sessionRef, cmd.Profile.Mode)
+	server.Mode = cmd.Profile.Mode
+	route := a.SessionRoute(sessionRef, server)
 	return upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
-		cmd.Epoch, route.Mode, "", route.ThreadID, cmd.HookAtMS, now)
+		cmd.Epoch, route, cmd.HookAtMS, now)
+}
+
+// routeHost is the server a session's start named as its host, and the
+// vendor home it serves, when the dispatcher can judge that process later;
+// else none.
+func (s *Service) routeHost(cmd HookEnroll) publish.Route {
+	home := cmd.VendorHome
+	if !s.judgeableHost(cmd.Host) || !filepath.IsAbs(home) || filepath.Clean(home) != home || len(home) > 4096 ||
+		strings.ContainsFunc(home, unicode.IsControl) {
+		return publish.Route{}
+	}
+	return publish.Route{Host: publish.Queue{PID: cmd.Host.PID, StartMS: cmd.Host.Start}, Home: home}
 }
 
 func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, adapter, sessionRef, launchRef string,
-	launchVerified bool, epoch uint64, mode, socketPath, threadID string, hookAtMS int64, now time.Time) error {
+	launchVerified bool, epoch uint64, route publish.Route, hookAtMS int64, now time.Time) error {
+	mode, socketPath, threadID := route.Mode, route.SocketPath, route.ThreadID
 	state, reason := routeCandidateReason(adapter, launchVerified, mode, socketPath, threadID)
 	watermark, err := currentWatermark(ctx, tx)
 	if err != nil {
@@ -91,9 +109,9 @@ func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoc
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO publish_route (
 		binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
-		launch_verified, policy_epoch, mode, mode_at_ms, socket_path, thread_id,
+		launch_verified, policy_epoch, mode, mode_at_ms, socket_path, thread_id, host_pid, host_start, vendor_home,
 		watermark_message_id, state, reason, registered_at_ms, updated_at_ms
-	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, 0), NULLIF(?, 0), NULLIF(?, ''), ?, ?, ?, ?, ?)
 	ON CONFLICT(binding_id) DO UPDATE SET
 		principal_id = excluded.principal_id,
 		binding_epoch = excluded.binding_epoch,
@@ -107,6 +125,9 @@ func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoc
 		mode_at_ms = excluded.mode_at_ms,
 		socket_path = excluded.socket_path,
 		thread_id = excluded.thread_id,
+		host_pid = excluded.host_pid,
+		host_start = excluded.host_start,
+		vendor_home = excluded.vendor_home,
 		watermark_message_id = excluded.watermark_message_id,
 		state = excluded.state,
 		reason = excluded.reason,
@@ -118,7 +139,7 @@ func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoc
 	WHERE excluded.binding_epoch > publish_route.binding_epoch
 	   OR (excluded.binding_epoch = publish_route.binding_epoch AND excluded.registered_at_ms >= publish_route.registered_at_ms)`,
 		bindingID, principal, bindingEpoch, adapter, sessionRef, launchRef,
-		launchVerified, epoch, mode, modeAtMS, socketPath, threadID,
+		launchVerified, epoch, mode, modeAtMS, socketPath, threadID, route.Host.PID, route.Host.StartMS, route.Home,
 		watermark, state, reason, hookAtMS, nowMS)
 	return err
 }
@@ -151,7 +172,7 @@ func attachPublishRouteSocket(ctx context.Context, tx store.Tx, bindingID, bindi
 			return false, nil
 		}
 		if err := upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, cmd.Adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
-			cmd.Epoch, cmd.PermissionMode, cmd.SocketPath, "", cmd.HookAtMS, now); err != nil {
+			cmd.Epoch, publish.Route{Mode: cmd.PermissionMode, SocketPath: cmd.SocketPath}, cmd.HookAtMS, now); err != nil {
 			return false, err
 		}
 		return true, recordSocketAttach(ctx, tx, bindingID, cmd, attachOutcome(cmd), now)

@@ -48,7 +48,10 @@ func (claude) AcceptsSocket(path string) bool {
 }
 
 // SessionRoute is empty: SessionStart's hook.route supplies the socket.
-func (claude) SessionRoute(string, string) Route { return Route{} }
+func (claude) SessionRoute(string, Route) Route { return Route{} }
+
+// ThreadRouted is false: a Claude route is the launch's own process.
+func (claude) ThreadRouted() bool { return false }
 
 func (claude) Reach(Route) string { return "" }
 

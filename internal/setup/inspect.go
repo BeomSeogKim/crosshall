@@ -245,3 +245,17 @@ func literalShellExecutable(command string) (string, bool) {
 func isCrosshallExecutable(command string) bool {
 	return command == "crosshall" || (filepath.IsAbs(command) && filepath.Base(command) == "crosshall")
 }
+
+// InstalledConfigDir is the configuration directory setup installed an
+// adapter's hooks into for this state root, as its journal records it (for
+// Codex, the CODEX_HOME); empty when none is recorded.
+func InstalledConfigDir(stateRoot, adapter string) string {
+	j, _, err := readJournal(stateRoot)
+	if err != nil {
+		return ""
+	}
+	if f, ok := j.Files[adapter]; ok && filepath.IsAbs(f.Path) {
+		return filepath.Dir(f.Path)
+	}
+	return ""
+}

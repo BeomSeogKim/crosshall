@@ -32,16 +32,16 @@ func TestProcessCommandReadsExecutableAndArguments(t *testing.T) {
 
 // The host of a test is the process that ran it, which is not a shell.
 func TestHostCommandSkipsNoProcessThatIsNotAShell(t *testing.T) {
-	exe, args, ok := HostCommand()
-	if !ok || !filepath.IsAbs(exe) || len(args) == 0 {
-		t.Fatalf("host command = %q %q, %v", exe, args, ok)
+	pid, exe, args, ok := HostCommand()
+	if !ok || pid <= 1 || !filepath.IsAbs(exe) || len(args) == 0 {
+		t.Fatalf("host command = %d %q %q, %v", pid, exe, args, ok)
 	}
 	parent, parentArgs, err := processCommand(os.Getppid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	name, _, _ := processParent(os.Getppid())
-	if !shells[filepath.Base(name)] && (exe != parent || !slices.Equal(args, parentArgs)) {
+	if !shells[filepath.Base(name)] && (pid != os.Getppid() || exe != parent || !slices.Equal(args, parentArgs)) {
 		t.Fatalf("host command = %q, want the parent %q", exe, parent)
 	}
 }

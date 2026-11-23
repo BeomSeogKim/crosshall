@@ -8,10 +8,15 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// hostCommand is proc.HostCommand; tests stand in for it.
-var hostCommand = proc.HostCommand
+// hostCommand is proc.HostCommand and processStart proc.StartOf; tests
+// stand in for them.
+var (
+	hostCommand  = proc.HostCommand
+	processStart = proc.StartOf
+)
 
 // releaseVersion is a release directory's name: the version, then the
 // platform triple. A pre-release stays unverified.
@@ -19,30 +24,31 @@ var releaseVersion = regexp.MustCompile(`^([0-9]+\.[0-9]+\.[0-9]+)(-(aarch64|x86
 
 // daemonBuild reads a session's mode from the process that runs its hook:
 // the managed server, an executable in a release directory of the vendor's
-// home run with the server's arguments, gives publish.ModeDaemon and that release's
-// version. Any other readable host gives publish.ModeInProcess, an unreadable one
-// leaves both unverified.
-func daemonBuild(d daemonSpec, lookup func(string) (string, bool)) (version, mode string) {
-	exe, args, ok := hostCommand()
+// home run with the server's arguments, gives publish.ModeDaemon, that release's
+// version, the server process and the home it serves. Any other readable host gives
+// publish.ModeInProcess, an unreadable one leaves both unverified.
+func daemonBuild(d daemonSpec, lookup func(string) (string, bool)) (version, mode string, host *wire.Host, served string) {
+	pid, exe, args, ok := hostCommand()
 	if !ok {
-		return "unverified", "unverified"
+		return "unverified", "unverified", nil, ""
 	}
 	home, ok := lookup(d.HomeEnv)
 	if !ok || !filepath.IsAbs(home) {
 		user, found := lookup("HOME")
 		if !found || !filepath.IsAbs(user) {
-			return "unverified", "unverified"
+			return "unverified", "unverified", nil, ""
 		}
 		home = filepath.Join(user, d.HomeDefault)
 	}
-	releases := filepath.Join(realPath(home), d.Releases)
+	served = realPath(home)
+	releases := filepath.Join(served, d.Releases)
 	rel, err := filepath.Rel(releases, realPath(exe))
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || len(args) == 0 {
-		return "unverified", publish.ModeInProcess
+		return "unverified", publish.ModeInProcess, nil, ""
 	}
 	for _, want := range d.Args {
 		if !slices.Contains(args[1:], want) {
-			return "unverified", publish.ModeInProcess
+			return "unverified", publish.ModeInProcess, nil, ""
 		}
 	}
 	release, _, _ := strings.Cut(rel, string(filepath.Separator))
@@ -50,7 +56,14 @@ func daemonBuild(d daemonSpec, lookup func(string) (string, bool)) (version, mod
 	if match := releaseVersion.FindStringSubmatch(release); match != nil {
 		version = match[1]
 	}
-	return version, publish.ModeDaemon
+	// The server is named, with the home it serves, only when its start
+	// identity reads, so the dispatcher can tell it from a later process
+	// with its PID.
+	start, err := processStart(pid)
+	if err != nil || start.Identity <= 0 {
+		return version, publish.ModeDaemon, nil, ""
+	}
+	return version, publish.ModeDaemon, &wire.Host{PID: int64(pid), Start: start.Identity, NS: proc.PIDNamespace()}, served
 }
 
 // realPath resolves symbolic links where it can: a home under /tmp is

@@ -116,10 +116,14 @@ type event struct {
 	Fact           string
 	VendorVersion  string
 	Mode           string
-	receipt        string
-	stopActive     string
-	name           string
-	startupRepo    *string
+	// Host is the managed server that runs the hook, in daemon mode, and
+	// VendorHome the home it serves.
+	Host        *wire.Host
+	VendorHome  string
+	receipt     string
+	stopActive  string
+	name        string
+	startupRepo *string
 }
 
 const stopActiveField = "stop_hook_active"
@@ -239,7 +243,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	}
 	e.VendorVersion, e.Mode = launchBuild(m, lookup)
 	if m.Daemon != nil {
-		e.VendorVersion, e.Mode = daemonBuild(*m.Daemon, lookup)
+		e.VendorVersion, e.Mode, e.Host, e.VendorHome = daemonBuild(*m.Daemon, lookup)
 	}
 	if m.ModeField != "" {
 		if pm := fields[m.ModeField]; pm != "" {

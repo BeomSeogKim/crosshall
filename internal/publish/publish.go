@@ -69,6 +69,10 @@ type Probe struct {
 	Route           Route
 	LaunchRef       string
 	StartedHookAtMS int64
+	// InstalledHome is the vendor's configuration home that setup installed
+	// this state root's hooks into, as setup recorded it; empty when none is
+	// recorded.
+	InstalledHome string
 }
 
 // Modes of a launch whose vendor runs a managed server, as its hooks report
@@ -78,11 +82,16 @@ const (
 	ModeInProcess = "in_process" // the session runs its server itself
 )
 
-// Route is what a vendor's hooks registered for one member session.
+// Route is what a vendor's hooks registered for one member session. Host
+// is the server process that held the session's thread at its start, and
+// Home the vendor home that server serves, as that start named them; only
+// a thread-routed adapter registers them.
 type Route struct {
 	Mode       string
 	SocketPath string
 	ThreadID   string
+	Host       Queue
+	Home       string
 }
 
 // Adapter is one vendor's part of publish.
@@ -97,9 +106,16 @@ type Adapter interface {
 	// AcceptsSocket reports whether a reported socket path may be stored.
 	AcceptsSocket(path string) bool
 	// SessionRoute is the route an enrolled session registers: the thread
-	// its reference names and the launch's mode, or nothing when the adapter
-	// registers its route another way.
-	SessionRoute(sessionRef, launchMode string) Route
+	// its reference names, with the launch's mode, server and home as its
+	// start reported them (launch), or nothing when the adapter registers
+	// its route another way.
+	SessionRoute(sessionRef string, launch Route) Route
+	// ThreadRouted reports whether the adapter's routes address a session's
+	// thread on the server that hosts it (Route.Host, Route.Home) rather
+	// than the launch's own process. Such a route needs no verified launch:
+	// its transport proves that server, and its notices queue per thread
+	// of that home.
+	ThreadRouted() bool
 	// Reach says why the adapter's sender cannot reach the session that
 	// registered a route at all, whatever its address: the owner's reason,
 	// empty when it can.

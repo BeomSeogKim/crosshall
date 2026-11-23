@@ -768,9 +768,10 @@ func (fixtureAdapter) Resolve(r publish.Route) (string, string) {
 }
 func (fixtureAdapter) ModeEligible(string) bool  { return true }
 func (fixtureAdapter) AcceptsSocket(string) bool { return false }
-func (fixtureAdapter) SessionRoute(ref, mode string) publish.Route {
-	return publish.Route{ThreadID: ref, Mode: mode}
+func (fixtureAdapter) SessionRoute(ref string, launch publish.Route) publish.Route {
+	return publish.Route{ThreadID: ref, Mode: launch.Mode}
 }
+func (fixtureAdapter) ThreadRouted() bool         { return false }
 func (fixtureAdapter) Reach(publish.Route) string { return "" }
 func (fixtureAdapter) Notice(ids []int64) (string, bool) {
 	return "fixture " + notice.IDList(ids), true
@@ -843,12 +844,13 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 					return publish.Submitted
 				},
 			})
-			p := &publisher{db: f.db}
+			// The proof also gets the home setup installed the hooks into.
+			p := &publisher{db: f.db, homes: func(adapter string) string { return "/installed/" + adapter }}
 			t.Cleanup(p.workers.Wait)
 			tickPublisher(t, p, f.now, true)
 			p.workers.Wait()
 			if got := awaitPublishTest(t, proofs); got.Adapter != "claude" || got.Address != publishTestTarget.Address ||
-				got.LaunchRef != "pid-2345" || got.StartedHookAtMS != 2000 {
+				got.LaunchRef != "pid-2345" || got.StartedHookAtMS != 2000 || got.InstalledHome != "/installed/claude" {
 				t.Fatalf("proved %+v", got)
 			}
 			if n := countPublish(t, f, "publish_attempt"); n != 0 {

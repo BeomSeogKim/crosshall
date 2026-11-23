@@ -558,3 +558,54 @@ func TestPendingDesktopAlertsIsReadOnly(t *testing.T) {
 		t.Fatal("a claimed stop is still pending")
 	}
 }
+
+// The owner line is an extra: an error while building it neither fails the
+// owner's command nor rolls back its effect.
+func TestOwnerLineFailureLeavesTheOwnerCommand(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.db.Exec(`INSERT INTO event (kind, subject, detail, at_ms) VALUES (?, 'principal:1', 'not json', 1)`, guardStopped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO owner_alert (event_seq) VALUES (last_insert_rowid())`); err != nil {
+		t.Fatal(err)
+	}
+	r := f.owner(CreateChannel{Name: "checkout"}, "")
+	wantOK(t, r)
+	if len(r.OwnerAlerts) != 0 {
+		t.Fatalf("owner line from a broken stop: %q", r.OwnerAlerts)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM channel WHERE name = 'checkout'`); n != 1 {
+		t.Fatalf("the owner's command was rolled back: %d channels", n)
+	}
+}
+
+// A line that fails after the stops were marked shown leaves them unshown:
+// its writes are undone with it, and the owner's command still commits.
+func TestOwnerLineFailureUndoesOnlyItsOwnWrites(t *testing.T) {
+	f := newFixture(t)
+	wantOK(t, f.owner(CreateChannel{Name: "checkout"}, ""))
+	m := ledgerMember(t, f, "checkout", "form")
+	principal := ledgerCaller(t, f, m)
+	if _, err := f.db.Exec(`UPDATE principal SET guard_told = 1 WHERE id = ?`, principal); err != nil {
+		t.Fatal(err)
+	}
+	// The stop names a channel the member is not in, so the line cannot be built.
+	if _, err := f.db.Exec(`INSERT INTO event (kind, subject, detail, at_ms) VALUES (?, ?, '{"channel":"nowhere","sender":"form","recipients":["tax"],"round":9,"round_limit":8}', 1)`,
+		guardStopped, fmt.Sprintf("principal:%d", principal)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO owner_alert (event_seq) VALUES (last_insert_rowid())`); err != nil {
+		t.Fatal(err)
+	}
+	r := f.owner(CreateChannel{Name: "billing"}, "")
+	wantOK(t, r)
+	if len(r.OwnerAlerts) != 0 {
+		t.Fatalf("owner line from a broken stop: %q", r.OwnerAlerts)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM channel WHERE name = 'billing'`); n != 1 {
+		t.Fatalf("the owner's command was rolled back: %d channels", n)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM owner_alert WHERE shown_at_ms IS NOT NULL`); n != 0 {
+		t.Fatalf("a stop whose line failed was marked shown: %d", n)
+	}
+}

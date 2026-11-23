@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,28 @@ func (s alertedStop) desktopAlert() DesktopAlert {
 // ownerAlertLines marks every stop not yet shown as shown, and returns
 // lines for the first three that are still open. The command's own effect
 // is already applied, so a grant never reports the stop it closed.
+// bestEffortOwnerAlerts returns the owner line, or none when building it
+// fails: the line is an extra, so its error is logged and its own writes
+// are undone without failing or rolling back the owner's command.
+func bestEffortOwnerAlerts(ctx context.Context, tx store.Tx, now time.Time) []string {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT owner_alert_lines`); err != nil {
+		log.Printf("dispatcher: owner line: %v", err)
+		return nil
+	}
+	lines, err := ownerAlertLines(ctx, tx, now)
+	if err != nil {
+		log.Printf("dispatcher: owner line: %v", err)
+		lines = nil
+		if _, err := tx.ExecContext(ctx, `ROLLBACK TO owner_alert_lines`); err != nil {
+			log.Printf("dispatcher: owner line: %v", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `RELEASE owner_alert_lines`); err != nil {
+		log.Printf("dispatcher: owner line: %v", err)
+	}
+	return lines
+}
+
 func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string, error) {
 	stops, err := alertedStops(ctx, tx, `a.shown_at_ms IS NULL`)
 	if err != nil || len(stops) == 0 {

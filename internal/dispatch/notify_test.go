@@ -209,6 +209,19 @@ func TestDispatcherEnvForwardsTheNotifySwitch(t *testing.T) {
 	}
 }
 
+// notify-send reaches the desktop through the session bus, which the
+// dispatcher, and so the command it runs, must inherit.
+func TestDispatcherEnvForwardsTheDesktopSession(t *testing.T) {
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	got := (LaunchConfig{StateRoot: t.TempDir()}).dispatcherEnv()
+	for _, want := range []string{"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", "XDG_RUNTIME_DIR=/run/user/1000"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("dispatcher child environment lacks %s: %v", want, got)
+		}
+	}
+}
+
 // The command runs outside every transaction and outside the dispatcher
 // loop; one runs at a time, and one cut off by a stop is not shown again.
 func TestNotifierHoldsNeitherTheLoopNorTheStore(t *testing.T) {

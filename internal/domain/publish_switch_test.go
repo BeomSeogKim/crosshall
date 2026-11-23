@@ -30,7 +30,9 @@ func (p *publishFixture) publishState() store.PublishState {
 			}
 		}
 	}
-	if owner == nil || *owner != state {
+	visible := state
+	visible.RecoveryHint = store.PublishRecoveryHint{}
+	if owner == nil || *owner != visible {
 		p.t.Fatalf("owner who shows %+v, the store %+v", owner, state)
 	}
 	return state
@@ -262,27 +264,91 @@ func TestPublishSuspensionReasonsAndHowTheyLift(t *testing.T) {
 	}
 }
 
-func TestPublishThirdSuspensionLastsForTheLaunch(t *testing.T) {
+func TestExpiredPublishSuspensionsDoNotCount(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	for i := 1; i <= 3; i++ {
 		p.observed("absorbed")
-		s := p.publishState()
-		if lasting := s.UntilMS == 0; s.State != "suspended" || lasting != (i == 3) {
-			t.Fatalf("suspension %d: %+v", i, s)
+		if s := p.publishState(); s.State != "suspended" || s.UntilMS != p.now.Add(30*time.Minute).UnixMilli() {
+			t.Fatalf("suspension %d: %+v, want a 30-minute suspension", i, s)
 		}
-		p.now = p.now.Add(31 * time.Minute)
+		p.now = p.now.Add(30 * time.Minute)
 	}
-	p.turnEndAsk(p.writer, "reader", "later")
-	p.requirePublish("the third suspension does not lift by time", "suspended", "absorbed")
-	p.now = p.now.Add(time.Second)
-	wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
-	p.requirePublish("resume lifts it", "available", "")
-	p.now = p.now.Add(time.Millisecond)
-	p.observed("absorbed")
-	if s := p.publishState(); s.UntilMS == 0 {
-		t.Fatalf("resume did not restart the count: %+v", s)
+}
+
+func TestPublishLastingSuspensionCountsOnlyQualifyingFailures(t *testing.T) {
+	for _, test := range []struct {
+		name, first, second, third string
+		ownTurn, lasting           bool
+	}{
+		{"three absorbed", "absorbed", "absorbed", "absorbed", false, true},
+		{"submission failure counts", "absorbed", "not_submitted", "absorbed", false, true},
+		{"prior unknown is skipped", "unknown", "absorbed", "absorbed", false, false},
+		{"latest unknown is timed", "absorbed", "absorbed", "unknown", false, false},
+		{"own turn resets two failures", "absorbed", "absorbed", "absorbed", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			first := p.observed(test.first)
+			p.now = p.now.Add(31 * time.Minute)
+			var second int64
+			if test.second == "not_submitted" {
+				second = p.notSubmitted(3)
+			} else {
+				second = p.observed(test.second)
+			}
+			p.now = p.now.Add(31 * time.Minute)
+			if test.ownTurn {
+				p.turnEndAsk(p.writer, "reader", "own-turn")
+				id := p.reserve()
+				ids := p.begin(id)
+				p.resolve(id, PublishSubmitted)
+				p.hook(p.reader, p.promptReceipt("own-turn", publishTestLaunch, p.now.UnixMilli()+1, ids))
+				p.observation(id, "own_turn")
+			}
+			p.turnEndAsk(p.writer, "reader", "third-failure")
+			id := p.reserve()
+			if id == 0 || len(p.begin(id)) == 0 {
+				t.Fatal("no notice to suspend")
+			}
+			p.resolve(id, PublishSubmitted)
+			p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = ? WHERE id = ?`, p.now.UnixMilli(), test.third, id)
+			// Stage overlapping suspension history after admission. The regular
+			// queue would have blocked that admission while either was active.
+			p.mutate(`UPDATE publish_suspension SET at_ms = ?, until_ms = ? WHERE notice IN (?, ?)`,
+				p.now.UnixMilli(), p.now.Add(30*time.Minute).UnixMilli(), first, second)
+			p.update(func(ctx context.Context, tx store.Tx) error { return suspendPublish(ctx, tx, id, test.third, p.now) })
+			var lasting bool
+			if err := p.db.QueryRow(`SELECT until_ms IS NULL FROM publish_suspension WHERE notice = ?`, id).Scan(&lasting); err != nil {
+				t.Fatal(err)
+			}
+			if lasting != test.lasting {
+				t.Fatalf("suspension lasts until launch ends: %t, want %t", lasting, test.lasting)
+			}
+			if test.lasting {
+				p.now = p.now.Add(31 * time.Minute)
+				p.turnEndAsk(p.writer, "reader", "later")
+				p.requirePublish("the lasting suspension does not lift by time", "suspended", "absorbed")
+				wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume"))
+				p.requirePublish("owner resume lifts it", "available", "")
+			}
+		})
 	}
+}
+
+func TestLegacyUnknownSuspensionExpires(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	id := p.observed("unknown")
+	p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+	p.turnEndAsk(p.writer, "reader", "while-suspended")
+	p.requirePublish("legacy unknown before its expiry", "suspended", "unknown")
+	if s := p.publishState(); s.UntilMS != p.now.Add(30*time.Minute).UnixMilli() {
+		t.Fatalf("legacy unknown: %+v, want a 30-minute suspension", s)
+	}
+	p.now = p.now.Add(30 * time.Minute)
+	p.requirePublish("legacy unknown at expiry", "available", "")
 }
 
 func TestPublishManifestEvidenceHonorsExactOverride(t *testing.T) {

@@ -348,6 +348,45 @@ func TestPublishReceiptAfterACompactInsideAnOpenTurnStaysUnknown(t *testing.T) {
 	}
 }
 
+func TestOpenPlaceholderReceiptsNeverSuspendForTheLaunch(t *testing.T) {
+	for _, gaps := range [][]time.Duration{
+		{0, 30*time.Minute + 2*time.Second, 51 * time.Minute},
+		{0, 60 * time.Minute, 78 * time.Minute},
+		{0, 57 * time.Minute},
+	} {
+		t.Run(fmt.Sprint(gaps), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			for i, gap := range gaps {
+				p.now = p.now.Add(gap)
+				at := p.now.UnixMilli()
+				turn := fmt.Sprintf("user-%d", i)
+				p.hook(p.reader, prompt(publishTestLaunch, turn, at+1))
+				p.hook(p.reader, event(publishTestLaunch, FactPromptSubmitted, turn+":repeated", turn, at+2, true))
+				p.hook(p.reader, stop(publishTestLaunch, turn, at+3))
+				if n := p.count(`SELECT COUNT(*) FROM turn WHERE turn_ref LIKE 'typed-ahead:%' AND finishing_hook_at_ms IS NULL`); n == 0 {
+					t.Fatal("no open typed-ahead placeholder before receipt")
+				}
+				p.turnEndAsk(p.writer, "reader", "open-placeholder-"+turn)
+				id := p.reserve()
+				if id == 0 {
+					t.Fatal("the previous suspension did not lift")
+				}
+				ids := p.begin(id)
+				p.resolve(id, PublishSubmitted)
+				p.hook(p.reader, p.promptReceipt("notice-"+turn, publishTestLaunch, at+4, ids))
+				p.observation(id, "unknown")
+				if s := p.publishState(); s.State != "suspended" || s.Notice != id || s.UntilMS != p.now.Add(30*time.Minute).UnixMilli() {
+					t.Fatalf("receipt %d: %+v, want a 30-minute suspension", i+1, s)
+				}
+			}
+			p.now = p.now.Add(30 * time.Minute)
+			p.turnEndAsk(p.writer, "reader", "after-replay")
+			p.requirePublish("the final suspension expired", "available", "")
+		})
+	}
+}
+
 // Fable #601: an auto-compact inside a long turn; the turn that opened before
 // that start and finished after it is the launch's last turn.
 func TestPublishReceiptAfterACompactedTurnFinishedIsItsOwnTurn(t *testing.T) {

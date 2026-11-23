@@ -104,3 +104,64 @@ func TestOwnerWhoProjectsEvidenceAndOpenRequests(t *testing.T) {
 		t.Fatalf("open requests after settlement: %v", m.OpenRequests)
 	}
 }
+
+func (f *fixture) ownerRow(alias string) OwnerMember {
+	f.t.Helper()
+	for _, ch := range decode[OwnerWhoResult](f.t, f.owner(OwnerWho{}, "")).Channels {
+		for _, m := range ch.Members {
+			if m.Alias == alias {
+				return m
+			}
+		}
+	}
+	f.t.Fatalf("owner who lists no @%s", alias)
+	return OwnerMember{}
+}
+
+// owner who counts a member's unread requests that nothing will tell it
+// about, so the owner finds stuck work without reading each line.
+func TestOwnerWhoCountsUnreadRequestsNothingWillTell(t *testing.T) {
+	p := newPublishFixture(t)
+	first := p.now
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 || got.OldestAtMS != first.UnixMilli() || got.OldestAgeS != 0 {
+		t.Fatalf("one unread request before any route: %+v", got)
+	}
+	p.now = p.now.Add(10 * time.Minute)
+	second := p.turnEndAsk(p.writer, "reader", "second")
+	wantOK(t, p.run(p.writer, Note{To: []string{"reader"}, Body: "fyi"}, "note")) // a note is not a request
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 2 || got.OldestAgeS != 600 {
+		t.Fatalf("two unread requests, the oldest ten minutes old: %+v", got)
+	}
+	if got := p.ownerRow("writer").UnreadNotWoken; got != nil {
+		t.Fatalf("a member without requests: %+v", got)
+	}
+
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, ""))
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 || got.OldestAtMS != p.now.UnixMilli() {
+		t.Fatalf("after reading the first, only #%d: %+v", second, got)
+	}
+
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "noticed")
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request a notice will offer is counted: %+v", got)
+	}
+
+	wantOK(t, p.run(p.reader, Leave{}, "leave"))
+	if got := p.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("a departed member: %+v", got)
+	}
+}
+
+// A request the member's turn end will offer is not stuck.
+func TestOwnerWhoLeavesOutARequestTheTurnEndWillOffer(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, "work"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("without turn-end evidence: %+v", got)
+	}
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("in a checked turn: %+v", got)
+	}
+}

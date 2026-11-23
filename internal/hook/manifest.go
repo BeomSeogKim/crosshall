@@ -70,18 +70,18 @@ type daemonSpec struct {
 }
 
 type eventSpec struct {
-	Name          string `json:"-"`
-	Fact          string `json:"fact"`
-	Output        string `json:"output"`
-	Enroll        bool   `json:"enroll"`
-	RecoverEnroll bool   `json:"recover_enroll"`
-	Notice        bool   `json:"notice"`
-	Stop          bool   `json:"stop"`
-	TurnRequired  bool   `json:"turn_required"`
-	SourceField   string `json:"source_field"`
-	ReasonField   string `json:"reason_field"`
-	MatchField    string `json:"match_field"`
-	MatchValue    string `json:"match_value"`
+	Name          string            `json:"-"`
+	Fact          string            `json:"fact"`
+	Output        string            `json:"output"`
+	Enroll        bool              `json:"enroll"`
+	RecoverEnroll bool              `json:"recover_enroll"`
+	Notice        bool              `json:"notice"`
+	Stop          bool              `json:"stop"`
+	TurnRequired  bool              `json:"turn_required"`
+	SourceField   string            `json:"source_field"`
+	ReasonField   string            `json:"reason_field"`
+	MatchField    string            `json:"match_field"`
+	FactsByMatch  map[string]string `json:"facts_by_match"`
 }
 
 func loadManifest(adapter string) (manifest, bool) {
@@ -156,9 +156,15 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		return event{}, err
 	}
 	callback, named := fields[m.EventField]
-	if (callback != spec.Name && (m.Adapter != "agy" || named)) ||
-		(spec.MatchField != "" && fields[spec.MatchField] != spec.MatchValue) {
+	if callback != spec.Name && (m.Adapter != "agy" || named) {
 		return event{}, errHookInput
+	}
+	fact := spec.Fact
+	if spec.MatchField != "" {
+		fact = spec.FactsByMatch[fields[spec.MatchField]]
+		if fact == "" {
+			return event{}, errHookInput
+		}
 	}
 
 	// A native payload can supply its own vendor variable. Retain the normal
@@ -180,11 +186,15 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		return event{}, errHookIdentity
 	}
 
+	turnRef := fields[m.TurnField]
+	if fact == wire.HookIdlePrompt {
+		turnRef = ""
+	}
 	e := event{
 		Identity:   id,
 		name:       spec.Name,
-		Fact:       spec.Fact,
-		TurnRef:    fields[m.TurnField],
+		Fact:       fact,
+		TurnRef:    turnRef,
 		Source:     fields[spec.SourceField],
 		Reason:     fields[spec.ReasonField],
 		receipt:    receipt,

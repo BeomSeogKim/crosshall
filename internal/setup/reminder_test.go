@@ -169,18 +169,18 @@ func TestSetupShowsCandidateForUnmeasuredBuildAfterImport(t *testing.T) {
 	if err := db.Update(t.Context(), func(tx store.Tx) error {
 		_, err := tx.ExecContext(t.Context(), `INSERT INTO capability_evidence
 			(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
-			VALUES ('claude', ?, ?, 'print', 'claude-2', 'reminder', 'candidate', 'fixture', 1)`, version, platform)
+			VALUES ('claude', ?, ?, 'print', 'claude-3', 'reminder', 'candidate', 'fixture', 1)`, version, platform)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertEvidence("candidate", version+" "+platform+"/print claude-2 — candidate")
+	assertEvidence("candidate", version+" "+platform+"/print claude-3 — candidate")
 	interrupted := errors.New("fixture policy transport failed")
 	service.SetPolicy = func(context.Context, string, bool) error { return interrupted }
 	if _, err := runSetupTest(t, service, "setup", "y\nn\nn\n", false); !errors.Is(err, interrupted) {
 		t.Fatalf("interrupted setup: %v", err)
 	}
-	assertEvidence("candidate", version+" "+platform+"/print claude-2 — candidate")
+	assertEvidence("candidate", version+" "+platform+"/print claude-3 — candidate")
 }
 
 // Setup and doctor show these reasons to the owner. They state measured facts

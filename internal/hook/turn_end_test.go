@@ -87,7 +87,7 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 				if version == "" {
 					version = "2.1.327"
 				}
-				listed := "claude " + version + " " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-2\n"
+				listed := "claude " + version + " " + runtime.GOOS + "-" + runtime.GOARCH + " print claude-3\n"
 				if err := os.WriteFile(filepath.Join(dir, "turn_end"), []byte(listed), 0600); err != nil {
 					t.Fatal(err)
 				}

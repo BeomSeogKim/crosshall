@@ -50,7 +50,7 @@ func TestClaudeManifestInstallDescription(t *testing.T) {
 			t.Errorf("matcher %s=%q is not for an installed event", event, matcher)
 		}
 	}
-	if in.Matchers["Notification"] != "permission_prompt" {
+	if in.Matchers["Notification"] != "permission_prompt|idle_prompt" {
 		t.Errorf("Notification matcher %q", in.Matchers["Notification"])
 	}
 	if len(m.CapsMS) != 3 {

@@ -344,7 +344,7 @@ func (term *terminal) exit() {
 func (c *conformance) writeEvidence(name, version, mode string, results []evidenceResult) string {
 	c.t.Helper()
 	evidence, _ := json.MarshalIndent(map[string]any{"vendor": "claude", "vendor_version": version,
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": mode, "manifest_rev": "claude-2",
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": mode, "manifest_rev": claudeManifestRevision(),
 		"run_at_ms": time.Now().UnixMilli(), "results": results}, "", "  ")
 	dir := os.Getenv("CROSSHALL_CONFORMANCE_OUT")
 	if dir == "" {
@@ -540,7 +540,7 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 	if out := c.owner("owner", "adapter", "evidence", file); !strings.Contains(out, "Recorded 3 result(s)") {
 		t.Fatalf("evidence import: %s", out)
 	}
-	recorded := c.evidenceLevels(version, runtime.GOOS+"-"+runtime.GOARCH, "interactive", "claude-2")
+	recorded := c.evidenceLevels(version, runtime.GOOS+"-"+runtime.GOARCH, "interactive", claudeManifestRevision())
 	for _, r := range results {
 		if recorded[r.Cap] != r.Level {
 			t.Errorf("imported %s %q, exported %q", r.Cap, recorded[r.Cap], r.Level)
@@ -551,6 +551,18 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 // typedAheadShape is what Claude Code reports for a turn and a prompt typed
 // while that turn runs.
 const typedAheadShape = "UserPromptSubmit A, UserPromptSubmit A, Stop A, Stop B"
+
+func (c *conformance) allowScratchPublish() {
+	c.t.Helper()
+	listed, _ := json.Marshal(map[string]any{"vendor": "claude", "vendor_version": c.version(),
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "interactive", "manifest_rev": claudeManifestRevision(),
+		"run_at_ms": time.Now().UnixMilli(), "results": []evidenceResult{{"publish", "tested", "scratch hall only: lets the harness observe a notice"}}})
+	file := filepath.Join(c.root, "publish.json")
+	if err := os.WriteFile(file, listed, 0600); err != nil {
+		c.t.Fatal(err)
+	}
+	c.owner("owner", "adapter", "evidence", file)
+}
 
 // A publish notice that crosshall submits while a turn is with the model does
 // not take the typed-ahead shape: Claude Code runs it after that turn's Stop
@@ -568,14 +580,7 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 	c.writer("join", "checkout", "--as", "writer")
 	c.installInteractive()
-	listed, _ := json.Marshal(map[string]any{"vendor": "claude", "vendor_version": c.version(),
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "interactive", "manifest_rev": "claude-2",
-		"run_at_ms": time.Now().UnixMilli(), "results": []evidenceResult{{"publish", "tested", "scratch hall only: lets the harness observe a notice"}}})
-	file := filepath.Join(c.root, "publish.json")
-	if err := os.WriteFile(file, listed, 0600); err != nil {
-		t.Fatal(err)
-	}
-	c.owner("owner", "adapter", "evidence", file)
+	c.allowScratchPublish()
 	term := c.interactive()
 	term.turn("first synthetic prompt")
 

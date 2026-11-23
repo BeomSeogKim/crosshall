@@ -165,7 +165,7 @@ func readQueuedHook(dir *os.Root, packet serverPacket) (hookScope, queuedHook, b
 		case wire.HookTurnFinishing:
 			hook.phase = 3
 			hook.dependent = true
-		case wire.HookSessionEnded:
+		case wire.HookSessionEnded, wire.HookIdlePrompt:
 			hook.dependent = true
 		}
 	}

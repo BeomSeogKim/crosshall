@@ -167,7 +167,8 @@ func TestDoctorRendersPublishMembersAndCounters(t *testing.T) {
 		"adapters": []any{map[string]any{
 			"adapter": "claude", "install_state": "installed", "intended": 6, "installed": 6,
 			"publish": store.DoctorPublishState{State: "candidate", Reason: "no active route",
-				Counters: store.DoctorPublishCounters{Date: "20261121", Submitted: 3, Uncertain: 1, NotSubmitted: 2, OwnTurn: 2, Absorbed: 1},
+				Counters: store.DoctorPublishCounters{Date: "20261121", Submitted: 7, Uncertain: 1, NotSubmitted: 2, OwnTurn: 2, Absorbed: 1,
+					Unknown: 4, UnknownCauses: store.DoctorUnknownCauses{OpenPlaceholder: 2, ActivitySinceStop: 1, NotRecorded: 1}},
 				Members: []store.DoctorPublishMember{{Channel: "dev", Alias: "opus", BindingID: 7,
 					State: store.PublishState{State: "off", Reason: "turned off by the owner for the hall"}}}},
 		}},
@@ -178,7 +179,8 @@ func TestDoctorRendersPublishMembersAndCounters(t *testing.T) {
 	}
 	stdout, _, _ := run(t, env, "owner", "doctor")
 	for _, want := range []string{
-		"  publish notices on 20261121 UTC: 3 submitted, 1 uncertain, 2 not submitted; observed 2 own turn, 1 absorbed, 0 unknown\n",
+		"  publish notices on 20261121 UTC: 7 submitted, 1 uncertain, 2 not submitted; observed 2 own turn, 1 absorbed, 4 unknown" +
+			" (2 open placeholder, 1 activity since stop, 1 cause not recorded)\n",
 		"  publish for @opus in #dev (binding 7): off (turned off by the owner for the hall)\n",
 	} {
 		if !strings.Contains(stdout, want) {

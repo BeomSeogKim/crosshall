@@ -112,7 +112,7 @@ What the owner controls:
 | `crosshall owner publish member <binding-id> on\|off\|default` | Notices for one member; this switch beats the adapter's, which beats the hall's |
 | `crosshall owner publish resume <binding-id>` | Lift a member's automatic suspension and any stop of its current build |
 
-`crosshall owner who --all` and `crosshall owner doctor` show each member's reason. Doctor also shows the publish status of each live build and the day's notice outcomes per adapter. For a build inheriting evidence with fewer than three confirmations, doctor counts notices that entered submission and remain held without a receipt.
+`crosshall owner who --all` and `crosshall owner doctor` show each member's reason. Doctor also shows the publish status of each live build and the day's notice outcomes per adapter. It splits the day's unknown receipts by the condition that kept each from being the session's own turn: `open placeholder` (the last turn is a prompt typed ahead that has not finished; on Claude Code 2.1.330 this usually means a prompt typed while a tool ran, which Claude Code took into the running turn, so it never gets a Stop of its own), `unfinished turn` (the last turn had no Stop, and another turn's activity came after it), `activity since stop` (something happened after the last turn's Stop), or `no turn but facts` (the session had no turn since it started, only other hook facts). Unknown receipts recorded before this was kept count as `cause not recorded`. For a build inheriting evidence with fewer than three confirmations, doctor counts notices that entered submission and remain held without a receipt.
 
 The hall stops by itself, toward pull, in these cases:
 

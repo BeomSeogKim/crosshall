@@ -4,9 +4,19 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded.
+Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 24. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
 
-Migration 023 records whether a session received the owner resume command for a lasting suspension. A session that already received the old reach-loss line gets the command at its next prompt while the suspension is in effect. The dispatcher backs up a schema 22 store as `store-v22-*.sqlite3` before migrating it. To return to v0.2.0-rc.3, stop the dispatcher and restore that copy before restarting the older binary. Restoring the copy discards changes made since the upgrade.
+1. Stop your agents' crosshall commands, including any background `crosshall wait`.
+2. Run `crosshall owner stop`.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v22-*.sqlite3` backup beside the database.
+4. Install the new release using the [README](README.md#quick-start) clone command.
+5. Run `crosshall owner start`. Set `CROSSHALL_NOTIFY=off` in its environment if you want no desktop notifications.
+
+To roll back, stop the new dispatcher, restore the schema 22 database from your pre-upgrade copy and restart the v0.2.0-rc.3 binary. Restoring the copy discards messages and other changes made since the upgrade.
+
+An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded. A session that already received the old reach-loss line gets the owner resume command at its next prompt while the suspension is in effect.
+
+A new round stop shows a desktop notification where the system can show one, and appears once, on stderr, on the owner's next command. See [loop guard](docs/operations.md#loop-guard). In owner status JSON, each `guard_stops` entry gains `sender`, `recipients`, `requests`, `request_count` and, once a grant has reset its thread or member, `last_reset_at_ms`. `owner budget grant <binding-id>` resets a member by binding, including a departed one.
 
 ## To v0.2.0-rc.3
 

@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,7 +176,20 @@ func Serve(ctx context.Context, cfg Config) error {
 		cancel()
 		usage.Wait()
 	}()
-	var nextUsage time.Time
+	version := cfg.Version
+	notify, notifyArgs := notifyCommand(runtime.GOOS)
+	if command, ok := testNotifyCommand(); ok {
+		version, notify = "v0.0.0", command
+	}
+	alerts := newNotifier(db, version, notifyOff(), notify, notifyArgs)
+	if err := alerts.recover(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		cancel()
+		alerts.wait()
+	}()
+	var nextUsage, nextAlert time.Time
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -210,6 +224,10 @@ func Serve(ctx context.Context, cfg Config) error {
 			if !now.Before(nextUsage) {
 				usage.Tick(ctx, now)
 				nextUsage = now.Add(time.Minute)
+			}
+			if !now.Before(nextAlert) {
+				alerts.tick(ctx, now)
+				nextAlert = now.Add(time.Second)
 			}
 			if sends {
 				logPublishFailure(pub.tick(ctx, now, false))

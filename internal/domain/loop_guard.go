@@ -18,6 +18,7 @@ const (
 	burstAnswerLimit   = 60
 	guardDefaultRounds = 8
 	guardStopped       = "loop_guard_stopped"
+	guardResetKind     = "loop_guard_reset"
 )
 
 type guardDecision struct {
@@ -182,7 +183,11 @@ func recordGuardStop(ctx context.Context, tx store.Tx, updated sql.Result, err e
 	if err != nil || changed == 0 {
 		return err
 	}
-	return audit(ctx, tx, guardStopped, subject, principal, detail, now)
+	if err := audit(ctx, tx, guardStopped, subject, principal, detail, now); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO owner_alert (event_seq) VALUES (last_insert_rowid())`)
+	return err
 }
 
 func endDrainedStop(ctx context.Context, tx store.Tx, principal, threadRoot, base, now int64) error {

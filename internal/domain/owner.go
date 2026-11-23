@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -30,6 +31,7 @@ type BudgetGrant struct {
 	Channel    string `json:"channel"`
 	ExchangeID int64  `json:"exchange_id,omitempty"`
 	Alias      string `json:"alias,omitempty"`
+	BindingID  int64  `json:"binding_id,omitempty"`
 	Rounds     *int64 `json:"rounds,omitempty"`
 	Units      int64  `json:"units,omitempty"`
 	Roots      int64  `json:"roots,omitempty"`
@@ -49,6 +51,7 @@ type BudgetGrantResult struct {
 	Channel    string `json:"channel"`
 	ExchangeID int64  `json:"exchange_id,omitempty"`
 	Alias      string `json:"alias,omitempty"`
+	BindingID  int64  `json:"binding_id,omitempty"`
 	Rounds     *int64 `json:"rounds,omitempty"`
 }
 
@@ -115,6 +118,9 @@ func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Call
 	if caller.Role != core.RoleOwner {
 		return Refuse(core.CodeOwnerOnly, "only the owner can reset rounds", "run it from the owner's own shell"), nil
 	}
+	if cmd.BindingID != 0 {
+		return grantBindingRounds(ctx, tx, req, cmd, now)
+	}
 	if !ValidName(cmd.Channel) {
 		return Fail(core.ExitUsage, "", "invalid channel name", "crosshall owner budget grant <channel>/x<id> --rounds <n>"), nil
 	}
@@ -150,9 +156,9 @@ func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Call
 
 	var r core.Result
 	if thread {
-		r, err = grantThreadRounds(ctx, tx, ch, cmd.ExchangeID, rounds)
+		r, err = grantThreadRounds(ctx, tx, ch, cmd.ExchangeID, rounds, now)
 	} else {
-		r, err = grantMemberRounds(ctx, tx, ch, cmd.Alias, rounds)
+		r, err = grantMemberRounds(ctx, tx, ch, cmd.Alias, rounds, now)
 	}
 	if err != nil || r.Status != core.ExitOK || req.OpKey == "" {
 		return r, err
@@ -179,46 +185,126 @@ func replayOwnerBudget(ctx context.Context, tx store.Tx, req Request, scope stri
 	return replay(ctx, tx, owner, req.OpKey, scope, cmd)
 }
 
-func grantThreadRounds(ctx context.Context, tx store.Tx, ch channelRow, exchange, rounds int64) (core.Result, error) {
-	result, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 0 WHERE id = ? AND channel_id = ?`, exchange, ch.id)
-	if err != nil {
-		return core.Result{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return core.Result{}, err
-	}
-	if changed == 0 {
+func grantThreadRounds(ctx context.Context, tx store.Tx, ch channelRow, exchange, rounds int64, now time.Time) (core.Result, error) {
+	var stopped bool
+	err := tx.QueryRowContext(ctx, `SELECT episode_open = 1 FROM exchange WHERE id = ? AND channel_id = ?`, exchange, ch.id).Scan(&stopped)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no exchange x%d in #%s", exchange, ch.name), "crosshall owner status --channel "+ch.name), nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE message
-        SET thread_reset_after_message_id = (SELECT COALESCE(MAX(id), 0) FROM message), thread_round_limit = ?
-        WHERE exchange_id = ? AND kind = 'ask' AND thread_root_id IS NULL`, rounds, exchange); err != nil {
+	if err != nil {
+		return core.Result{}, err
+	}
+	fence, err := guardFence(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 0 WHERE id = ?`, exchange); err != nil {
+		return core.Result{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE message SET thread_reset_after_message_id = ?, thread_round_limit = ?
+        WHERE exchange_id = ? AND kind = 'ask' AND thread_root_id IS NULL`, fence, rounds, exchange); err != nil {
 		return core.Result{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM thread_position WHERE thread_root_id IN (
         SELECT id FROM message WHERE exchange_id = ? AND kind = 'ask' AND thread_root_id IS NULL)`, exchange); err != nil {
 		return core.Result{}, err
 	}
+	if err := auditGuardReset(ctx, tx, fmt.Sprintf("exchange:%d", exchange), guardReset{ch.name, rounds, fence, stopped}, now); err != nil {
+		return core.Result{}, err
+	}
 	return OK(BudgetGrantResult{Channel: ch.name, ExchangeID: exchange, Rounds: &rounds})
 }
 
-func grantMemberRounds(ctx context.Context, tx store.Tx, ch channelRow, alias string, rounds int64) (core.Result, error) {
-	result, err := tx.ExecContext(ctx, `UPDATE principal SET round_limit = ?, any_level_ms = 0, guard_told = 0,
-        reset_after_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
-        WHERE id = (SELECT principal_id FROM binding WHERE channel_id = ? AND alias = ? AND state = 'live')`,
-		rounds, ch.id, alias)
-	if err != nil {
-		return core.Result{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return core.Result{}, err
-	}
-	if changed == 0 {
+func grantMemberRounds(ctx context.Context, tx store.Tx, ch channelRow, alias string, rounds int64, now time.Time) (core.Result, error) {
+	var principal int64
+	err := tx.QueryRowContext(ctx, `SELECT principal_id FROM binding WHERE channel_id = ? AND alias = ? AND state = 'live'`,
+		ch.id, alias).Scan(&principal)
+	if errors.Is(err, sql.ErrNoRows) {
 		return noLiveBudgetMember(ch, alias), nil
 	}
+	if err != nil {
+		return core.Result{}, err
+	}
+	if err := resetMemberRounds(ctx, tx, ch.name, principal, rounds, now); err != nil {
+		return core.Result{}, err
+	}
 	return OK(BudgetGrantResult{Channel: ch.name, Alias: alias, Rounds: &rounds})
+}
+
+// grantBindingRounds resets the member a binding names, live or departed;
+// the limit stays on its principal for a later return.
+func grantBindingRounds(ctx context.Context, tx store.Tx, req Request, cmd BudgetGrant, now time.Time) (core.Result, error) {
+	scope := "binding:" + strconv.FormatInt(cmd.BindingID, 10)
+	if r, found, err := replayOwnerBudget(ctx, tx, req, scope, cmd); found || err != nil {
+		return r, err
+	}
+	if cmd.BindingID < 0 || cmd.Channel != "" || cmd.ExchangeID != 0 || cmd.Alias != "" || cmd.Units != 0 || cmd.Roots != 0 ||
+		cmd.Pool != 0 || (cmd.Rounds != nil && *cmd.Rounds < 0) {
+		return Fail(core.ExitUsage, "", "grant non-negative rounds to one binding", "crosshall owner budget grant <binding-id> --rounds <n>"), nil
+	}
+	var channel, alias string
+	var principal int64
+	err := tx.QueryRowContext(ctx, `SELECT c.name, b.alias, b.principal_id FROM binding b JOIN channel c ON c.id = b.channel_id
+        WHERE b.id = ?`, cmd.BindingID).Scan(&channel, &alias, &principal)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no binding %d", cmd.BindingID), "crosshall owner who --all"), nil
+	}
+	if err != nil {
+		return core.Result{}, err
+	}
+	rounds := int64(guardDefaultRounds)
+	if cmd.Rounds != nil {
+		rounds = *cmd.Rounds
+	}
+	if err := resetMemberRounds(ctx, tx, channel, principal, rounds, now); err != nil {
+		return core.Result{}, err
+	}
+	r, err := OK(BudgetGrantResult{Channel: channel, Alias: alias, BindingID: cmd.BindingID, Rounds: &rounds})
+	if err != nil || req.OpKey == "" {
+		return r, err
+	}
+	owner, err := ownerPrincipal(ctx, tx, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	return r, record(ctx, tx, owner, req.OpKey, scope, cmd, r, now)
+}
+
+func resetMemberRounds(ctx context.Context, tx store.Tx, channel string, principal, rounds int64, now time.Time) error {
+	var stopped bool
+	if err := tx.QueryRowContext(ctx, `SELECT guard_told = 1 FROM principal WHERE id = ?`, principal).Scan(&stopped); err != nil {
+		return err
+	}
+	fence, err := guardFence(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE principal SET round_limit = ?, any_level_ms = 0, guard_told = 0, reset_after_message_id = ?
+        WHERE id = ?`, rounds, fence, principal); err != nil {
+		return err
+	}
+	return auditGuardReset(ctx, tx, fmt.Sprintf("principal:%d", principal), guardReset{channel, rounds, fence, stopped}, now)
+}
+
+func guardFence(ctx context.Context, tx store.Tx) (int64, error) {
+	var fence int64
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&fence)
+	return fence, err
+}
+
+type guardReset struct {
+	Channel             string `json:"channel"`
+	Rounds              int64  `json:"rounds"`
+	ResetAfterMessageID int64  `json:"reset_after_message_id"`
+	WasStopped          bool   `json:"was_stopped"`
+}
+
+func auditGuardReset(ctx context.Context, tx store.Tx, subject string, detail guardReset, now time.Time) error {
+	owner, err := ownerPrincipal(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	return audit(ctx, tx, guardResetKind, subject, owner, detail, now)
 }
 
 func noLiveBudgetMember(ch channelRow, alias string) core.Result {

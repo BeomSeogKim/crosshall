@@ -83,4 +83,7 @@ type Result struct {
 	Data   json.RawMessage `json:"data"`
 	// JoinHintAcked is current delivery metadata, populated after operation replay.
 	JoinHintAcked bool `json:"join_hint_acked,omitempty"`
+	// OwnerAlerts are the lines about round stops an owner command shows
+	// once, on stderr after its own output; they are never stored for replay.
+	OwnerAlerts []string `json:"owner_alerts,omitempty"`
 }

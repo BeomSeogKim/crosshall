@@ -27,7 +27,7 @@ type SetupRequest struct {
 	// Terminal reports that standard input and output are a terminal.
 	Terminal       bool
 	PathConsent    func(bool) error
-	OfferTelemetry func(*bufio.Scanner) error
+	OfferTelemetry func(*bufio.Reader) error
 	// Installed is told that at least one agent's hooks were installed.
 	Installed func()
 }
@@ -81,7 +81,7 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 		if req.Offer {
 			source = "installer"
 		}
-		req.OfferTelemetry = func(input *bufio.Scanner) error {
+		req.OfferTelemetry = func(input *bufio.Reader) error {
 			_, err := offerTelemetry(env, opts, input, stdout, source)
 			return err
 		}

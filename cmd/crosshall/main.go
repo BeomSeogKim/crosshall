@@ -110,7 +110,6 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.Stop = paths.launch(true).Stop
 		env.TelemetryEndpoint = telemetryconfig.Endpoint
 		env.TelemetryStateRoot = paths.state
-		env.TelemetryManagedOff = telemetryconfig.ManagedOff
 		env.Setup = func(req cli.SetupRequest) error {
 			executable, err := os.Executable()
 			if err != nil {

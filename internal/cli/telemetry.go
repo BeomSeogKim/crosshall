@@ -29,8 +29,9 @@ func applyTelemetryEnvironment(env Env, out io.Writer) error {
 	return err
 }
 
-func offerTelemetry(env Env, opts options, input *bufio.Scanner, out io.Writer, source string) (bool, error) {
-	if opts.json || env.TelemetryEndpoint == "" || env.TelemetryStateRoot == "" ||
+func offerTelemetry(env Env, opts options, input *bufio.Reader, out io.Writer, source string) (bool, error) {
+	_, ci := os.LookupEnv("CI")
+	if ci || opts.json || env.TelemetryEndpoint == "" || env.TelemetryStateRoot == "" ||
 		env.SetupTerminal == nil || !env.SetupTerminal() || telemetryconfig.EnvironmentOff() || managedTelemetryOff(env) {
 		return false, nil
 	}
@@ -47,18 +48,25 @@ func offerTelemetry(env Env, opts options, input *bufio.Scanner, out io.Writer, 
 }
 
 func managedTelemetryOff(env Env) bool {
-	return env.TelemetryManagedOff != nil && env.TelemetryManagedOff()
+	if env.TelemetryPolicyPath != "" {
+		return telemetryconfig.ManagedOffAt(env.TelemetryPolicyPath)
+	}
+	return telemetryconfig.ManagedOff()
 }
 
-func askTelemetry(input *bufio.Scanner, out io.Writer) (string, error) {
+func askTelemetry(input *bufio.Reader, out io.Writer) (string, error) {
 	for range 2 {
 		if _, err := fmt.Fprintln(out, telemetryQuestion); err != nil {
 			return telemetryconfig.Unset, err
 		}
-		if !input.Scan() {
-			return telemetryconfig.Unset, input.Err()
+		line, err := input.ReadString('\n')
+		if errors.Is(err, io.EOF) {
+			return telemetryconfig.Unset, nil
 		}
-		switch strings.ToLower(strings.TrimSpace(input.Text())) {
+		if err != nil {
+			return telemetryconfig.Unset, err
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "", "y", "yes":
 			return telemetryconfig.On, nil
 		case "n", "no":

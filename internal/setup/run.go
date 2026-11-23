@@ -33,7 +33,7 @@ type Request struct {
 	Offer          bool
 	Terminal       bool
 	PathConsent    func(bool) error
-	OfferTelemetry func(*bufio.Scanner) error
+	OfferTelemetry func(*bufio.Reader) error
 	// Installed is told that at least one agent's hooks were installed.
 	Installed func()
 }

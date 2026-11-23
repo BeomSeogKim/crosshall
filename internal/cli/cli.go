@@ -141,7 +141,7 @@ type Env struct {
 	SetupTerminal       func() bool
 	TelemetryEndpoint   string
 	TelemetryStateRoot  string
-	TelemetryManagedOff func() bool
+	TelemetryPolicyPath string
 	// SetupAdapters lists the shipped hook adapters a setup may name.
 	SetupAdapters []string
 }
@@ -249,24 +249,29 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	if len(args) == 0 {
 		return o.usage("usage: crosshall owner <command>; run `crosshall owner help`")
 	}
-	if args[0] == "help" {
-		fmt.Fprint(stdout, ownerUsage)
-		return core.ExitOK
-	}
+	help := args[0] == "help"
+	var gate string
 	if env.OwnerGate != nil {
-		if msg := env.OwnerGate(); msg != "" {
-			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, msg,
-				"rerun this command from your separate owner terminal"), stdout, stderr)
+		gate = env.OwnerGate()
+	}
+	if gate != "" && !help {
+		return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, gate,
+			"rerun this command from your separate owner terminal"), stdout, stderr)
+	}
+	if gate == "" {
+		if err := applyTelemetryEnvironment(env, stderr); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 		}
 	}
-	if err := applyTelemetryEnvironment(env, stderr); err != nil {
-		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	if help {
+		fmt.Fprint(stdout, ownerUsage)
+		return core.ExitOK
 	}
 	deadline := env.CommandDeadline
 	switch args[0] {
 	case "start", "channel", "who", "log", "adapter", "publish", "status", "cancel", "budget", "restore", "depart":
 		if env.Stdin != nil {
-			asked, err := offerTelemetry(env, opts, bufio.NewScanner(env.Stdin), stdout, "owner-prompt")
+			asked, err := offerTelemetry(env, opts, bufio.NewReader(env.Stdin), stdout, "owner-prompt")
 			if err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}

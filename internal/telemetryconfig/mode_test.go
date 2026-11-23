@@ -68,3 +68,40 @@ func TestTelemetryEligibilityStartsAtTheNextUTCMidnight(t *testing.T) {
 		t.Fatalf("first complete UTC day: %s", got)
 	}
 }
+
+func TestTelemetryExplicitOffPrevailsOverFirstAnswer(t *testing.T) {
+	for _, order := range []string{"off first", "answer first", "concurrent"} {
+		t.Run(order, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "state")
+			off := func() {
+				if _, _, err := SetMode(root, Off, "owner-command", ""); err != nil {
+					t.Error(err)
+				}
+			}
+			answer := func() {
+				if _, _, err := SetMode(root, On, "owner-prompt", Unset); err != nil {
+					t.Error(err)
+				}
+			}
+			switch order {
+			case "off first":
+				off()
+				answer()
+			case "answer first":
+				answer()
+				off()
+			case "concurrent":
+				var wait sync.WaitGroup
+				start := make(chan struct{})
+				wait.Go(func() { <-start; answer() })
+				wait.Go(func() { <-start; off() })
+				close(start)
+				wait.Wait()
+			}
+			setting, err := ReadMode(root)
+			if err != nil || setting.Mode != Off || setting.Source != "owner-command" {
+				t.Fatalf("off should prevail: setting=%+v, error=%v", setting, err)
+			}
+		})
+	}
+}

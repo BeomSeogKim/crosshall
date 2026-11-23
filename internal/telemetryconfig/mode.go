@@ -1,8 +1,10 @@
 package telemetryconfig
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -43,8 +45,10 @@ func EnvironmentOff() bool {
 	}
 }
 
-func ManagedOff() bool {
-	_, err := os.Lstat(managedOffFile)
+func ManagedOff() bool { return ManagedOffAt(managedOffFile) }
+
+func ManagedOffAt(path string) bool {
+	_, err := os.Lstat(path)
 	return !errors.Is(err, os.ErrNotExist)
 }
 
@@ -61,12 +65,27 @@ func ReadMode(stateRoot string) (Setting, error) {
 }
 
 func readMode(dir *os.Root) (Setting, error) {
-	data, err := ident.ReadPrivateFile(dir, "mode", 160)
+	f, err := dir.OpenFile("mode", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return Setting{Mode: Unset}, nil
 	}
 	if err != nil {
 		return Setting{}, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return Setting{}, err
+	}
+	if info.Mode() != 0600 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) || info.Size() > 160 {
+		return Setting{}, errors.New("invalid telemetry/mode")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 161))
+	if err != nil {
+		return Setting{}, err
+	}
+	if len(data) > 160 {
+		return Setting{}, errors.New("invalid telemetry/mode")
 	}
 	parts := strings.Fields(string(data))
 	if len(parts) != 3 || (parts[0] != On && parts[0] != Off) {
@@ -104,42 +123,26 @@ func SetMode(stateRoot, mode, source, onlyIf string) (Setting, bool, error) {
 	}
 	defer dir.Close()
 
-	lock, err := dir.OpenFile("mode.lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
-	if err != nil {
-		return Setting{}, false, err
-	}
-	defer lock.Close()
-	info, err := lock.Stat()
-	if err != nil {
-		return Setting{}, false, err
-	}
-	if info.Mode() != 0600 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		return Setting{}, false, errors.New("invalid telemetry/mode.lock")
-	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return Setting{}, false, err
-	}
-
-	current, err := readMode(dir)
-	if err != nil {
-		return Setting{}, false, err
-	}
-	if onlyIf != "" && current.Mode != onlyIf {
-		return current, false, nil
-	}
-	changed := current.Mode != mode
-	if changed {
-		current = Setting{Mode: mode, ChangedAt: time.Now().UTC(), Source: source}
-		if err := writeMode(dir, current); err != nil {
-			return Setting{}, false, err
+	if onlyIf == On {
+		current, err := readMode(dir)
+		if err != nil || current.Mode != On {
+			return current, false, err
 		}
+	}
+	setting := Setting{Mode: mode, ChangedAt: time.Now().UTC(), Source: source}
+	createOnly := onlyIf == Unset
+	if err := writeMode(dir, setting, createOnly); err != nil {
+		if createOnly && errors.Is(err, os.ErrExist) {
+			return Setting{}, false, nil
+		}
+		return Setting{}, false, err
 	}
 	if mode == Off {
 		if err := dir.RemoveAll("pending"); err != nil {
-			return current, changed, err
+			return setting, true, err
 		}
 	}
-	return current, changed, nil
+	return setting, true, nil
 }
 
 func openTelemetryDir(stateRoot string, create bool) (*os.Root, error) {
@@ -161,11 +164,8 @@ func openTelemetryDir(stateRoot string, create bool) (*os.Root, error) {
 	return ident.OpenPrivateChild(root, "telemetry")
 }
 
-func writeMode(dir *os.Root, setting Setting) error {
-	const stage = "mode.part"
-	if err := dir.Remove(stage); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+func writeMode(dir *os.Root, setting Setting, createOnly bool) error {
+	stage := "mode-" + rand.Text() + ".part"
 	file, err := dir.OpenFile(stage, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
@@ -174,6 +174,9 @@ func writeMode(dir *os.Root, setting Setting) error {
 	_, err = fmt.Fprintf(file, "%s %s %s\n", setting.Mode, setting.ChangedAt.Format(time.RFC3339Nano), setting.Source)
 	if err := errors.Join(err, file.Close()); err != nil {
 		return err
+	}
+	if createOnly {
+		return dir.Link(stage, "mode")
 	}
 	return dir.Rename(stage, "mode")
 }

@@ -8,7 +8,7 @@ crosshall can send one usage report a day to Adrian Studio, its maintainer, to d
 - **One report per active day.** After a UTC day closes, the dispatcher builds that day's report once, writes it to `telemetry/pending/` in your state directory and never rebuilds it. A day with no activity has no report.
 - **One request a day.** The dispatcher sends the first request for a new report at most once per 24 hours, at a random time up to six hours after the report was built, as one HTTPS POST made by `/usr/bin/curl`. A backlog goes out one report a day, oldest first; a report more than seven days old is deleted unsent. A failed request is retried with the same bytes after one hour, doubling up to a day; a retry may come sooner than 24 hours after the last request.
 - **Only the dispatcher sends.** Hooks, member commands and the `crosshall` commands you type make no network call and gain no output. On a machine without `/usr/bin/curl` nothing is sent, and `crosshall owner telemetry` says why.
-- **Visible before it is sent.** `crosshall owner telemetry show` prints the report waiting to be sent, byte for byte, and `crosshall owner telemetry` names the receiver's last answer and the next attempt.
+- **Visible before it is sent.** `crosshall owner telemetry show` shows the report waiting to be sent, exactly as it will be sent, and `crosshall owner telemetry` names the receiver's last answer and the next attempt.
 - **Kept locally.** A sent report is moved to `telemetry/sent/` and kept 30 days. `crosshall owner telemetry sent` lists those days and `crosshall owner telemetry sent --day YYYY-MM-DD` prints one, byte for byte as it was sent.
 
 ## What a report holds

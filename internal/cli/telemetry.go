@@ -15,7 +15,7 @@ import (
 )
 
 const telemetryQuestion = `Usage statistics help Adrian Studio decide what to fix and build in crosshall. A daily report can include rounded counts of messages, notices and hook timings, plus the crosshall release, platform, agent release families and a random token for that day. Reports exclude message text, channel names, aliases, paths, host names and user names.
-The maintainer's server keeps reports for 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. Preview with crosshall owner telemetry show and disable with crosshall owner telemetry off.
+The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
 Send usage statistics? [Y/n]`
 
 func applyTelemetryEnvironment(env Env, out io.Writer) error {
@@ -167,7 +167,7 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	if pending != nil {
 		fields["pending_day"], fields["next_attempt"] = pending.Day, pending.NextAttempt
 		if !o.json {
-			fmt.Fprintf(out, "Waiting to be sent: the report for %s, not before %s (crosshall owner telemetry show prints it)\n",
+			fmt.Fprintf(out, "Waiting to be sent: the report for %s, not before %s (crosshall owner telemetry show shows it)\n",
 				pending.Day, pending.NextAttempt.Format(time.RFC3339))
 		}
 	}

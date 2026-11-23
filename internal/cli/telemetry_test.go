@@ -247,7 +247,7 @@ func TestTelemetryShowAndRetryStatus(t *testing.T) {
 	}
 	stdout, _, code := run(t, env, "owner", "telemetry")
 	if code != core.ExitOK || !strings.Contains(stdout, "Last answer from the receiver: 429") ||
-		!strings.Contains(stdout, "Waiting to be sent: the report for 2026-11-09, not before 2026-11-10T03:00:00Z") {
+		!strings.Contains(stdout, "Waiting to be sent: the report for 2026-11-09, not before 2026-11-10T03:00:00Z (crosshall owner telemetry show shows it)") {
 		t.Fatalf("status: code=%d, stdout=%s", code, stdout)
 	}
 	stdout, _, code = run(t, env, "--json", "owner", "telemetry")

@@ -292,3 +292,26 @@ func TestNoNextLineWhenEveryRecipientIsTold(t *testing.T) {
 		t.Errorf("final reply lacks its next: line:\n%s", answer)
 	}
 }
+
+// A recipient the turn-end check of its running turn will tell is not named
+// in the next: line.
+func TestTurnEndRecipientIsLeftOutOfTheNextLine(t *testing.T) {
+	turnEnd := domain.Wake{Wake: domain.WakeNone, Why: domain.WhyOff, SeenAt: domain.SeenAtTurnEnd}
+	command := domain.Wake{Wake: domain.WakeNone, Why: domain.WhyNoRoute, SeenAt: domain.SeenAtCommand}
+	ask, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Channel: "dev",
+		Recipients: []domain.Delivery{{Alias: "opus", State: "stored", Wake: turnEnd}, {Alias: "agy", State: "stored", Wake: command}}})}},
+		"--key", "k", "ask", "@opus", "work")
+	for _, want := range []string{
+		"@opus  stored -> not woken: notices off; it sees this when its turn ends\n",
+		"next: nothing will tell @agy. Ask a member the hall can wake (crosshall who), or tell your user.\n",
+	} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("send result lacks %q:\n%s", want, ask)
+		}
+	}
+	only, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.AskResult{ID: 43, Channel: "dev",
+		Recipients: []domain.Delivery{{Alias: "opus", State: "stored", Wake: turnEnd}}})}}, "--key", "k", "ask", "@opus", "work")
+	if strings.Contains(only, "next:") {
+		t.Errorf("a recipient its turn's end will tell got a next: line:\n%s", only)
+	}
+}

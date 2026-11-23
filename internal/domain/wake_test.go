@@ -307,6 +307,16 @@ func TestARequestDuringACheckedTurnIsSeenWhenTheTurnEnds(t *testing.T) {
 	if d := send("next-turn"); d.SeenAt != SeenAtTurnEnd {
 		t.Fatalf("in the next checked turn: %+v", d)
 	}
+	// Nothing follows an answered permission dialog: the turn shows that
+	// stage until its Stop, which still offers the request.
+	f.hook(reader, event("launch", FactApprovalRequested, "turn-2:approval", "turn-2", f.now.UnixMilli()+3, false))
+	if d := send("after-approval"); d.SeenAt != SeenAtTurnEnd {
+		t.Fatalf("after a permission request in the turn: %+v", d)
+	}
+	if got := f.hook(reader, stop("launch", "turn-2", f.now.UnixMilli()+4)); !strings.Contains(got.TurnEndLine, "[crosshall] pending:") {
+		t.Fatalf("the turn's end after a permission request offered nothing: %+v", got)
+	}
+	f.hook(reader, prompt("launch", "turn-3", f.now.UnixMilli()+5))
 	// A prompt past its cap is not a running turn any more.
 	f.now = f.now.Add(31 * time.Minute)
 	if d := send("stale-prompt"); d.SeenAt != SeenAtPrompt {

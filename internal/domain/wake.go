@@ -144,12 +144,16 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 
 // seesAtTurnEnd reports whether the member is in a turn whose end the
 // turn-end check will offer an unread request at: its latest fact is a
-// current prompt (a turn that reached its Stop shows that stage instead) and
+// current prompt or permission request (a turn that reached its Stop shows
+// that stage instead) and
 // its launch's turn-end check is covered and switched on. An open turn row
 // alone is not enough: a typed-ahead placeholder can stay open for good.
 func seesAtTurnEnd(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
 	fact, err := latestFact(ctx, tx, principal)
-	if fact == nil || err != nil || fact.Fact != FactPromptSubmitted || !fact.At(ms(now)).Current {
+	// A session reports nothing after an answered permission dialog, so a
+	// turn that asked for one shows that stage until its Stop.
+	if fact == nil || err != nil || fact.Fact != FactPromptSubmitted && fact.Fact != FactApprovalRequested ||
+		!fact.At(ms(now)).Current {
 		return false, err
 	}
 	var covered bool

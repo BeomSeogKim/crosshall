@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -72,6 +73,14 @@ func reachWake(status store.PublishState, found bool) Wake {
 	if adapter, ok := strings.CutPrefix(status.Reason, store.PublishNoSender); ok {
 		w := none(WhyNoRoute)
 		w.Adapter = adapter
+		return w
+	}
+	switch status.Reason {
+	// A Codex session outside a confirmed managed app server has no route a
+	// notice could take.
+	case publish.CodexNoDaemon, publish.CodexDaemonUnverified:
+		w := none(WhyNoRoute)
+		w.Adapter = "codex"
 		return w
 	}
 	return none(WhyUnproven)

@@ -115,12 +115,22 @@ func TestSendResultSaysWhatWillTellEachRecipient(t *testing.T) {
 	})
 	t.Run("no sender for the adapter", func(t *testing.T) {
 		p := wakeFixture(t)
-		p.policy("codex", true, 1)
-		p.mutate(`UPDATE publish_route SET adapter = 'codex' WHERE binding_id = ?`, p.binding.ID)
+		p.policy("agy", true, 1)
+		p.mutate(`UPDATE publish_route SET adapter = 'agy' WHERE binding_id = ?`, p.binding.ID)
 		w := notWoken(WhyNoRoute)
-		w.Adapter = "codex"
-		p.sendTo("codex route", w)
+		w.Adapter = "agy"
+		p.sendTo("agy route", w)
 	})
+	for _, mode := range []string{"in_process", "unverified"} {
+		t.Run("codex "+mode, func(t *testing.T) {
+			p := wakeFixture(t)
+			p.policy("codex", true, 1)
+			p.mutate(`UPDATE publish_route SET adapter = 'codex', mode = ? WHERE binding_id = ?`, mode, p.binding.ID)
+			w := notWoken(WhyNoRoute)
+			w.Adapter = "codex"
+			p.sendTo("codex route", w)
+		})
+	}
 	t.Run("no route", func(t *testing.T) {
 		p := wakeFixture(t)
 		p.mutate(`DELETE FROM publish_route WHERE binding_id = ?`, p.binding.ID)

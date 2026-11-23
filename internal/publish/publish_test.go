@@ -43,8 +43,60 @@ func TestShippedAdaptersKeepTheirRouteRules(t *testing.T) {
 	if codex.AcceptsSocket(sock) {
 		t.Error("codex accepted a socket")
 	}
-	if claude.SessionThread("s") != "" || codex.SessionThread("thread-1") != "thread-1" {
-		t.Error("only a Codex session reference is its thread")
+	if claude.SessionRoute("s", "interactive") != (Route{}) ||
+		codex.SessionRoute("thread-1", ModeDaemon) != (Route{ThreadID: "thread-1", Mode: ModeDaemon}) {
+		t.Error("only a Codex session reference is its thread, with the launch's mode")
+	}
+}
+
+// A Codex thread is reachable only through the managed server: the owner
+// reads why otherwise, ahead of the thread's address (#236).
+func TestCodexReachesOnlyADaemonThread(t *testing.T) {
+	codex, _ := Shipped().Lookup("codex")
+	claude, _ := Shipped().Lookup("claude")
+	for mode, want := range map[string]string{
+		ModeDaemon: "", ModeInProcess: CodexNoDaemon, "unverified": CodexDaemonUnverified, "": CodexDaemonUnverified,
+	} {
+		if got := codex.Reach(Route{ThreadID: "thread-1", Mode: mode}); got != want {
+			t.Errorf("reach of a %q thread = %q, want %q", mode, got, want)
+		}
+	}
+	if claude.Reach(Route{}) != "" {
+		t.Error("a Claude route has a reach reason")
+	}
+	sending := Shipped().WithTransport("codex", Transport{Send: func(context.Context, Target, string) Outcome { return Submitted }})
+	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeInProcess}); address != "" || why != CodexNoDaemon {
+		t.Errorf("in-process address = %q, %q", address, why)
+	}
+	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon}); address != "thread-1" || why != "" {
+		t.Errorf("daemon address = %q, %q", address, why)
+	}
+	if _, why := Shipped().Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon}); why != "no sender for codex" {
+		t.Errorf("shipped codex address reason = %q", why)
+	}
+}
+
+// The Codex notice names its IDs and its sender, and only that notice
+// echoes back as a receipt.
+func TestCodexNoticeEchoesItsIDs(t *testing.T) {
+	codex, _ := Shipped().Lookup("codex")
+	line, ok := codex.Notice([]int64{3, 17})
+	want := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session: do not reply to the sender. Run crosshall read."
+	if !ok || line != want {
+		t.Fatalf("notice = %q, %v", line, ok)
+	}
+	if ids, ok := codex.Echo(line); !ok || ids != "3 17" {
+		t.Fatalf("echo = %q, %v", ids, ok)
+	}
+	claude, _ := Shipped().Lookup("claude")
+	claudeLine, _ := claude.Notice([]int64{3})
+	for _, prompt := range []string{claudeLine, "[crosshall] pending: 3", "run crosshall read"} {
+		if _, ok := codex.Echo(prompt); ok {
+			t.Errorf("codex echoed %q", prompt)
+		}
+	}
+	if Shipped().Sends("codex") {
+		t.Error("codex sends without a transport")
 	}
 }
 
@@ -66,8 +118,10 @@ func TestClaudeRecognizesOnlyItsOwnNotice(t *testing.T) {
 		t.Error("the shared grammar accepted IDs out of order")
 	}
 	codex, _ := Lookup("codex")
-	if _, ok := codex.Notice([]int64{1}); ok {
-		t.Error("codex has a notice before trusted capture is shown")
+	if codexLine, _ := codex.Notice([]int64{3, 7}); codexLine == line {
+		t.Error("codex and claude notices read the same")
+	} else if _, ok := claude.Echo(codexLine); ok {
+		t.Error("claude recognized the codex notice")
 	}
 }
 
@@ -86,13 +140,14 @@ func TestOnlyClaudeSendsInTheShippedBuild(t *testing.T) {
 // fixture is an adapter this build does not ship.
 type fixture struct{ transport Transport }
 
-func (fixture) Resolve(r Route) (string, string)  { return r.ThreadID, "" }
-func (fixture) ModeEligible(string) bool          { return true }
-func (fixture) AcceptsSocket(string) bool         { return false }
-func (fixture) SessionThread(ref string) string   { return ref }
-func (fixture) Notice(ids []int64) (string, bool) { return "fixture " + notice.IDList(ids), true }
-func (fixture) Echo(prompt string) (string, bool) { return strings.CutPrefix(prompt, "fixture ") }
-func (f fixture) Transport() Transport            { return f.transport }
+func (fixture) Resolve(r Route) (string, string)    { return r.ThreadID, "" }
+func (fixture) ModeEligible(string) bool            { return true }
+func (fixture) AcceptsSocket(string) bool           { return false }
+func (fixture) SessionRoute(ref, mode string) Route { return Route{ThreadID: ref, Mode: mode} }
+func (fixture) Reach(Route) string                  { return "" }
+func (fixture) Notice(ids []int64) (string, bool)   { return "fixture " + notice.IDList(ids), true }
+func (fixture) Echo(prompt string) (string, bool)   { return strings.CutPrefix(prompt, "fixture ") }
+func (f fixture) Transport() Transport              { return f.transport }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }

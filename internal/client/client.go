@@ -114,6 +114,7 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 		return core.Result{}, err
 	}
 	req.OpKey = call.OpKey
+	req.OwnerAlerts = call.Owner && call.OwnerAlerts
 	if strings.HasPrefix(req.Verb, "owner ") != call.Owner {
 		return localFailure(core.ExitRefused, core.CodeOwnerOnly, "command and ingress disagree"), nil
 	}

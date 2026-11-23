@@ -20,7 +20,7 @@ func TestOwnerDepartUsesBindingTokenAndOperationKey(t *testing.T) {
 	if code != core.ExitOK || out != "@writer in #checkout departed (binding 12).\n" {
 		t.Fatalf("exit %d: stdout %q, stderr %q", code, out, stderr)
 	}
-	want := Call{Owner: true, Command: domain.OwnerDepart{BindingID: 12, Seen: departureToken}, OpKey: "departure-1"}
+	want := Call{Owner: true, Command: domain.OwnerDepart{BindingID: 12, Seen: departureToken}, OpKey: "departure-1", OwnerAlerts: true}
 	if len(ft.calls) != 1 || ft.calls[0] != want {
 		t.Fatalf("calls = %+v, want %+v", ft.calls, want)
 	}

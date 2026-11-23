@@ -559,6 +559,24 @@ func TestPendingDesktopAlertsIsReadOnly(t *testing.T) {
 	}
 }
 
+// An owner request that prints nothing, such as setup's policy update,
+// leaves the stop for the next owner command that prints the line.
+func TestOwnerLineWaitsForARequestThatPrintsIt(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	f.threadStop(a, "tax")
+	quiet := f.exec(core.Caller{Role: core.RoleOwner}, Request{Command: OwnerStatus{}})
+	wantOK(t, quiet)
+	if quiet.OwnerAlerts != nil {
+		t.Fatalf("a request that prints no line received one: %q", quiet.OwnerAlerts)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM owner_alert WHERE shown_at_ms IS NULL`); n != 1 {
+		t.Fatalf("unshown stops after a quiet request: %d", n)
+	}
+	if got := f.owner(OwnerStatus{}, "").OwnerAlerts; len(got) != 2 {
+		t.Fatalf("the next owner command: %q", got)
+	}
+}
+
 // The owner line is an extra: an error while building it neither fails the
 // owner's command nor rolls back its effect.
 func TestOwnerLineFailureLeavesTheOwnerCommand(t *testing.T) {

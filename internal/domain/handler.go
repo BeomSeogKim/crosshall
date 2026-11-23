@@ -72,7 +72,7 @@ func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, r
 	if result, err = withMemberOutput(ctx, tx, caller, req, result, now); err != nil {
 		return core.Result{}, err
 	}
-	if caller.Role == core.RoleOwner {
+	if caller.Role == core.RoleOwner && req.OwnerAlerts {
 		result.OwnerAlerts = bestEffortOwnerAlerts(ctx, tx, now)
 	}
 	return withReturnedAlias(result, returnedAs)

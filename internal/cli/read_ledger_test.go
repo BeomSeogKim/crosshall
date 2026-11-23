@@ -36,7 +36,9 @@ func TestLedgerCommandsUseExpectedIngressAndKeys(t *testing.T) {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			ft := &fakeTransport{result: okResult(t, struct{}{})}
 			_, stderr, code := run(t, Env{Transport: ft, NewKey: func() string { return "test-key" }}, append([]string{"--json"}, tc.args...)...)
-			if code != core.ExitOK || !reflect.DeepEqual(ft.calls, []Call{tc.call}) {
+			want := tc.call
+			want.OwnerAlerts = want.Owner // an owner command prints the owner line
+			if code != core.ExitOK || !reflect.DeepEqual(ft.calls, []Call{want}) {
 				t.Fatalf("exit=%d, stderr=%q, calls=%+v", code, stderr, ft.calls)
 			}
 		})

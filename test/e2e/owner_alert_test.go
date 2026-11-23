@@ -83,3 +83,27 @@ func TestOwnerCommandPrintsAStopOnceOnStderr(t *testing.T) {
 		t.Fatalf("the stop was printed again: %q", second.stderr)
 	}
 }
+
+// Setup's own owner requests print no owner line, so a stop it passes over
+// stays for the next owner command, with desktop notifications off.
+func TestSetupLeavesAStopForTheNextOwnerCommand(t *testing.T) {
+	f := newSetupWorld(t)
+	owner := f.owner()
+	owner.extra = []string{"CROSSHALL_NOTIFY=off"}
+	owner.must("owner", "start")
+	owner.must("owner", "channel", "create", "checkout")
+	form, tax := f.member(), f.member()
+	form.mustFixtureWrite("join", "checkout", "--as", "form")
+	tax.mustFixtureWrite("join", "checkout", "--as", "tax")
+	owner.must("owner", "budget", "grant", "checkout/@form", "--rounds", "0")
+	if o := form.run("ask", "@tax", "--new", "stopped"); o.exit != 3 || o.obj["code"] != "round_limit" {
+		t.Fatalf("refusal: exit %d %v", o.exit, o.obj)
+	}
+	if applied := f.apply("", "setup", "claude", "--apply"); strings.Contains(applied.stderr, "round limit") {
+		t.Fatalf("setup printed the stop: %q", applied.stderr)
+	}
+	if status := owner.must("owner", "status", "--channel", "checkout"); !strings.HasPrefix(status.stderr,
+		"crosshall: round limit reached in #checkout for @form's new threads at ") {
+		t.Fatalf("the owner command after setup: stderr %q", status.stderr)
+	}
+}

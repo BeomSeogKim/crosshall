@@ -24,16 +24,24 @@ func TestTelemetryQuestion(t *testing.T) {
 		{"default after Enter", "\n", telemetryconfig.On, 1},
 		{"typed yes", "YeS\n", telemetryconfig.On, 1},
 		{"decline", "n\n", telemetryconfig.Off, 1},
+		{"y key under a Korean input method", "ㅛ\n", telemetryconfig.On, 1},
+		{"n key under a Korean input method", " ㅜ \n", telemetryconfig.Off, 1},
 		{"EOF", "", telemetryconfig.Unset, 1},
 		{"whitespace at EOF", " ", telemetryconfig.Unset, 1},
 		{"yes at EOF", "yes", telemetryconfig.Unset, 1},
 		{"one retry", "typo\nno\n", telemetryconfig.Off, 2},
 		{"two invalid answers", "typo\nwrong\n", telemetryconfig.Unset, 2},
+		{"retry at EOF", "ㅛㄷㄴ\n", telemetryconfig.Unset, 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out strings.Builder
 			mode, err := askTelemetry(bufio.NewReader(strings.NewReader(tt.input)), &out)
-			if err != nil || mode != tt.mode || out.String() != strings.Repeat(wantQuestion, tt.questions) {
+			// An answer it does not accept is followed by the prompt line only.
+			want := wantQuestion
+			if tt.questions == 2 {
+				want += "Answer y or n.\nSend usage statistics? [Y/n]\n"
+			}
+			if err != nil || mode != tt.mode || out.String() != want {
 				t.Fatalf("mode=%q, error=%v, question=%q", mode, err, out.String())
 			}
 		})

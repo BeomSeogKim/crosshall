@@ -84,13 +84,18 @@ func memberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) 
 }
 
 // messageWake is what will tell a live binding about stored message msg: a
-// notice that offered it or will, or else nothing, with the reason and where
-// the member sees it.
+// notice that offered it or will, else the member's running wait when it
+// accepts the message, else nothing, with the reason and where the member
+// sees it.
 func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, principal, msg int64, now time.Time) (Wake, error) {
-	var offered bool
+	var (
+		offered, endsWait bool
+		kind              string
+	)
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_attempt_item i
 		JOIN publish_attempt a ON a.id = i.attempt_id
-		WHERE i.message_id = ? AND i.principal_id = ? AND a.state <> 'not_submitted')`, msg, principal).Scan(&offered); err != nil {
+		WHERE i.message_id = m.id AND i.principal_id = ? AND a.state <> 'not_submitted'), m.kind, `+notMoreTime+`
+		FROM message m WHERE m.id = ?`, principal, msg).Scan(&offered, &kind, &endsWait); err != nil {
 		return Wake{}, err
 	}
 	if offered {
@@ -111,6 +116,10 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 			return w, nil
 		}
 		w = Wake{Wake: WakeNone, Why: WhyKind}
+	}
+	// A request for more time ends no wait.
+	if endsWait && s.waits.running(binding, kind, now) {
+		return Wake{Wake: WakeWait}, nil
 	}
 	w.SeenAt, err = s.seenAt(ctx, tx, binding)
 	return w, err

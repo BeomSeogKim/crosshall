@@ -425,8 +425,11 @@ func (s *Service) deliveries(ctx context.Context, tx store.Tx, msg int64, now ti
 			return nil, err
 		}
 		out[at].Wake, out[at].Next = w, "waits for its next crosshall command"
-		if w.Wake == WakeNotice {
+		switch w.Wake {
+		case WakeNotice:
 			out[at].Next = "notice queued"
+		case WakeWait:
+			out[at].Next = WaitRunning
 		}
 	}
 	return out, nil

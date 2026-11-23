@@ -35,7 +35,8 @@ name.
   rejects them.
 - Never push, publish, or open a pull request unless the maintainer asked.
 - No new dependency, network call or telemetry without an issue that agreed
-  to it.
+  to it. A new telemetry key needs an issue, a new registry number, a row in
+  `docs/telemetry.md` and a test.
 
 ## Checks
 

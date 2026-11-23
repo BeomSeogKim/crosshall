@@ -15,7 +15,7 @@ import (
 )
 
 const telemetryQuestion = `Usage statistics help Adrian Studio decide what to fix and build in crosshall. A daily report can include rounded counts of messages, notices and hook timings, plus the crosshall release, platform, agent release families and a random token for that day. Reports exclude message text, channel names, aliases, paths, host names and user names.
-The maintainer's server keeps reports for 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. Preview with crosshall owner telemetry show and disable with crosshall owner telemetry off.
+The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
 Send usage statistics? [Y/n]`
 
 func applyTelemetryEnvironment(env Env, out io.Writer) error {
@@ -108,7 +108,7 @@ func runOwnerTelemetry(env Env, opts options, args []string, stdout, stderr io.W
 		}
 		setting, _, err = telemetryconfig.SetMode(env.TelemetryStateRoot, action, "owner-command", "")
 	case "show":
-		return o.fail(core.ExitUnavailable, core.CodeUnsent, "usage report previews are unavailable in this build", "")
+		return runTelemetryShow(env, opts, stdout, stderr)
 	default:
 		return o.usage("usage: crosshall owner telemetry [on|off|show|sent]")
 	}
@@ -123,6 +123,10 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
+	st, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot, time.Now())
+	if err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
 	fields := map[string]any{
 		"v": 1, "ok": true, "kind": "owner telemetry", "mode": setting.Mode, "endpoint": env.TelemetryEndpoint,
 		"environment_opt_out": environmentOff, "managed_opt_out": managedOff,
@@ -133,6 +137,12 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	if setting.Source != "" {
 		fields["decision_source"] = setting.Source
 		fields["decided_at"] = setting.ChangedAt
+	}
+	curlMissing := false
+	if setting.Mode == telemetryconfig.On && env.TelemetryCurl != "" {
+		info, err := os.Stat(env.TelemetryCurl)
+		curlMissing = err != nil || !info.Mode().IsRegular()
+		fields["curl_missing"] = curlMissing
 	}
 	if setting.Mode == telemetryconfig.On && !environmentOff && !managedOff {
 		day := telemetryconfig.NextFullDay(setting.ChangedAt).Format(time.DateOnly)
@@ -148,6 +158,19 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 			fmt.Fprintf(out, "Last sent UTC day: %s\n", day)
 		}
 	}
+	if st.LastStatus != "" {
+		fields["last_answer"] = st.LastStatus
+		if !o.json {
+			fmt.Fprintf(out, "Last answer from the receiver: %s\n", st.LastStatus)
+		}
+	}
+	if pending != nil {
+		fields["pending_day"], fields["next_attempt"] = pending.Day, pending.NextAttempt
+		if !o.json {
+			fmt.Fprintf(out, "Waiting to be sent: the report for %s, not before %s (crosshall owner telemetry show shows it)\n",
+				pending.Day, pending.NextAttempt.Format(time.RFC3339))
+		}
+	}
 	if o.json {
 		writeJSON(out, fields)
 		return core.ExitOK
@@ -158,6 +181,9 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	if managedOff {
 		fmt.Fprintln(out, "Sending is disabled by /etc/crosshall/telemetry-off.")
 	}
+	if curlMissing {
+		fmt.Fprintf(out, "Nothing is sent: reports are sent with %s, which is not installed.\n", env.TelemetryCurl)
+	}
 	if env.TelemetryEndpoint == "" {
 		fmt.Fprintln(out, "Receiver: not configured")
 	} else {
@@ -165,6 +191,29 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	}
 	if turnedOff {
 		fmt.Fprintln(out, "Reports already accepted keep their normal retention.")
+	}
+	return core.ExitOK
+}
+
+// runTelemetryShow prints the batch the dispatcher sends next, byte for
+// byte as it will be sent.
+func runTelemetryShow(env Env, opts options, stdout, stderr io.Writer) core.ExitCode {
+	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	_, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot, time.Now())
+	if err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	if pending == nil {
+		return o.fail(core.ExitUnavailable, core.CodeUnsent, "no usage report is waiting to be sent",
+			"crosshall owner telemetry sent lists the reports already sent")
+	}
+	if opts.json {
+		writeJSON(stdout, map[string]any{"v": 1, "ok": true, "kind": "owner telemetry show", "day": pending.Day,
+			"next_attempt": pending.NextAttempt, "report": json.RawMessage(pending.Body)})
+		return core.ExitOK
+	}
+	if _, err := stdout.Write(pending.Body); err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
 	return core.ExitOK
 }

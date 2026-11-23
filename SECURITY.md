@@ -28,4 +28,6 @@ most:
 - a way for message content to be executed rather than treated as data;
 - a way for one agent session to send as another, or as the owner;
 - a way for messages to cross a channel boundary;
-- anything that writes to a terminal's input.
+- anything that writes to a terminal's input;
+- a way for a usage report to carry message content, a name, a path or an
+  identifier, or to be sent without the owner's yes.

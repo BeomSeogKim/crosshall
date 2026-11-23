@@ -32,8 +32,9 @@ type Input struct {
 	// Now is when the report is built. Within SnapshotWindow after the
 	// day's close the report adds the snapshot.
 	Now time.Time
-	// Hooks is the day's hook counter file; HooksRead false marks it missing.
-	Hooks     []byte
+	// Hooks are the day's hook counter file counted by CountHooks, outside
+	// the caller's transaction; HooksRead false marks the file missing.
+	Hooks     HookCounts
 	HooksRead bool
 	// WeekActiveDays and WeekUnobserved10m are the freezer's figures over
 	// the seven days ending with Day, before rounding.
@@ -58,7 +59,9 @@ func Build(ctx context.Context, tx store.Tx, in Input) (Report, error) {
 	raw := map[string]int64{"week.active_days": in.WeekActiveDays, "week.unobserved_10m": in.WeekUnobserved10m}
 	if in.HooksRead {
 		r.Sources.Hooks = "ok"
-		addHookCounts(raw, in.Hooks)
+		for key, n := range in.Hooks {
+			raw[key] += n
+		}
 	}
 	b := builder{ctx: ctx, tx: tx, counts: raw, from: start.UnixMilli(), to: end.UnixMilli()}
 	b.flows()
@@ -69,6 +72,7 @@ func Build(ctx context.Context, tx store.Tx, in Input) (Report, error) {
 	if b.err != nil {
 		return Report{}, b.err
 	}
+	r.Unobserved10m = raw["notice.unobserved_10m"]
 	r.Counts = make(map[string]int64)
 	for key, n := range raw {
 		if v := Round(n); v > 0 && registry.has(key) {

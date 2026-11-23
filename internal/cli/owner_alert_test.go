@@ -100,3 +100,18 @@ func TestBudgetGrantTakesABindingID(t *testing.T) {
 		t.Fatalf("owner help lacks the binding form:\n%s", out)
 	}
 }
+
+// A channel named by digits keeps its legacy --pool form: a key committed
+// before binding IDs existed replays through its original invocation.
+func TestBudgetGrantKeepsTheLegacyPoolFormForANumericChannel(t *testing.T) {
+	for _, args := range [][]string{{"123", "--pool", "3"}, {"123", "--pool=3"}, {"#123", "--pool", "3"}} {
+		ft := &fakeTransport{result: okResult(t, domain.BudgetGrantResult{Channel: "123"})}
+		_, stderr, code := run(t, Env{Transport: ft}, append([]string{"owner", "budget", "grant"}, args...)...)
+		if code != core.ExitOK || len(ft.calls) != 1 {
+			t.Fatalf("%v: exit %d stderr %q calls %+v", args, code, stderr, ft.calls)
+		}
+		if got, _ := ft.calls[0].Command.(domain.BudgetGrant); got.Channel != "123" || got.Pool != 3 || got.BindingID != 0 {
+			t.Fatalf("%v: command %+v", args, got)
+		}
+	}
+}

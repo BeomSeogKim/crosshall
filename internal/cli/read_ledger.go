@@ -133,7 +133,12 @@ func parseBudgetGrant(args []string) (domain.BudgetGrant, error) {
 		return domain.BudgetGrant{}, usage
 	}
 	ch, path, ok := ledgerTarget(args[0])
-	if binding, err := parsePositive(args[0]); !ok && err == nil {
+	// A bare number is a binding, unless --pool marks the legacy channel form.
+	legacyPool := false
+	if len(args) > 1 {
+		_, _, legacyPool, _ = flagValue(args, 1, "--pool")
+	}
+	if binding, err := parsePositive(args[0]); !ok && err == nil && !legacyPool {
 		cmd := domain.BudgetGrant{BindingID: binding}
 		if len(args) == 1 {
 			return cmd, nil

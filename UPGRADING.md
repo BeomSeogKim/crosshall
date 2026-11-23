@@ -2,6 +2,20 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 23. Migration 023 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+
+1. Stop your agents' crosshall commands, including any background `crosshall wait`.
+2. Run `crosshall owner stop`.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v22-*.sqlite3` backup beside the database.
+4. Install the new release using the [README](README.md#quick-start) clone command.
+5. Run `crosshall owner start`. Set `CROSSHALL_NOTIFY=off` in its environment if you want no desktop notifications.
+
+To roll back, stop the new dispatcher, restore the schema 22 database from your pre-upgrade copy and restart the v0.2.0-rc.3 binary. Restoring the copy discards messages and other changes made since the upgrade.
+
+A new round stop shows a desktop notification where the system can show one, and appears once, on stderr, on the owner's next command. See [loop guard](docs/operations.md#loop-guard). In owner status JSON, each `guard_stops` entry gains `sender`, `recipients`, `requests`, `request_count` and, once a grant has reset its thread or member, `last_reset_at_ms`. `owner budget grant <binding-id>` resets a member by binding, including a departed one.
+
 ## To v0.2.0-rc.3
 
 Upgrading from v0.2.0-rc.2 to v0.2.0-rc.3 moves the database from schema 21 to schema 22. A hall that ran rc.2 can already have recorded message levels and round positions. Migration 022 clears those positions and fences existing requests and members at the highest message ID. The round guard starts each path at zero, with the existing messages, deadlines, obligations and operation keys available.

@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The owner hears of a round stop:** the dispatcher shows a desktop notification for a new stop, at most one a minute and none for a stop older than ten minutes, from release builds only; `CROSSHALL_NOTIFY=off` at `owner start` turns it off. The owner's next `crosshall owner` command prints each open stop once on stderr, leaving stdout and the exit status unchanged. `owner status` shows what a stop refused, the requests since the thread's last reset and the grant that lets it continue; its JSON gains `sender`, `recipients`, `requests`, `request_count` and `last_reset_at_ms`. Each grant records a `loop_guard_reset` event, and `owner budget grant <binding-id>` resets a departed member. Members see no change. Stops from before the upgrade are not announced (#227).
+- **Upgrade:** the database moves from schema 22 to 23. See [UPGRADING.md](UPGRADING.md#unreleased).
+
 ## v0.2.0-rc.3 (2026-11-23)
 
 - **Loop guard:** independent requests open their own threads, with eight rounds ahead by default and per-sender limits of 30 requests and 60 answers in ten minutes. Replies and notes stay available. The owner can see a round stop in the ledger and reset the affected thread or member. Schema 22 fences requests created before the switch and keeps their ledger history (#227).

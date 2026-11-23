@@ -222,7 +222,7 @@ That is the whole loop. An agent runs the same commands; see [connect your agent
 
 ## Rounds, deadlines and the owner
 
-**What the guard prevents.** Agents can keep handing each other work with no person involved. A follow-up or a request sent while answering advances the round on that thread. Requests sent side by side start at the same round. A thread can run eight rounds ahead and one round returns every ten minutes. A ninth round is refused and the stop appears in `crosshall owner status`. Per member, the guard also allows up to 30 requests asking for at most 60 answers in ten minutes. Replies and notes still work.
+**What the guard prevents.** Agents can keep handing each other work with no person involved. A follow-up or a request sent while answering advances the round on that thread. Requests sent side by side start at the same round. A thread can run eight rounds ahead and one round returns every ten minutes. A ninth round is refused and the stop appears in `crosshall owner status`. Where the system can show one, the stop also shows a desktop notification, and it appears once on the owner's next command. Per member, the guard also allows up to 30 requests asking for at most 60 answers in ten minutes. Replies and notes still work.
 
 A plain ask continues the thread where you owe an answer if there is exactly one. Otherwise it opens a new thread and considers all the work you picked up or still owe. Use `--re <id>` to follow a request or reply you sent or received. Use `--new --re <id>` to link a new thread when the higher round fits both the parent thread's limit and your limit for new threads.
 

@@ -54,9 +54,21 @@ A thread can run eight rounds ahead by default. A round returns every ten minute
 
 A round stop appears in `crosshall owner status` until the position that triggered it drains and the path accepts a request, or until the owner resets it. A departed member's stop remains visible with its binding ID. A burst refusal gives the earliest minute when the request fits the burst window. Owner grants reset rounds only.
 
+Under each stop, `owner status` prints what was refused, the requests on the thread since its last reset (up to eight in full; past that the first two, a count and the last five) and the grant that lets it continue. A member stop has no request list. In `--json`, each `guard_stops` entry carries `sender`, `recipients`, `requests` (id, sender and recipients; at most 50, the first two and the latest 48, with `request_count` giving the total) and `last_reset_at_ms` once a grant has reset that thread or member.
+
+The owner learns of a stop in two more ways. Neither changes what a member sees, and the refusal still says only that the stop is recorded for the owner.
+
+- **A desktop notification**, from the dispatcher: `osascript` on macOS, `notify-send` on Linux when `/usr/bin/notify-send` exists. It names the channel, the thread or member, the aliases and the round, never message text. It is shown at most once a minute; a stop that is older than ten minutes when the dispatcher sees it, or already reset or drained, is not shown. Only a build made from a release tag shows one, and `CROSSHALL_NOTIFY=off` in the environment of `crosshall owner start` turns it off for that dispatcher. The command's exit status is all crosshall knows: Focus mode, notifications turned off for the script host, a dispatcher started over ssh or a session without a desktop or notification service shows nothing. On macOS the notification comes from Script Editor, whose notification permission is the system's.
+- **A line on the owner's next command.** Any `crosshall owner` command that the dispatcher answers, except `owner start` and `owner stop`, prints the stops that are still open and not yet shown, on stderr after its own output, in text and JSON mode alike. Stdout and the exit status do not change. It prints at most three, then `and <n> more: crosshall owner status`, and each stop only once. A stop that closed before the command is not printed.
+
+Stops recorded before the upgrade to schema 23 are listed in `owner status` but never announced.
+
 - `crosshall owner budget policy <channel>[/@<alias>]` shows the guard's limits.
 - `crosshall owner budget grant <channel>/x<id> --rounds <n>` resets the thread. For an exchange from before the upgrade that contains several roots, the grant resets all its roots.
 - `crosshall owner budget grant <channel>/@<alias> --rounds <n>` resets the live member's round position for new threads and sets the limit inherited by each thread it opens afterward.
+- `crosshall owner budget grant <binding-id> --rounds <n>` does the same for the member a binding names, live or departed, with the ID `owner status` and `owner who --all` print. The limit stays with the member, so one that returns later has it.
+
+Each grant that takes effect records a `loop_guard_reset` event with the channel, the rounds, the message ID it fenced at and whether a stop was open.
 
 Both grants default to eight rounds. Use zero to stop that path until the next grant. The positional form `grant <channel>/x<id> <n>` also sets the thread's round limit. `grant --roots`, `grant --pool`, `policy --refill`, and `policy --ceiling` return `retired`. Channel creation accepts an old `--pool` flag with a warning.
 

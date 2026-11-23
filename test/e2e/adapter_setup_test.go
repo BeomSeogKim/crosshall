@@ -226,26 +226,39 @@ func (f *setupWorld) enrollmentEvidence(adapter string) string {
 }
 
 func (f *setupWorld) hookCounter(adapter, event string) string {
-	directory := filepath.Join(f.rendezvous(), "hooks")
-	days, err := os.ReadDir(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return "no counter record"
-	}
+	records, err := f.hookCounterRecords(adapter, event)
 	if err != nil {
 		return err.Error()
 	}
-	for _, day := range slices.Backward(days) {
+	if len(records) == 0 {
+		return "no counter record"
+	}
+	return records[len(records)-1]
+}
+
+// Records are ordered by UTC day and then by append order within the day.
+func (f *setupWorld) hookCounterRecords(adapter, event string) ([]string, error) {
+	directory := filepath.Join(f.rendezvous(), "hooks")
+	days, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var records []string
+	for _, day := range days {
 		data, err := os.ReadFile(filepath.Join(directory, day.Name()))
 		if err != nil {
-			return err.Error()
+			return nil, err
 		}
-		for _, line := range slices.Backward(strings.Split(string(data), "\n")) {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if fields := strings.Fields(line); len(fields) == 4 && fields[0] == adapter && fields[1] == event {
-				return line
+				records = append(records, line)
 			}
 		}
 	}
-	return "no counter record"
+	return records, nil
 }
 
 func TestAdapterSetupReportsStalledEnrollment(t *testing.T) {

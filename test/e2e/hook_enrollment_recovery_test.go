@@ -202,7 +202,9 @@ func (f *setupWorld) waitForStartupRecordRemoval(cwd string) {
 func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields func(string) string) string {
 	f.t.Helper()
 	deadline := time.Now().Add(fixtureEventTimeout)
-	delivered := f.waitForWelcomeDelivery(cwd, adapter, event, fields, deadline)
+	delivered := f.waitForWelcomeDelivery(adapter, event, deadline, func(turn string) string {
+		return f.invokeHook(cwd, adapter, event, fields(turn))
+	})
 	db := f.db()
 	f.waitEnrollmentPackets(adapter, event, deadline)
 	if _, welcome := hookJoinAcknowledgements(f.t, db, adapter); !welcome {
@@ -222,11 +224,12 @@ func (f *setupWorld) waitForEnrollmentWelcome(cwd, adapter, event string, fields
 	return delivered
 }
 
-func (f *setupWorld) waitForWelcomeDelivery(cwd, adapter, event string, fields func(string) string, deadline time.Time) string {
+func (f *setupWorld) waitForWelcomeDelivery(adapter, event string, deadline time.Time, invoke func(string) string) string {
 	f.t.Helper()
+	db := f.db()
 	for attempt := 1; time.Now().Before(deadline); attempt++ {
 		turn := fmt.Sprintf("recovery-%d", attempt)
-		out := f.invokeHook(cwd, adapter, event, fields(turn))
+		out := invoke(turn)
 		if out != "" {
 			var native struct {
 				Output struct {
@@ -243,12 +246,89 @@ func (f *setupWorld) waitForWelcomeDelivery(cwd, adapter, event string, fields f
 			if strings.Contains(native.Output.Context, "Before voluntarily ending any turn") {
 				f.t.Fatalf("%s start line carried the member rules: %q", event, out)
 			}
-			return turn
+			// The callback can expire between stdout and the local receipt.
+			if hasWelcomeReceipt(f.t, f.enrollmentLeaf(adapter)) {
+				return turn
+			}
+			if _, acknowledged := hookJoinAcknowledgements(f.t, db, adapter); acknowledged {
+				return turn
+			}
 		}
 		f.waitEnrollmentPackets(adapter, event, deadline)
 	}
-	f.t.Fatalf("no %s recovery welcome (counter %q); %s", event, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
+	f.t.Fatalf("no receipted %s recovery welcome (counter %q); %s", event, f.hookCounter(adapter, event), f.enrollmentEvidence(adapter))
 	return ""
+}
+
+func hasWelcomeReceipt(t *testing.T, leaf string) bool {
+	t.Helper()
+	info, err := os.Lstat(filepath.Join(leaf, "seen-join-hint"))
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().IsRegular()
+}
+
+// A directory at the receipt's path prevents its atomic rename after stdout.
+func blockWelcomeReceipt(t *testing.T, leaf string) func() {
+	t.Helper()
+	path := filepath.Join(leaf, "seen-join-hint")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestInstalledHookRetriesWelcomePrintedWithoutReceipt(t *testing.T) {
+	f := newSetupWorld(t)
+	f.apply("", "setup", "claude", "--apply")
+	repo := f.enrollmentRepo()
+	member := &participant{w: f.world, extra: []string{"CLAUDE_CODE_SESSION_ID=" + setupSessionPrefix + "claude"}}
+	if res := member.run("join", "missing-channel"); res.exit == 0 {
+		t.Fatal("provisional join unexpectedly succeeded")
+	}
+	leaf := f.enrollmentLeaf("claude")
+	unblock := blockWelcomeReceipt(t, leaf)
+	db := f.db()
+	var missed, acknowledged string
+	deadline := time.Now().Add(fixtureEventTimeout)
+	confirmed := f.waitForWelcomeDelivery("claude", "SessionStart", deadline, func(turn string) string {
+		if acknowledged != "" {
+			t.Fatalf("retried with %q after the store confirmed %q", turn, acknowledged)
+		}
+		out := f.invokeHook(repo, "claude", "SessionStart", `"source":"startup"`)
+		if out == "" {
+			return out
+		}
+		if missed == "" {
+			missed = turn
+			unblock()
+		} else if hasWelcomeReceipt(t, leaf) {
+			f.waitEnrollmentPackets("claude", "SessionStart", deadline)
+			if _, seen := hookJoinAcknowledgements(t, db, "claude"); !seen {
+				member.run("wait", "--existing", "--timeout", "1s")
+				if _, seen := hookJoinAcknowledgements(t, db, "claude"); !seen {
+					t.Fatal("the member did not confirm the native receipt")
+				}
+			}
+			// Only the store can confirm this delivery after the file is gone.
+			if err := os.Remove(filepath.Join(leaf, "seen-join-hint")); err != nil {
+				t.Fatal(err)
+			}
+			acknowledged = turn
+		}
+		return out
+	})
+	if missed == "" || confirmed == missed || confirmed != acknowledged {
+		t.Fatalf("welcome without receipt on %q, stored on %q, accepted on %q", missed, acknowledged, confirmed)
+	}
 }
 
 func (f *setupWorld) waitEnrollmentPackets(adapter, event string, deadline time.Time) {

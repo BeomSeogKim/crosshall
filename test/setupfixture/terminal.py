@@ -25,10 +25,9 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
             stdout=slave if tty_out else subprocess.PIPE, stderr=subprocess.STDOUT,
         )
     except BaseException:
+        os.close(slave)
         os.close(master)
         raise
-    finally:
-        os.close(slave)
 
     output = bytearray()
     deadline = time.monotonic() + timeout
@@ -45,12 +44,25 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
                     process.stdin.close()
                 except BrokenPipeError:
                     pass
+        if not tty_out:
+            os.close(slave)
+            slave = None
         with selectors.DefaultSelector() as poll:
             poll.register(master if tty_out else process.stdout, selectors.EVENT_READ)
             while poll.get_map():
-                events = poll.select(max(0, deadline - time.monotonic()))
-                if not events:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise subprocess.TimeoutExpired(command, timeout, bytes(output))
+                # Darwin discards unread output on the last slave close. Keep
+                # our copy until the child exits and the master is drained.
+                exited = slave is not None and process.poll() is not None
+                wait = remaining
+                if slave is not None:
+                    wait = 0 if exited else min(remaining, 0.05)
+                events = poll.select(wait)
+                if not events and exited:
+                    os.close(slave)
+                    slave = None
                 for key, _ in events:
                     try:
                         chunk = os.read(key.fd, 65536)
@@ -64,10 +76,16 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
                         poll.unregister(key.fileobj)
         code = process.wait(timeout=max(0, deadline - time.monotonic()))
         return code, bytes(output)
-    finally:
-        if process.poll() is None:
+    except BaseException:
+        try:
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    finally:
+        if slave is not None:
+            os.close(slave)
         if process.stdout is not None:
             process.stdout.close()
         os.close(master)

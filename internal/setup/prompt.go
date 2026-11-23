@@ -66,6 +66,7 @@ func (s Service) prompts(ctx context.Context, req Request, ops operations) error
 			p.out = io.Discard
 		}
 	}
+	var promptErr error
 	switch {
 	case req.Action == "status":
 		statuses, err := ops.Status(ctx)
@@ -74,11 +75,16 @@ func (s Service) prompts(ctx context.Context, req Request, ops operations) error
 		}
 		return RenderStatus(req.Output, statuses, req.JSON)
 	case req.Offer:
-		return p.offer(ctx)
+		promptErr = p.offer(ctx)
 	case req.Action == "uninstall":
 		return p.uninstall(ctx)
+	default:
+		promptErr = p.setup(ctx)
 	}
-	return p.setup(ctx)
+	if promptErr == nil && req.OfferTelemetry != nil {
+		return req.OfferTelemetry(p.scanner)
+	}
+	return promptErr
 }
 
 // offer is the installer's form. It asks only in an owner terminal when no

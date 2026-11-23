@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
 const usage = `Usage: crosshall [--json] [--key <k>] <command>
@@ -78,6 +80,7 @@ Owner commands (from a separate owner terminal):
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
+  owner telemetry [on|off|show|sent]                 Manage usage statistics
   owner publish hall on|off                         Turn notices on or off for the hall
   owner publish member <binding-id> on|off|default  Set notices for one member; the member
                                                     switch beats the adapter switch, which
@@ -135,7 +138,10 @@ type Env struct {
 	Setup func(SetupRequest) error
 	// SetupTerminal reports whether standard input and output are both a
 	// terminal, so setup may ask questions. Nil means no terminal.
-	SetupTerminal func() bool
+	SetupTerminal       func() bool
+	TelemetryEndpoint   string
+	TelemetryStateRoot  string
+	TelemetryManagedOff func() bool
 	// SetupAdapters lists the shipped hook adapters a setup may name.
 	SetupAdapters []string
 }
@@ -162,7 +168,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return core.ExitOK
 	}
 	verb, rest := rest[0], rest[1:]
-	if verb != domain.VerbWait && !env.CommandDeadline.IsZero() {
+	if verb != domain.VerbWait && verb != "owner" && !env.CommandDeadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, env.CommandDeadline)
 		defer cancel()
@@ -253,7 +259,30 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 				"rerun this command from your separate owner terminal"), stdout, stderr)
 		}
 	}
+	if err := applyTelemetryEnvironment(env, stderr); err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	deadline := env.CommandDeadline
+	switch args[0] {
+	case "start", "channel", "who", "log", "adapter", "publish", "status", "cancel", "budget", "restore", "depart":
+		if env.Stdin != nil {
+			asked, err := offerTelemetry(env, opts, bufio.NewScanner(env.Stdin), stdout, "owner-prompt")
+			if err != nil {
+				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+			}
+			if asked && !deadline.IsZero() {
+				deadline = spool.Deadline(time.Now(), true)
+			}
+		}
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
 	switch {
+	case args[0] == "telemetry":
+		return runOwnerTelemetry(env, opts, args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "start":
 		start := env.StartReady
 		if start == nil {

@@ -158,13 +158,27 @@ type ExchangeRound struct {
 }
 
 type GuardStop struct {
-	ExchangeID   int64  `json:"exchange_id,omitempty"`
-	Alias        string `json:"alias,omitempty"`
-	BindingID    int64  `json:"binding_id,omitempty"`
-	BindingState string `json:"binding_state,omitempty"`
-	AtMS         int64  `json:"at_ms"`
-	Round        int64  `json:"round"`
-	RoundLimit   int64  `json:"round_limit"`
+	ExchangeID   int64    `json:"exchange_id,omitempty"`
+	Alias        string   `json:"alias,omitempty"`
+	BindingID    int64    `json:"binding_id,omitempty"`
+	BindingState string   `json:"binding_state,omitempty"`
+	AtMS         int64    `json:"at_ms"`
+	Round        int64    `json:"round"`
+	RoundLimit   int64    `json:"round_limit"`
+	Sender       string   `json:"sender"`
+	Recipients   []string `json:"recipients"`
+	// Requests are a thread's requests since its last reset; past
+	// maxStopRequests it keeps the first two and the latest ones, and
+	// RequestCount counts them all.
+	Requests      []StopRequest `json:"requests,omitempty"`
+	RequestCount  int64         `json:"request_count,omitempty"`
+	LastResetAtMS *int64        `json:"last_reset_at_ms,omitempty"`
+}
+
+type StopRequest struct {
+	ID         int64    `json:"id"`
+	Sender     string   `json:"sender"`
+	Recipients []string `json:"recipients"`
 }
 
 func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {
@@ -393,22 +407,74 @@ func (s *Service) channelLedger(ctx context.Context, tx store.Tx, ch channelRow,
         WHERE b.channel_id = ?1 AND p.guard_told = 1
     )
     SELECT stopped.exchange_id, stopped.alias, stopped.binding_id, stopped.binding_state, e.at_ms, json_extract(e.detail, '$.round'),
-        json_extract(e.detail, '$.round_limit')
+        json_extract(e.detail, '$.round_limit'), COALESCE(json_extract(e.detail, '$.sender'), ''),
+        COALESCE(json_extract(e.detail, '$.recipients'), '[]'),
+        (SELECT at_ms FROM event WHERE kind = ?3 AND subject = stopped.subject ORDER BY seq DESC LIMIT 1)
     FROM stopped JOIN event e ON e.seq = (
         SELECT MAX(seq) FROM event WHERE kind = ?2 AND subject = stopped.subject)
-    ORDER BY e.seq`, ch.id, guardStopped)
+    ORDER BY e.seq`, ch.id, guardStopped, guardResetKind)
 	if err != nil {
 		return out, err
 	}
 	defer events.Close()
 	for events.Next() {
 		var stop GuardStop
-		if err := events.Scan(&stop.ExchangeID, &stop.Alias, &stop.BindingID, &stop.BindingState, &stop.AtMS, &stop.Round, &stop.RoundLimit); err != nil {
+		var recipients string
+		if err := events.Scan(&stop.ExchangeID, &stop.Alias, &stop.BindingID, &stop.BindingState, &stop.AtMS, &stop.Round, &stop.RoundLimit,
+			&stop.Sender, &recipients, &stop.LastResetAtMS); err != nil {
+			return out, err
+		}
+		if err := json.Unmarshal([]byte(recipients), &stop.Recipients); err != nil {
 			return out, err
 		}
 		out.GuardStops = append(out.GuardStops, stop)
 	}
-	return out, events.Err()
+	if err := events.Err(); err != nil {
+		return out, err
+	}
+	for i := range out.GuardStops {
+		if stop := &out.GuardStops[i]; stop.ExchangeID != 0 {
+			if stop.Requests, stop.RequestCount, err = stopRequests(ctx, tx, ch.id, stop.ExchangeID); err != nil {
+				return out, err
+			}
+		}
+	}
+	return out, nil
+}
+
+const maxStopRequests = 50
+
+// stopRequests lists the requests on an exchange's threads since each
+// thread's last reset. An exchange from before the cutover may have several
+// roots; their requests are listed together.
+func stopRequests(ctx context.Context, tx store.Tx, channel, exchange int64) ([]StopRequest, int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, COALESCE(sb.alias, ''), (SELECT json_group_array(alias_at_commit)
+        FROM (SELECT alias_at_commit FROM recipient WHERE message_id = m.id ORDER BY alias_at_commit))
+        FROM message m JOIN message root ON root.id = COALESCE(m.thread_root_id, m.id)
+        LEFT JOIN binding sb ON sb.channel_id = m.channel_id AND sb.principal_id = m.sender_id
+        WHERE m.channel_id = ? AND m.kind = 'ask' AND root.exchange_id = ? AND m.id > root.thread_reset_after_message_id
+        ORDER BY m.id`, channel, exchange)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []StopRequest{}
+	for rows.Next() {
+		var r StopRequest
+		var recipients string
+		if err := rows.Scan(&r.ID, &r.Sender, &recipients); err != nil {
+			return nil, 0, err
+		}
+		if err := json.Unmarshal([]byte(recipients), &r.Recipients); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	count := int64(len(out))
+	if len(out) > maxStopRequests {
+		out = append(out[:2], out[len(out)-maxStopRequests+2:]...)
+	}
+	return out, count, rows.Err()
 }
 
 // A nonzero waitingFor scopes the view to an asker's unsettled or unread work.

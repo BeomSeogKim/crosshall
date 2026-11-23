@@ -128,12 +128,33 @@ func ledgerOwnerCall(args []string) (Call, error) {
 }
 
 func parseBudgetGrant(args []string) (domain.BudgetGrant, error) {
-	usage := fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> or <channel>/@<alias> [--rounds <n>]")
+	usage := fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id>, <channel>/@<alias> or <binding-id> [--rounds <n>]")
 	if len(args) == 0 {
 		return domain.BudgetGrant{}, usage
 	}
 	ch, path, ok := ledgerTarget(args[0])
+	// A bare number is a binding, unless --pool marks the legacy channel form.
+	legacyPool := false
+	if len(args) > 1 {
+		_, _, legacyPool, _ = flagValue(args, 1, "--pool")
+	}
+	if binding, err := parsePositive(args[0]); !ok && err == nil && !legacyPool {
+		cmd := domain.BudgetGrant{BindingID: binding}
+		if len(args) == 1 {
+			return cmd, nil
+		}
+		value, last, found, err := flagValue(args, 1, "--rounds")
+		rounds, countErr := strconv.ParseInt(value, 10, 64)
+		if found && err == nil && countErr == nil && rounds >= 0 && last == len(args)-1 {
+			cmd.Rounds = &rounds
+			return cmd, nil
+		}
+		return domain.BudgetGrant{}, usage
+	}
 	if !ok {
+		if len(args) < 2 {
+			return domain.BudgetGrant{}, usage
+		}
 		ch = strings.TrimPrefix(args[0], "#")
 		value, last, found, err := flagValue(args, 1, "--pool")
 		count, countErr := parsePositive(value)
@@ -319,6 +340,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 					}
 					fmt.Fprintf(w, "  %s stopped at %s (new threads, round limit %d)\n", member, ledgerTime(stop.AtMS), stop.RoundLimit)
 				}
+				fmt.Fprintf(w, "    refused: @%s to %s, round %d\n", stop.Sender, domain.RecipientList(stop.Recipients), stop.Round)
+				if stop.ExchangeID != 0 {
+					fmt.Fprintf(w, "    since its last reset: %s\n", stopRequestList(stop.Requests, stop.RequestCount))
+				}
+				fmt.Fprintf(w, "    to let it continue: %s\n", domain.StopGrant(ch.Name, stop))
 			}
 		}
 		if self := r.Self; self != nil {
@@ -346,6 +372,8 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		if r.Rounds == nil {
 			fmt.Fprintln(w, "Previously recorded grant.")
+		} else if r.BindingID != 0 {
+			fmt.Fprintf(w, "binding %d (@%s in #%s): reset. Its new threads may run %d rounds ahead.\n", r.BindingID, r.Alias, r.Channel, *r.Rounds)
 		} else if r.ExchangeID != 0 {
 			fmt.Fprintf(w, "#%s/x%d: reset. It may run %d rounds ahead.\n", r.Channel, r.ExchangeID, *r.Rounds)
 		} else {
@@ -474,6 +502,19 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 
 // ledgerTime uses the same local form as ask and reply.
 func ledgerTime(ms int64) string { return clock(ms) }
+
+// stopRequestList names up to eight requests; past that the first two, a
+// count, and the last five.
+func stopRequestList(requests []domain.StopRequest, count int64) string {
+	var items []string
+	for _, r := range requests {
+		items = append(items, fmt.Sprintf("#%d @%s to %s", r.ID, r.Sender, domain.RecipientList(r.Recipients)))
+	}
+	if count > 8 && len(items) >= 7 {
+		items = append(append(items[:2:2], fmt.Sprintf("... %d more ...", count-7)), items[len(items)-5:]...)
+	}
+	return strings.Join(items, ", ")
+}
 
 func ledgerIDs(ids []int64) string {
 	values := make([]string, len(ids))

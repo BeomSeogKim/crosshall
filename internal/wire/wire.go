@@ -29,6 +29,9 @@ type Request struct {
 	// Host is the agent process that runs a member command, when the
 	// client could identify it.
 	Host *Host `json:"host,omitempty"`
+	// OwnerAlerts says the client prints the owner line of an owner
+	// request; only such a request marks the stops it carries as shown.
+	OwnerAlerts bool `json:"owner_alerts,omitempty"`
 }
 
 // Host names a process by its PID, its start identity and the PID

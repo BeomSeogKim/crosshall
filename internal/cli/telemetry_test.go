@@ -61,7 +61,7 @@ func TestTelemetryOfferAtOwnerEntryPoints(t *testing.T) {
 			t.Setenv(telemetryconfig.TelemetryEnv, "off")
 		}},
 		{name: "managed opt-out", args: []string{"owner", "start"}, configure: func(t *testing.T, e *Env) {
-			if err := os.WriteFile(e.TelemetryPolicyPath, []byte("managed"), 0600); err != nil {
+			if err := os.WriteFile(e.ResolveTelemetryPolicyPath(telemetryconfig.ManagedOffPath), []byte("managed"), 0600); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -79,13 +79,13 @@ func TestTelemetryOfferAtOwnerEntryPoints(t *testing.T) {
 			t.Setenv(telemetryconfig.TelemetryEnv, "")
 			t.Setenv(telemetryconfig.DoNotTrackEnv, "")
 			env := Env{
-				Stdin:               strings.NewReader("\nno\n"),
-				SetupTerminal:       func() bool { return true },
-				OwnerGate:           func() string { return "" },
-				TelemetryEndpoint:   "https://example.invalid",
-				TelemetryStateRoot:  filepath.Join(t.TempDir(), "state"),
-				TelemetryPolicyPath: filepath.Join(t.TempDir(), "telemetry-off"),
-				StartReady:          func(ctx context.Context) error { return ctx.Err() },
+				Stdin:                      strings.NewReader("\nno\n"),
+				SetupTerminal:              func() bool { return true },
+				OwnerGate:                  func() string { return "" },
+				TelemetryEndpoint:          "https://example.invalid",
+				TelemetryStateRoot:         filepath.Join(t.TempDir(), "state"),
+				ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off")),
+				StartReady:                 func(ctx context.Context) error { return ctx.Err() },
 				Setup: func(req SetupRequest) error {
 					input := bufio.NewReader(req.Input)
 					_, _ = input.ReadString('\n')
@@ -138,7 +138,7 @@ func TestTelemetryPolicyFileOverridesExplicitOn(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"), TelemetryPolicyPath: policy}
+		env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"), ResolveTelemetryPolicyPath: temporaryPolicyPath(t, policy)}
 		_, stderr, code := run(t, env, "owner", "telemetry", "on")
 		setting, err := telemetryconfig.ReadMode(env.TelemetryStateRoot)
 		if err != nil {
@@ -186,5 +186,15 @@ func TestTelemetryDurableVetoForOwnerHelpAndDryRun(t *testing.T) {
 			}
 			checkMode(telemetryconfig.Off)
 		})
+	}
+}
+
+func temporaryPolicyPath(t *testing.T, fixture string) func(string) string {
+	t.Helper()
+	return func(defaultPath string) string {
+		if defaultPath != "/etc/crosshall/telemetry-off" {
+			t.Fatalf("default telemetry policy path = %q", defaultPath)
+		}
+		return fixture
 	}
 }

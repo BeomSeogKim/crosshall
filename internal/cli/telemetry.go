@@ -48,10 +48,11 @@ func offerTelemetry(env Env, opts options, input *bufio.Reader, out io.Writer, s
 }
 
 func managedTelemetryOff(env Env) bool {
-	if env.TelemetryPolicyPath != "" {
-		return telemetryconfig.ManagedOffAt(env.TelemetryPolicyPath)
+	path := telemetryconfig.ManagedOffPath
+	if env.ResolveTelemetryPolicyPath != nil {
+		path = env.ResolveTelemetryPolicyPath(path)
 	}
-	return telemetryconfig.ManagedOff()
+	return telemetryconfig.ManagedOffAt(path)
 }
 
 func askTelemetry(input *bufio.Reader, out io.Writer) (string, error) {

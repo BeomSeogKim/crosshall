@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 	TelemetryEnv  = "CROSSHALL_TELEMETRY"
 	DoNotTrackEnv = "DO_NOT_TRACK"
 
-	managedOffFile = "/etc/crosshall/telemetry-off"
+	ManagedOffPath = "/etc/crosshall/telemetry-off"
 )
 
 type Setting struct {
@@ -37,7 +38,7 @@ func EnvironmentOff() bool {
 	case "off", "0", "false", "no", "disabled":
 		return true
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(DoNotTrackEnv))) {
+	switch strings.ToLower(os.Getenv(DoNotTrackEnv)) {
 	case "", "0", "false":
 		return false
 	default:
@@ -45,7 +46,7 @@ func EnvironmentOff() bool {
 	}
 }
 
-func ManagedOff() bool { return ManagedOffAt(managedOffFile) }
+func ManagedOff() bool { return ManagedOffAt(ManagedOffPath) }
 
 func ManagedOffAt(path string) bool {
 	_, err := os.Lstat(path)
@@ -111,6 +112,10 @@ func NextFullDay(after time.Time) time.Time {
 }
 
 func SetMode(stateRoot, mode, source, onlyIf string) (Setting, bool, error) {
+	return setMode(stateRoot, mode, source, onlyIf, time.Now)
+}
+
+func setMode(stateRoot, mode, source, onlyIf string, now func() time.Time) (Setting, bool, error) {
 	if (mode != On && mode != Off) || !validSource(source) {
 		return Setting{}, false, errors.New("invalid telemetry setting")
 	}
@@ -123,13 +128,30 @@ func SetMode(stateRoot, mode, source, onlyIf string) (Setting, bool, error) {
 	}
 	defer dir.Close()
 
-	if onlyIf == On {
-		current, err := readMode(dir)
-		if err != nil || current.Mode != On {
-			return current, false, err
-		}
+	lock, err := spool.OpenServerFile(dir, "mode.lock", os.O_RDWR|os.O_CREATE)
+	if err != nil {
+		return Setting{}, false, err
 	}
-	setting := Setting{Mode: mode, ChangedAt: time.Now().UTC(), Source: source}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return Setting{}, false, err
+	}
+	current, err := readMode(dir)
+	if err != nil || onlyIf != "" && current.Mode != onlyIf {
+		return current, false, err
+	}
+	if current.Mode == mode {
+		if mode == Off {
+			err = dir.RemoveAll("pending")
+		}
+		return current, false, err
+	}
+
+	changedAt := now().UTC()
+	if changedAt.Before(current.ChangedAt) {
+		changedAt = current.ChangedAt
+	}
+	setting := Setting{Mode: mode, ChangedAt: changedAt, Source: source}
 	createOnly := onlyIf == Unset
 	if err := writeMode(dir, setting, createOnly); err != nil {
 		if createOnly && errors.Is(err, os.ErrExist) {

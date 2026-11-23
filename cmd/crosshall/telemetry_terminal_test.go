@@ -30,12 +30,17 @@ func TestTelemetryTerminalChild(t *testing.T) {
 	root := os.Getenv("CROSSHALL_STATE_DIR")
 	ctx := t.Context()
 	env := cli.Env{
-		Stdin:               os.Stdin,
-		SetupTerminal:       func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
-		StartReady:          func(context.Context) error { return nil },
-		TelemetryEndpoint:   "https://example.invalid",
-		TelemetryStateRoot:  root,
-		TelemetryPolicyPath: filepath.Join(root, "telemetry-off"),
+		Stdin:              os.Stdin,
+		SetupTerminal:      func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		StartReady:         func(context.Context) error { return nil },
+		TelemetryEndpoint:  "https://example.invalid",
+		TelemetryStateRoot: root,
+		ResolveTelemetryPolicyPath: func(path string) string {
+			if path != "/etc/crosshall/telemetry-off" {
+				t.Fatalf("default telemetry policy path = %q", path)
+			}
+			return filepath.Join(root, "telemetry-off")
+		},
 		Setup: func(req cli.SetupRequest) error {
 			svc := setup.Service{StateRoot: root, Executable: os.Args[0]}
 			return svc.Run(ctx, setup.Request(req))
@@ -60,11 +65,12 @@ func TestTelemetryConsentWithAPseudoTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, command, input, ci, wantMode string
-		inCI, wantQuestion                 bool
+		name, command, input, ci, wantMode, doNotTrack string
+		inCI, wantQuestion                             bool
 	}{
 		{name: "owner CI", command: "owner", input: "\n", ci: "1", inCI: true, wantMode: telemetryconfig.Unset},
 		{name: "setup CI with empty marker", command: "setup", input: "\n", inCI: true, wantMode: telemetryconfig.Unset},
+		{name: "whitespace veto", command: "setup", input: "\n", doNotTrack: " ", wantMode: telemetryconfig.Unset},
 		{name: "Enter", command: "owner", input: "\n", wantQuestion: true, wantMode: telemetryconfig.On},
 		{name: "partial EOF", command: "setup", input: " \x04", wantQuestion: true, wantMode: telemetryconfig.Unset},
 	} {
@@ -72,7 +78,7 @@ func TestTelemetryConsentWithAPseudoTerminal(t *testing.T) {
 			fixture := setuptest.New(t)
 			t.Setenv(telemetryPTYMode, tt.command)
 			t.Setenv(telemetryconfig.TelemetryEnv, "")
-			t.Setenv(telemetryconfig.DoNotTrackEnv, "")
+			t.Setenv(telemetryconfig.DoNotTrackEnv, tt.doNotTrack)
 			t.Setenv("CI", tt.ci)
 			if !tt.inCI {
 				if err := os.Unsetenv("CI"); err != nil {

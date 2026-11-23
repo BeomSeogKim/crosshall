@@ -105,3 +105,85 @@ func TestTelemetryExplicitOffPrevailsOverFirstAnswer(t *testing.T) {
 		})
 	}
 }
+
+func TestRepeatedTelemetryOnPreservesContinuousConsent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	first := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	setting, changed, err := setMode(root, On, "owner-prompt", Unset, func() time.Time { return first })
+	if err != nil || !changed {
+		t.Fatalf("initial choice: %+v changed=%v err=%v", setting, changed, err)
+	}
+	repeated, changed, err := setMode(root, On, "owner-command", "", func() time.Time {
+		return first.AddDate(0, 0, 5)
+	})
+	if err != nil || changed || repeated != setting {
+		t.Fatalf("repeated on: %+v changed=%v err=%v; initial was %+v", repeated, changed, err, setting)
+	}
+	got, err := ReadMode(root)
+	if err != nil || got != setting || NextFullDay(got.ChangedAt).Format(time.DateOnly) != "2026-11-19" {
+		t.Fatalf("continuous consent: %+v, %v", got, err)
+	}
+}
+
+func TestTelemetryTransitionsKeepTheOffDayIneligible(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	beforeMidnight := time.Date(2026, 11, 23, 23, 59, 59, 0, time.UTC)
+	afterMidnight := beforeMidnight.Add(2 * time.Second)
+	sampled := make(chan struct{})
+	resume := make(chan struct{})
+	onDone, offDone := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, _, err := setMode(root, On, "owner-command", "", func() time.Time {
+			close(sampled)
+			<-resume
+			return beforeMidnight
+		})
+		onDone <- err
+	}()
+	<-sampled
+	go func() {
+		_, _, err := setMode(root, Off, "owner-command", "", func() time.Time { return afterMidnight })
+		offDone <- err
+	}()
+	select {
+	case err := <-offDone:
+		t.Errorf("off completed while an older decision could still replace it: %v", err)
+		close(resume)
+		<-onDone
+		return
+	case <-time.After(40 * time.Millisecond):
+		close(resume)
+	}
+	if err := <-onDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-offDone; err != nil {
+		t.Fatal(err)
+	}
+	off, err := ReadMode(root)
+	if err != nil || off.Mode != Off || !off.ChangedAt.Equal(afterMidnight) {
+		t.Fatalf("newer off was not preserved: %+v, %v", off, err)
+	}
+	on, changed, err := setMode(root, On, "owner-command", "", func() time.Time {
+		return beforeMidnight
+	})
+	if err != nil || !changed || NextFullDay(on.ChangedAt).Format(time.DateOnly) != "2026-11-25" {
+		t.Fatalf("a clock rollback made the off day eligible: %+v, changed=%v, %v", on, changed, err)
+	}
+}
+
+func TestDoNotTrackNonEmptyVeto(t *testing.T) {
+	t.Setenv(TelemetryEnv, "")
+	for _, tc := range []struct {
+		value string
+		off   bool
+	}{
+		{"", false}, {"0", false}, {"false", false}, {"FALSE", false},
+		{" ", true}, {" false ", true}, {"1", true},
+	} {
+		t.Setenv(DoNotTrackEnv, tc.value)
+		if got := EnvironmentOff(); got != tc.off {
+			t.Errorf("DO_NOT_TRACK=%q gives veto %v, want %v", tc.value, got, tc.off)
+		}
+	}
+}

@@ -138,10 +138,10 @@ type Env struct {
 	Setup func(SetupRequest) error
 	// SetupTerminal reports whether standard input and output are both a
 	// terminal, so setup may ask questions. Nil means no terminal.
-	SetupTerminal       func() bool
-	TelemetryEndpoint   string
-	TelemetryStateRoot  string
-	TelemetryPolicyPath string
+	SetupTerminal              func() bool
+	TelemetryEndpoint          string
+	TelemetryStateRoot         string
+	ResolveTelemetryPolicyPath func(string) string
 	// SetupAdapters lists the shipped hook adapters a setup may name.
 	SetupAdapters []string
 }

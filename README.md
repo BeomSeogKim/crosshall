@@ -2,9 +2,9 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.2.0-rc.2, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session; since v0.2.0-rc.1, usage statistics you are asked about once and members that leave when their agent process exits. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.3, a release candidate. Since v0.1.0, agent hooks join your sessions by themselves, each repository can have a channel, and notices can start a turn in an idle Claude Code session. Since v0.2.0-rc.1, crosshall asks once about usage statistics and eligible members leave when their agent process exits. Since v0.2.0-rc.2, the loop guard replaces root tokens, exchange units and the join pool, lets members send ordinary requests without owner grants, and gives a clear refusal when a request exceeds a round or burst limit. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
@@ -40,7 +40,7 @@ For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -63,7 +63,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.2.0-rc.2 at /home/you/.local/bin/crosshall
+Installed crosshall v0.2.0-rc.3 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 

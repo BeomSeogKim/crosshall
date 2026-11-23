@@ -2,17 +2,17 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.2.0-rc.3
 
-From v0.2.0-rc.2, this upgrade moves the database from schema 21 to schema 22. A hall that ran rc.2 can already have recorded message levels and round positions. Migration 022 clears those positions and fences existing requests and members at the highest message ID. The round guard starts each path at zero, with the existing messages, deadlines, obligations and operation keys available.
+Upgrading from v0.2.0-rc.2 to v0.2.0-rc.3 moves the database from schema 21 to schema 22. A hall that ran rc.2 can already have recorded message levels and round positions. Migration 022 clears those positions and fences existing requests and members at the highest message ID. The round guard starts each path at zero, with the existing messages, deadlines, obligations and operation keys available.
 
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
-3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v21-*.sqlite3` backup beside the database.
-4. Install the new release using its tag in the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the v0.2.0-rc.3 dispatcher also saves a `store-v21-*.sqlite3` backup beside the database.
+4. Install v0.2.0-rc.3 using the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
 5. Run `crosshall owner start`.
 
-To roll back, stop the new dispatcher, restore the schema 21 database from your pre-upgrade copy and restart the v0.2.0-rc.2 binary. Restoring the copy discards messages and other changes made since the upgrade.
+To roll back, stop the v0.2.0-rc.3 dispatcher, restore the schema 21 database from your pre-upgrade copy and restart the v0.2.0-rc.2 binary. Restoring the copy discards messages and other changes made since the upgrade.
 
 The loop guard replaces exchange units, root tokens and the join pool. Each independent request opens its own exchange. Rule 6 tells members to reply or note what they have when a request stops. Owner status shows active stops, and `owner budget grant <channel>/x<id> --rounds <n>` and `owner budget grant <channel>/@<alias> --rounds <n>` reset the corresponding scope. A positional number on the thread form sets rounds. `grant --roots`, `grant --pool`, `policy --refill` and `policy --ceiling` exit 3 with `retired`. `owner channel create --pool` still creates the channel, prints a warning and returns `pool_ignored: true` in JSON.
 

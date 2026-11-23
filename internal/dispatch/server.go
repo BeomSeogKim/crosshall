@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -109,10 +108,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil
-		}
+	if acquired, err := acquireDispatcherLock(ctx, lock); err != nil || !acquired {
 		return err
 	}
 	if err := prepareNamedSpool(state, "owner"); err != nil {

@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Dispatcher startup:** a new dispatcher retries when a status check briefly holds the state lock for reading. Concurrent starts still share one dispatcher (#102).
 - **Owner start timeout:** `crosshall owner start` reports the last startup stage it observed and the state of the dispatcher lock and readiness marker when it times out (#102).
 - **The owner hears of a round stop:** the dispatcher shows a desktop notification for a new stop, at most one a minute and none for a stop older than ten minutes, from release builds only; `CROSSHALL_NOTIFY=off` at `owner start` turns it off. The owner's next `crosshall owner` command prints each open stop once on stderr, leaving stdout and the exit status unchanged. `owner status` shows what a stop refused, the requests since the thread's last reset and the grant that lets it continue; its JSON gains `sender`, `recipients`, `requests`, `request_count` and `last_reset_at_ms`. Each grant records a `loop_guard_reset` event, and `owner budget grant <binding-id>` resets a departed member. Members see no change. Stops from before the upgrade are not announced (#227).
 - **Upgrade:** the database moves from schema 22 to 25. See [UPGRADING.md](UPGRADING.md#unreleased).

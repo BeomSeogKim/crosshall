@@ -195,3 +195,101 @@ func TestOwnerStartWaitsForSilentIncumbentToReleaseLock(t *testing.T) {
 	}
 	assertReadyLease(t, w.rendezvous(), marker.Instance, true)
 }
+
+func TestDispatcherStartupDistinguishesSharedObserversFromAnIncumbent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		lock    int
+		release bool
+	}{
+		{"shared observer releases", syscall.LOCK_SH, true},
+		{"shared observer remains", syscall.LOCK_SH, false},
+		{"exclusive incumbent remains", syscall.LOCK_EX, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			if err := os.Mkdir(w.state, 0700); err != nil {
+				t.Fatal(err)
+			}
+			lock, err := os.OpenFile(filepath.Join(w.state, "dispatcher.lock"), os.O_CREATE|os.O_RDWR, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			if err := syscall.Flock(int(lock.Fd()), tc.lock|syscall.LOCK_NB); err != nil {
+				t.Fatal(err)
+			}
+
+			// One guardian launches exactly one candidate; a replacement
+			// cannot hide that candidate's loss of a shared-lock race.
+			cmd := exec.Command(binary, "__test_dispatch_guardian")
+			cmd.Dir, cmd.Env = w.home, w.owner().env()
+			var output bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &output, &output
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			deadline := time.After(fixtureEventTimeout)
+			ready := filepath.Join(w.rendezvous(), "ready")
+			if !tc.release {
+				select {
+				case err := <-done:
+					if tc.lock == syscall.LOCK_EX && err != nil {
+						t.Fatalf("candidate did not defer to the incumbent: %v, %s", err, &output)
+					}
+					if tc.lock == syscall.LOCK_SH && (err == nil || !strings.Contains(output.String(), "acquiring dispatcher lock: context deadline exceeded")) {
+						t.Fatalf("expected a shared lock timeout, got %v, %q", err, &output)
+					}
+				case <-deadline:
+					t.Fatal("candidate never returned under a persistent lock")
+				}
+				if _, err := os.Stat(ready); !os.IsNotExist(err) {
+					t.Fatalf("readiness marker while lock was held: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(w.state, "store.sqlite3")); !os.IsNotExist(err) {
+					t.Fatalf("candidate opened the store while lock was held: %v", err)
+				}
+				return
+			}
+
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			var candidate int
+			for {
+				select {
+				case err := <-done:
+					t.Fatalf("candidate exited before reaching readiness: %v, %s", err, &output)
+				case <-deadline:
+					t.Fatalf("candidate %d never reached readiness", candidate)
+				case <-tick.C:
+					if candidate == 0 {
+						for _, pid := range w.dispatcherPIDs() {
+							if pid != os.Getpid() {
+								candidate = pid
+								break
+							}
+						}
+						if candidate != 0 {
+							if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+								t.Fatal(err)
+							}
+						}
+						continue
+					}
+					raw, err := os.ReadFile(ready)
+					if os.IsNotExist(err) {
+						continue
+					}
+					var marker struct{ PID int }
+					if err != nil || json.Unmarshal(raw, &marker) != nil || marker.PID != candidate {
+						t.Fatalf("candidate %d did not own readiness: %s (%v)", candidate, raw, err)
+					}
+					w.owner().must("owner", "start")
+					return
+				}
+			}
+		})
+	}
+}

@@ -3,8 +3,10 @@
 package e2e
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,5 +88,29 @@ func TestSentUsageReportCanBeReadByteForByte(t *testing.T) {
 	}
 	if got := owner.mustPlain("owner", "telemetry", "sent", "--day", day); got != body {
 		t.Fatalf("report bytes: %q", got)
+	}
+}
+
+// A binary stamped with a release tag names the shipping receiver; the
+// development build of the other tests names none.
+func TestReleaseBuildNamesTheReceiver(t *testing.T) {
+	tagged := filepath.Join(t.TempDir(), "crosshall")
+	build := exec.Command("go", "build", "-tags=testvendorhome", "-ldflags=-X main.version=v1.2.3", "-o", tagged, "../../cmd/crosshall")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build tagged binary: %s (%v)", out, err)
+	}
+	w := newWorld(t)
+	cmd := exec.Command(tagged, "--json", "owner", "telemetry")
+	cmd.Env = w.baseEnv()
+	out, err := cmd.Output()
+	var got map[string]any
+	if err == nil {
+		err = json.Unmarshal(out, &got)
+	}
+	if err != nil || got["endpoint"] != "https://telemetry.addylog.dev/v1/report" || got["mode"] != "unset" {
+		t.Fatalf("tagged build: %s (%v)", out, err)
+	}
+	if dev := w.owner().must("owner", "telemetry"); dev.obj["endpoint"] != "" {
+		t.Fatalf("development build: %s", dev.stdout)
 	}
 }

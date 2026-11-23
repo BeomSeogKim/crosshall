@@ -150,3 +150,56 @@ exec /bin/sleep 60`, "sh", binary)
 		t.Fatal("the resumed member is not back as @hand")
 	}
 }
+
+// A member whose hook start opened a launch nothing will end (a Claude Code
+// start without CLAUDE_PID is session-scoped, as Antigravity's is) is still
+// tracked by its host, and that launch ends with the member.
+func TestMemberWithAnUnendingLaunchDepartsWithItsProcess(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("requires kernel process identity")
+	}
+	w, writer, c := m2World(t)
+	c.pid = ""
+	join := exec.CommandContext(t.Context(), binary, "join", "checkout", "--as", "hand")
+	join.Dir = c.repo
+	join.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
+	if out, err := join.CombinedOutput(); err != nil {
+		t.Fatalf("join: %v\n%s", err, out)
+	}
+	db := w.db()
+	openLaunches := func() (n int) {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'session' AND ended_hook_at_ms IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for deadline := time.Now().Add(fixtureEventTimeout); openLaunches() == 0; time.Sleep(25 * time.Millisecond) {
+		if !time.Now().Before(deadline) {
+			t.Fatal("the start opened no session launch")
+		}
+		c.fire("SessionStart", map[string]any{"source": "startup"})
+	}
+	process := exec.CommandContext(t.Context(), "/bin/sh", "-c", `export CLAUDE_PID=$$
+"$1" who >/dev/null || exit $?
+exec /bin/sleep 60`, "sh", binary)
+	process.Dir = c.repo
+	process.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = process.Process.Kill()
+		_ = process.Wait()
+	})
+	state := func() hostState {
+		return memberHostState(t, db, `b.principal_id = (SELECT principal_id FROM principal_key WHERE vendor = 'claude' AND key = ?)`, c.key)
+	}
+	awaitHost(t, process, state)
+	killAndAwaitDeparture(t, process, state)
+	if n := openLaunches(); n != 0 {
+		t.Fatalf("open session launches after the departure: %d", n)
+	}
+	if rosterHas(t, writer, "hand") {
+		t.Fatal("the ended member remains live in who")
+	}
+}

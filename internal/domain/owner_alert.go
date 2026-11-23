@@ -133,9 +133,6 @@ func (s alertedStop) desktopAlert() DesktopAlert {
 			d.Sender, RecipientList(d.Recipients), d.Round, d.RoundLimit)}
 }
 
-// ownerAlertLines marks every stop not yet shown as shown, and returns
-// lines for the first three that are still open. The command's own effect
-// is already applied, so a grant never reports the stop it closed.
 // bestEffortOwnerAlerts returns the owner line, or none when building it
 // fails: the line is an extra, so its error is logged and its own writes
 // are undone without failing or rolling back the owner's command.
@@ -158,6 +155,9 @@ func bestEffortOwnerAlerts(ctx context.Context, tx store.Tx, now time.Time) []st
 	return lines
 }
 
+// ownerAlertLines marks every stop not yet shown as shown, and returns
+// lines for the first three that are still open. The command's own effect
+// is already applied, so a grant never reports the stop it closed.
 func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string, error) {
 	stops, err := alertedStops(ctx, tx, `a.shown_at_ms IS NULL`)
 	if err != nil || len(stops) == 0 {

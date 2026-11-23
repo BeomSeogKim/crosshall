@@ -71,11 +71,14 @@ var turnEndSwitchSchema string
 //go:embed migrations/019_reach_told.sql
 var reachToldSchema string
 
+//go:embed migrations/020_member_host.sql
+var memberHostSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
-	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema,
+	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema,
 }
 
 // Store owns the dispatcher's single SQLite connection.

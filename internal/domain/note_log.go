@@ -409,6 +409,9 @@ func (s *Service) leave(ctx context.Context, tx store.Tx, caller core.Caller, re
 	if err := invalidatePublishRouteForLeave(ctx, tx, m.binding, now); err != nil {
 		return core.Result{}, err
 	}
+	if err := forgetHost(ctx, tx, m.principal); err != nil {
+		return core.Result{}, err
+	}
 	if err := rosterChange(ctx, tx, m.channel, m.principal, "departed"); err != nil {
 		return core.Result{}, err
 	}

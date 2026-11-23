@@ -13,6 +13,11 @@ import (
 
 const RouteVariable = "CROSSHALL_ROUTE"
 
+// HostVariable names the process crosshall run replaced itself with, as
+// "<pid>:<start identity>", so that a route member's commands can name the
+// process whose end ends the session.
+const HostVariable = "CROSSHALL_HOST"
+
 // Identity names a conversation or an explicitly scoped launch. Version is
 // diagnostic metadata and never participates in the caller key.
 type Identity struct {

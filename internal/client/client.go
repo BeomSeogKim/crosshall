@@ -30,6 +30,12 @@ type Transport struct {
 	startMember func(context.Context) (bool, error)
 	joinLaunch  func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch
 	bindLaunch  func(ident.Identity, domain.JoinLaunch) error
+	host        func(ident.Identity, func(string) (string, bool)) *wire.Host
+}
+
+// EnableHost lets each member command name the agent process that runs it.
+func (t *Transport) EnableHost(host func(ident.Identity, func(string) (string, bool)) *wire.Host) {
+	t.host = host
 }
 
 // EnableJoinLaunch lets a join name the agent process it runs in, and records
@@ -104,6 +110,11 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 		id, resolveErr = ident.ResolveEnvironment(t.lookup)
 		if resolveErr != nil {
 			return identityFailure(resolveErr), nil
+		}
+		// A wait only reads; a background wait that outlived its agent
+		// must not speak for it.
+		if t.host != nil && req.Verb != domain.VerbWait {
+			req.Host = t.host(id, t.lookup)
 		}
 		var memberCtx context.Context
 		var cancel context.CancelFunc

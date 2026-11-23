@@ -97,6 +97,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		transport.EnableJoinLaunch(hook.JoinLaunch, func(id ident.Identity, l domain.JoinLaunch) error {
 			return hook.BindJoinLaunch(paths.rendezvous, id, l)
 		})
+		transport.EnableHost(hook.MemberHost)
 		env.Transport = transport
 		env.Doctor = paths.launch(false).Doctor
 		env.Whoami = transport.Whoami
@@ -231,10 +232,12 @@ func serve(paths statePaths, pathErr error) int {
 				if err != nil {
 					return domain.Request{}, err
 				}
-				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack}, nil
+				return domain.Request{OpKey: req.OpKey, Command: cmd, Vendor: r.Vendor, SessionKey: r.SessionKey, Enroll: r.Enroll, Ack: req.Ack,
+					Host: req.Host}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
-				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, HasPromptLine: hook.HasPromptLine,
+				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, ProcessGone: proc.ProcessGone,
+				HasPromptLine: hook.HasPromptLine,
 				LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
 					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation)
 				}},

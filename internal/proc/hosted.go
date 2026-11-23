@@ -3,6 +3,7 @@ package proc
 import (
 	"os"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -25,4 +26,30 @@ func HostedBy(pid int) bool {
 		p = parent
 	}
 	return false
+}
+
+// Host finds the agent process that hosts this command: the process envPID
+// names when it is an ancestor, or, when envPID is zero, the nearest ancestor
+// whose command name is in names. Any process may stand between, at most 16
+// levels: a command run through a wrapper still finds the agent above it.
+func Host(envPID int, names []string) (int, Start, bool) {
+	p := os.Getppid()
+	for range 16 {
+		if p <= 1 {
+			break
+		}
+		name, parent, err := processParent(p)
+		if err != nil {
+			break
+		}
+		if envPID > 0 && p == envPID || envPID <= 0 && slices.Contains(names, strings.TrimPrefix(path.Base(name), "-")) {
+			start, err := processStart(p)
+			if err != nil || start.Identity <= 0 {
+				break
+			}
+			return p, start, true
+		}
+		p = parent
+	}
+	return 0, Start{}, false
 }

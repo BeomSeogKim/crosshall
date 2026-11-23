@@ -37,6 +37,8 @@ type Request struct {
 	Ack uint64
 	// Adapter contains dispatcher-verified context for a hook request.
 	Adapter *AdapterContext
+	// Host is the agent process the client named for a member command.
+	Host *wire.Host
 }
 
 type AdapterContext struct {

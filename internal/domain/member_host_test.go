@@ -162,33 +162,66 @@ func TestHostIsNotJudgedWhileALaunchIsOpen(t *testing.T) {
 	}
 }
 
-func TestHostChangedAfterTheProbeDepartsNothing(t *testing.T) {
-	f := newHostFixture(t)
-	tx, err := f.db.Begin()
-	if err != nil {
-		t.Fatal(err)
+// What the probe saw is checked again when its result is applied: a change
+// in between departs nobody.
+func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		change func(f *hostFixture)
+	}{
+		{"the host changed", func(f *hostFixture) {
+			wantOK(t, f.command(f.worker, Who{}, "", &wire.Host{PID: 101, Start: 8}))
+		}},
+		{"a launch opened", func(f *hostFixture) {
+			f.exec1(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
+				VALUES (?, 'pid-100-1', '{"adapter":"claude"}', 1, 0)`, f.principal(f.worker))
+		}},
+		{"the binding's route changed", func(f *hostFixture) {
+			f.exec1(`UPDATE binding SET route_epoch = route_epoch + 1 WHERE principal_id = ?`, f.principal(f.worker))
+		}},
+		{"the binding is no longer live", func(f *hostFixture) {
+			f.exec1(`UPDATE binding SET state = 'departed', departed_by_owner = 1 WHERE principal_id = ?`, f.principal(f.worker))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newHostFixture(t)
+			tx, err := f.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			probed, err := HostedMembers(t.Context(), tx, 0, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx.Rollback()
+			worker := f.principal(f.worker)
+			probed = slices.DeleteFunc(probed, func(m HostedMember) bool { return m.PrincipalID != worker })
+			if len(probed) != 1 {
+				t.Fatalf("probed %+v", probed)
+			}
+			c.change(f)
+			tx, err = f.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
+			if err != nil || changed {
+				t.Fatalf("changed %v, %v", changed, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT COUNT(*) FROM event WHERE kind = 'session_ended'`); n != 0 {
+				t.Fatalf("a stale probe ended %d sessions", n)
+			}
+		})
 	}
-	probed, err := HostedMembers(t.Context(), tx, 0, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx.Rollback()
-	worker := f.principal(f.worker)
-	probed = slices.DeleteFunc(probed, func(m HostedMember) bool { return m.PrincipalID != worker })
-	wantOK(t, f.command(f.worker, Who{}, "", &wire.Host{PID: 101, Start: 8}))
-	tx, err = f.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
-	if err != nil || changed {
-		t.Fatalf("changed %v, %v", changed, err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if state, _, _ := f.bindingState(f.worker); state != "live" {
-		t.Fatalf("a stale probe departed the member: %s", state)
+}
+
+func (f *hostFixture) exec1(query string, args ...any) {
+	f.t.Helper()
+	if _, err := f.db.Exec(query, args...); err != nil {
+		f.t.Fatal(err)
 	}
 }
 
@@ -231,6 +264,17 @@ func TestReturnTakesAnotherAliasWhenTheOldOneIsTaken(t *testing.T) {
 	}
 	if fields := decode[map[string]any](t, r); fields["rejoined_as"] != alias {
 		t.Errorf("rejoined_as %v, want %s", fields["rejoined_as"], alias)
+	}
+}
+
+func TestNoReturnIntoAnArchivedChannel(t *testing.T) {
+	f := newHostFixture(t)
+	f.gone[100] = true
+	f.sweep()
+	f.exec1(`UPDATE channel SET state = 'archived'`)
+	wantCode(t, f.command(f.worker, Inbox{}, "", &wire.Host{PID: 300, Start: 11}), notEnrolled().Status, core.CodeNotEnrolled)
+	if state, _, _ := f.bindingState(f.worker); state != "departed" {
+		t.Fatalf("a member came back into an archived channel: %s", state)
 	}
 }
 

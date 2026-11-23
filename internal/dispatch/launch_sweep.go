@@ -68,12 +68,19 @@ func probeMemberHosts(ctx context.Context, db *store.Store, afterHost int64) (in
 		if err := ctx.Err(); err != nil {
 			return afterHost, nil, err
 		}
-		sameNamespace, previousBoot := compareLaunchPIDNamespaces(runtime.GOOS, pidNamespace, m.PIDNamespace)
-		if previousBoot || sameNamespace && proc.ProcessGone(m.PID, m.StartIdentity) {
+		if hostGone(runtime.GOOS, pidNamespace, m, proc.ProcessGone) {
 			gone = append(gone, m)
 		}
 	}
 	return next, gone, nil
+}
+
+// hostGone reports whether a member's host is proven gone: it was recorded
+// before the last boot, or it is in the dispatcher's own namespace and the
+// process check proves it. An unknown or foreign namespace is never gone.
+func hostGone(platform, dispatcher string, m domain.HostedMember, processGone func(pid, identity int64) bool) bool {
+	sameNamespace, previousBoot := compareLaunchPIDNamespaces(platform, dispatcher, m.PIDNamespace)
+	return previousBoot || sameNamespace && processGone(m.PID, m.StartIdentity)
 }
 
 func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) launchSweepResult {

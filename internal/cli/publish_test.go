@@ -315,3 +315,15 @@ func TestTurnEndRecipientIsLeftOutOfTheNextLine(t *testing.T) {
 		t.Errorf("a recipient its turn's end will tell got a next: line:\n%s", only)
 	}
 }
+
+func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
+	shown := time.Now().Add(-5 * time.Minute).UnixMilli()
+	none := domain.Wake{Wake: domain.WakeNone, Why: domain.WhyNoRoute, Adapter: "codex"}
+	waiting, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.WaitingResult{Channel: "dev",
+		Requests: []domain.LedgerRequest{{ID: 42, Sender: "lead", Recipients: []domain.LedgerRecipient{
+			{Alias: "sol", State: "open", Wake: none, ShownAtMS: &shown}}}}})}}, "waiting")
+	want := "@sol stored -> not woken: no notice route for codex; shown " + clock(shown) + ", not read\n"
+	if !strings.Contains(waiting, want) {
+		t.Errorf("waiting lacks %q:\n%s", want, waiting)
+	}
+}

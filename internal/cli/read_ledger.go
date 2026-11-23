@@ -430,6 +430,9 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 			if recipient.Wake.Wake != "" {
 				state += " -> " + wakeText(recipient.Wake, false)
 			}
+			if at := recipient.ShownAtMS; at != nil {
+				state += "; shown " + ledgerTime(*at) + ", not read"
+			}
 		}
 		if recipient.ReplyUnread {
 			state += ", unread reply"

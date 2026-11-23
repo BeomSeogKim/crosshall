@@ -330,3 +330,54 @@ func exec(t *testing.T, f *fixture, statement string) {
 		t.Fatal(err)
 	}
 }
+
+// A request a turn end or a prompt line already showed, and that the member
+// has not read, says when it was shown in waiting instead of where it will
+// be seen: each request is shown once.
+func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return adapter == "claude" }
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	row := func(id int64) LedgerRecipient {
+		t.Helper()
+		for _, req := range decode[WaitingResult](t, f.run(writer, Waiting{}, "")).Requests {
+			if req.ID == id {
+				return req.Recipients[0]
+			}
+		}
+		t.Fatalf("#%d not in waiting", id)
+		return LedgerRecipient{}
+	}
+	atTurnEnd := f.turnEndAsk(writer, "reader", "at-turn-end")
+	if r := row(atTurnEnd); r.SeenAt != SeenAtTurnEnd || r.ShownAtMS != nil {
+		t.Fatalf("before the turn ends: %+v", r)
+	}
+	stopAt := f.now.UnixMilli() + 1
+	if got := f.hook(reader, stop("launch", "turn-1", stopAt)); !strings.Contains(got.TurnEndLine, "pending:") {
+		t.Fatalf("the turn's end offered nothing: %+v", got)
+	}
+	if r := row(atTurnEnd); r.Wake.Wake != WakeNone || r.SeenAt != "" || r.ShownAtMS == nil || *r.ShownAtMS != f.now.UnixMilli() {
+		t.Fatalf("after the turn end showed it: %+v", r)
+	}
+
+	atPrompt := f.turnEndAsk(writer, "reader", "at-prompt")
+	if r := row(atPrompt); r.SeenAt != SeenAtPrompt || r.ShownAtMS != nil {
+		t.Fatalf("before the next prompt: %+v", r)
+	}
+	if got := f.hook(reader, prompt("launch", "turn-2", f.now.UnixMilli()+2)); !strings.Contains(got.PendingLine, "pending:") {
+		t.Fatalf("the prompt showed nothing: %+v", got)
+	}
+	if r := row(atPrompt); r.SeenAt != "" || r.ShownAtMS == nil {
+		t.Fatalf("after the prompt line showed it: %+v", r)
+	}
+	// A running wait still takes it; shown replaces only where it is seen.
+	f.svc.waits.saw(bindingIDOf(t, f, f.principalOf(reader)), false, f.now)
+	if r := row(atPrompt); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
+		t.Fatalf("a running wait after the prompt line: %+v", r)
+	}
+	f.svc.waits.forget(bindingIDOf(t, f, f.principalOf(reader)))
+	wantOK(t, f.run(reader, Read{IDs: []int64{atPrompt}}, "read"))
+	if r := row(atPrompt); r.Wake != (Wake{}) || r.ShownAtMS != nil {
+		t.Fatalf("after reading: %+v", r)
+	}
+}

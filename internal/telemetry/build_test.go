@@ -45,9 +45,10 @@ var fixtureSQL = []string{
 		(1, 'zqxmarker-channel', 'zqxmarker topic', 0), (2, 'zqxmarker-other', '', 0)`,
 	`INSERT INTO principal (id, kind, vendor, vendor_version, created_at_ms) VALUES
 		(1, 'owner', 'owner', NULL, 0), (2, 'session', 'claude', '2.1.330', 0),
-		(3, 'session', 'codex', 'zqxmarker-version', 0)`,
+		(3, 'session', 'codex', '0.171.0', 0), (4, 'session', 'agy', 'ls:cli-1.5.13', 0)`,
 	`INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, focus, reach_told) VALUES
-		(1, 2, 1, 'zqxmarker-alias', 0, 'zqxmarker focus', 1), (2, 3, 1, 'zqxmarker-alias2', 0, '', NULL)`,
+		(1, 2, 1, 'zqxmarker-alias', 0, 'zqxmarker focus', 1), (2, 3, 1, 'zqxmarker-alias2', 0, '', NULL),
+		(3, 4, 1, 'zqxmarker-alias3', 0, '', NULL)`,
 	// m1 ask answered by m2; m3 a note from the day before; m4 an ask left
 	// open; m5 an ask from the day before, picked up on the day.
 	fmt.Sprintf(`INSERT INTO message (id, channel_id, sender_id, kind, outcome, in_reply_to, audience_mode, due_at_ms, body, created_at_ms) VALUES
@@ -77,8 +78,9 @@ var fixtureSQL = []string{
 		at(0, 9, 0), at(1, 9, 0)),
 	fmt.Sprintf(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms, pid_namespace) VALUES
 		(2, 'zqxmarker-l1', '{"adapter":"claude","manifest_rev":"claude-2","vendor_version":"2.1.330","platform":"darwin","mode":"interactive"}', 1, %d, 'zqxmarker'),
-		(3, 'zqxmarker-l2', '{"adapter":"codex","manifest_rev":"codex-1","vendor_version":"zqxmarker","platform":"zqxmarker","mode":"zqxmarker"}', 0, %d, '')`,
-		at(0, 9, 0), at(0, 9, 0)),
+		(3, 'zqxmarker-l2', '{"adapter":"codex","manifest_rev":"codex-1","vendor_version":"unverified","platform":"zqxmarker","mode":"unverified"}', 0, %d, ''),
+		(4, 'zqxmarker-l3', '{"adapter":"agy","manifest_rev":"agy-1","vendor_version":"unverified","platform":"zqxmarker","mode":"unverified"}', 0, %d, '')`,
+		at(0, 9, 0), at(0, 9, 0), at(0, 9, 0)),
 	fmt.Sprintf(`INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms) VALUES
 		(2, 'zqxmarker-l1', 'zqxmarker-t1', %d)`, at(0, 10, 0)),
 	fmt.Sprintf(`INSERT INTO turn_end_notice (principal_id, adapter, launch_ref, turn_ref, at_ms) VALUES
@@ -86,17 +88,21 @@ var fixtureSQL = []string{
 	// a1 crosses midnight: reserved the day before, resolved on the day,
 	// observed the day after, and its item unread until then: unobserved at
 	// its boundary 00:09 on the day, observed late the day after. a2 is
-	// retired unobserved; a3 is observed in time, absorbed.
+	// retired unobserved; a3 is observed in time, absorbed. a4 is observed
+	// after its boundary, but its only item was picked up before it: neither
+	// unobserved nor late.
 	fmt.Sprintf(`INSERT INTO publish_attempt (id, binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
 		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, resolved_at_ms, observed_at_ms,
 		observation, retired_at_ms) VALUES
 		(1, 1, 2, 1, 1, 'claude', 'zqxmarker', 'zqxmarker-l1', 1, 4242, 1, 'submitted', %d, %d, %d, 'own_turn', NULL),
 		(2, 1, 2, 1, 1, 'claude', 'zqxmarker', 'zqxmarker-l1', 1, 4242, 1, 'not_submitted', %d, %d, NULL, NULL, %d),
-		(3, 1, 2, 1, 1, 'claude', 'zqxmarker', 'zqxmarker-l1', 1, 4242, 1, 'submitted', %d, %d, %d, 'absorbed', NULL)`,
+		(3, 1, 2, 1, 1, 'claude', 'zqxmarker', 'zqxmarker-l1', 1, 4242, 1, 'submitted', %d, %d, %d, 'absorbed', NULL),
+		(4, 2, 3, 1, 1, 'codex', 'zqxmarker', 'zqxmarker-l2', 1, 4343, 1, 'submitted', %d, %d, %d, 'unknown', NULL)`,
 		at(-1, 23, 59), at(0, 0, 0), at(1, 0, 5),
 		at(0, 10, 0), at(0, 10, 0), at(0, 10, 10),
-		at(0, 10, 20), at(0, 10, 20), at(0, 10, 21)),
-	`INSERT INTO publish_attempt_item (attempt_id, principal_id, message_id) VALUES (1, 2, 2), (3, 2, 2)`,
+		at(0, 10, 20), at(0, 10, 20), at(0, 10, 21),
+		at(0, 14, 0), at(0, 14, 0), at(0, 15, 0)),
+	`INSERT INTO publish_attempt_item (attempt_id, principal_id, message_id) VALUES (1, 2, 2), (3, 2, 2), (4, 3, 1)`,
 	fmt.Sprintf(`INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms) VALUES
 		(1, 'zqxmarker-l1', 'absorbed', 3, %d, %d), (1, 'zqxmarker-l1', 'unknown', 3, %d, NULL)`,
 		at(0, 10, 21), at(0, 10, 51), at(0, 12, 0)),
@@ -109,6 +115,34 @@ var fixtureSQL = []string{
 	`INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES
 		('claude', 1, 1, 1, 0, 0), ('codex', 0, 0, 1, 0, 0)`,
 	`INSERT INTO hall_publish (id, enabled, changed_at_ms) VALUES (1, 1, 0)`,
+	// Every other table gets a row, so the canary reaches all of them.
+	`INSERT INTO hall_auto_join (id, enabled, changed_at_ms) VALUES (1, 1, 0)`,
+	`INSERT INTO exchange (id, channel_id, root_message_id, opened_by_id, granted) VALUES (1, 1, 1, 2, 8)`,
+	`INSERT INTO budget_event (exchange_id, delta, reason, message_id, by_id, at_ms) VALUES (1, -1, 'debit', 1, 2, 0)`,
+	`INSERT INTO announcement (principal_id, message_id, via, ref, at_ms) VALUES (3, 4, 'turn_end', 1, 0)`,
+	`INSERT INTO capability (principal_id, cap, level, available, vendor_version, platform, mode, checked_at_ms)
+		VALUES (3, 'observe', 'candidate', 0, 'zqxmarker', 'zqxmarker', 'zqxmarker', 0)`,
+	`INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
+		VALUES ('codex', 'zqxmarker', 'zqxmarker', 'zqxmarker', 'codex-1', 'publish', 'tested', 'zqxmarker-ref', 0)`,
+	`INSERT INTO delivery_attempt (message_set, principal_id, route, state, at_ms) VALUES ('zqxmarker', 3, 'zqxmarker', 'recorded', 0)`,
+	`INSERT INTO principal_key (vendor, key, principal_id, created_at_ms) VALUES ('codex', 'zqxmarker-key', 3, 0)`,
+	`INSERT INTO leaf (digest, vendor, key, principal_id, generation, file_identity, created_at_ms)
+		VALUES ('` + strings.Repeat("ab", 32) + `', 'codex', 'zqxmarker-key', 3, 'zqxmarker', 'zqxmarker', 0)`,
+	`INSERT INTO observation (principal_id, kind, origin, source, observed_at_ms, launch_ref, event_ref, turn_ref, profile)
+		VALUES (3, 'command', 'unknown', 'zqxmarker', 0, 'zqxmarker-l2', 'zqxmarker', 'zqxmarker', '{"adapter":"zqxmarker"}')`,
+	`INSERT INTO offer (id, principal_id, binding_id, generation, launch_ref, epoch, reason, evidence, at_ms)
+		VALUES (1, 3, 2, 'zqxmarker', 'zqxmarker-l2', 0, 'prompt', 'zqxmarker', 0)`,
+	`INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (1, 4, 3)`,
+	`INSERT INTO pickup_receipt (token_hash, principal_id, generation, read_op_key, issued_at_ms, expires_at_ms, turn_ref, tool_call_ref)
+		VALUES ('zqxmarker-token', 3, 'zqxmarker', 'zqxmarker-op', 0, 0, 'zqxmarker', 'zqxmarker')`,
+	`INSERT INTO pickup_receipt_item (token_hash, message_id) VALUES ('zqxmarker-token', 4)`,
+	`INSERT INTO receipt (message_id, principal_id, stage, seq, at_ms, evidence) VALUES (4, 3, 'stored', 1, 0, 'zqxmarker')`,
+	`INSERT INTO repo_default (repo_root, channel_id) VALUES ('/zqxmarker/repo', 1)`,
+	`INSERT INTO result_wait (message_id, asker_id, state) VALUES (4, 2, 'armed')`,
+	`INSERT INTO roster_change (channel_id, seq, principal_id, field) VALUES (1, 1, 2, 'zqxmarker')`,
+	`INSERT INTO waiter_lease (principal_id, lease_token, holder, armed_at_ms, renewed_at_ms, expires_at_ms, state, reason)
+		VALUES (3, 'zqxmarker', 'zqxmarker', 0, 0, 0, 'live', 'zqxmarker')`,
+	`INSERT INTO publish_route_proof (binding_id, generation, process_pid, process_start_ms) VALUES (1, 1, 4242, 1)`,
 }
 
 func openFixture(t *testing.T) *store.Store {
@@ -345,7 +379,10 @@ func TestNoMarkerReachesTheReport(t *testing.T) {
 		}
 	}
 	check("fixture", build(t, s, in))
-	marked := make(map[string]bool)
+	// Every table must have a fixture row, and every text column must be
+	// marked in at least one row or refused by the schema (an enum): a new
+	// table or column fails here until the fixture reaches it.
+	var empty, unreached []string
 	err := s.Update(t.Context(), func(tx store.Tx) error {
 		ctx := t.Context()
 		tables, err := texts(tx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
@@ -353,6 +390,14 @@ func TestNoMarkerReachesTheReport(t *testing.T) {
 			return err
 		}
 		for _, table := range tables {
+			var rows int
+			if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q`, table)).Scan(&rows); err != nil {
+				return err
+			}
+			if rows == 0 {
+				empty = append(empty, table)
+				continue
+			}
 			columns, err := texts(tx, `SELECT name FROM pragma_table_info(?) WHERE type NOT LIKE 'INTEGER%'`, table)
 			if err != nil {
 				return err
@@ -364,32 +409,34 @@ func TestNoMarkerReachesTheReport(t *testing.T) {
 					return err
 				}
 				// Each row gets its own value, so a unique column takes it.
+				// A NULL is replaced too, unless the schema refuses it.
 				updates := map[string]string{table + "." + column: fmt.Sprintf(`UPDATE %q SET %q = ? || '-' || rowid
-					WHERE NOT json_valid(%[2]q) OR json_type(%[2]q) <> 'object'`, table, column)}
+					WHERE %[2]q IS NULL OR NOT json_valid(%[2]q) OR json_type(%[2]q) <> 'object'`, table, column)}
 				for _, m := range members {
 					updates[table+"."+column+"."+m] = fmt.Sprintf(`UPDATE %q SET %q = json_set(%[2]q, '$.' || json_quote(%q), ? || '-' || rowid)
 						WHERE json_valid(%[2]q) AND json_type(%[2]q, '$.' || json_quote(%[3]q)) = 'text'`, table, column, m)
 				}
+				reached := false
 				for name, update := range updates {
 					if _, err := tx.ExecContext(ctx, `SAVEPOINT mark`); err != nil {
 						return err
 					}
-					// A refused update means the schema admits only its own
-					// values in that column.
-					if res, err := tx.ExecContext(ctx, update, marker+"-"+name); err == nil {
-						if n, _ := res.RowsAffected(); n > 0 {
-							marked[name] = true
-							r, err := Build(ctx, tx, in)
-							if err != nil {
-								return fmt.Errorf("%s: %w", name, err)
-							}
-							r.App.Platform = "darwin-arm64"
-							raw, err := r.Marshal()
-							if err != nil {
-								return err
-							}
-							check(name, raw)
+					res, err := tx.ExecContext(ctx, update, marker+"-"+name)
+					if err != nil {
+						// The schema admits only its own values in that column.
+						reached = true
+					} else if n, _ := res.RowsAffected(); n > 0 {
+						reached = true
+						r, err := Build(ctx, tx, in)
+						if err != nil {
+							return fmt.Errorf("%s: %w", name, err)
 						}
+						r.App.Platform = "darwin-arm64"
+						raw, err := r.Marshal()
+						if err != nil {
+							return err
+						}
+						check(name, raw)
 					}
 					if _, err := tx.ExecContext(ctx, `ROLLBACK TO mark`); err != nil {
 						return err
@@ -398,6 +445,9 @@ func TestNoMarkerReachesTheReport(t *testing.T) {
 						return err
 					}
 				}
+				if !reached {
+					unreached = append(unreached, table+"."+column)
+				}
 			}
 		}
 		return nil
@@ -405,16 +455,11 @@ func TestNoMarkerReachesTheReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"channel.name", "channel.topic", "binding.alias", "binding.focus", "message.body",
-		"recipient.alias_at_commit", "op.verb", "op.scope", "op.result.note", "event.kind", "event.subject",
-		"event.detail.alias", "event.detail.by", "event.detail.reason", "adapter_launch.profile.vendor_version",
-		"adapter_launch.profile.mode", "adapter_launch.profile.manifest_rev", "adapter_launch.profile.adapter",
-		"adapter_launch.pid_namespace", "principal.vendor", "principal.vendor_version", "publish_attempt.adapter",
-		"publish_attempt.session_ref", "publish_route.socket_path", "publish_route.reason", "turn_end_notice.adapter",
-		"capability_build.vendor", "capability_build.vendor_version", "capability_build.stop_reason"} {
-		if !marked[name] {
-			t.Errorf("the canary did not mark %s", name)
-		}
+	if len(empty) > 0 {
+		t.Errorf("tables without a fixture row, which the canary cannot reach: %v", empty)
+	}
+	if len(unreached) > 0 {
+		t.Errorf("text columns neither marked nor refused by the schema: %v", unreached)
 	}
 }
 
@@ -453,5 +498,27 @@ func TestEncodingIsCanonical(t *testing.T) {
 	var back map[string]any
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A hall where nothing happened still has its snapshot and the week
+// figures; such a day is not active, and the fixture day is.
+func TestIdleDayIsNotActive(t *testing.T) {
+	s, err := store.Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	exec(t, s, `INSERT INTO channel (id, name, created_at_ms) VALUES (1, 'idle', 0)`,
+		`INSERT INTO principal (id, kind, vendor, vendor_version, created_at_ms) VALUES (1, 'session', 'claude', '2.1.330', 0)`,
+		`INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms) VALUES (1, 1, 1, 'idle', 0)`)
+	in := fixtureInput()
+	in.Hooks = nil
+	r := buildReport(t, s, in)
+	if len(r.Counts) == 0 || r.Active() {
+		t.Fatalf("idle day: counts %v, active %v; want snapshot or week figures only and not active", r.Counts, r.Active())
+	}
+	if !buildReport(t, openFixture(t), fixtureInput()).Active() {
+		t.Fatal("the fixture day is not active")
 	}
 }

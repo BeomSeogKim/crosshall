@@ -42,6 +42,18 @@ type Switches struct {
 	TurnEndClaude string `json:"turn_end_claude"`
 }
 
+// Active reports whether anything happened on the day: a count other than
+// the snapshot and the week figures, which an idle hall has too. A day that
+// is not active is not reported.
+func (r Report) Active() bool {
+	for key := range r.Counts {
+		if !strings.HasPrefix(key, "snap.") && !strings.HasPrefix(key, "week.") {
+			return true
+		}
+	}
+	return false
+}
+
 // Marshal returns the canonical bytes: no whitespace, members in the order
 // of the wire contract, count keys in ascending byte order.
 func (r Report) Marshal() ([]byte, error) {
@@ -90,9 +102,13 @@ func family(adapter, version string) string {
 	}
 	prefix := ""
 	if adapter == "agy" {
-		// Antigravity reports its language server's build.
-		prefix = "ls_"
-		version = strings.TrimPrefix(version, "ls:")
+		// Antigravity's runtime version is its language server's build,
+		// which identity resolution records as "ls:cli-<n>".
+		rest, ok := strings.CutPrefix(version, "ls:cli-")
+		if !ok {
+			return "other"
+		}
+		prefix, version = "ls_", rest
 	}
 	if m := familyPattern.FindStringSubmatch(version); m != nil {
 		if f := prefix + m[1] + "_" + m[2]; registry.has("snap.live_launch." + adapter + "." + f) {

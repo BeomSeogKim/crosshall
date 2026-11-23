@@ -180,24 +180,25 @@ func (b *builder) pickups() {
 // or else its reservation, plus ten minutes), the attempts that as of T were
 // submitted or uncertain, neither observed nor retired, and still carried an
 // item whose recipient had not picked it up and whose obligation, if any,
-// was not settled. Observations after T count as late on their own day.
-// Every condition compares stored times with T, so the count does not
-// depend on when it is taken.
+// was not settled. notice.late_observed counts the same attempts on the day
+// they were observed after T, so it is a part of notice.unobserved_10m.
+// Every condition compares stored times with T, so the counts do not depend
+// on when they are taken.
 func (b *builder) unobserved() {
 	boundary := `COALESCE(a.submitting_at_ms, a.reserved_at_ms) + ` + strconv.FormatInt(unobservedAfter.Milliseconds(), 10)
+	outstanding := `a.state IN ('submitted', 'uncertain') AND a.resolved_at_ms <= ` + boundary + `
+		AND (a.retired_at_ms IS NULL OR a.retired_at_ms > ` + boundary + `)
+		AND EXISTS (SELECT 1 FROM publish_attempt_item i
+			JOIN recipient r ON r.message_id = i.message_id AND r.principal_id = i.principal_id
+			LEFT JOIN obligation o ON o.message_id = i.message_id AND o.principal_id = i.principal_id
+			WHERE i.attempt_id = a.id
+				AND (r.picked_up_at_ms IS NULL OR r.picked_up_at_ms > ` + boundary + `)
+				AND (o.settled_at_ms IS NULL OR o.settled_at_ms > ` + boundary + `))`
 	b.count(fixed("notice.unobserved_10m"), `SELECT '', COUNT(*) FROM publish_attempt a
-		WHERE `+boundary+` >= ?1 AND `+boundary+` < ?2
-			AND a.state IN ('submitted', 'uncertain') AND a.resolved_at_ms <= `+boundary+`
-			AND (a.observed_at_ms IS NULL OR a.observed_at_ms > `+boundary+`)
-			AND (a.retired_at_ms IS NULL OR a.retired_at_ms > `+boundary+`)
-			AND EXISTS (SELECT 1 FROM publish_attempt_item i
-				JOIN recipient r ON r.message_id = i.message_id AND r.principal_id = i.principal_id
-				LEFT JOIN obligation o ON o.message_id = i.message_id AND o.principal_id = i.principal_id
-				WHERE i.attempt_id = a.id
-					AND (r.picked_up_at_ms IS NULL OR r.picked_up_at_ms > `+boundary+`)
-					AND (o.settled_at_ms IS NULL OR o.settled_at_ms > `+boundary+`))`, b.from, b.to)
+		WHERE `+boundary+` >= ?1 AND `+boundary+` < ?2 AND (a.observed_at_ms IS NULL OR a.observed_at_ms > `+boundary+`)
+			AND `+outstanding, b.from, b.to)
 	b.count(fixed("notice.late_observed"), `SELECT '', COUNT(*) FROM publish_attempt a
-		WHERE a.observed_at_ms >= ?1 AND a.observed_at_ms < ?2 AND a.observed_at_ms > `+boundary, b.from, b.to)
+		WHERE a.observed_at_ms >= ?1 AND a.observed_at_ms < ?2 AND a.observed_at_ms > `+boundary+` AND `+outstanding, b.from, b.to)
 }
 
 // snapshot adds the figures that describe the hall at now and returns the
@@ -261,13 +262,18 @@ func (b *builder) reach(now time.Time) {
 }
 
 // liveLaunches counts the current, unended launch of each member with a live
-// binding, doctor's population, by its runtime version family.
+// binding, doctor's population, by its runtime version family. Only Claude
+// Code's hooks verify a launch's version; for an unverified launch the
+// family comes from the version identity resolution recorded for the
+// member's session.
 func (b *builder) liveLaunches() {
 	if b.err != nil {
 		return
 	}
-	rows, err := b.tx.QueryContext(b.ctx, `SELECT json_extract(l.profile, '$.adapter'), json_extract(l.profile, '$.vendor_version')
-		FROM adapter_launch l
+	rows, err := b.tx.QueryContext(b.ctx, `SELECT json_extract(l.profile, '$.adapter'),
+		CASE WHEN COALESCE(json_extract(l.profile, '$.vendor_version'), 'unverified') IN ('', 'unverified')
+			THEN p.vendor_version ELSE json_extract(l.profile, '$.vendor_version') END
+		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
 		WHERE l.ended_hook_at_ms IS NULL AND json_valid(l.profile)
 			AND l.rowid = (SELECT current.rowid FROM adapter_launch current
 				WHERE current.principal_id = l.principal_id

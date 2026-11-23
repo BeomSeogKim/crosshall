@@ -224,11 +224,14 @@ func TestVersionMapping(t *testing.T) {
 			t.Errorf("AppVersion(%q) = %q, want %q", in, got, want)
 		}
 	}
+	// The strings identity resolution records (runtimeVersion) and a Claude
+	// launch profile carries; "unverified" is an unverified launch's.
 	for _, c := range []struct{ adapter, version, want string }{
 		{"claude", "2.1.330", "2_1"}, {"claude", "2.2.0", "other"}, {"claude", "unverified", "unknown"},
-		{"claude", "", "unknown"}, {"claude", "2.1.330-zqxmarker", "other"}, {"codex", "0.170.0", "0_170"},
-		{"codex", "0.171.2", "0_171"}, {"codex", "0.172.0", "other"}, {"agy", "ls:1.5.11", "ls_1_5"},
-		{"agy", "1.5.11", "ls_1_5"}, {"agy", "unverified", "unknown"}, {"agy", "ls:zqxmarker", "other"},
+		{"claude", "unknown", "unknown"}, {"claude", "", "unknown"}, {"claude", "2.1.330-zqxmarker", "other"},
+		{"codex", "0.170.0", "0_170"}, {"codex", "0.171.0", "0_171"}, {"codex", "0.172.0", "other"}, {"codex", "unknown", "unknown"},
+		{"agy", "ls:cli-1.5.13", "ls_1_5"}, {"agy", "ls:cli-1.6.0", "other"}, {"agy", "unknown", "unknown"},
+		{"agy", "1.5.13", "other"}, {"agy", "ls:cli-zqxmarker", "other"},
 	} {
 		if got := family(c.adapter, c.version); got != c.want {
 			t.Errorf("family(%s, %q) = %q, want %q", c.adapter, c.version, got, c.want)

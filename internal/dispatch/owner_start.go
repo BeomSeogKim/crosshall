@@ -93,7 +93,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 		marker = fmt.Sprintf("a valid readiness marker named PID %d", candidate.PID)
 	}
 	return fmt.Errorf("dispatcher readiness was not confirmed (%w). Last observed stage was %s. "+
-		"At the final check, %s and %s. See dispatcher.log", wait.Err(), stage, lock, marker)
+		"At the final check, %s and %s. See dispatcher.log.", wait.Err(), stage, lock, marker)
 }
 
 func (cfg LaunchConfig) startCandidate(state *os.Root) (<-chan bool, error) {

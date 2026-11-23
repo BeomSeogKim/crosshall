@@ -53,3 +53,26 @@ func Host(envPID int, names []string) (int, Start, bool) {
 	}
 	return 0, Start{}, false
 }
+
+// HostCommand names the process that runs this command, past any shells in
+// between: its executable path and arguments. ok is false when they cannot
+// be read.
+func HostCommand() (exe string, args []string, ok bool) {
+	p := os.Getppid()
+	for range 16 {
+		if p <= 1 {
+			return "", nil, false
+		}
+		name, parent, err := processParent(p)
+		if err != nil {
+			return "", nil, false
+		}
+		if shells[strings.TrimPrefix(path.Base(name), "-")] {
+			p = parent
+			continue
+		}
+		exe, args, err := processCommand(p)
+		return exe, args, err == nil
+	}
+	return "", nil, false
+}

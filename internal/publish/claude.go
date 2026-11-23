@@ -47,8 +47,10 @@ func (claude) AcceptsSocket(path string) bool {
 	return slices.Contains(claudeSocketDirs(), filepath.Dir(path))
 }
 
-// SessionThread is empty: SessionStart's hook.route supplies the socket.
-func (claude) SessionThread(string) string { return "" }
+// SessionRoute is empty: SessionStart's hook.route supplies the socket.
+func (claude) SessionRoute(string, string) Route { return Route{} }
+
+func (claude) Reach(Route) string { return "" }
 
 const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 

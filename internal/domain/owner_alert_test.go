@@ -1,13 +1,16 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 // threadStop makes s's next request on a new thread to the alias a round
@@ -256,5 +259,175 @@ func TestOwnerStatusCapsTheRequestList(t *testing.T) {
 	}
 	if want := append(append([]int64{}, ids[:2]...), ids[5:]...); !reflect.DeepEqual(got, want) {
 		t.Fatalf("capped list keeps %v, want the first two and the last 48", got)
+	}
+}
+
+func (f *fixture) claimDesktop(available bool) []DesktopAlert {
+	f.t.Helper()
+	tx, err := f.db.Begin()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer tx.Rollback()
+	alerts, err := ClaimDesktopAlerts(context.Background(), tx, f.now, available)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		f.t.Fatal(err)
+	}
+	return alerts
+}
+
+func (f *fixture) inTx(apply func(store.Tx) error) {
+	f.t.Helper()
+	tx, err := f.db.Begin()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := apply(tx); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) desktopStates() []string {
+	f.t.Helper()
+	rows, err := f.db.Query(`SELECT desktop_state || CASE WHEN desktop_at_ms IS NULL THEN '' ELSE '@' || desktop_at_ms END
+		FROM owner_alert ORDER BY event_seq`)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			f.t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func TestDesktopAlertIsSentOnceAndSpacedAMinuteApart(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	parent := f.threadStop(a, "tax")
+	start := ms(f.now)
+	alerts := f.claimDesktop(true)
+	want := DesktopAlert{Title: "crosshall: round limit in #checkout",
+		Body: fmt.Sprintf("x%d stopped. @form's request to @tax would be round 9 of 8. Run: crosshall owner status", parent.Exchange)}
+	if len(alerts) != 1 || alerts[0].Title != want.Title || alerts[0].Body != want.Body || alerts[0].Seq == 0 {
+		t.Fatalf("claimed %+v, want %+v", alerts, want)
+	}
+	f.inTx(func(tx store.Tx) error { return FinishDesktopAlert(context.Background(), tx, alerts[0].Seq, true) })
+	if again := f.claimDesktop(true); len(again) != 0 {
+		t.Fatalf("a sent stop was claimed again: %+v", again)
+	}
+	f.now = f.now.Add(59 * time.Second)
+	f.grantMember("form", 0)
+	wantCode(t, f.ask(a, Ask{New: true, To: []string{"tax"}, Body: "new"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	if second := f.claimDesktop(true); len(second) != 0 {
+		t.Fatalf("a second stop inside a minute was sent: %+v", second)
+	}
+	if got := f.desktopStates(); !reflect.DeepEqual(got, []string{fmt.Sprintf("sent@%d", start), "skipped"}) {
+		t.Fatalf("states %v", got)
+	}
+}
+
+func TestDesktopAlertSkipsOldAndClosedStops(t *testing.T) {
+	f, a, _, c := channel3(t)
+	f.threadStop(a, "tax")
+	f.now = f.now.Add(10*time.Minute + time.Millisecond)
+	if alerts := f.claimDesktop(true); len(alerts) != 0 {
+		t.Fatalf("a stop older than ten minutes was sent: %+v", alerts)
+	}
+	granted := f.threadStop(c, "form")
+	f.grantThread(granted.Exchange, 8)
+	r1 := f.newSession("route")
+	wantOK(t, f.join(r1, Join{Channel: "checkout", Alias: "r1"}, ""))
+	wantOK(t, f.join(f.newSession("route"), Join{Channel: "checkout", Alias: "r2"}, ""))
+	drained := f.threadStop(r1, "r2")
+	executeGuardFixture(t, f, `UPDATE exchange SET episode_open = 0 WHERE id = ?`, drained.Exchange)
+	wantCode(t, f.ask(r1, Ask{Re: drained.ID, To: []string{"r2"}, Body: "again"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	alerts := f.claimDesktop(true)
+	if len(alerts) != 1 || !strings.HasPrefix(alerts[0].Body, fmt.Sprintf("x%d stopped. @r1's", drained.Exchange)) {
+		t.Fatalf("claimed %+v, want only the stop recorded again", alerts)
+	}
+	if got := f.desktopStates(); !reflect.DeepEqual(got, []string{"skipped", "skipped", "skipped", "sending@" + fmt.Sprint(ms(f.now))}) {
+		t.Fatalf("states %v", got)
+	}
+}
+
+func TestDesktopAlertUnavailableFailedAndInterrupted(t *testing.T) {
+	f, a, _, c := channel3(t)
+	f.threadStop(a, "tax")
+	if alerts := f.claimDesktop(false); len(alerts) != 0 {
+		t.Fatalf("claimed %+v without a notification command", alerts)
+	}
+	f.now = f.now.Add(time.Minute)
+	f.threadStop(c, "form")
+	failed := f.claimDesktop(true)
+	f.inTx(func(tx store.Tx) error { return FinishDesktopAlert(context.Background(), tx, failed[0].Seq, false) })
+	f.now = f.now.Add(time.Minute)
+	f.grantMember("form", 0)
+	wantCode(t, f.ask(a, Ask{New: true, To: []string{"tax"}, Body: "new"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	interrupted := f.claimDesktop(true)
+	f.inTx(func(tx store.Tx) error { return FailUnfinishedDesktopAlerts(context.Background(), tx) })
+	f.now = f.now.Add(time.Minute)
+	if again := f.claimDesktop(true); len(failed) != 1 || len(interrupted) != 1 || len(again) != 0 {
+		t.Fatalf("claims %+v, %+v, then %+v", failed, interrupted, again)
+	}
+	want := []string{"unavailable", fmt.Sprintf("failed@%d", ms(f.now)-2*60_000), fmt.Sprintf("failed@%d", ms(f.now)-60_000)}
+	if got := f.desktopStates(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("states %v, want %v", got, want)
+	}
+}
+
+func TestDesktopAlertTextNamesNoMessageAndShortensRecipients(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	to := []string{"tax", "a11y"}
+	for _, alias := range []string{"r1", "r2", "r3"} {
+		wantOK(t, f.join(f.newSession("route"), Join{Channel: "checkout", Alias: alias}, ""))
+		to = append(to, alias)
+	}
+	f.grantMember("form", 0)
+	wantCode(t, f.ask(a, Ask{New: true, To: to, Body: "SECRET-BODY"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	alerts := f.claimDesktop(true)
+	want := "@form's new threads stopped. @form's request to @a11y, @r1, @r2 and 2 more would be round 1 of 0. Run: crosshall owner status"
+	if len(alerts) != 1 || alerts[0].Body != want || strings.Contains(alerts[0].Title+alerts[0].Body, "SECRET") {
+		t.Fatalf("claimed %+v, want body %q", alerts, want)
+	}
+}
+
+func TestRecipientListNamesThreeAtMost(t *testing.T) {
+	for _, tc := range []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"b"}, "@b"},
+		{[]string{"b", "c"}, "@b and @c"},
+		{[]string{"b", "c", "d"}, "@b, @c and @d"},
+		{[]string{"b", "c", "d", "e"}, "@b, @c, @d and 1 more"},
+	} {
+		if got := RecipientList(tc.in); got != tc.want {
+			t.Errorf("RecipientList(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A stop recorded before migration 023 has no owner_alert row.
+func TestStopFromBeforeTheUpgradeIsListedButNotAnnounced(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	f.threadStop(a, "tax")
+	executeGuardFixture(t, f, `DELETE FROM owner_alert`)
+	if alerts := f.claimDesktop(true); len(alerts) != 0 {
+		t.Fatalf("an earlier stop was sent: %+v", alerts)
+	}
+	if stops := f.guardStops(); len(stops) != 1 {
+		t.Fatalf("an earlier stop is not listed: %+v", stops)
 	}
 }

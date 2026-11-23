@@ -146,7 +146,7 @@ func setMode(stateRoot, mode, source, onlyIf string, now func() time.Time) (Sett
 	}
 	if current.Mode == mode {
 		if mode == Off {
-			err = dir.RemoveAll("pending")
+			err = dropPending(dir)
 		}
 		return current, false, err
 	}
@@ -164,7 +164,7 @@ func setMode(stateRoot, mode, source, onlyIf string, now func() time.Time) (Sett
 		return Setting{}, false, err
 	}
 	if mode == Off {
-		if err := dir.RemoveAll("pending"); err != nil {
+		if err := dropPending(dir); err != nil {
 			return setting, true, err
 		}
 	}
@@ -174,7 +174,8 @@ func setMode(stateRoot, mode, source, onlyIf string, now func() time.Time) (Sett
 // Locked runs fn with the telemetry directory open and the setting's lock
 // held, so that turning the setting off cannot interleave with a change fn
 // makes. When the directory does not exist the setting is unset and fn does
-// not run.
+// not run. A mode file that cannot be read is passed as unset, so fn still
+// sees the opt-outs, and its error is returned.
 func Locked(stateRoot string, fn func(dir *os.Root, setting Setting) error) error {
 	dir, err := openTelemetryDir(stateRoot, false)
 	if errors.Is(err, os.ErrNotExist) {
@@ -194,9 +195,19 @@ func Locked(stateRoot string, fn func(dir *os.Root, setting Setting) error) erro
 	}
 	setting, err := readMode(dir)
 	if err != nil {
-		return err
+		return errors.Join(err, fn(dir, Setting{Mode: Unset}))
 	}
 	return fn(dir, setting)
+}
+
+// dropPending deletes the batches not yet sent; a batch the receiver
+// accepted keeps its bytes until it is archived or expires.
+func dropPending(dir *os.Root) error {
+	st, err := ReadState(dir)
+	if err != nil {
+		return err
+	}
+	return DropPending(dir, st)
 }
 
 func openTelemetryDir(stateRoot string, create bool) (*os.Root, error) {

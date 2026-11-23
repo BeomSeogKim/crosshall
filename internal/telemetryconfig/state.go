@@ -25,13 +25,15 @@ const MaxReport = 16 << 10
 // every recently frozen day, with or without a batch; a day in it is never
 // built again.
 type State struct {
-	// SuppressedThrough is the latest time a dispatcher saw an opt-out
-	// while the setting was on. It only moves forward.
-	SuppressedThrough time.Time            `json:"suppressed_through,omitzero"`
-	Days              map[string]*DayState `json:"days,omitempty"`
-	LastPost          time.Time            `json:"last_post,omitzero"`
-	StoppedVersion    string               `json:"stopped_version,omitempty"`
-	LastStatus        string               `json:"last_status,omitempty"`
+	// VetoDay is the latest UTC day on which a dispatcher observed an
+	// opt-out: the owner's off, an environment veto or the administrator's
+	// file. That day and every earlier one are never sent. It only moves
+	// forward.
+	VetoDay        string               `json:"veto_day,omitempty"`
+	Days           map[string]*DayState `json:"days,omitempty"`
+	LastPost       time.Time            `json:"last_post,omitzero"`
+	StoppedVersion string               `json:"stopped_version,omitempty"`
+	LastStatus     string               `json:"last_status,omitempty"`
 }
 
 // DayState is one frozen day.
@@ -48,30 +50,51 @@ type DayState struct {
 	AcceptedAt time.Time `json:"accepted_at,omitzero"`
 }
 
-// EligibleFrom is the first day that lies wholly after the setting turned
-// on and after the last opt-out a dispatcher saw. No earlier day is built
-// or sent, whatever is still on disk.
-func EligibleFrom(setting Setting, st *State) time.Time {
-	from := setting.ChangedAt
-	if st.SuppressedThrough.After(from) {
-		from = st.SuppressedThrough
+// Cutoff is the last UTC day that is never built or sent: the later of the
+// day the setting last changed and the latest day an opt-out was observed.
+// It is the only cutoff; whatever is still on disk, no day up to it goes
+// out.
+func Cutoff(setting Setting, st *State) string {
+	cutoff := setting.ChangedAt.UTC().Format(time.DateOnly)
+	if st.VetoDay > cutoff {
+		cutoff = st.VetoDay
 	}
-	return NextFullDay(from)
+	return cutoff
 }
 
-// Sendable reports whether the pending batch of day may still be sent: it
-// belongs to the current consent interval and the receiver has not
-// accepted it.
-func (st *State) Sendable(day string, eligible time.Time) bool {
+// Sendable reports whether the pending batch of day may be sent: it is
+// after the cutoff and the receiver has not accepted it.
+func (st *State) Sendable(day, cutoff string) bool {
 	d := st.Days[day]
-	return d != nil && !d.Accepted && day >= eligible.UTC().Format(time.DateOnly)
+	return d != nil && !d.Accepted && day > cutoff
 }
 
-// Suppress records an opt-out seen at t; the cutoff never moves back.
-func (st *State) Suppress(t time.Time) {
-	if t.After(st.SuppressedThrough) {
-		st.SuppressedThrough = t.UTC()
+// DropPending deletes every pending batch the receiver has not accepted.
+// Accepted bytes stay until they are moved to sent/ or expire.
+func DropPending(dir *os.Root, st *State) error {
+	days, err := ListDays(dir, "pending")
+	if err != nil {
+		return err
 	}
+	for _, day := range days {
+		if d := st.Days[day]; d != nil && d.Accepted {
+			continue
+		}
+		if err := dir.Remove("pending/" + day + ".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// Veto records an opt-out observed at t, rounded up to its whole UTC day,
+// and reports whether the record moved.
+func (st *State) Veto(t time.Time) bool {
+	if day := t.UTC().Format(time.DateOnly); day > st.VetoDay {
+		st.VetoDay = day
+		return true
+	}
+	return false
 }
 
 // NextAttempt is when the pending batch of day may be sent.
@@ -192,9 +215,9 @@ func ReadPending(stateRoot string) (*State, *Pending, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	eligible := EligibleFrom(setting, st)
+	cutoff := Cutoff(setting, st)
 	for _, day := range days {
-		if !st.Sendable(day, eligible) {
+		if !st.Sendable(day, cutoff) {
 			continue
 		}
 		body, err := ReadDayFile(dir, "pending", day)

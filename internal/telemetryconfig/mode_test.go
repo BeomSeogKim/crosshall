@@ -51,11 +51,27 @@ func TestTelemetryOffDiscardsPendingAndPreservesSent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A batch the receiver accepted, whose move to sent/ is owed, keeps
+	// its bytes.
+	if err := os.WriteFile(filepath.Join(pending, "2026-11-19.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.OpenRoot(filepath.Join(root, "telemetry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := WriteState(dir, &State{Days: map[string]*DayState{"2026-11-19": {Batch: true, Accepted: true}}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := SetMode(root, Off, "owner-command", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pending telemetry archive survived: %v", err)
+	if _, err := os.Stat(filepath.Join(pending, "2026-11-20.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending telemetry report survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(pending, "2026-11-19.json")); err != nil {
+		t.Fatalf("accepted report was removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(sent, "2026-11-20.json")); err != nil {
 		t.Fatal(err)

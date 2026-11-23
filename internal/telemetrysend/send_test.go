@@ -314,9 +314,15 @@ func TestNothingUnlessOn(t *testing.T) {
 			if n := len(h.rc.received()); n != 0 {
 				t.Fatalf("%d requests", n)
 			}
-			for _, name := range []string{"state.json", "pending", "sent"} {
+			for _, name := range []string{"pending", "sent"} {
 				if _, err := os.Lstat(filepath.Join(h.state, "telemetry", name)); !os.IsNotExist(err) {
 					t.Fatalf("telemetry/%s exists: %v", name, err)
+				}
+			}
+			// An off is recorded as an opt-out day; nothing else is.
+			if _, err := os.Lstat(filepath.Join(h.state, "telemetry", "state.json")); err == nil {
+				if st := h.readState(t); name != "off" || len(st.Days) != 0 || st.LastStatus != "" {
+					t.Fatalf("telemetry/state.json holds %+v", st)
 				}
 			}
 		})
@@ -525,8 +531,8 @@ func TestOptOutIsRecordedWithoutCurl(t *testing.T) {
 	h.cfg.Vetoed = true
 	h.tick(New(h.cfg, h.db), d0.Add(time.Hour))
 	st := h.readState(t)
-	if at := st.SuppressedThrough; at.Before(d0.Add(time.Hour)) || at.After(d0.Add(time.Hour+time.Minute)) {
-		t.Fatalf("suppressed through %v", st.SuppressedThrough)
+	if st.VetoDay != "2026-11-10" {
+		t.Fatalf("veto day %q", st.VetoDay)
 	}
 }
 

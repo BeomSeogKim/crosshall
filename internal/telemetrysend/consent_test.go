@@ -1,9 +1,12 @@
 package telemetrysend
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,8 +82,8 @@ func TestOptOutSeenDuringBuildIsRecorded(t *testing.T) {
 		}
 	}
 	h.tick(New(during, h.db), d0.Add(time.Minute))
-	if st := h.readState(t); st.SuppressedThrough.Before(d0.Add(time.Minute)) || len(h.files("pending")) != 0 {
-		t.Fatalf("suppressed through %v, pending %v", st.SuppressedThrough, h.files("pending"))
+	if st := h.readState(t); st.VetoDay != "2026-11-10" || len(h.files("pending")) != 0 {
+		t.Fatalf("veto day %q, pending %v", st.VetoDay, h.files("pending"))
 	}
 	os.Remove(h.cfg.PolicyPath)
 	h.run(d0.Add(time.Hour), d0.AddDate(0, 0, 3))
@@ -162,5 +165,99 @@ func TestAcceptedBatchSurvivesAgeing(t *testing.T) {
 	}
 	if len(h.rc.received()) != 1 {
 		t.Fatalf("%d requests", len(h.rc.received()))
+	}
+}
+
+// A veto first seen just after midnight, in the last check before the
+// request, is recorded on the new day: the round started the evening
+// before, and the new day is never sent.
+func TestVetoAfterMidnightIsRecordedOnItsDay(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -3))
+	h.hookActivity(d0.AddDate(0, 0, -2).Add(time.Hour))
+	h.hookActivity(d0.Add(time.Hour))
+	h.hookActivity(d0.AddDate(0, 0, 1).Add(time.Hour))
+	var mu sync.Mutex
+	clock := d0.Add(-400 * time.Millisecond)
+	cfg := h.cfg
+	cfg.clock = func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	// A batch for November 8 is due when the round starts.
+	h.tick(New(h.cfg, h.db), d0.AddDate(0, 0, -1).Add(time.Minute))
+	h.rc.respond = func(_ int, w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }
+	h.tick(New(h.cfg, h.db), d0.AddDate(0, 0, -1).Add(7*time.Hour))
+	h.rc.respond = nil
+	before := len(h.rc.received())
+	cfg.beforeSend = func() {
+		mu.Lock()
+		clock = d0.Add(200 * time.Millisecond)
+		mu.Unlock()
+		if err := os.WriteFile(h.cfg.PolicyPath, nil, 0644); err != nil {
+			t.Error(err)
+		}
+	}
+	h.tick(New(cfg, h.db), d0.Add(-400*time.Millisecond))
+	if st := h.readState(t); st.VetoDay != "2026-11-10" || len(h.rc.received()) != before {
+		t.Fatalf("veto day %q, %d requests", st.VetoDay, len(h.rc.received())-before)
+	}
+	os.Remove(h.cfg.PolicyPath)
+	h.run(d0.Add(time.Hour), d0.AddDate(0, 0, 3))
+	if after := h.sentDays(d0.AddDate(0, 0, 3))[before:]; !slices.Equal(after, []string{"2026-11-11"}) {
+		t.Fatalf("sent after the veto: %v, want only 2026-11-11", after)
+	}
+}
+
+// Accepted bytes whose move to sent/ is owed survive off, the
+// administrator's file and a veto, are never sent again, and expire 30 days
+// after their acceptance even while the move keeps failing.
+func TestAcceptedBytesOutliveOptOutsAndExpire(t *testing.T) {
+	for _, optOut := range []string{"off", "administrator", "veto"} {
+		t.Run(optOut, func(t *testing.T) {
+			h := newHall(t)
+			h.setMode("on", d0.AddDate(0, 0, -2))
+			h.hookActivity(d0.Add(-time.Hour))
+			blocker := filepath.Join(h.state, "telemetry", "sent")
+			if err := os.WriteFile(blocker, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			h.run(d0.Add(time.Minute), d0.Add(7*time.Hour))
+			if len(h.rc.received()) != 1 || len(h.files("pending")) != 1 {
+				t.Fatalf("%d requests, pending %v", len(h.rc.received()), h.files("pending"))
+			}
+			switch optOut {
+			case "off":
+				if _, _, err := telemetryconfig.SetMode(h.state, telemetryconfig.Off, "owner-command", ""); err != nil {
+					t.Fatal(err)
+				}
+			case "administrator":
+				if err := os.WriteFile(h.cfg.PolicyPath, nil, 0644); err != nil {
+					t.Fatal(err)
+				}
+			case "veto":
+				h.cfg.Vetoed = true
+			}
+			h.run(d0.Add(8*time.Hour), d0.AddDate(0, 0, 29))
+			if len(h.rc.received()) != 1 || len(h.files("pending")) != 1 {
+				t.Fatalf("after 29 days: %d requests, pending %v", len(h.rc.received()), h.files("pending"))
+			}
+			h.run(d0.AddDate(0, 0, 30).Add(8*time.Hour), d0.AddDate(0, 0, 31))
+			if len(h.rc.received()) != 1 || len(h.files("pending")) != 0 {
+				t.Fatalf("after 31 days: %d requests, pending %v", len(h.rc.received()), h.files("pending"))
+			}
+		})
+	}
+}
+
+// An opt-out is recorded even when the mode file cannot be read at that
+// moment.
+func TestOptOutIsRecordedWithAnUnreadableMode(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -3))
+	mode := filepath.Join(h.state, "telemetry", "mode")
+	if err := errors.Join(os.WriteFile(mode, []byte("garbage"), 0600), os.WriteFile(h.cfg.PolicyPath, nil, 0644)); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(New(h.cfg, h.db), d0.Add(time.Hour))
+	if st := h.readState(t); st.VetoDay != "2026-11-10" {
+		t.Fatalf("veto day %q", st.VetoDay)
 	}
 }

@@ -80,8 +80,8 @@ It can mean any of: the setting was off or unset, an opt-out was in effect, no d
 
 | Switch | Seen by | Effect |
 | --- | --- | --- |
-| `crosshall owner telemetry off` | the dispatcher, within a minute and before every request | off for this state directory; works with the dispatcher stopped and from unset |
-| `/etc/crosshall/telemetry-off`, any content | the dispatcher, every minute and before every request; the question | off for every hall on the machine while it exists; reports not yet sent are deleted, and days on which a dispatcher saw it are never reported. The switch for a managed machine |
+| `crosshall owner telemetry off` | the dispatcher, within a minute and before every request | off for this state directory; works with the dispatcher stopped and from unset. Reports not yet sent are deleted, and after `on` again no day up to the one it was turned on is reported |
+| `/etc/crosshall/telemetry-off`, any content | the dispatcher, before each of its decisions and during a request; the question | off for every hall on the machine while it exists; reports not yet sent are deleted, and days on which a dispatcher saw it are never reported. The switch for a managed machine |
 | `CROSSHALL_TELEMETRY=off` (or `0`, `false`, `no`, `disabled`), or `DO_NOT_TRACK` set to anything but empty, `0` or `false` | a dispatcher launched with it, for its whole life; setup and owner commands | for the dispatcher: no request, and no report about a day it ran on. For setup and owner commands: no question, and a setting of `on` becomes `off` |
 | the same variables | hooks, member commands, a dispatcher already running | nothing: a variable set in one terminal is not a machine-wide switch |
 

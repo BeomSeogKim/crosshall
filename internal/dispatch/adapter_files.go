@@ -78,6 +78,7 @@ func (s *server) publishAdapterStamp(dir *os.Root, generation string, notice, re
 }
 
 type adapterInvalidation struct {
+	principal                    int64
 	digest, identity, generation string
 	notice, reminder             bool
 	departed                     bool
@@ -85,7 +86,7 @@ type adapterInvalidation struct {
 
 func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidation, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT COALESCE(l.digest, ''), COALESCE(l.file_identity, ''),
+		SELECT d.principal_id, COALESCE(l.digest, ''), COALESCE(l.file_identity, ''),
 		       COALESCE(l.generation, ''), d.notice, d.reminder, NOT EXISTS (
 		           SELECT 1 FROM binding b WHERE b.principal_id = d.principal_id AND b.state = 'live')
 		FROM adapter_dirty d LEFT JOIN leaf l ON l.principal_id = d.principal_id
@@ -100,7 +101,7 @@ func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidati
 	var changes []adapterInvalidation
 	for rows.Next() {
 		var change adapterInvalidation
-		if err := rows.Scan(&change.digest, &change.identity, &change.generation, &change.notice, &change.reminder, &change.departed); err != nil {
+		if err := rows.Scan(&change.principal, &change.digest, &change.identity, &change.generation, &change.notice, &change.reminder, &change.departed); err != nil {
 			return nil, err
 		}
 		changes = append(changes, change)
@@ -137,7 +138,7 @@ func (s *server) applyAdapterStamps(ctx context.Context, tx store.Tx) error {
 			}
 			defer members.Close()
 		}
-		if err := s.invalidateAdapterLeaf(members, change); err != nil {
+		if err := s.invalidateAdapterLeaf(ctx, tx, members, change); err != nil {
 			return err
 		}
 	}
@@ -145,7 +146,7 @@ func (s *server) applyAdapterStamps(ctx context.Context, tx store.Tx) error {
 	return err
 }
 
-func (s *server) invalidateAdapterLeaf(members *os.Root, change adapterInvalidation) error {
+func (s *server) invalidateAdapterLeaf(ctx context.Context, tx store.Tx, members *os.Root, change adapterInvalidation) error {
 	dir, err := spool.OpenServerChild(members, change.digest[:16], false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // Restoring the leaf requires a new generation.
@@ -173,7 +174,46 @@ func (s *server) invalidateAdapterLeaf(members *os.Root, change adapterInvalidat
 			return errors.Join(err, removeErr)
 		}
 	}
+	return s.publishTurnEndAsk(ctx, tx, dir, change.generation, change.principal)
+}
+
+// publishTurnEndAsk records, before the caller commits, whether a Stop of
+// the member may have an ask to announce. A new ask marks the member dirty,
+// so a "0" is never older than the asks it covers; a read or a claim
+// lowers a "1" at the member's next hook. A record that cannot be written
+// is removed: the Stop then waits.
+func (s *server) publishTurnEndAsk(ctx context.Context, tx store.Tx, dir *os.Root, generation string, principal int64) error {
+	if dir == nil || generation == "" || s.ready.Instance == "" {
+		return nil
+	}
+	waiting, err := domain.TurnEndAskWaiting(ctx, tx, principal)
+	if err != nil {
+		return err
+	}
+	flag := "0"
+	if waiting {
+		flag = "1"
+	}
+	record := s.ready.Instance + " " + generation + " " + flag + "\n"
+	if current, err := readAdapterText(dir, hook.TurnEndAskFile); err == nil && current == record {
+		return nil
+	}
+	if err := publishAdapterText(dir, hook.TurnEndAskFile, record); err != nil {
+		if removeErr := dir.Remove(hook.TurnEndAskFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(err, removeErr)
+		}
+	}
 	return nil
+}
+
+func readAdapterText(dir *os.Root, name string) (string, error) {
+	file, err := spool.OpenServerFile(dir, name, os.O_RDONLY)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 256))
+	return string(raw), err
 }
 
 // addHookAck attaches the stamp the completed transaction evaluated.

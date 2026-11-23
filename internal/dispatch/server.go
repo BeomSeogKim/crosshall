@@ -734,6 +734,11 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				return err
 			}
 		}
+		if isHook && !arrival.Owner && resolved.Caller.Role == core.RoleMember && resolved.Caller.PrincipalID != nil {
+			if err := s.publishTurnEndAsk(ctx, tx, arrival.Dir, req.Generation, *resolved.Caller.PrincipalID); err != nil {
+				return err
+			}
+		}
 		if isHook && !oneWayHook {
 			return s.addHookAck(ctx, tx, arrival, req, &result)
 		}

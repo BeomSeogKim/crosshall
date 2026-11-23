@@ -156,6 +156,42 @@ func TestAdapterStampWriteFailureRemovesTheOldAcknowledgementTarget(t *testing.T
 	}
 }
 
+// #261: the record a Stop reads is written with the stamp, before commit,
+// and a record that cannot be replaced is removed so the Stop waits.
+func TestTurnEndAskRecordFollowsTheStampAndFailsTowardWaiting(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	leaf := adapterLeafFixture(t, s, root, true)
+	apply := func() {
+		t.Helper()
+		s.fixtureSQL(t, `INSERT INTO adapter_dirty (principal_id, notice, reminder) VALUES (1, 1, 0)`)
+		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+			return s.applyAdapterStamps(t.Context(), tx)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply()
+	if got, err := readAdapterText(leaf, hook.TurnEndAskFile); err != nil || got != "test-dispatcher test-gen 0\n" {
+		t.Fatalf("record %q (%v)", got, err)
+	}
+	if err := leaf.Remove(hook.TurnEndAskFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.WriteFile(hook.TurnEndAskFile, []byte("test-dispatcher test-gen 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.Mkdir(hook.TurnEndAskFile+".part", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := leaf.WriteFile(hook.TurnEndAskFile+".part/blocked", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	apply()
+	if _, err := leaf.Lstat(hook.TurnEndAskFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a record that could not be replaced remained: %v", err)
+	}
+}
+
 func TestHookAcknowledgementUsesItsOwnSequenceAndLiveInstance(t *testing.T) {
 	s, root := adapterFilesFixture(t)
 	leaf := adapterLeafFixture(t, s, root, true)

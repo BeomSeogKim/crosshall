@@ -320,3 +320,42 @@ func TestTurnEndNoticeFollowsTheOwnersSwitch(t *testing.T) {
 		}
 	}
 }
+
+// #261: a Stop's hook skips its wait only while TurnEndAskWaiting is false,
+// so it must hold for every ask a turn-end notice could still announce.
+func TestTurnEndAskWaitingFollowsWhatANoticeCouldAnnounce(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	pid := f.principalOf(reader)
+	waiting := func(want bool, when string) {
+		t.Helper()
+		if got, err := TurnEndAskWaiting(t.Context(), f.db, pid); err != nil || got != want {
+			t.Fatalf("%s: waiting = %t (%v), want %t", when, got, err, want)
+		}
+	}
+	waiting(false, "no message")
+	f.turnEndAsk(reader, "writer", "outgoing")
+	waiting(false, "the member's own ask")
+	f.noteTo(writer, "reader", 1)
+	waiting(false, "a note")
+	read := f.turnEndAsk(writer, "reader", "to read")
+	waiting(true, "an unread ask")
+	wantOK(t, f.run(reader, Read{IDs: []int64{read}}, "read"))
+	waiting(false, "the ask read")
+	cancelled := f.turnEndAsk(writer, "reader", "to cancel")
+	waiting(true, "an ask before its cancel")
+	wantOK(t, f.owner(Cancel{Channel: "checkout", ID: cancelled}, "cancel"))
+	waiting(false, "the ask cancelled")
+	announced := f.turnEndAsk(writer, "reader", "to announce")
+	waiting(true, "an ask before its notice")
+	if r := f.hook(reader, stop("launch", "turn-1", f.now.UnixMilli()+1)); r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", announced) {
+		t.Fatalf("turn-end result = %+v", r)
+	}
+	waiting(false, "the ask announced")
+	f.turnEndAsk(writer, "reader", "before leaving")
+	waiting(true, "an ask before the member left")
+	if _, err := f.db.Exec(`UPDATE binding SET state = 'departed' WHERE principal_id = ?`, pid); err != nil {
+		t.Fatal(err)
+	}
+	waiting(false, "the member left")
+}

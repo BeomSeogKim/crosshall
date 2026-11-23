@@ -9,6 +9,22 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
+// turnEndAsk is an ask a turn-end notice may still announce: unread, open
+// and not announced by any notice.
+const turnEndAsk = `m.kind = 'ask' AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND ` + noClosedObligation + `
+	AND NOT EXISTS (SELECT 1 FROM announcement i WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)`
+
+// TurnEndAskWaiting reports whether the member's live binding has an ask a
+// turn-end notice could announce. Without one a Stop has nothing to print,
+// so its hook need not wait for the dispatcher.
+func TurnEndAskWaiting(ctx context.Context, tx store.Tx, principal int64) (bool, error) {
+	var waiting bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient r JOIN message m ON m.id = r.message_id
+		JOIN binding b ON b.principal_id = r.principal_id AND b.channel_id = m.channel_id AND b.state = 'live'
+		WHERE r.principal_id = ? AND `+turnEndAsk+`)`, principal).Scan(&waiting)
+	return waiting, err
+}
+
 // claimTurnEndNotice runs inside the hook writer transaction, after the
 // caller's binding, policy epoch and latest launch have been checked.
 func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int64, cmd HookEvent, now time.Time) (string, error) {
@@ -35,10 +51,7 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 	// Match the unread open asks in inbox. The claim records an output
 	// attempt, leaving pickup and obligation state alone.
 	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND m.kind = 'ask'
-			AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM announcement i
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)
+		WHERE r.principal_id = ? AND m.channel_id = ? AND `+turnEndAsk+`
 		ORDER BY r.message_id LIMIT ?`, principal, channel, OfferCap)
 	if err != nil || len(ids) == 0 {
 		return "", err

@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Quiet turns end without waiting:** a Claude Code Stop waits for the dispatcher only while a request is left for its turn-end line; otherwise it records the turn end and returns. The dispatcher keeps that answer in a file of the member's own directory. On a loaded macOS machine this removes 13 to 15 ms at p50 from each quiet turn (#261).
 - **The owner hears of a lasting notice suspension:** a third suspension of a launch, which lasts until that launch ends, gets the round stop's desktop notification and a line on the next owner command, naming `crosshall owner publish resume <binding-id>`, while it still keeps the member's notices off. Every suspension, timed or lasting, now records a `publish_suspended` event. No schema change.
 - **Dispatcher startup:** a new dispatcher retries when a status check briefly holds the state lock for reading. Concurrent starts still share one dispatcher (#102).
 - **Owner start timeout:** `crosshall owner start` reports the last startup stage it observed and the state of the dispatcher lock and readiness marker when it times out (#102).

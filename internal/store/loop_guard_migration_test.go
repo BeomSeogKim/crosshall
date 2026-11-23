@@ -63,7 +63,7 @@ func TestLoopGuardCutoverFencesBothUpgradePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer upgraded.Close()
-			if after := adapterLedgerSnapshot(t, upgraded.db, 22); after != before {
+			if after := adapterLedgerSnapshot(t, upgraded.db, len(migrations)); after != before {
 				t.Fatal("cutover changed prior ledger rows")
 			}
 			var wrong int
@@ -81,5 +81,36 @@ func TestLoopGuardCutoverFencesBothUpgradePaths(t *testing.T) {
 				t.Fatalf("cutover overwrote the original message stamp: level=%d err=%v", level, err)
 			}
 		})
+	}
+}
+
+func TestOwnerAlertMigrationLeavesEarlierStopsUnannounced(t *testing.T) {
+	ctx, root := t.Context(), t.TempDir()
+	old, err := openWithMigrations(ctx, root, migrations[:22])
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAdapterLedger(t, old)
+	if _, err := old.db.ExecContext(ctx, `UPDATE exchange SET episode_open = 1, episode_count = 1;
+		INSERT INTO event (kind, subject, actor_id, detail, at_ms)
+		SELECT 'loop_guard_stopped', 'exchange:' || id, NULL, '{"round":9,"round_limit":8}', 1 FROM exchange`); err != nil {
+		t.Fatal(err)
+	}
+	before := adapterLedgerSnapshot(t, old.db, 22)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	if after := adapterLedgerSnapshot(t, upgraded.db, 23); after != before {
+		t.Fatal("migration 023 changed prior ledger rows")
+	}
+	var alerts, open int
+	if err := upgraded.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM owner_alert),
+		(SELECT COUNT(*) FROM exchange WHERE episode_open = 1)`).Scan(&alerts, &open); err != nil || alerts != 0 || open == 0 {
+		t.Fatalf("earlier stops: %d alerts, %d still open, err %v", alerts, open, err)
 	}
 }

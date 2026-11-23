@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -290,19 +291,19 @@ func TestGuardOwnerCanSeeAMemberStopAcrossDepartureAndReturn(t *testing.T) {
 	departed := first[0]
 	departed.BindingState = "departed"
 	afterLeave := readStops()
-	if len(afterLeave) != 1 || afterLeave[0] != departed {
+	if len(afterLeave) != 1 || !reflect.DeepEqual(afterLeave[0], departed) {
 		t.Errorf("departed member stop: %+v, want %+v", afterLeave, departed)
 	}
 	replacement := f.newSession("route")
 	wantOK(t, f.join(replacement, Join{Channel: "checkout", Alias: "form"}, "join"))
 	f.grantMember("form", 8)
-	if afterReuse := readStops(); len(afterReuse) != 1 || afterReuse[0] != departed {
+	if afterReuse := readStops(); len(afterReuse) != 1 || !reflect.DeepEqual(afterReuse[0], departed) {
 		t.Fatalf("alias reuse moved or resolved the original stop: %+v", afterReuse)
 	}
 	wantOK(t, f.join(a, Join{Channel: "checkout", Alias: "form-back"}, "return"))
 	returned := first[0]
 	returned.Alias = "form-back"
-	if afterReturn := readStops(); len(afterReturn) != 1 || afterReturn[0] != returned {
+	if afterReturn := readStops(); len(afterReturn) != 1 || !reflect.DeepEqual(afterReturn[0], returned) {
 		t.Fatalf("returning member stop: %+v, want %+v", afterReturn, returned)
 	}
 	f.grantMember("form-back", 8)

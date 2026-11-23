@@ -149,46 +149,139 @@ func TestGoneHostDepartsTheMemberAndKeepsItsWork(t *testing.T) {
 	}
 }
 
-func TestHostIsNotJudgedWhileALaunchIsOpen(t *testing.T) {
-	f := newHostFixture(t)
-	if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-		VALUES (?, 'pid-100-x', '{}', 1, 0)`, f.principal(f.worker)); err != nil {
-		t.Fatal(err)
-	}
-	f.gone[100] = true
-	f.sweep()
-	if state, _, _ := f.bindingState(f.worker); state != "live" {
-		t.Fatalf("a member with an open launch was judged by its host: %s", state)
+// Only an open launch the process sweep checks keeps a member from being
+// judged by its host; any other is ended with the member.
+func TestOnlyAProcessLaunchKeepsTheHostFromJudging(t *testing.T) {
+	for _, c := range []struct {
+		name, adapter, ref string
+		verified, enabled  bool
+		governs            bool
+	}{
+		{"Claude process launch", "claude", "pid-100-1", true, true, true},
+		{"Claude process launch, adapter switched off", "claude", "pid-100-1", true, false, true},
+		{"Codex session launch with its end hook enabled", "codex", SessionLaunch, false, true, false},
+		{"Antigravity session launch", "agy", SessionLaunch, false, true, false},
+		{"Claude launch without a launch ID", "claude", SessionLaunch, false, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newHostFixture(t)
+			f.policy(c.adapter, c.enabled, 1)
+			worker := f.principal(f.worker)
+			if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
+				VALUES (?, ?, json_object('adapter', ?), ?, 0)`, worker, c.ref, c.adapter, c.verified); err != nil {
+				t.Fatal(err)
+			}
+			f.gone[100] = true
+			f.sweep()
+			state, _, _ := f.bindingState(f.worker)
+			open := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND ended_hook_at_ms IS NULL`, worker)
+			if c.governs && (state != "live" || open != 1) {
+				t.Fatalf("binding %s, open launches %d; want live with its launch open", state, open)
+			}
+			if !c.governs && (state != "departed" || open != 0) {
+				t.Fatalf("binding %s, open launches %d; want departed with its launch ended", state, open)
+			}
+		})
 	}
 }
 
-func TestHostChangedAfterTheProbeDepartsNothing(t *testing.T) {
-	f := newHostFixture(t)
-	tx, err := f.db.Begin()
-	if err != nil {
-		t.Fatal(err)
+// A hook-joined member whose launch nothing ends (Antigravity's) is tracked
+// by its host. Its departure ends the launch: a start older than the
+// departure is a stale callback, a later one brings the member back.
+func TestHookJoinedMemberWithASessionLaunchDepartsByHost(t *testing.T) {
+	f, writer := adapterChannel(t)
+	h := &hostFixture{fixture: f, gone: map[int64]bool{}}
+	f.svc.ProcessGone = func(pid, identity int64) bool { return h.gone[pid] }
+	s := f.newSession("codex")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start(SessionLaunch, "startup", t0))
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 400, Start: 3}))
+	h.sweep()
+	if state, _, _ := h.bindingState(s); state != "live" {
+		t.Fatalf("a running host departed the member: %s", state)
 	}
-	probed, err := HostedMembers(t.Context(), tx, 0, 32)
-	if err != nil {
-		t.Fatal(err)
+	h.gone[400] = true
+	f.now = f.now.Add(5 * time.Second)
+	h.sweep()
+	if state, byHook, _ := h.bindingState(s); state != "departed" || !byHook {
+		t.Fatalf("binding %s, by hook %v; want departed by its process", state, byHook)
 	}
-	tx.Rollback()
-	worker := f.principal(f.worker)
-	probed = slices.DeleteFunc(probed, func(m HostedMember) bool { return m.PrincipalID != worker })
-	wantOK(t, f.command(f.worker, Who{}, "", &wire.Host{PID: 101, Start: 8}))
-	tx, err = f.db.Begin()
-	if err != nil {
-		t.Fatal(err)
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE ended_hook_at_ms = ?`, ms(f.now)); n != 1 {
+		t.Fatalf("launches ended at the departure: %d", n)
 	}
-	changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
-	if err != nil || changed {
-		t.Fatalf("changed %v, %v", changed, err)
+	f.hook(s, start(SessionLaunch, "resume", t0+1_000))
+	if state, _, _ := h.bindingState(s); state != "departed" {
+		t.Fatalf("a start older than the departure brought the member back: %s", state)
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	f.hook(s, start(SessionLaunch, "resume", ms(f.now)+1_000))
+	if state, _, alias := h.bindingState(s); state != "live" || alias != "codex1" {
+		t.Fatalf("binding %s as @%s; want live as @codex1 after a new start", state, alias)
 	}
-	if state, _, _ := f.bindingState(f.worker); state != "live" {
-		t.Fatalf("a stale probe departed the member: %s", state)
+	if m := f.memberRow(writer, "codex1"); m.Alias != "codex1" {
+		t.Fatalf("the member is not in the roster: %+v", m)
+	}
+}
+
+// What the probe saw is checked again when its result is applied: a change
+// in between departs nobody.
+func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		change func(f *hostFixture)
+	}{
+		{"the host changed", func(f *hostFixture) {
+			wantOK(t, f.command(f.worker, Who{}, "", &wire.Host{PID: 101, Start: 8}))
+		}},
+		{"a launch opened", func(f *hostFixture) {
+			f.exec1(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
+				VALUES (?, 'pid-100-1', '{"adapter":"claude"}', 1, 0)`, f.principal(f.worker))
+		}},
+		{"the binding's route changed", func(f *hostFixture) {
+			f.exec1(`UPDATE binding SET route_epoch = route_epoch + 1 WHERE principal_id = ?`, f.principal(f.worker))
+		}},
+		{"the binding is no longer live", func(f *hostFixture) {
+			f.exec1(`UPDATE binding SET state = 'departed', departed_by_owner = 1 WHERE principal_id = ?`, f.principal(f.worker))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newHostFixture(t)
+			tx, err := f.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			probed, err := HostedMembers(t.Context(), tx, 0, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx.Rollback()
+			worker := f.principal(f.worker)
+			probed = slices.DeleteFunc(probed, func(m HostedMember) bool { return m.PrincipalID != worker })
+			if len(probed) != 1 {
+				t.Fatalf("probed %+v", probed)
+			}
+			c.change(f)
+			tx, err = f.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
+			if err != nil || changed {
+				t.Fatalf("changed %v, %v", changed, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if n := f.count(`SELECT COUNT(*) FROM event WHERE kind = 'session_ended'`); n != 0 {
+				t.Fatalf("a stale probe ended %d sessions", n)
+			}
+		})
+	}
+}
+
+func (f *hostFixture) exec1(query string, args ...any) {
+	f.t.Helper()
+	if _, err := f.db.Exec(query, args...); err != nil {
+		f.t.Fatal(err)
 	}
 }
 
@@ -234,6 +327,17 @@ func TestReturnTakesAnotherAliasWhenTheOldOneIsTaken(t *testing.T) {
 	}
 }
 
+func TestNoReturnIntoAnArchivedChannel(t *testing.T) {
+	f := newHostFixture(t)
+	f.gone[100] = true
+	f.sweep()
+	f.exec1(`UPDATE channel SET state = 'archived'`)
+	wantCode(t, f.command(f.worker, Inbox{}, "", &wire.Host{PID: 300, Start: 11}), notEnrolled().Status, core.CodeNotEnrolled)
+	if state, _, _ := f.bindingState(f.worker); state != "departed" {
+		t.Fatalf("a member came back into an archived channel: %s", state)
+	}
+}
+
 func TestNoReturnAfterLeavingOrAnOwnerDeparture(t *testing.T) {
 	f := newHostFixture(t)
 	alive := &wire.Host{PID: 300, Start: 11}
@@ -250,5 +354,32 @@ func TestNoReturnAfterLeavingOrAnOwnerDeparture(t *testing.T) {
 	wantCode(t, f.command(f.lead, Inbox{}, "", alive), notEnrolled().Status, core.CodeNotEnrolled)
 	if state, _, _ := f.bindingState(f.lead); state != "departed" {
 		t.Fatalf("a member the owner departed came back: %s", state)
+	}
+}
+
+// A start that arrives after the old process died but before the sweep is
+// positive evidence that the session runs elsewhere: it forgets the host,
+// so the sweep departs nobody, and the next command names the new process.
+func TestAResumedStartBeforeTheSweepKeepsTheMember(t *testing.T) {
+	f, _ := adapterChannel(t)
+	h := &hostFixture{fixture: f, gone: map[int64]bool{}}
+	f.svc.ProcessGone = func(pid, identity int64) bool { return h.gone[pid] }
+	s := f.newSession("codex")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start(SessionLaunch, "startup", t0))
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 400, Start: 3}))
+	h.gone[400] = true
+	f.hook(s, start(SessionLaunch, "resume", t0+300))
+	f.now = f.now.Add(500 * time.Millisecond)
+	h.sweep()
+	if state, _, _ := h.bindingState(s); state != "live" {
+		t.Fatalf("a resumed session was departed with its old process: %s", state)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE ended_hook_at_ms IS NULL`); n != 1 {
+		t.Fatalf("open launches %d, want the resumed one", n)
+	}
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 401, Start: 4}))
+	if pid, _, _, ok := h.host(s); !ok || pid != 401 {
+		t.Fatalf("host %d (%v), want the resumed process", pid, ok)
 	}
 }

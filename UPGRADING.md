@@ -13,6 +13,8 @@ From v0.2.0-rc.1, the next release migrates the database from schema 18 to schem
 
 Your agents' sessions need no new start and the hooks need not be installed again: the installed hook entries are the same as those of v0.2.0-rc.1.
 
+The usage statistics setting starts unset after the upgrade and is stored in a local file. A terminal setup or the first eligible owner command can ask once a receiver is configured. This build leaves the receiver unconfigured. See [usage statistics](docs/operations.md#usage-statistics).
+
 What changes without a new question:
 
 - **A session the hall can start a turn in makes no check before ending a turn.** A session with an available notice route is told so once, at a prompt: `[crosshall] The hall brings new work to this session: no check is needed before ending a turn.` While that was the hall's last word, a turn that showed no `[crosshall] pending:` line ends without a `crosshall read`. When the hall stops reaching the session, the next prompt says `[crosshall] The hall cannot reach this session now: check before ending a turn (crosshall read).`, and the first line comes back when the route does. Each is one line in the session's context and costs no model request. The lines follow the notice route and have no switch of their own. A session whose effective notice setting is off is not told that the hall brings new work. See [adapters](docs/adapters.md).

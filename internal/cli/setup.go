@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"slices"
@@ -24,8 +25,9 @@ type SetupRequest struct {
 	// Offer is the installer's private form: ask only when eligible.
 	Offer bool
 	// Terminal reports that standard input and output are a terminal.
-	Terminal    bool
-	PathConsent func(bool) error
+	Terminal       bool
+	PathConsent    func(bool) error
+	OfferTelemetry func(*bufio.Reader) error
 	// Installed is told that at least one agent's hooks were installed.
 	Installed func()
 }
@@ -57,6 +59,11 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 	}
 	req.JSON, req.Input, req.Output, req.Prompt = opts.json, env.Stdin, stdout, stderr
 	req.Terminal = env.SetupTerminal != nil && env.SetupTerminal()
+	if action == "setup" && !req.DryRun {
+		if err := applyTelemetryEnvironment(env, stderr); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+		}
+	}
 	if req.Offer && (!req.Terminal || env.Setup == nil) {
 		return core.ExitOK // the installer's offer: silent when it cannot ask
 	}
@@ -68,6 +75,16 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 	}
 	if req.Input == nil {
 		req.Input = strings.NewReader("")
+	}
+	if req.Action == "setup" && req.Terminal && !req.DryRun && !req.Apply && !req.JSON && env.TelemetryEndpoint != "" {
+		source := "owner-prompt"
+		if req.Offer {
+			source = "installer"
+		}
+		req.OfferTelemetry = func(input *bufio.Reader) error {
+			_, err := offerTelemetry(env, opts, input, stdout, source)
+			return err
+		}
 	}
 	if err := env.Setup(req); err != nil {
 		var result interface{ Reported() bool }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -193,5 +194,75 @@ func TestSendReplayShowsTheCurrentWake(t *testing.T) {
 	wantOK(t, p.run(p.reader, Leave{}, "leave"))
 	if d := send("queued"); d.Wake != (Wake{}) || d.Next != "held until it rejoins" {
 		t.Fatalf("recipient left: %+v", d)
+	}
+}
+
+// waitingRecipient is the reader's row of request id in the writer's waiting.
+func (p *publishFixture) waitingRecipient(id int64) LedgerRecipient {
+	p.t.Helper()
+	for _, req := range decode[WaitingResult](p.t, p.run(p.writer, Waiting{}, "")).Requests {
+		if req.ID == id {
+			return req.Recipients[0]
+		}
+	}
+	p.t.Fatalf("#%d not in waiting", id)
+	return LedgerRecipient{}
+}
+
+// Once a request has a notice of its own, waiting shows that notice and no
+// wake words: a spent notice is not a queued one.
+func TestWaitingShowsNoWakeForARequestWithItsOwnNotice(t *testing.T) {
+	p := wakeFixture(t)
+	p.proveRoute()
+	id := p.turnEndAsk(p.writer, "reader", "work")
+	if r := p.waitingRecipient(id); r.Wake != (Wake{Wake: WakeNotice}) || r.Notice != nil {
+		t.Fatalf("before the notice: %+v", r)
+	}
+	attempt := p.reserve()
+	p.begin(attempt)
+	p.resolve(attempt, PublishSubmitted)
+	p.mutate(`UPDATE publish_attempt SET observed_at_ms = ?, observation = 'unknown' WHERE id = ?`, p.now.UnixMilli(), attempt)
+	p.update(func(ctx context.Context, tx store.Tx) error {
+		return suspendPublish(ctx, tx, attempt, "unknown", p.now)
+	})
+	if s := p.publishState(); s.State != "suspended" {
+		t.Fatalf("state %+v, want suspended", s)
+	}
+	if r := p.waitingRecipient(id); r.Wake != (Wake{}) || r.Notice == nil || r.Notice.Observation != "unknown" {
+		t.Fatalf("after an unknown notice: %+v", r)
+	}
+	if w := p.memberRow(p.writer, "reader").Wake; w.Wake != WakeNone || w.Why != WhySuspended {
+		t.Fatalf("who: %+v", w)
+	}
+}
+
+// A recipient that picked a request up, or asked for more time, has no wake
+// words in waiting.
+func TestWaitingShowsNoWakeOnceARequestIsPickedUp(t *testing.T) {
+	p := wakeFixture(t)
+	picked := p.turnEndAsk(p.writer, "reader", "picked")
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{picked}}, "read"))
+	if r := p.waitingRecipient(picked); r.Wake != (Wake{}) || r.PickedUpAtMS == nil {
+		t.Fatalf("picked up: %+v", r)
+	}
+	// A request for more time can come before the request is read.
+	unread := p.turnEndAsk(p.writer, "reader", "unread")
+	wantOK(t, p.reply(p.reader, Reply{To: unread, Outcome: OutcomeMoreTime, Body: "soon"}, "more"))
+	if r := p.waitingRecipient(unread); r.Wake != (Wake{}) || r.MoreTimeAtMS == nil || r.PickedUpAtMS != nil {
+		t.Fatalf("more time before reading: %+v", r)
+	}
+}
+
+// A notice wins over a running wait in who, as in a send.
+func TestWhoPrefersANoticeOverARunningWait(t *testing.T) {
+	p := wakeFixture(t)
+	p.svc.waits.saw(p.binding.ID, false, p.now)
+	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeWait}) {
+		t.Fatalf("a running wait on an unproven route: %+v", w)
+	}
+	p.proveRoute()
+	p.svc.waits.saw(p.binding.ID, false, p.now)
+	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeNotice}) {
+		t.Fatalf("a running wait on an available route: %+v", w)
 	}
 }

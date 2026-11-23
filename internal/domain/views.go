@@ -462,7 +462,8 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 			if bindingState == "departed" {
 				r.BindingState = bindingState
 			}
-			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil {
+			// A request with a notice of its own shows that notice instead.
+			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && r.Notice == nil {
 				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
 					return nil, err
 				}

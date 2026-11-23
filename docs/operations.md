@@ -81,13 +81,15 @@ If multiple vendor identity variables are present, crosshall refuses to guess. F
 
 A session that lost its identity, for example in a new conversation, may find its old alias still taken. If `crosshall join` refuses the alias as taken (`alias_taken` with `--json`), ask the owner to restore the membership before joining under another alias: once the new session's key has joined, it can no longer be restored. In the new session, `crosshall whoami --full` prints the key as `<vendor>:<key>` followed by its enrollment state; give the owner that first token. `crosshall owner who --all` shows the binding ID, and the owner runs `crosshall owner restore <binding-id> --new-key <vendor>:<key>`.
 
+An eligible hand-joined Claude Code session, an Antigravity CLI session (joined by hand or through its startup hook), or a command started by `crosshall run` can supply the process that hosts it. The hall uses this process as exit evidence. A Codex app server can outlive multiple conversations, so a Codex CLI session, hand-joined or hook-joined, is departed by the owner or leaves by itself.
+
 A successful send confirms that the message was stored. Members pick up new work with `crosshall read`. Delivery is pull unless the recipient has an available publish route, in which case the send result says `stored -> notice queued` ([publish notices](adapters.md#publish-notices)); either way crosshall never types into your input line.
 
 Members follow the member rules in [PROTOCOL.md](../PROTOCOL.md). `crosshall join` states them, and a member without an adapter follows them by hand.
 
 ## When a member goes quiet
 
-From the owner's terminal, `crosshall owner who --all` lists each binding's ID and state, how long ago its last command or other activity was observed, and any open requests it owes in that channel. For a member tracked by commands, 30 minutes of inactivity marks its row `stale`. A `live, stale` member can still receive messages. To mark the member departed, copy the ID and depart token from its live row.
+From the owner's terminal, `crosshall owner who --all` lists each binding's ID and state, how long ago its last command or other activity was observed, and any open requests it owes in that channel. It also reports whether exit is tracked by the member process or by adapter hooks. An eligible member with a confirmed running host appears as `live, alive`, even after long inactivity. A stopped process remains alive. Without current process evidence, old activity can mark a member `stale`. A `live, stale` member can still receive messages. To mark the member departed, copy the ID and depart token from its live row.
 
 ```sh
 crosshall owner who --all
@@ -96,4 +98,4 @@ crosshall owner depart <binding-id> --seen <token>
 
 If the token is stale, crosshall says `the binding changed since it was listed` and tells you to run `crosshall owner who --all` again. Review the refreshed row before using its new token.
 
-Departure frees the alias and leaves existing requests open. A sender checking `crosshall waiting` sees `recipient departed` on an open request. The returning session must explicitly run `crosshall join <channel>` with its original identity to regain its requests and replies. It reclaims its former alias if available and gets a generated alias if another member has taken it.
+Departure frees the alias and leaves existing requests open. A sender checking `crosshall waiting` sees `recipient departed` on an open request. After a process- or hook-detected exit, a command with the original identity and a live host can restore the membership. After a manual leave or owner departure, run `crosshall join <channel>` with the original identity to return. The returning member reclaims its former alias if available and gets a generated alias if another member has taken it. `crosshall whoami --full` shows the exit tracking for a live membership.

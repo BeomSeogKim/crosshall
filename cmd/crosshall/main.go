@@ -240,8 +240,8 @@ func serve(paths statePaths, pathErr error) int {
 					Host: req.Host}, nil
 			},
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
-				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, ProcessGone: proc.ProcessGone,
-				HasPromptLine: hook.HasPromptLine,
+				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, ProcessGone: proc.ProcessGone, ProcessAlive: proc.ProcessAlive,
+				HasPromptLine: hook.HasPromptLine, HasSessionEnd: hook.HasSessionEnd,
 				LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
 					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation)
 				}},

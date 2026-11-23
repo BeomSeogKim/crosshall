@@ -82,3 +82,11 @@ func ProcessGone(pid, identity int64) bool {
 	start, err := probeProcessStart(int(pid))
 	return errors.Is(err, errProcessGone) || start.Identity > 0 && start.Identity != identity
 }
+
+func ProcessAlive(pid, identity int64) bool {
+	if pid <= 0 || pid > math.MaxInt32 || identity <= 0 {
+		return false
+	}
+	start, err := probeProcessStart(int(pid))
+	return err == nil && start.Identity == identity
+}

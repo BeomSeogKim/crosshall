@@ -180,7 +180,19 @@ func (t *Transport) whoami(stdout io.Writer, asJSON, full bool) core.ExitCode {
 	if err != nil {
 		result = identityFailure(err)
 	} else {
-		reply, _ = t.spool.Member(context.Background(), id, wire.Request{Verb: "who"})
+		req := wire.Request{Verb: domain.VerbWho}
+		if t.host != nil {
+			req.Host = t.host(id, t.lookup)
+		}
+		if full {
+			req.Args = json.RawMessage(`{"exit_tracking":true}`)
+		}
+		reply, _ = t.spool.Member(context.Background(), id, req)
+		// An already-running older dispatcher accepts who without the diagnostic argument.
+		if full && reply.Result.Status == core.ExitUsage {
+			req.Args = nil
+			reply, _ = t.spool.Member(context.Background(), id, req)
+		}
 		result = reply.Result
 	}
 	status, rules := writeWhoami(stdout, id, result, asJSON, full)
@@ -204,10 +216,11 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 	}
 	var message struct {
 		Message, Hint string
-		Pending       []int64         `json:"pending"`
-		OwedCount     *int            `json:"owed_count"`
-		JoinHint      string          `json:"join_hint"`
-		Changes       json.RawMessage `json:"roster_changes"`
+		Pending       []int64             `json:"pending"`
+		OwedCount     *int                `json:"owed_count"`
+		JoinHint      string              `json:"join_hint"`
+		Changes       json.RawMessage     `json:"roster_changes"`
+		ExitTracking  domain.ExitTracking `json:"exit_tracking"`
 	}
 	_ = json.Unmarshal(result.Data, &message)
 	restoreHint := ""
@@ -243,6 +256,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 			}
 			data["code"], data["message"], data["hint"] = result.Code, message.Message, hint
 		}
+		if full && message.ExitTracking != "" {
+			data["exit_tracking"] = message.ExitTracking
+		}
 		if message.OwedCount != nil {
 			data["pending"], data["owed_count"] = message.Pending, *message.OwedCount
 		}
@@ -259,6 +275,9 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		_, err = fmt.Fprintf(stdout, "%s:%s %s (%s)\n", id.Vendor, displayKey, state, result.Code)
 	} else {
 		_, err = fmt.Fprintf(stdout, "%s:%s %s\n", id.Vendor, displayKey, state)
+	}
+	if err == nil && !asJSON && full && message.ExitTracking != "" {
+		_, err = fmt.Fprintln(stdout, "Session exit: "+message.ExitTracking.Description())
 	}
 	if err == nil && !asJSON && restoreHint != "" {
 		_, err = fmt.Fprintln(stdout, restoreHint)

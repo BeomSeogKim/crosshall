@@ -4,6 +4,7 @@
   "event_field": "hookEventName",
   "session_field": "conversationId",
   "session_env": "ANTIGRAVITY_CONVERSATION_ID",
+  "host_names": ["agy"],
   "install": {
     "file": "hooks.json",
     "encoding": "shell",

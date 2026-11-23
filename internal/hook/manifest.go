@@ -35,6 +35,7 @@ type manifest struct {
 	SessionField string      `json:"session_field"`
 	SessionEnv   string      `json:"session_env"`
 	LaunchEnv    string      `json:"launch_env"`
+	HostNames    []string    `json:"host_names"`
 	SocketEnv    string      `json:"socket_env"`
 	TurnField    string      `json:"turn_field"`
 	// PromptEntryRef adds the hook's entry time to a prompt's reference:

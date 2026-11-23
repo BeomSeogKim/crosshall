@@ -67,7 +67,8 @@ type WhoResult struct {
 	Members []Member `json:"members"`
 	// RosterSeq is the cursor the client acknowledges after rendering. It is
 	// zero (nothing to acknowledge) until the join hint was acknowledged.
-	RosterSeq uint64 `json:"roster_seq,omitempty"`
+	RosterSeq    uint64       `json:"roster_seq,omitempty"`
+	ExitTracking ExitTracking `json:"exit_tracking,omitempty"`
 }
 
 // Refusal is the data of any unsuccessful result.

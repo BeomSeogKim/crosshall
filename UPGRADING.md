@@ -2,18 +2,18 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.2.0-rc.2
 
-From v0.2.0-rc.1, the next release migrates the database from schema 18 to schema 21. Migration 19 records the reachability advice a member received. Migration 20 adds `member_host` to record the process hosting a member. Migration 21 adds the records of budget rounds; this release only records them and changes no behavior. The first dispatcher start of the new program copies the schema 18 database to `store-v18-*.sqlite3` beside `store.sqlite3`; v0.2.0-rc.1 does not start on schema 21, so keep that copy if you may go back.
+From v0.2.0-rc.1, this release migrates the database from schema 18 to schema 21. Migration 19 records the reachability advice a member received. Migration 20 adds `member_host` to record the process hosting a member. Migration 21 adds the records of budget rounds; this release only records them and changes no behavior. The first v0.2.0-rc.2 dispatcher start copies the schema 18 database to `store-v18-*.sqlite3` beside `store.sqlite3`; v0.2.0-rc.1 does not start on schema 21, so keep that copy if you may go back.
 
 1. Stop your agents' crosshall commands, including a `crosshall wait` running in the background.
 2. Run `crosshall owner stop`. A dispatcher that keeps running is still the old program: the database is not migrated and nothing below changes until it is stopped and started again.
-3. Install the new release as the [README](README.md#quick-start) shows, with the new release's tag in place of `v0.2.0-rc.1` in the clone command. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
+3. Install v0.2.0-rc.2 as the [README](README.md#quick-start) shows, with `v0.2.0-rc.2` as the tag in the clone command. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
 4. Run `crosshall owner start`.
 
 Your agents' sessions need no new start and the hooks need not be installed again: the installed hook entries are the same as those of v0.2.0-rc.1.
 
-The usage statistics setting starts unset after the upgrade and is stored in a local file. A terminal setup or the first eligible owner command can ask once a receiver is configured. Nothing is sent before it is answered, and then only reports about whole UTC days after the answer, by the dispatcher through `/usr/bin/curl`. This build leaves the receiver unconfigured. See [usage statistics](docs/operations.md#usage-statistics) and [what a report holds](docs/telemetry.md).
+The usage statistics setting starts unset after the upgrade and is stored in a local file. A terminal setup or the first eligible owner command can ask. Nothing is sent before it is answered, and then only reports about whole UTC days after the answer, by the dispatcher through `/usr/bin/curl`. Reports go to `https://telemetry.addylog.dev/v1/report`; a build not made from a release tag neither asks nor sends. `crosshall owner telemetry show` shows the report waiting to be sent, exactly as it will be sent. `crosshall owner telemetry off` and `/etc/crosshall/telemetry-off` stop it before the next request; `CROSSHALL_TELEMETRY=off` and `DO_NOT_TRACK` stop a dispatcher started with them. See [usage statistics](docs/operations.md#usage-statistics) and [what a report holds](docs/telemetry.md).
 
 What changes without a new question:
 

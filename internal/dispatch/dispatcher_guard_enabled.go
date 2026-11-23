@@ -18,7 +18,12 @@ const (
 	testDispatcherLeaseEnv = "CROSSHALL_TEST_DISPATCHER_LEASE_DIR"
 	testDispatcherGuardian = "__test_dispatch_guardian"
 	testDispatcherPoll     = 25 * time.Millisecond
+	testNotifyCommandEnv   = "CROSSHALL_TEST_NOTIFY_COMMAND"
 )
+
+// testNotifyCommand lets an end-to-end test stand in for the desktop
+// notification command, which only release builds run otherwise.
+func testNotifyCommand() (string, bool) { return os.LookupEnv(testNotifyCommandEnv) }
 
 func dispatcherSubcommand() string {
 	if _, ok := os.LookupEnv(testDispatcherLeaseEnv); ok {
@@ -28,6 +33,9 @@ func dispatcherSubcommand() string {
 }
 
 func appendTestDispatcherEnv(env []string) []string {
+	if command, ok := testNotifyCommand(); ok {
+		env = append(env, testNotifyCommandEnv+"="+command)
+	}
 	if dir, ok := os.LookupEnv(testDispatcherLeaseEnv); ok {
 		return append(env, testDispatcherLeaseEnv+"="+dir)
 	}

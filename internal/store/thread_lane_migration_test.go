@@ -7,7 +7,7 @@ import "testing"
 func TestThreadLaneMigrationKeepsEachOpenNoticeOnItsProcess(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
-	prior, err := openWithMigrations(ctx, root, migrations[:len(migrations)-1])
+	prior, err := openWithMigrations(ctx, root, migrations[:24])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestThreadLaneMigrationKeepsEachOpenNoticeOnItsProcess(t *testing.T) {
 	if err := prior.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := Open(ctx, root)
+	upgraded, err := openWithMigrations(ctx, root, migrations[:25])
 	if err != nil {
 		t.Fatal(err)
 	}

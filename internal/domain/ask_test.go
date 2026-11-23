@@ -41,9 +41,9 @@ func (f *fixture) pickUp(s session, id int64) {
 }
 
 // state is a fingerprint of everything an ask or a reply can write.
-func (f *fixture) state() [8]int {
-	var out [8]int
-	for i, table := range []string{"message", "recipient", "obligation", "receipt", "exchange", "budget_event", "op", "event"} {
+func (f *fixture) state() [9]int {
+	var out [9]int
+	for i, table := range []string{"message", "recipient", "obligation", "receipt", "exchange", "budget_event", "op", "event", "owner_alert"} {
 		out[i] = f.count(`SELECT COUNT(*) FROM ` + table)
 	}
 	return out

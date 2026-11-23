@@ -124,8 +124,9 @@ func (f *fixture) exec(caller core.Caller, req Request) core.Result {
 	return r
 }
 
+// owner runs cmd as the CLI does: it prints the owner line it receives.
 func (f *fixture) owner(cmd Command, key string) core.Result {
-	return f.exec(core.Caller{Role: core.RoleOwner}, Request{OpKey: key, Command: cmd})
+	return f.exec(core.Caller{Role: core.RoleOwner}, Request{OpKey: key, Command: cmd, OwnerAlerts: true})
 }
 
 func (f *fixture) join(s session, cmd Join, key string) core.Result {

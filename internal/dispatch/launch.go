@@ -148,7 +148,9 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 
 func (cfg LaunchConfig) dispatcherEnv() []string {
 	env := []string{"CROSSHALL_STATE_DIR=" + cfg.StateRoot}
-	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME", telemetryconfig.TelemetryEnv, telemetryconfig.DoNotTrackEnv}
+	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME", telemetryconfig.TelemetryEnv, telemetryconfig.DoNotTrackEnv, notifyEnv,
+		// notify-send reaches the desktop through the session bus.
+		"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
 	if allowsTestClock(cfg.Version) {
 		keys = append(keys, clockOffsetEnv)
 	}

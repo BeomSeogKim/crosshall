@@ -74,6 +74,8 @@ Owner commands (from a separate owner terminal):
   owner budget grant <channel>/x<id> [--rounds <n>]   Reset a thread (default 8)
   owner budget grant <channel>/@<alias> [--rounds <n>]
                                                     Reset a member's new threads (default 8)
+  owner budget grant <binding-id> [--rounds <n>]    Reset the new threads of a live or departed
+                                                    member, by the binding owner status shows
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
@@ -92,6 +94,8 @@ type Call struct {
 	Command domain.Command
 	// OpKey is empty for commands without a durable effect.
 	OpKey string
+	// OwnerAlerts asks for the owner line, which the caller then prints.
+	OwnerAlerts bool
 }
 
 // Transport delivers a call to the dispatcher and returns its result.
@@ -359,6 +363,8 @@ func send(ctx context.Context, env Env, opts options, call Call, stdout, stderr 
 	if env.Transport == nil {
 		return o.unavailableFor(env, call.Command.Verb())
 	}
+	// RenderAndAcknowledge prints the owner line of an owner command.
+	call.OwnerAlerts = call.Owner
 	result, err := env.Transport.Do(ctx, call)
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")

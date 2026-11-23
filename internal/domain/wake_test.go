@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,5 +265,119 @@ func TestWhoPrefersANoticeOverARunningWait(t *testing.T) {
 	p.svc.waits.saw(p.binding.ID, false, p.now)
 	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeNotice}) {
 		t.Fatalf("a running wait on an available route: %+v", w)
+	}
+}
+
+// A request to a member in a turn whose end the turn-end check will offer it
+// at says so, and the Stop of that turn does offer it.
+func TestARequestDuringACheckedTurnIsSeenWhenTheTurnEnds(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return adapter == "claude" }
+	send := func(key string) Delivery {
+		t.Helper()
+		return decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, key)).Recipients[0]
+	}
+	if d := send("not-covered"); d.Wake.Wake != WakeNone || d.SeenAt != SeenAtPrompt {
+		t.Fatalf("no turn-end evidence: %+v", d)
+	}
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	d := send("in-turn")
+	if d.Wake.Wake != WakeNone || d.SeenAt != SeenAtTurnEnd {
+		t.Fatalf("in a checked turn: %+v", d)
+	}
+	note := decode[NoteResult](t, f.run(writer, Note{To: []string{"reader"}, Body: "fyi"}, "note")).Recipients[0]
+	if note.SeenAt != SeenAtPrompt {
+		t.Fatalf("a note, which the check never offers: %+v", note)
+	}
+	exec(t, f, `UPDATE adapter_policy SET turn_end = 0 WHERE adapter = 'claude'`)
+	if d := send("switched-off"); d.SeenAt != SeenAtPrompt {
+		t.Fatalf("turn-end check off: %+v", d)
+	}
+	exec(t, f, `UPDATE adapter_policy SET turn_end = 1 WHERE adapter = 'claude'`)
+
+	got := f.hook(reader, stop("launch", "turn-1", f.now.UnixMilli()+1))
+	if !strings.Contains(got.TurnEndLine, "[crosshall] pending:") {
+		t.Fatalf("the turn's end offered nothing: %+v", got)
+	}
+	// The turn had its check; the next request waits for the next prompt.
+	if d := send("after-the-check"); d.SeenAt != SeenAtPrompt {
+		t.Fatalf("after the turn's check: %+v", d)
+	}
+	f.hook(reader, prompt("launch", "turn-2", f.now.UnixMilli()+2))
+	if d := send("next-turn"); d.SeenAt != SeenAtTurnEnd {
+		t.Fatalf("in the next checked turn: %+v", d)
+	}
+	// Nothing follows an answered permission dialog: the turn shows that
+	// stage until its Stop, which still offers the request.
+	f.hook(reader, event("launch", FactApprovalRequested, "turn-2:approval", "turn-2", f.now.UnixMilli()+3, false))
+	if d := send("after-approval"); d.SeenAt != SeenAtTurnEnd {
+		t.Fatalf("after a permission request in the turn: %+v", d)
+	}
+	if got := f.hook(reader, stop("launch", "turn-2", f.now.UnixMilli()+4)); !strings.Contains(got.TurnEndLine, "[crosshall] pending:") {
+		t.Fatalf("the turn's end after a permission request offered nothing: %+v", got)
+	}
+	f.hook(reader, prompt("launch", "turn-3", f.now.UnixMilli()+5))
+	// A prompt past its cap is not a running turn any more.
+	f.now = f.now.Add(31 * time.Minute)
+	if d := send("stale-prompt"); d.SeenAt != SeenAtPrompt {
+		t.Fatalf("a prompt 31 minutes old: %+v", d)
+	}
+}
+
+func exec(t *testing.T, f *fixture, statement string) {
+	t.Helper()
+	if _, err := f.db.Exec(statement); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A request a turn end or a prompt line already showed, and that the member
+// has not read, says when it was shown in waiting instead of where it will
+// be seen: each request is shown once.
+func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return adapter == "claude" }
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	row := func(id int64) LedgerRecipient {
+		t.Helper()
+		for _, req := range decode[WaitingResult](t, f.run(writer, Waiting{}, "")).Requests {
+			if req.ID == id {
+				return req.Recipients[0]
+			}
+		}
+		t.Fatalf("#%d not in waiting", id)
+		return LedgerRecipient{}
+	}
+	atTurnEnd := f.turnEndAsk(writer, "reader", "at-turn-end")
+	if r := row(atTurnEnd); r.SeenAt != SeenAtTurnEnd || r.ShownAtMS != nil {
+		t.Fatalf("before the turn ends: %+v", r)
+	}
+	stopAt := f.now.UnixMilli() + 1
+	if got := f.hook(reader, stop("launch", "turn-1", stopAt)); !strings.Contains(got.TurnEndLine, "pending:") {
+		t.Fatalf("the turn's end offered nothing: %+v", got)
+	}
+	if r := row(atTurnEnd); r.Wake.Wake != WakeNone || r.SeenAt != "" || r.ShownAtMS == nil || *r.ShownAtMS != f.now.UnixMilli() {
+		t.Fatalf("after the turn end showed it: %+v", r)
+	}
+
+	atPrompt := f.turnEndAsk(writer, "reader", "at-prompt")
+	if r := row(atPrompt); r.SeenAt != SeenAtPrompt || r.ShownAtMS != nil {
+		t.Fatalf("before the next prompt: %+v", r)
+	}
+	if got := f.hook(reader, prompt("launch", "turn-2", f.now.UnixMilli()+2)); !strings.Contains(got.PendingLine, "pending:") {
+		t.Fatalf("the prompt showed nothing: %+v", got)
+	}
+	if r := row(atPrompt); r.SeenAt != "" || r.ShownAtMS == nil {
+		t.Fatalf("after the prompt line showed it: %+v", r)
+	}
+	// A running wait still takes it; shown replaces only where it is seen.
+	f.svc.waits.saw(bindingIDOf(t, f, f.principalOf(reader)), false, f.now)
+	if r := row(atPrompt); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
+		t.Fatalf("a running wait after the prompt line: %+v", r)
+	}
+	f.svc.waits.forget(bindingIDOf(t, f, f.principalOf(reader)))
+	wantOK(t, f.run(reader, Read{IDs: []int64{atPrompt}}, "read"))
+	if r := row(atPrompt); r.Wake != (Wake{}) || r.ShownAtMS != nil {
+		t.Fatalf("after reading: %+v", r)
 	}
 }

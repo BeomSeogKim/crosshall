@@ -27,6 +27,10 @@ func RenderAndAcknowledge(transport any, result core.Result, asJSON bool, stdout
 	if out.err != nil || diag.err != nil {
 		return core.ExitError
 	}
+	// The owner's stop lines never change the command's exit status.
+	for _, line := range result.OwnerAlerts {
+		fmt.Fprintln(stderr, line)
+	}
 	if ack, ok := transport.(interface{ Acknowledge() error }); ok && status == core.ExitOK && result.Status == core.ExitOK {
 		if err := ack.Acknowledge(); err != nil {
 			fmt.Fprintf(stderr, "crosshall: could not acknowledge displayed roster: %v\n", err)

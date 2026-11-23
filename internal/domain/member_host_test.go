@@ -10,10 +10,6 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// sessionEnders are the adapters whose installed hooks report a session end,
-// as the dispatcher passes them.
-var sessionEnders = []string{"claude", "codex"}
-
 // hostFixture is a channel with two members that joined by hand and named
 // hosts: "worker" in process 100 and "lead" in process 200. gone holds the
 // processes the service is told have ended.
@@ -73,7 +69,7 @@ func (f *hostFixture) sweep() {
 		f.t.Fatal(err)
 	}
 	defer tx.Rollback()
-	members, err := HostedMembers(f.t.Context(), tx, 0, 32, sessionEnders)
+	members, err := HostedMembers(f.t.Context(), tx, 0, 32)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -83,7 +79,7 @@ func (f *hostFixture) sweep() {
 			gone = append(gone, m)
 		}
 	}
-	if _, err := DepartGoneHosts(f.t.Context(), tx, gone, sessionEnders, f.now); err != nil {
+	if _, err := DepartGoneHosts(f.t.Context(), tx, gone, f.now); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -153,20 +149,19 @@ func TestGoneHostDepartsTheMemberAndKeepsItsWork(t *testing.T) {
 	}
 }
 
-// Only an open launch that something will end keeps a member from being
+// Only an open launch the process sweep checks keeps a member from being
 // judged by its host; any other is ended with the member.
-func TestOnlyALaunchThatCanEndKeepsTheHostFromJudging(t *testing.T) {
+func TestOnlyAProcessLaunchKeepsTheHostFromJudging(t *testing.T) {
 	for _, c := range []struct {
 		name, adapter, ref string
 		verified, enabled  bool
 		governs            bool
 	}{
+		{"Claude process launch", "claude", "pid-100-1", true, true, true},
 		{"Claude process launch, adapter switched off", "claude", "pid-100-1", true, false, true},
-		{"verified launch of an enabled adapter with a session end", "codex", "thread-1", true, true, true},
-		{"the same launch after its adapter was switched off", "codex", "thread-1", true, false, false},
+		{"Codex session launch with its end hook enabled", "codex", SessionLaunch, false, true, false},
 		{"Antigravity session launch", "agy", SessionLaunch, false, true, false},
 		{"Claude launch without a launch ID", "claude", SessionLaunch, false, true, false},
-		{"verified launch of an adapter without a session end", "agy", "conv-1", true, true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newHostFixture(t)
@@ -254,7 +249,7 @@ func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			probed, err := HostedMembers(t.Context(), tx, 0, 32, sessionEnders)
+			probed, err := HostedMembers(t.Context(), tx, 0, 32)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -269,7 +264,7 @@ func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed, err := DepartGoneHosts(t.Context(), tx, probed, sessionEnders, f.now)
+			changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
 			if err != nil || changed {
 				t.Fatalf("changed %v, %v", changed, err)
 			}
@@ -359,5 +354,32 @@ func TestNoReturnAfterLeavingOrAnOwnerDeparture(t *testing.T) {
 	wantCode(t, f.command(f.lead, Inbox{}, "", alive), notEnrolled().Status, core.CodeNotEnrolled)
 	if state, _, _ := f.bindingState(f.lead); state != "departed" {
 		t.Fatalf("a member the owner departed came back: %s", state)
+	}
+}
+
+// A start that arrives after the old process died but before the sweep is
+// positive evidence that the session runs elsewhere: it forgets the host,
+// so the sweep departs nobody, and the next command names the new process.
+func TestAResumedStartBeforeTheSweepKeepsTheMember(t *testing.T) {
+	f, _ := adapterChannel(t)
+	h := &hostFixture{fixture: f, gone: map[int64]bool{}}
+	f.svc.ProcessGone = func(pid, identity int64) bool { return h.gone[pid] }
+	s := f.newSession("codex")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start(SessionLaunch, "startup", t0))
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 400, Start: 3}))
+	h.gone[400] = true
+	f.hook(s, start(SessionLaunch, "resume", t0+300))
+	f.now = f.now.Add(500 * time.Millisecond)
+	h.sweep()
+	if state, _, _ := h.bindingState(s); state != "live" {
+		t.Fatalf("a resumed session was departed with its old process: %s", state)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE ended_hook_at_ms IS NULL`); n != 1 {
+		t.Fatalf("open launches %d, want the resumed one", n)
+	}
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 401, Start: 4}))
+	if pid, _, _, ok := h.host(s); !ok || pid != 401 {
+		t.Fatalf("host %d (%v), want the resumed process", pid, ok)
 	}
 }

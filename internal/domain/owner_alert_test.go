@@ -427,7 +427,107 @@ func TestStopFromBeforeTheUpgradeIsListedButNotAnnounced(t *testing.T) {
 	if alerts := f.claimDesktop(true); len(alerts) != 0 {
 		t.Fatalf("an earlier stop was sent: %+v", alerts)
 	}
-	if stops := f.guardStops(); len(stops) != 1 {
-		t.Fatalf("an earlier stop is not listed: %+v", stops)
+	r := f.owner(OwnerStatus{Channel: "checkout"}, "")
+	if stops := decode[StatusResult](t, r).Channels[0].GuardStops; len(stops) != 1 || r.OwnerAlerts != nil {
+		t.Fatalf("an earlier stop: listed %+v, line %q", stops, r.OwnerAlerts)
+	}
+}
+
+func clockAt(atMS int64) string { return time.UnixMilli(atMS).Format("15:04") }
+
+func TestOwnerLineShowsAnOpenStopOnceAndNeverToAMember(t *testing.T) {
+	f, a, b, _ := channel3(t)
+	parent := f.threadStop(a, "tax")
+	if r := f.who(a); r.OwnerAlerts != nil {
+		t.Fatalf("a member command carried the owner line: %q", r.OwnerAlerts)
+	}
+	if r := f.ask(b, Ask{To: []string{"a11y"}, Body: "unrelated"}, ""); r.OwnerAlerts != nil {
+		t.Fatalf("a member request carried the owner line: %q", r.OwnerAlerts)
+	}
+	want := []string{
+		fmt.Sprintf("crosshall: round limit reached in #checkout on x%d at %s. @form's request to @tax was refused: it would be round 9 of 8.",
+			parent.Exchange, clockAt(ms(f.now))),
+		fmt.Sprintf("next: crosshall owner status --channel checkout shows the thread. crosshall owner budget grant checkout/x%d --rounds 8 lets it continue.",
+			parent.Exchange),
+	}
+	if got := f.owner(OwnerStatus{}, "").OwnerAlerts; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first owner command: %q, want %q", got, want)
+	}
+	if got := f.owner(OwnerStatus{}, "").OwnerAlerts; got != nil {
+		t.Fatalf("the stop was shown twice: %q", got)
+	}
+}
+
+func TestOwnerLineNamesALiveOrDepartedMember(t *testing.T) {
+	for _, departed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("departed=%t", departed), func(t *testing.T) {
+			f, a, _, _ := channel3(t)
+			f.grantMember("form", 0)
+			wantCode(t, f.ask(a, Ask{New: true, To: []string{"tax"}, Body: "stopped"}, ""), core.ExitRefused, core.CodeRoundLimit)
+			target := "checkout/@form"
+			if departed {
+				target = fmt.Sprint(f.count(`SELECT id FROM binding WHERE alias = 'form'`))
+				wantOK(t, f.run(a, Leave{}, "leave"))
+			}
+			want := []string{
+				fmt.Sprintf("crosshall: round limit reached in #checkout for @form's new threads at %s. Its request to @tax was refused: it would be round 1 of 0.",
+					clockAt(ms(f.now))),
+				"next: crosshall owner status --channel checkout shows it. crosshall owner budget grant " + target + " --rounds 8 lets @form open threads again.",
+			}
+			if got := f.owner(OwnerStatus{}, "").OwnerAlerts; !reflect.DeepEqual(got, want) {
+				t.Fatalf("owner line %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestOwnerLineSkipsClosedStopsAndCountsPastThree(t *testing.T) {
+	f, a, _, c := channel3(t)
+	granted := f.threadStop(a, "tax")
+	if r := f.owner(BudgetGrant{Channel: "checkout", ExchangeID: granted.Exchange, Rounds: rounds(8)}, "grant"); r.OwnerAlerts != nil {
+		t.Fatalf("the grant that closed the stop printed it: %q", r.OwnerAlerts)
+	}
+	drained := f.threadStop(c, "form")
+	executeGuardFixture(t, f, `UPDATE exchange SET episode_open = 0 WHERE id = ?`, drained.Exchange)
+	if r := f.owner(OwnerStatus{}, ""); r.OwnerAlerts != nil {
+		t.Fatalf("a drained stop was printed: %q", r.OwnerAlerts)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM owner_alert WHERE shown_at_ms IS NULL`); n != 0 {
+		t.Fatalf("%d closed stops are still waiting to be shown", n)
+	}
+	var first int64
+	for i := 0; i < 4; i++ {
+		sender, recipient := f.newSession("route"), f.newSession("route")
+		wantOK(t, f.join(sender, Join{Channel: "checkout", Alias: fmt.Sprintf("s%d", i)}, ""))
+		wantOK(t, f.join(recipient, Join{Channel: "checkout", Alias: fmt.Sprintf("r%d", i)}, ""))
+		stop := f.threadStop(sender, fmt.Sprintf("r%d", i))
+		if i == 0 {
+			first = stop.Exchange
+		}
+	}
+	got := f.owner(OwnerStatus{}, "").OwnerAlerts
+	if len(got) != 7 || !strings.Contains(got[0], fmt.Sprintf(" on x%d ", first)) || got[6] != "and 1 more: crosshall owner status" {
+		t.Fatalf("four stops: %q", got)
+	}
+	if again := f.owner(OwnerStatus{}, "").OwnerAlerts; again != nil {
+		t.Fatalf("the stops were printed again: %q", again)
+	}
+}
+
+func TestNoHookOutputMentionsAStop(t *testing.T) {
+	f, writer := adapterChannel(t)
+	s := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start("pid-1", "startup", t0))
+	f.grantMember("claude1", 0)
+	wantCode(t, f.ask(s, Ask{New: true, To: []string{"writer"}, Body: "stopped"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	wantOK(t, f.ask(writer, Ask{To: []string{"claude1"}, Body: "hello"}, ""))
+	for _, cmd := range []Command{prompt("pid-1", "t1", t0+1_000), stop("pid-1", "t1", t0+2_000)} {
+		r := f.hookResult(s, cmd)
+		wantOK(t, r)
+		if text := strings.ToLower(string(r.Data)); strings.Contains(text, "round limit") || strings.Contains(text, "stop is recorded") ||
+			strings.Contains(text, "budget grant") || r.OwnerAlerts != nil {
+			t.Fatalf("%s hook output mentions the stop: %s", cmd.Verb(), r.Data)
+		}
 	}
 }

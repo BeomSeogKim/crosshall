@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 const (
 	desktopAlertMaxAge = 10 * time.Minute
 	desktopAlertGap    = time.Minute
+	ownerLineStops     = 3
 )
 
 // DesktopAlert is a round stop the dispatcher shows as a notification.
@@ -119,6 +121,83 @@ func (s alertedStop) desktopAlert() DesktopAlert {
 	return DesktopAlert{Seq: s.seq, Title: "crosshall: round limit in #" + d.Channel,
 		Body: opening + fmt.Sprintf("@%s's request to %s would be round %d of %d. Run: crosshall owner status",
 			d.Sender, RecipientList(d.Recipients), d.Round, d.RoundLimit)}
+}
+
+// ownerAlertLines marks every stop not yet shown as shown, and returns
+// lines for the first three that are still open. The command's own effect
+// is already applied, so a grant never reports the stop it closed.
+func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string, error) {
+	stops, err := alertedStops(ctx, tx, `a.shown_at_ms IS NULL`)
+	if err != nil || len(stops) == 0 {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE owner_alert SET shown_at_ms = ? WHERE shown_at_ms IS NULL`, ms(now)); err != nil {
+		return nil, err
+	}
+	var lines []string
+	open := 0
+	for _, stop := range stops {
+		if !stop.open {
+			continue
+		}
+		if open++; open > ownerLineStops {
+			continue
+		}
+		more, err := stop.ownerLines(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, more...)
+	}
+	if open > ownerLineStops {
+		lines = append(lines, fmt.Sprintf("and %d more: crosshall owner status", open-ownerLineStops))
+	}
+	return lines, nil
+}
+
+func (s alertedStop) ownerLines(ctx context.Context, tx store.Tx) ([]string, error) {
+	d := s.detail
+	at := time.UnixMilli(s.atMS).Format("15:04")
+	refused := fmt.Sprintf("request to %s was refused: it would be round %d of %d.", RecipientList(d.Recipients), d.Round, d.RoundLimit)
+	if raw, ok := strings.CutPrefix(s.subject, "exchange:"); ok {
+		exchange, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return []string{
+			fmt.Sprintf("crosshall: round limit reached in #%s on x%d at %s. @%s's %s", d.Channel, exchange, at, d.Sender, refused),
+			fmt.Sprintf("next: crosshall owner status --channel %s shows the thread. %s lets it continue.",
+				d.Channel, StopGrant(d.Channel, GuardStop{ExchangeID: exchange, RoundLimit: d.RoundLimit})),
+		}, nil
+	}
+	member := GuardStop{RoundLimit: d.RoundLimit}
+	if err := tx.QueryRowContext(ctx, `SELECT b.id, b.alias, b.state FROM binding b JOIN channel c ON c.id = b.channel_id
+        WHERE b.principal_id = CAST(substr(?, 11) AS INTEGER) AND c.name = ?`, s.subject, d.Channel).
+		Scan(&member.BindingID, &member.Alias, &member.BindingState); err != nil {
+		return nil, err
+	}
+	return []string{
+		fmt.Sprintf("crosshall: round limit reached in #%s for @%s's new threads at %s. Its %s", d.Channel, d.Sender, at, refused),
+		fmt.Sprintf("next: crosshall owner status --channel %s shows it. %s lets @%s open threads again.",
+			d.Channel, StopGrant(d.Channel, member), member.Alias),
+	}, nil
+}
+
+// StopGrant is the command that lets a stopped thread or member continue:
+// a member that is not live is named by its binding. A stop under a zero
+// limit suggests the default, since a zero grant would not lift it.
+func StopGrant(channel string, stop GuardStop) string {
+	rounds := stop.RoundLimit
+	if rounds == 0 {
+		rounds = guardDefaultRounds
+	}
+	target := fmt.Sprintf("%s/x%d", channel, stop.ExchangeID)
+	if stop.ExchangeID == 0 && stop.BindingState == "live" {
+		target = channel + "/@" + stop.Alias
+	} else if stop.ExchangeID == 0 {
+		target = strconv.FormatInt(stop.BindingID, 10)
+	}
+	return fmt.Sprintf("crosshall owner budget grant %s --rounds %d", target, rounds)
 }
 
 // RecipientList names up to three aliases and counts the rest.

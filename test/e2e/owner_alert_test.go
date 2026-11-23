@@ -61,3 +61,25 @@ func TestRefusedRequestDoesNotWaitForTheNotification(t *testing.T) {
 		t.Fatalf("the notification command already ended: %v", err)
 	}
 }
+
+// The owner's next command prints an open stop once, on stderr, leaving
+// its JSON output and exit status as they were.
+func TestOwnerCommandPrintsAStopOnceOnStderr(t *testing.T) {
+	_, owner, members := setup(t)
+	form := members[0]
+	owner.must("owner", "budget", "grant", "checkout/@form", "--rounds", "0")
+	if o := form.run("ask", "@tax", "--new", "stopped"); o.exit != 3 || o.obj["code"] != "round_limit" ||
+		strings.Contains(o.stderr, "budget grant") {
+		t.Fatalf("refusal: exit %d stderr %q %v", o.exit, o.stderr, o.obj)
+	}
+	first := owner.must("owner", "status", "--channel", "checkout")
+	lines := strings.Split(strings.TrimSuffix(first.stderr, "\n"), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "crosshall: round limit reached in #checkout for @form's new threads at ") ||
+		lines[1] != "next: crosshall owner status --channel checkout shows it. crosshall owner budget grant checkout/@form --rounds 8 lets @form open threads again." ||
+		first.obj["ok"] != true {
+		t.Fatalf("first owner command: stderr %q stdout %q", first.stderr, first.stdout)
+	}
+	if second := owner.must("owner", "status", "--channel", "checkout"); second.stderr != "" {
+		t.Fatalf("the stop was printed again: %q", second.stderr)
+	}
+}

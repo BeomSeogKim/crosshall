@@ -124,14 +124,20 @@ func TestStatusPrintsCurrentRoundsAndStops(t *testing.T) {
 	thread.ParentRequestID = 17
 	status.Channels[0].Exchanges = []domain.ExchangeRound{thread}
 	status.Channels[0].GuardStops = []domain.GuardStop{
-		{ExchangeID: 12, AtMS: base.UnixMilli(), RoundLimit: 8},
-		{Alias: "tax", AtMS: base.UnixMilli(), RoundLimit: 8},
-		{Alias: "tax", BindingID: 4, BindingState: "departed", AtMS: base.UnixMilli(), RoundLimit: 0},
+		{ExchangeID: 12, AtMS: base.UnixMilli(), Round: 9, RoundLimit: 8, Sender: "tax", Recipients: []string{"form"},
+			Requests: []domain.StopRequest{{ID: 17, Sender: "form", Recipients: []string{"tax"}}}, RequestCount: 1},
+		{Alias: "tax", BindingID: 3, BindingState: "live", AtMS: base.UnixMilli(), Round: 9, RoundLimit: 8, Sender: "tax", Recipients: []string{"form"}},
+		{Alias: "tax", BindingID: 4, BindingState: "departed", AtMS: base.UnixMilli(), Round: 1, RoundLimit: 0, Sender: "tax", Recipients: []string{"form"}},
 	}
 	transport.result = okResult(t, status)
 	out, stderr, code = run(t, Env{Transport: transport}, "owner", "status")
-	want := "#checkout\n  x12: round 3 of 8, handoff for #17\n  x12 stopped at 14:31 (round limit 8)\n  @tax stopped at 14:31 (new threads, round limit 8)\n" +
-		"  @tax (departed, binding 4) stopped at 14:31 (new threads, round limit 0)\n"
+	want := "#checkout\n  x12: round 3 of 8, handoff for #17\n  x12 stopped at 14:31 (round limit 8)\n" +
+		"    refused: @tax to @form, round 9\n    since its last reset: #17 @form to @tax\n" +
+		"    to let it continue: crosshall owner budget grant checkout/x12 --rounds 8\n" +
+		"  @tax stopped at 14:31 (new threads, round limit 8)\n    refused: @tax to @form, round 9\n" +
+		"    to let it continue: crosshall owner budget grant checkout/@tax --rounds 8\n" +
+		"  @tax (departed, binding 4) stopped at 14:31 (new threads, round limit 0)\n    refused: @tax to @form, round 1\n" +
+		"    to let it continue: crosshall owner budget grant 4 --rounds 8\n"
 	if code != core.ExitOK || stderr != "" || out != want {
 		t.Fatalf("owner status exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}

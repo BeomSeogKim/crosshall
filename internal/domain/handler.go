@@ -70,6 +70,11 @@ func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, r
 	if result, err = withMemberOutput(ctx, tx, caller, req, result, now); err != nil {
 		return core.Result{}, err
 	}
+	if caller.Role == core.RoleOwner {
+		if result.OwnerAlerts, err = ownerAlertLines(ctx, tx, now); err != nil {
+			return core.Result{}, err
+		}
+	}
 	return withReturnedAlias(result, returnedAs)
 }
 

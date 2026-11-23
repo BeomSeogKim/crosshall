@@ -74,6 +74,8 @@ Owner commands (from a separate owner terminal):
   owner budget grant <channel>/x<id> [--rounds <n>]   Reset a thread (default 8)
   owner budget grant <channel>/@<alias> [--rounds <n>]
                                                     Reset a member's new threads (default 8)
+  owner budget grant <binding-id> [--rounds <n>]    Reset the new threads of a live or departed
+                                                    member, by the binding owner status shows
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy

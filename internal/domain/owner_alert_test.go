@@ -531,3 +531,30 @@ func TestNoHookOutputMentionsAStop(t *testing.T) {
 		}
 	}
 }
+
+// The dispatcher looks for pending stops in a read transaction each second
+// and opens a write transaction only when one is there.
+func TestPendingDesktopAlertsIsReadOnly(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	pending := func() bool {
+		t.Helper()
+		var got bool
+		f.inTx(func(tx store.Tx) error {
+			var err error
+			got, err = PendingDesktopAlerts(context.Background(), tx)
+			return err
+		})
+		return got
+	}
+	if pending() {
+		t.Fatal("pending without a stop")
+	}
+	f.threadStop(a, "tax")
+	if !pending() {
+		t.Fatal("a new stop is not pending")
+	}
+	f.claimDesktop(true)
+	if pending() {
+		t.Fatal("a claimed stop is still pending")
+	}
+}

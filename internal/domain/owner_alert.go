@@ -96,6 +96,15 @@ func ClaimDesktopAlerts(ctx context.Context, tx store.Tx, now time.Time, availab
 }
 
 // FinishDesktopAlert records whether the command exited 0.
+// PendingDesktopAlerts reports whether a stop waits for its desktop
+// decision. It only reads, so the dispatcher can ask every second without
+// taking the write lock.
+func PendingDesktopAlerts(ctx context.Context, tx store.Tx) (bool, error) {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM owner_alert WHERE desktop_state = 'pending')`).Scan(&pending)
+	return pending, err
+}
+
 func FinishDesktopAlert(ctx context.Context, tx store.Tx, seq int64, sent bool) error {
 	state := "failed"
 	if sent {

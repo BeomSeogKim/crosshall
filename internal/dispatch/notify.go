@@ -73,12 +73,20 @@ func (n *notifier) tick(ctx context.Context, now time.Time) {
 	if !n.running.CompareAndSwap(false, true) {
 		return
 	}
-	var alerts []domain.DesktopAlert
-	err := n.db.Update(ctx, func(tx store.Tx) error {
+	var pending bool
+	err := n.db.View(ctx, func(tx store.Tx) error {
 		var err error
-		alerts, err = domain.ClaimDesktopAlerts(ctx, tx, now, n.path != "")
+		pending, err = domain.PendingDesktopAlerts(ctx, tx)
 		return err
 	})
+	var alerts []domain.DesktopAlert
+	if err == nil && pending {
+		err = n.db.Update(ctx, func(tx store.Tx) error {
+			var err error
+			alerts, err = domain.ClaimDesktopAlerts(ctx, tx, now, n.path != "")
+			return err
+		})
+	}
 	if err != nil || len(alerts) == 0 {
 		n.running.Store(false)
 		if err != nil && ctx.Err() == nil {

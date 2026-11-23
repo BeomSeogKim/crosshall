@@ -178,7 +178,7 @@ func exec(t *testing.T, s *store.Store, statements ...string) {
 func fixtureInput() Input {
 	return Input{
 		Day: day.Add(13 * time.Hour), Batch: "9f1c2e4a7b3d5f60812a4c6e8b0d2f41", Version: "v0.2.0-rc.2",
-		Now: day.Add(24*time.Hour + time.Minute), Hooks: []byte(fixtureHooks), HooksRead: true,
+		Now: day.Add(24*time.Hour + time.Minute), Hooks: CountHooks([]byte(fixtureHooks)), HooksRead: true,
 		WeekActiveDays: 3,
 	}
 }
@@ -369,8 +369,8 @@ func TestHookBucketsFollowTheHookDeadline(t *testing.T) {
 func TestNoMarkerReachesTheReport(t *testing.T) {
 	s := openFixture(t)
 	in := fixtureInput()
-	in.Hooks = []byte(fixtureHooks + "\n" + marker + " Stop clean 1\nclaude " + marker + " clean 1\n" +
-		"claude Stop " + marker + " 1\nclaude Stop clean " + marker + "\n")
+	in.Hooks = CountHooks([]byte(fixtureHooks + "\n" + marker + " Stop clean 1\nclaude " + marker + " clean 1\n" +
+		"claude Stop " + marker + " 1\nclaude Stop clean " + marker + "\n"))
 	check := func(what string, raw []byte) {
 		t.Helper()
 		if bytes.Contains(bytes.ToLower(raw), []byte(marker)) {

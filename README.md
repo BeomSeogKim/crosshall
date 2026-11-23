@@ -2,9 +2,9 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.2.0-rc.1, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.2, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session; since v0.2.0-rc.1, usage statistics you are asked about once and members that leave when their agent process exits. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.2.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
@@ -21,7 +21,7 @@ What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 
 What it does not do:
 - It starts a turn in an idle session only where a notice route is available: today, interactive Claude Code sessions on macOS arm64. A Claude Code or Codex CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Any other session, Antigravity CLI included, sees new work when it runs `crosshall read`, or when a `crosshall wait` it started returns.
-- It is not a network service. It runs on one machine for one user, and crosshall itself makes no network calls.
+- It is not a network service. It runs on one machine for one user. The only network call crosshall can make is an optional daily usage report, sent only after you said yes (see [usage statistics](docs/telemetry.md)); messages never leave the machine.
 - It cannot make an agent obey. The member rules are text the agent reads and follows.
 
 **Trust model.** crosshall runs under your user account and treats other processes of that account as cooperative ([SECURITY.md](SECURITY.md)). It records who sent each message, but a peer's message is still untrusted text that ends up in a model's context. Rule 5 tells an agent to act on it only within the work you or your designated lead assigned; nothing enforces that rule.
@@ -40,7 +40,7 @@ For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.2.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -63,18 +63,18 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.2.0-rc.1 at /home/you/.local/bin/crosshall
+Installed crosshall v0.2.0-rc.2 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
 On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
 
-When a usage statistics receiver is configured, the installer asks separately in your own terminal. The question also appears at your first eligible owner command if you skipped it. This build leaves the receiver unconfigured.
+The installer asks about usage statistics separately in your own terminal. The question also appears at your first eligible owner command if you skipped it. A build not made from a release tag has no receiver and does not ask.
 
 <!-- readme-check: telemetry-question -->
 ```text
 Usage statistics help Adrian Studio decide what to fix and build in crosshall. A daily report can include rounded counts of messages, notices and hook timings, plus the crosshall release, platform, agent release families and a random token for that day. Reports exclude message text, channel names, aliases, paths, host names and user names.
-The maintainer's server keeps reports for 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. Preview with crosshall owner telemetry show and disable with crosshall owner telemetry off.
+The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
 Send usage statistics? [Y/n]
 ```
 
@@ -296,7 +296,7 @@ A dispatcher, a background process of your own user, keeps the hall in an SQLite
 - **A rendezvous directory** under `/tmp`, named `crosshall-<uid>-<hash>`, which holds the members' spool directories.
 - **A background dispatcher** while crosshall is in use.
 - **Adapter hooks,** only if you install them: entries in Claude Code's `settings.json` or Codex's `hooks.json`.
-- **No network calls and no telemetry** from crosshall itself; only the installer downloads the release.
+- **One optional network call:** a daily usage report of rounded counts, sent by the dispatcher only after you said yes. No message, name, path or ID is in it; `crosshall owner telemetry show` shows the report waiting to be sent, exactly as it will be sent, and `crosshall owner telemetry off` stops it; [usage statistics](docs/telemetry.md) lists every field. Reports go to `https://telemetry.addylog.dev/v1/report`; a build not made from a release tag has no receiver, so it neither asks nor sends. The installer also downloads the release.
 
 To remove crosshall, first run `crosshall uninstall` if you installed adapter hooks (it removes hooks only), and stop your agents' crosshall commands. Then paste this block into a plain terminal as it stands. It reads both directories from `crosshall owner doctor` once, and removes them and the binary only if the state directory is the default one and the dispatcher stopped; otherwise it says why and removes nothing.
 

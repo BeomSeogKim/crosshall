@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,5 +197,92 @@ func temporaryPolicyPath(t *testing.T, fixture string) func(string) string {
 			t.Fatalf("default telemetry policy path = %q", defaultPath)
 		}
 		return fixture
+	}
+}
+
+func TestTelemetryStatusSaysWhenCurlIsMissing(t *testing.T) {
+	t.Setenv(telemetryconfig.TelemetryEnv, "")
+	t.Setenv(telemetryconfig.DoNotTrackEnv, "")
+	for curl, missing := range map[string]bool{"/nonexistent/curl": true, os.Args[0]: false} {
+		env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"), TelemetryCurl: curl,
+			ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off"))}
+		stdout, stderr, code := run(t, env, "owner", "telemetry", "on")
+		said := strings.Contains(stdout, "Nothing is sent: reports are sent with "+curl+", which is not installed.")
+		if code != core.ExitOK || said != missing {
+			t.Fatalf("curl %s: code=%d, stdout=%s, stderr=%s", curl, code, stdout, stderr)
+		}
+	}
+}
+
+// show prints the batch the dispatcher sends next byte for byte, and the
+// status names the last answer and the next attempt; with only an accepted
+// batch left, nothing is waiting.
+func TestTelemetryShowAndRetryStatus(t *testing.T) {
+	t.Setenv(telemetryconfig.TelemetryEnv, "")
+	t.Setenv(telemetryconfig.DoNotTrackEnv, "")
+	env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"),
+		ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off"))}
+	if _, _, code := run(t, env, "owner", "telemetry", "on"); code != core.ExitOK {
+		t.Fatal(code)
+	}
+	if _, stderr, code := run(t, env, "owner", "telemetry", "show"); code != core.ExitUnavailable ||
+		!strings.Contains(stderr, "no usage report is waiting to be sent") {
+		t.Fatalf("show with nothing pending: code=%d, stderr=%s", code, stderr)
+	}
+	// On ten days ago; a batch from before the cutoff, one older than seven
+	// days and one the receiver accepted (its move to sent/ still owed) are
+	// skipped, as the dispatcher skips them.
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	ago := func(days int) string { return today.AddDate(0, 0, -days).Format(time.DateOnly) }
+	mode := filepath.Join(env.TelemetryStateRoot, "telemetry", "mode")
+	if err := os.WriteFile(mode, []byte("on "+today.AddDate(0, 0, -10).Format(time.RFC3339)+" owner-command\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pendingDay := ago(1)
+	body := `{"v":1,"registry":1,"batch":"00000000000000000000000000000000","day":"` + pendingDay + `"}`
+	next := today.Add(27 * time.Hour)
+	dir, err := os.OpenRoot(filepath.Join(env.TelemetryStateRoot, "telemetry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	st := &telemetryconfig.State{LastStatus: "429", Days: map[string]*telemetryconfig.DayState{
+		ago(12): {Batch: true}, ago(8): {Batch: true}, ago(2): {Batch: true, Accepted: true},
+		pendingDay: {Batch: true, NotBefore: next, Attempts: 1}}}
+	for day := range st.Days {
+		if err := telemetryconfig.WriteDayFile(dir, "pending", day, []byte(strings.ReplaceAll(body, pendingDay, day))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := telemetryconfig.WriteState(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, _, code := run(t, env, "owner", "telemetry", "show"); code != core.ExitOK || stdout != body {
+		t.Fatalf("show: code=%d, stdout=%q", code, stdout)
+	}
+	stdout, _, code := run(t, env, "owner", "telemetry")
+	if code != core.ExitOK || !strings.Contains(stdout, "Last answer from the receiver: 429") ||
+		!strings.Contains(stdout, "Waiting to be sent: the report for "+pendingDay+", not before "+next.Format(time.RFC3339)+" (crosshall owner telemetry show shows it)") {
+		t.Fatalf("status: code=%d, stdout=%s", code, stdout)
+	}
+	stdout, _, code = run(t, env, "--json", "owner", "telemetry")
+	var status struct {
+		LastAnswer  string    `json:"last_answer"`
+		PendingDay  string    `json:"pending_day"`
+		NextAttempt time.Time `json:"next_attempt"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); code != core.ExitOK || err != nil ||
+		status.LastAnswer != "429" || status.PendingDay != pendingDay || !status.NextAttempt.Equal(next) {
+		t.Fatalf("status json: code=%d, %s, %v", code, stdout, err)
+	}
+	st.Days[pendingDay].Accepted = true
+	if err := telemetryconfig.WriteState(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := run(t, env, "owner", "telemetry", "show"); code != core.ExitUnavailable {
+		t.Fatalf("show with only accepted batches: code=%d, stdout=%q, stderr=%s", code, stdout, stderr)
+	}
+	if stdout, _, _ := run(t, env, "owner", "telemetry"); strings.Contains(stdout, "Waiting to be sent") {
+		t.Fatalf("status with only accepted batches: %s", stdout)
 	}
 }

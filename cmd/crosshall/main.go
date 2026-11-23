@@ -25,6 +25,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/setup"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/telemetry"
 	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -109,7 +110,8 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		}
 		env.StartReady = paths.launch(true).StartReady
 		env.Stop = paths.launch(true).Stop
-		env.TelemetryEndpoint = telemetryconfig.Endpoint
+		env.TelemetryEndpoint = telemetry.Receiver(version)
+		env.TelemetryCurl = telemetryconfig.CurlPath
 		env.TelemetryStateRoot = paths.state
 		env.Setup = func(req cli.SetupRequest) error {
 			executable, err := os.Executable()

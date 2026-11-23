@@ -34,10 +34,14 @@ func ReadHookFile(rv *os.Root, day time.Time) (raw []byte, ok bool) {
 	return raw, true
 }
 
-// addHookCounts counts each complete record "adapter event outcome ms" of a
+// HookCounts are a hook counter file's records counted by registry key.
+type HookCounts map[string]int64
+
+// CountHooks counts each complete record "adapter event outcome ms" of a
 // registered adapter and outcome, by event class and latency bucket.
 // Anything else is skipped, as doctor skips it.
-func addHookCounts(counts map[string]int64, raw []byte) {
+func CountHooks(raw []byte) HookCounts {
+	counts := HookCounts{}
 	records := string(raw)
 	for records != "" {
 		line, rest, complete := strings.Cut(records, "\n")
@@ -61,6 +65,7 @@ func addHookCounts(counts map[string]int64, raw []byte) {
 		counts["hook."+adapter+"."+class+"."+outcome]++
 		counts["hook_ms."+adapter+"."+class+"."+hookMSBucket(ms)]++
 	}
+	return counts
 }
 
 func hookMSBucket(ms int) string {

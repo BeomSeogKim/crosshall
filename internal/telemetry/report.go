@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 )
 
 // Report is one day's report in its canonical member order.
@@ -21,6 +23,9 @@ type Report struct {
 	Sources  Sources          `json:"sources"`
 	Switches *Switches        `json:"switches,omitempty"`
 	Counts   map[string]int64 `json:"counts"`
+	// Unobserved10m is the day's notice.unobserved_10m before rounding,
+	// which the sender keeps locally for later days' week figures.
+	Unobserved10m int64 `json:"-"`
 }
 
 // App names the release and platform that built the report.
@@ -54,6 +59,19 @@ func (r Report) Active() bool {
 	return false
 }
 
+// SetWeek sets the week figures, rounded, once the caller knows the day is
+// active: the active days and the unobserved notices of the seven days
+// ending with this one.
+func (r *Report) SetWeek(activeDays, unobserved10m int64) {
+	for key, n := range map[string]int64{"week.active_days": activeDays, "week.unobserved_10m": unobserved10m} {
+		if v := Round(n); v > 0 {
+			r.Counts[key] = v
+		} else {
+			delete(r.Counts, key)
+		}
+	}
+}
+
 // Marshal returns the canonical bytes: no whitespace, members in the order
 // of the wire contract, count keys in ascending byte order.
 func (r Report) Marshal() ([]byte, error) {
@@ -79,6 +97,16 @@ func AppVersion(version string) string {
 		return version
 	}
 	return "dev"
+}
+
+// Receiver is the endpoint a build of version uses: the shipping receiver
+// for a release tag, none for any other build, which then neither asks nor
+// sends.
+func Receiver(version string) string {
+	if AppVersion(version) == "dev" {
+		return ""
+	}
+	return telemetryconfig.Endpoint
 }
 
 // Round rounds a count down to the value ladder; below 1 it is 0, which is

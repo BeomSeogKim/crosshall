@@ -27,7 +27,7 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	// notice was queued to (#236).
 	var thread string
 	if !cmd.LaunchVerified {
-		if a, ok := publish.Lookup(cmd.Profile.Adapter); ok && cmd.LaunchRef == SessionLaunch {
+		if a, ok := publish.Lookup(cmd.Profile.Adapter); ok {
 			thread = a.SessionRoute(sessionKey, "").ThreadID
 		}
 		if thread == "" {

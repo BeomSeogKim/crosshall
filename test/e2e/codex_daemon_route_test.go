@@ -56,9 +56,15 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 	f.apply("", "setup", "codex", "--apply")
 	repo := f.enrollmentRepo()
 	daemon := buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
-	start := func(source string, underDaemon bool) {
+	// A shell that runs more than the hook stays between it and the server,
+	// as a hook command of several commands would; one that runs only the
+	// hook may replace itself with it.
+	start := func(source string, underDaemon, keepShell bool) {
 		t.Helper()
 		cmd := f.installedHookCommand(t.Context(), repo, "codex", "SessionStart", fmt.Sprintf(`"source":%q`, source))
+		if keepShell {
+			cmd.Args[len(cmd.Args)-1] += "; :"
+		}
 		if underDaemon {
 			wrapped := exec.CommandContext(t.Context(), daemon, append([]string{"app-server", "--managed-daemon", "--"}, cmd.Args...)...)
 			wrapped.Dir, wrapped.Env, wrapped.Stdin = cmd.Dir, cmd.Env, cmd.Stdin
@@ -73,11 +79,11 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 	db := f.db()
 	// A start may first bring the dispatcher up; it is sent again until
 	// the route shows it.
-	startUntil := func(source string, underDaemon bool, want string) {
+	startUntil := func(source string, underDaemon, keepShell bool, want string) {
 		t.Helper()
 		var mode, version string
 		for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(100 * time.Millisecond) {
-			start(source, underDaemon)
+			start(source, underDaemon, keepShell)
 			err := db.QueryRow(`SELECT COALESCE(r.mode, ''), json_extract(l.profile, '$.vendor_version')
 				FROM publish_route r JOIN adapter_launch l ON l.principal_id = r.principal_id AND l.launch_ref = r.launch_ref
 				WHERE r.adapter = 'codex' AND r.state = 'active'`).Scan(&mode, &version)
@@ -93,14 +99,15 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 		}
 	}
 
-	startUntil("startup", true, "daemon")
+	startUntil("startup", true, true, "daemon")
 	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (no sender for codex)") {
 		t.Fatalf("a daemon session should wait only for a sender:\n%s", out)
 	}
-	startUntil("resume", false, "in_process")
+	startUntil("resume", false, true, "in_process")
 	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (codex runs without its daemon)") {
 		t.Fatalf("an in-process session should say why it cannot be reached:\n%s", out)
 	}
+	startUntil("resume", true, false, "daemon")
 }
 
 // buildCodexDaemon builds the stand-in server where Codex installs its

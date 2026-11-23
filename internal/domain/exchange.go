@@ -31,6 +31,7 @@ type attribution struct {
 	exchange        exchangeRow
 	isNew           bool
 	parentRequestID int64
+	roundPath       int64
 }
 
 // member is the caller's live binding, resolved for a member verb.
@@ -190,7 +191,7 @@ func existing(ctx context.Context, tx store.Tx, m member, id int64) (attribution
 	if !ok {
 		return attribution{}, nil, fmt.Errorf("domain: exchange %d missing", id)
 	}
-	return attribution{exchange: e}, nil, nil
+	return attribution{exchange: e, roundPath: id}, nil, nil
 }
 
 // The opener can explicitly follow its handoff while still owing its parent.
@@ -206,14 +207,14 @@ func canFollowHandoff(ctx context.Context, tx store.Tx, m member, exchange int64
 }
 
 func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64, budget rootBudget) (attribution, *core.Result, error) {
-	var remaining int64
+	var remaining, exchange int64
 	var read bool
-	err := tx.QueryRowContext(ctx, `SELECT e.granted - e.spent, r.picked_up_at_ms IS NOT NULL
+	err := tx.QueryRowContext(ctx, `SELECT e.granted - e.spent, e.id, r.picked_up_at_ms IS NOT NULL
 		FROM message msg JOIN exchange e ON e.id = msg.exchange_id AND e.channel_id = msg.channel_id
 		JOIN obligation o ON o.message_id = msg.id AND o.principal_id = ?
 		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
 		WHERE msg.id = ? AND msg.channel_id = ? AND msg.kind = 'ask' AND o.state = 'open'`,
-		m.principal, request, m.channel).Scan(&remaining, &read)
+		m.principal, request, m.channel).Scan(&remaining, &exchange, &read)
 	if errors.Is(err, sql.ErrNoRows) {
 		r := Refuse(core.CodeBadRoot, fmt.Sprintf("#%d is not an open request you owe", request), "crosshall inbox")
 		return attribution{}, &r, nil
@@ -229,7 +230,9 @@ func linkedRoot(ctx context.Context, tx store.Tx, m member, request int64, budge
 			fmt.Sprintf("continue it with crosshall ask @alias \"...\" --re %d", request))
 		return attribution{}, &r, nil
 	}
-	return rootCredit(ctx, tx, m, request, budget)
+	attributed, refusal, err := rootCredit(ctx, tx, m, request, budget)
+	attributed.roundPath = exchange
+	return attributed, refusal, err
 }
 
 // newRoot checks that the caller may open a new exchange: nothing owed, no

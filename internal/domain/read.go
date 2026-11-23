@@ -42,6 +42,7 @@ type ReadMessage struct {
 	ObligationState string        `json:"obligation_state,omitempty"`
 	ReplyIDs        []int64       `json:"reply_ids,omitempty"`
 	Replies         []ReadMessage `json:"replies,omitempty"`
+	levelMS         int64
 }
 
 type readItem struct {
@@ -212,11 +213,11 @@ func loadReplies(ctx context.Context, tx store.Tx, member memberView, item readI
 func readBody(ctx context.Context, tx store.Tx, member memberView, id int64) (ReadMessage, error) {
 	msg := ReadMessage{ID: id, Channel: member.name}
 	err := tx.QueryRowContext(ctx, `SELECT m.kind, m.sender_id, COALESCE(b.alias, ''), m.body,
-		m.due_at_ms, m.in_reply_to, m.exchange_id, COALESCE(m.outcome, ''), COALESCE(o.state, '')
+		m.due_at_ms, m.in_reply_to, m.exchange_id, COALESCE(m.outcome, ''), COALESCE(o.state, ''), m.level_ms
 		FROM message m LEFT JOIN binding b ON b.channel_id = m.channel_id AND b.principal_id = m.sender_id
 		LEFT JOIN obligation o ON o.message_id = m.id AND o.principal_id = ?
 		WHERE m.channel_id = ? AND m.id = ?`, member.principal, member.channel, id).
-		Scan(&msg.Kind, &msg.SenderID, &msg.Sender, &msg.Body, &msg.DueAtMS, &msg.InReplyTo, &msg.Exchange, &msg.Outcome, &msg.ObligationState)
+		Scan(&msg.Kind, &msg.SenderID, &msg.Sender, &msg.Body, &msg.DueAtMS, &msg.InReplyTo, &msg.Exchange, &msg.Outcome, &msg.ObligationState, &msg.levelMS)
 	return msg, err
 }
 
@@ -234,10 +235,18 @@ func recordPickup(ctx context.Context, tx store.Tx, member memberView, msg ReadM
 		VALUES (?, ?, 'picked_up', 1, ?, 'cli')`, msg.ID, member.principal, ms(now)); err != nil {
 		return err
 	}
+	var path int64
 	if msg.Exchange != nil {
-		_, err = tx.ExecContext(ctx, "UPDATE binding SET context_exchange_id = ? WHERE id = ?", *msg.Exchange, member.binding)
+		path = *msg.Exchange
+		if _, err := tx.ExecContext(ctx, "UPDATE binding SET context_exchange_id = ? WHERE id = ?", path, member.binding); err != nil {
+			return err
+		}
 	}
-	return err
+	origin := msg.ID
+	if msg.InReplyTo != nil {
+		origin = *msg.InReplyTo
+	}
+	return foldRound(ctx, tx, member.principal, origin, path, msg.levelMS)
 }
 
 func selectIDs(ctx context.Context, tx store.Tx, query string, args ...any) ([]int64, error) {

@@ -3,11 +3,13 @@ package dispatch
 import (
 	"context"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-// retentionDue reports whether the daily retention pass runs at now: once
+// retentionDue reports whether the daily retention pass starts at now: once
 // per UTC day, on the first tick of a day after the last pass's day. A
-// clock set back runs no pass until it passes that day again.
+// clock set back starts no pass until it passes that day again.
 func retentionDue(last, now time.Time) bool {
 	if last.IsZero() {
 		return true
@@ -16,12 +18,32 @@ func retentionDue(last, now time.Time) bool {
 	return !now.UTC().Before(time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC))
 }
 
-// runRetention deletes the rows no reader needs any more (#256).
-func (s *server) runRetention(ctx context.Context, now time.Time) {
-	if !retentionDue(s.lastRetention, now) {
-		return
+// retention is the daily pass's state between dispatcher ticks.
+type retention struct {
+	last time.Time
+	pass *store.RetentionPass
+}
+
+// retentionTick runs one chunk of the daily retention pass (#256), starting
+// the pass when it is due. The dispatcher loop calls it once per tick after
+// the scan, never before the first ready marker, so a hook waits for one
+// chunk at most. A failed pass is abandoned until the next day.
+func (s *server) retentionTick(ctx context.Context, now time.Time) {
+	if s.retention.pass == nil {
+		if !retentionDue(s.retention.last, now) {
+			return
+		}
+		s.retention.last = now
+		pass, err := s.db.StartRetention(ctx, now)
+		if err != nil {
+			s.logFailure(err)
+			return
+		}
+		s.retention.pass = pass
 	}
-	s.lastRetention = now
-	_, err := s.db.PruneRetention(ctx, now)
+	done, err := s.db.RetentionChunk(ctx, s.retention.pass)
+	if done || err != nil {
+		s.retention.pass = nil
+	}
 	s.logFailure(err)
 }

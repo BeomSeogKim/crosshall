@@ -16,6 +16,10 @@ import (
 // publisher activates it, and sets its watermark, on its next tick.
 const PublishNotActivated = "route not yet activated"
 
+// PublishNoSender begins the candidate reason of a route whose adapter has
+// no sender; the adapter's name follows it.
+const PublishNoSender = "no sender for "
+
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
 const PublishHourlyCap = 30
 
@@ -226,7 +230,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	case reach != "":
 		state.Reason = reach
 	case !adapters.Sends(adapter):
-		state.Reason = "no sender for " + adapter
+		state.Reason = PublishNoSender + adapter
 	case !verified:
 		state.Reason = "unverified launch"
 	case !current:

@@ -20,7 +20,7 @@ A report never holds message text, channel names or topics, aliases, focus text,
 | Field | Value |
 | --- | --- |
 | `v` | `1`, the shape of the report |
-| `registry` | `1`, the key list below |
+| `registry` | `2`, the key list below |
 | `batch` | 32 random hexadecimal characters drawn when the report is built. It only lets the receiver drop a copy sent twice; it is not reused and names nothing else |
 | `day` | the UTC day counted |
 | `app.version` | the crosshall release tag. A development build never reports |
@@ -48,6 +48,7 @@ Each figure is counted on the day of its own event. `<A>` in a sentence below is
 | `notice.unobserved_10m` | notices submitted to the agent, or whose submission is uncertain, still unconfirmed 10 minutes later while their work was still waiting |
 | `notice.late_observed` | notices of the previous figure that were confirmed later |
 | `receipt.rejected.{malformed,stale}` | notice confirmations the hall rejected, by reason |
+| `send.wake.{notice,wait,none}` | recipients of a request or a final reply, by what the sender was told would tell them: a notice, their running wait, or nothing |
 | `suspend.{absorbed,unknown,not_submitted}.{timed,lasting}` | notices paused for a session, by cause, and whether the pause had an end time |
 | `turn_end.claim.{claude,codex,agy}` | turn-end checks of `<A>` committed to continue a turn with a pending line, counted even when no output followed |
 | `join.{hook,cli,rejoined}` | channel joins made by a hook, by a command, and returns to a channel |

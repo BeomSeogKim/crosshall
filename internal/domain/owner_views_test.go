@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -163,5 +164,47 @@ func TestOwnerWhoLeavesOutARequestTheTurnEndWillOffer(t *testing.T) {
 	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
 	if got := f.ownerRow("reader").UnreadNotWoken; got != nil {
 		t.Fatalf("in a checked turn: %+v", got)
+	}
+}
+
+// A plain wait returns only messages above its cursor, so it does not
+// tell its member about a request that came before; one sent while it
+// runs, it does.
+func TestOwnerWhoCountsARequestBehindAWaitsCursor(t *testing.T) {
+	f, writer, reader := waitPresenceChannel(t)
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, Body: "older"}, "older"))
+	poll(t, f, reader, Wait{})
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request behind the running wait's cursor: %+v", got)
+	}
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, Body: "newer"}, "newer"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request the running wait will return was counted: %+v", got)
+	}
+}
+
+// A request the member already answered with more time is not stuck: its
+// sender sees more_time, not a warning.
+func TestOwnerWhoLeavesOutARequestGivenMoreTime(t *testing.T) {
+	f, writer, reader := waitPresenceChannel(t)
+	ask := decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, Body: "work"}, "ask"))
+	wantOK(t, actLedger(f, reader, Reply{To: ask.ID, Body: "later", Outcome: OutcomeMoreTime}, "more-time"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("a request given more time: %+v", got)
+	}
+}
+
+// A turn end offers at most OfferCap requests, so the rest are stuck.
+func TestOwnerWhoCountsRequestsPastTheTurnEndCap(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	var last int64
+	for i := range OfferCap + 1 {
+		f.now = f.now.Add(time.Second)
+		last = decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, fmt.Sprintf("ask-%d", i))).ID
+	}
+	got := f.ownerRow("reader").UnreadNotWoken
+	if got == nil || got.Requests != 1 || got.OldestAtMS != f.now.UnixMilli() {
+		t.Fatalf("the request past the cap (#%d): %+v", last, got)
 	}
 }

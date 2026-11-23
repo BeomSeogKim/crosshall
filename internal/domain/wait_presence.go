@@ -25,11 +25,12 @@ type waitPresence struct {
 type waitPoll struct {
 	at       time.Time
 	workOnly bool
+	cursor   int64
 }
 
 // saw records a poll that leaves the binding's wait running, and forgets
 // polls that are no longer fresh.
-func (w *waitPresence) saw(binding int64, workOnly bool, now time.Time) {
+func (w *waitPresence) saw(binding int64, workOnly bool, cursor int64, now time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for id, p := range w.polls {
@@ -40,7 +41,7 @@ func (w *waitPresence) saw(binding int64, workOnly bool, now time.Time) {
 	if w.polls == nil {
 		w.polls = map[int64]waitPoll{}
 	}
-	w.polls[binding] = waitPoll{at: now, workOnly: workOnly}
+	w.polls[binding] = waitPoll{at: now, workOnly: workOnly, cursor: cursor}
 }
 
 // forget drops the binding's poll: its wait has ended.
@@ -66,4 +67,16 @@ func (w *waitPresence) running(binding int64, kind string, now time.Time) bool {
 func fresh(p waitPoll, now time.Time) bool {
 	age := now.Sub(p.at)
 	return age >= 0 && age <= waitFresh
+}
+
+// accepts reports whether the binding's running wait will return message
+// msg of kind: it accepts the kind, and msg is above the cursor it
+// continues from, so a request stored before the wait began is not one.
+func (w *waitPresence) accepts(binding int64, kind string, msg int64, now time.Time) bool {
+	if !w.running(binding, kind, now) {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return msg > w.polls[binding].cursor
 }

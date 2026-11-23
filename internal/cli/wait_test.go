@@ -160,7 +160,8 @@ func TestWaitEndsWhenItsAgentHasEnded(t *testing.T) {
 			},
 			gone: func() bool { checks++; return checks == 2 },
 		}
-		stdout, stderr, code := run(t, Env{Transport: transport}, "--json", "wait")
+		// Bounded, so a broken host check fails with a wait timeout.
+		stdout, stderr, code := run(t, Env{Transport: transport}, "--json", "wait", "--timeout", "1m")
 		if code != core.ExitError || !strings.Contains(stdout, `"code":"`+string(CodeWaitHostGone)+`"`) {
 			t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 		}

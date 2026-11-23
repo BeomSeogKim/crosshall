@@ -86,13 +86,16 @@ func TestWaitPresenceIsFreshForThreeSeconds(t *testing.T) {
 	if got := askNext(t, f, writer, "ends-the-wait"); got != WaitRunning {
 		t.Fatalf("a new wait: %q", got)
 	}
-	f.now = f.now.Add(2 * time.Second)
+	f.now = f.now.Add(time.Second)
 	if r := decode[WaitSnapshot](t, actLedger(f, reader, cmd, "")); len(r.Unread) != 1 {
 		t.Fatalf("the wait did not return the ask: %+v", r)
 	}
-	f.now = f.now.Add(1500 * time.Millisecond)
+	f.now = f.now.Add(500 * time.Millisecond) // the earlier poll is still fresh
 	if whoWaitRunning(t, f, writer, "reader") {
 		t.Fatal("a wait that returned work stays running")
+	}
+	if got := askNext(t, f, writer, "after-the-wait-returned"); got != pullNext {
+		t.Fatalf("a wait that returned work: %q", got)
 	}
 }
 
@@ -142,12 +145,16 @@ func TestWaitPresenceIsLostWithTheDispatcher(t *testing.T) {
 
 func TestWaitPresenceIgnoresARefusedPoll(t *testing.T) {
 	f, writer, reader := waitPresenceChannel(t)
-	r := actLedger(f, reader, Wait{Any: true, WorkOnly: true}, "")
-	if r.Status == 0 {
-		t.Fatal("--any with --work-only was accepted")
-	}
-	if got := askNext(t, f, writer, "refused"); got != pullNext {
-		t.Fatalf("a refused wait counts as running: %q", got)
+	for name, cmd := range map[string]Wait{
+		"usage":              {Any: true, WorkOnly: true},
+		"membership changed": {Cursor: &WaitCursor{BindingID: 1 << 40}},
+	} {
+		if r := actLedger(f, reader, cmd, ""); r.Status == 0 {
+			t.Fatalf("%s: the poll was accepted", name)
+		}
+		if got := askNext(t, f, writer, "refused "+name); got != pullNext {
+			t.Fatalf("%s: a refused wait counts as running: %q", name, got)
+		}
 	}
 }
 

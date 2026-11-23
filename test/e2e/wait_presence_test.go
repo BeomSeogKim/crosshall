@@ -77,9 +77,11 @@ func TestWaitEndsWithItsAgent(t *testing.T) {
 	w, _, members := setup(t)
 	form := members[0]
 	// The shell reads its own host value, then runs the wait as its child.
+	// The wait is bounded, so a broken host check fails with a timeout and
+	// leaves no process behind.
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `read host; CROSSHALL_HOST=$host "$0" --json wait --work-only; echo unreachable`, binary)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `read host; CROSSHALL_HOST=$host "$0" --json wait --work-only --timeout 12s; echo unreachable`, binary)
 	cmd.Dir, cmd.Env = w.home, form.env()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

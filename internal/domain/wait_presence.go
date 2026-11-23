@@ -43,6 +43,13 @@ func (w *waitPresence) saw(binding int64, workOnly bool, now time.Time) {
 	w.polls[binding] = waitPoll{at: now, workOnly: workOnly}
 }
 
+// forget drops the binding's poll: its wait has ended.
+func (w *waitPresence) forget(binding int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.polls, binding)
+}
+
 // running reports whether the binding has a running wait whose filter
 // accepts a message of kind: a note does not end a --work-only wait. An
 // empty kind asks for any running wait. A nil presence knows of no wait.

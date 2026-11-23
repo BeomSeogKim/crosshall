@@ -67,7 +67,7 @@ The global options `--json` and `--key` go before the command. Commands that que
 | Exit | Meaning |
 | ---: | --- |
 | 0 | Success, including work found by a wait |
-| 1 | General error |
+| 1 | General error, including a wait whose agent process has ended (`wait_host_gone`) |
 | 2 | Usage error |
 | 3 | Refused |
 | 4 | Not enrolled or no usable identity for the command |

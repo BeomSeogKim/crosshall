@@ -37,10 +37,13 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	var id, fenceAt int64
 	var current bool
 	err := tx.QueryRowContext(ctx, `SELECT a.id, a.submitting_at_ms,
-		(r.state = 'active' AND r.generation = a.generation AND r.binding_epoch = a.binding_epoch
+		((r.state = 'active' AND r.generation = a.generation OR
+			r.state = 'ended' AND r.reason = 'left channel' AND r.generation = a.generation + 1
+				AND b.state = 'departed' AND b.departed_by_owner = 0 AND b.departed_by_hook = 0)
+			AND r.binding_epoch = a.binding_epoch AND b.route_epoch = a.binding_epoch
 			AND r.adapter = a.adapter AND r.session_ref = a.session_ref AND r.launch_ref = a.launch_ref
 			AND r.policy_epoch = a.policy_epoch AND a.launch_ref = ?)
-		FROM publish_attempt a JOIN publish_route r ON r.binding_id = a.binding_id
+		FROM publish_attempt a JOIN publish_route r ON r.binding_id = a.binding_id JOIN binding b ON b.id = a.binding_id
 		WHERE a.binding_id = ? AND a.principal_id = ? AND a.adapter = ? AND a.session_ref = ?
 			AND (? = '' OR r.thread_id = ?)
 			AND a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state IN ('submitting', 'submitted', 'uncertain')`,

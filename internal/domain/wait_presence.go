@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"context"
 	"sync"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 // WaitRunning is a send line's next step for a recipient whose own wait is
@@ -23,13 +26,14 @@ type waitPresence struct {
 }
 
 type waitPoll struct {
-	at       time.Time
-	workOnly bool
+	at         time.Time
+	workOnly   bool
+	generation int64
 }
 
 // saw records a poll that leaves the binding's wait running, and forgets
 // polls that are no longer fresh.
-func (w *waitPresence) saw(binding int64, workOnly bool, now time.Time) {
+func (w *waitPresence) saw(binding, generation int64, workOnly bool, now time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for id, p := range w.polls {
@@ -40,7 +44,7 @@ func (w *waitPresence) saw(binding int64, workOnly bool, now time.Time) {
 	if w.polls == nil {
 		w.polls = map[int64]waitPoll{}
 	}
-	w.polls[binding] = waitPoll{at: now, workOnly: workOnly}
+	w.polls[binding] = waitPoll{at: now, workOnly: workOnly, generation: generation}
 }
 
 // forget drops the binding's poll: its wait has ended.
@@ -53,14 +57,20 @@ func (w *waitPresence) forget(binding int64) {
 // running reports whether the binding has a running wait whose filter
 // accepts a message of kind: a note does not end a --work-only wait. An
 // empty kind asks for any running wait. A nil presence knows of no wait.
-func (w *waitPresence) running(binding int64, kind string, now time.Time) bool {
+func (w *waitPresence) running(ctx context.Context, tx store.Tx, binding int64, kind string, now time.Time) (bool, error) {
 	if w == nil {
-		return false
+		return false, nil
 	}
 	w.mu.Lock()
 	p, ok := w.polls[binding]
 	w.mu.Unlock()
-	return ok && fresh(p, now) && !(p.workOnly && kind == "note")
+	if !ok || !fresh(p, now) || p.workOnly && kind == "note" {
+		return false, nil
+	}
+	var current bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binding b JOIN member_selection s ON s.principal_id = b.principal_id
+		WHERE b.id = ? AND b.state = 'live' AND s.binding_id = b.id AND s.generation = ?)`, binding, p.generation).Scan(&current)
+	return current, err
 }
 
 func fresh(p waitPoll, now time.Time) bool {

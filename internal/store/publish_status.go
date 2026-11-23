@@ -107,7 +107,8 @@ func PublishLane() string {
 // PublishNotSuspended holds when no suspension of the route's launch,
 // committed after the owner's last resume, is still in force at nowMS.
 func PublishNotSuspended(nowMS int64) string {
-	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s WHERE s.binding_id = r.binding_id
+	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s
+		WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = r.principal_id)
 		AND s.launch_ref = r.launch_ref AND s.id > b.publish_resume_suspension
 		AND COALESCE((%s) > %d, 1))`, publishSuspensionExpiry, nowMS)
 }
@@ -202,10 +203,10 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	var recoveryHint int
 	err = tx.QueryRowContext(ctx, `WITH suspensions AS (
 		SELECT s.id, s.reason, s.notice, s.at_ms, s.recovery_hint, `+publishSuspensionExpiry+` AS until_ms FROM publish_suspension s
-		WHERE s.binding_id = ? AND s.launch_ref = ? AND s.id > ?
+		WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = ?) AND s.launch_ref = ? AND s.id > ?
 	)
 		SELECT id, reason, notice, at_ms, until_ms, recovery_hint FROM suspensions WHERE until_ms IS NULL OR until_ms > ?
-		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, bindingID, launchRef, resumedAfter, now.UnixMilli()).
+		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, principal, launchRef, resumedAfter, now.UnixMilli()).
 		Scan(&suspensionID, &reason, &notice, &at, &until, &recoveryHint)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, err

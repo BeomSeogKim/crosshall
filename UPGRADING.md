@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 25. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 26. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
 
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
@@ -19,6 +19,10 @@ An unknown notice receipt suspends its session's notices for 30 minutes. If an o
 A new round stop shows a desktop notification where the system can show one, and appears once, on stderr, on the owner's next command. See [loop guard](docs/operations.md#loop-guard). In owner status JSON, each `guard_stops` entry gains `sender`, `recipients`, `requests`, `request_count` and, once a grant has reset its thread or member, `last_reset_at_ms`. `owner budget grant <binding-id>` resets a member by binding, including a departed one.
 
 Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
+
+Migration 026 records the selected channel binding for each enrolled session and enforces one live binding per session. It uses existing membership records, including departed bindings, and preserves the message and request ledger. If existing records leave the selected binding ambiguous, the migration stops and reports the affected IDs.
+
+Use the upgraded binary for member commands and hooks after restarting the dispatcher. If you were already running a development build, the automatic backup matches the schema of that build, for example `store-v25-*.sqlite3` when upgrading from schema 25.
 
 ## To v0.2.0-rc.3
 

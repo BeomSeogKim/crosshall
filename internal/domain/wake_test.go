@@ -257,12 +257,12 @@ func TestWaitingShowsNoWakeOnceARequestIsPickedUp(t *testing.T) {
 // A notice wins over a running wait in who, as in a send.
 func TestWhoPrefersANoticeOverARunningWait(t *testing.T) {
 	p := wakeFixture(t)
-	p.svc.waits.saw(p.binding.ID, false, p.now)
+	wantOK(t, p.run(p.reader, Wait{}, ""))
 	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeWait}) {
 		t.Fatalf("a running wait on an unproven route: %+v", w)
 	}
 	p.proveRoute()
-	p.svc.waits.saw(p.binding.ID, false, p.now)
+	wantOK(t, p.run(p.reader, Wait{}, ""))
 	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeNotice}) {
 		t.Fatalf("a running wait on an available route: %+v", w)
 	}
@@ -371,7 +371,7 @@ func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
 		t.Fatalf("after the prompt line showed it: %+v", r)
 	}
 	// A running wait still takes it; shown replaces only where it is seen.
-	f.svc.waits.saw(bindingIDOf(t, f, f.principalOf(reader)), false, f.now)
+	wantOK(t, f.run(reader, Wait{}, ""))
 	if r := row(atPrompt); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
 		t.Fatalf("a running wait after the prompt line: %+v", r)
 	}

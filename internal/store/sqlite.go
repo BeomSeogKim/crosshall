@@ -90,12 +90,15 @@ var ownerAlertSchema string
 //go:embed migrations/025_thread_lanes.sql
 var threadLanesSchema string
 
+//go:embed migrations/026_session_move.sql
+var sessionMoveSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
-	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
+	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema, sessionMoveSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a
@@ -196,6 +199,11 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 	}
 	for step := version; step < len(migrations); step++ {
 		err := s.Update(ctx, func(tx Tx) error {
+			if migrations[step] == sessionMoveSchema {
+				if err := checkSessionMoveBindings(ctx, tx); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.ExecContext(ctx, migrations[step]); err != nil {
 				return err
 			}
@@ -210,6 +218,20 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 		}
 	}
 	return nil
+}
+
+func checkSessionMoveBindings(ctx context.Context, tx Tx) error {
+	var principal int64
+	var bindings string
+	err := tx.QueryRowContext(ctx, `SELECT principal_id, GROUP_CONCAT(id, ', ' ORDER BY id) FROM binding
+		GROUP BY principal_id HAVING COUNT(*) > 1 ORDER BY principal_id LIMIT 1`).Scan(&principal, &bindings)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("cannot select a membership for principal %d with bindings %s", principal, bindings)
 }
 
 func (s *Store) backup(ctx context.Context, stateRoot string, version int) (string, error) {

@@ -106,7 +106,7 @@ func TestLeaveRejoinAndOneChannelEndToEnd(t *testing.T) {
 			t.Fatalf("focus not shown: %v", row)
 		}
 	}
-	left := tax.must("leave")
+	left := tax.must("--key", "leave-checkout", "leave")
 	if left.obj["owed"] != float64(1) {
 		t.Fatalf("leave %v", left.obj)
 	}
@@ -117,10 +117,17 @@ func TestLeaveRejoinAndOneChannelEndToEnd(t *testing.T) {
 	if rows["tax"] == nil || rows["tax"]["state"] != "open" {
 		t.Fatalf("the owed request must stay visible: %v", rows)
 	}
-	if o := tax.run("join", "inventory"); o.exit != 3 || o.obj["code"] != "one_channel" {
-		t.Fatalf("join another channel: exit %d %v", o.exit, o.obj)
+	if joined := tax.must("join", "inventory", "--as", "writer"); joined.obj["channel"] != "inventory" {
+		t.Fatalf("join another channel after leaving: %v", joined.obj)
 	}
-	back := tax.must("join", "checkout")
+	if replay := tax.must("--key", "leave-checkout", "leave"); replay.obj["channel"] != "checkout" || tax.must("who").obj["channel"] != "inventory" {
+		t.Fatalf("replaying the old leave changed the new membership: %v", replay.obj)
+	}
+	if o := tax.run("join", "checkout"); o.exit != 3 || o.obj["code"] != "one_channel" ||
+		!strings.Contains(fmt.Sprint(o.obj["hint"]), "crosshall join checkout --move") {
+		t.Fatalf("join another channel while live: exit %d %v", o.exit, o.obj)
+	}
+	back := tax.must("join", "checkout", "--move")
 	if back.obj["alias"] != "tax" {
 		t.Fatalf("re-join %v", back.obj)
 	}
@@ -130,4 +137,48 @@ func TestLeaveRejoinAndOneChannelEndToEnd(t *testing.T) {
 	if last["kind"] != "reply" || last["body"] != "done" {
 		t.Fatalf("log tail %v", last)
 	}
+}
+
+func TestMoveKeepsRequestsAndLateRepliesInTheirOriginalChannel(t *testing.T) {
+	w, owner, members := setup(t)
+	form, tax := members[0], members[1]
+	owner.must("owner", "channel", "create", "inventory")
+	stock := w.member()
+	stock.mustFixtureWrite("join", "inventory", "--as", "writer")
+	incoming := num(t, tax.must("ask", "@form", "review this in checkout"), "id")
+	outgoing := num(t, form.must("ask", "@tax", "reply here after I move"), "id")
+
+	if collision := form.run("join", "inventory", "--move", "--as", "writer"); collision.exit != 3 ||
+		collision.obj["code"] != "alias_taken" || !strings.Contains(fmt.Sprint(collision.obj["hint"]), "crosshall join inventory --move") ||
+		form.must("who").obj["channel"] != "checkout" {
+		t.Fatalf("the destination alias collision changed the source: exit %d %v", collision.exit, collision.obj)
+	}
+	move := []string{"--key", "move-to-inventory", "join", "inventory", "--move", "--as", "reviewer"}
+	moved := form.must(move...)
+	receipt, ok := moved.obj["move"].(map[string]any)
+	if !ok || receipt["channel"] != "checkout" || receipt["unread"] != float64(1) ||
+		receipt["owed"] != float64(1) || receipt["waiting"] != float64(1) || moved.obj["channel"] != "inventory" {
+		t.Fatalf("move receipt: %v", moved.obj)
+	}
+
+	late := num(t, tax.must("reply", strconv.FormatInt(outgoing, 10), "late reply for checkout"), "id")
+	fresh := num(t, stock.must("ask", "@reviewer", "inventory only"), "id")
+	if unread := ids(form.must("inbox").obj["unread"]); !slices.Equal(unread, []int64{fresh}) {
+		t.Fatalf("inventory inbox: %v, want [%d]", unread, fresh)
+	}
+	if o := form.run("reply", strconv.FormatInt(incoming, 10), "wrong channel"); o.exit != 3 || o.obj["code"] != "not_found" {
+		t.Fatalf("reply crossed channels: exit %d %v", o.exit, o.obj)
+	}
+
+	back := form.must("join", "checkout", "--move")
+	if back.obj["alias"] != "form" {
+		t.Fatalf("return lost the original alias: %v", back.obj)
+	}
+	if replay := form.must(move...); replay.obj["channel"] != "inventory" || form.must("who").obj["channel"] != "checkout" {
+		t.Fatalf("replaying the original move changed the current channel: %v", replay.obj)
+	}
+	if unread := ids(form.must("inbox").obj["unread"]); !slices.Equal(unread, []int64{incoming, late}) {
+		t.Fatalf("restored checkout inbox: %v, want [%d %d]", unread, incoming, late)
+	}
+	form.must("reply", strconv.FormatInt(incoming, 10), "checkout done")
 }

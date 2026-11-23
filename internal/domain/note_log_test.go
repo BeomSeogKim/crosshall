@@ -204,9 +204,7 @@ func logIDs(r LogResult) []int64 {
 	return out
 }
 
-// Leave: obligations survive a leave, another
-// channel stays refused, and coming back restores the alias.
-func TestLeaveKeepsObligationsAndOneChannel(t *testing.T) {
+func TestLeaveKeepsObligationsInTheirChannel(t *testing.T) {
 	f, a, b, _ := channel3(t)
 
 	ask := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "review?"}, "ask"))
@@ -237,8 +235,9 @@ func TestLeaveKeepsObligationsAndOneChannel(t *testing.T) {
 		t.Fatalf("%d departures recorded", n)
 	}
 
-	wantCode(t, f.join(b, Join{Channel: "inventory"}, ""), core.ExitRefused, core.CodeOneChannel)
-	back := decode[JoinResult](t, f.join(b, Join{Channel: "checkout"}, ""))
+	wantOK(t, f.join(b, Join{Channel: "inventory"}, ""))
+	wantCode(t, f.exec(f.resolved(b), Request{Command: Reply{To: ask.ID, Body: "late"}}), core.ExitRefused, core.CodeNotFound)
+	back := decode[JoinResult](t, f.join(b, Join{Channel: "checkout", Move: true}, ""))
 	if back.Alias != "tax" {
 		t.Fatalf("re-join %+v", back)
 	}

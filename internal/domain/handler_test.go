@@ -306,17 +306,17 @@ func TestRejoinAndOneChannel(t *testing.T) {
 	wantCode(t, f.join(s, Join{Channel: "checkout", Alias: "other"}, ""), core.ExitRefused, core.CodeAliasTaken)
 	wantCode(t, f.join(s, Join{Channel: "inventory"}, ""), core.ExitRefused, core.CodeOneChannel)
 
-	// A departed binding still counts for the one-channel rule, and coming
-	// back to the same channel restores the alias.
+	// Departure permits a new channel. Returning to the original channel
+	// keeps its binding and alias.
 	if _, err := f.db.Exec(`UPDATE binding SET state = 'departed', departed_at_ms = 1`); err != nil {
 		t.Fatal(err)
 	}
-	wantCode(t, f.join(s, Join{Channel: "inventory"}, ""), core.ExitRefused, core.CodeOneChannel)
-	back := decode[JoinResult](t, f.join(s, Join{Channel: "checkout"}, ""))
+	wantOK(t, f.join(s, Join{Channel: "inventory"}, ""))
+	back := decode[JoinResult](t, f.join(s, Join{Channel: "checkout", Move: true}, ""))
 	if back.Restored || back.Alias != "form" || back.Hint == "" {
 		t.Fatalf("return after departure %+v", back)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM binding`); n != 1 {
+	if n := f.count(`SELECT COUNT(*) FROM binding`); n != 2 {
 		t.Fatalf("%d bindings", n)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -267,6 +266,7 @@ type memberLeaf struct {
 	identity   string
 	generation string
 	fenced     bool
+	membership core.Membership
 }
 
 // Only startup runs this, while holding the dispatcher lock and before
@@ -493,6 +493,7 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 		// by the next pass.
 		s.logFailure(err)
 	}
+	s.logFailure(ident.RepublishMembership(dir, leaf.membership))
 	watched.add(filepath.Join(path, "in"))
 	if reap {
 		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour)))
@@ -507,14 +508,17 @@ func (s *server) leaves(ctx context.Context) ([]memberLeaf, error) {
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		// A client may still have its old leaf after a key rotation. Drain
 		// that directory so the resolver can return the retirement refusal.
-		rows, err := tx.QueryContext(ctx, "SELECT digest, file_identity, generation, state = 'fenced' FROM leaf ORDER BY digest")
+		rows, err := tx.QueryContext(ctx, `SELECT l.digest, l.file_identity, l.generation, l.state = 'fenced',
+			COALESCE(s.binding_id, 0), COALESCE(s.generation, 0)
+			FROM leaf l LEFT JOIN member_selection s ON s.principal_id = l.principal_id ORDER BY l.digest`)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var leaf memberLeaf
-			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.generation, &leaf.fenced); err != nil {
+			if err := rows.Scan(&leaf.digest, &leaf.identity, &leaf.generation, &leaf.fenced,
+				&leaf.membership.BindingID, &leaf.membership.Generation); err != nil {
 				return err
 			}
 			leaves = append(leaves, leaf)
@@ -620,6 +624,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var result core.Result
 	var enrolledSession ident.Identity
 	var channelCreated bool
+	var membershipToPublish *core.Membership
 	var afterCommit func() (string, error)
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
@@ -629,6 +634,25 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		afterCommit = resolved.AfterCommit
 		if resolved.Refusal != nil {
 			result = *resolved.Refusal
+			return errRefusalRollback
+		}
+		if !arrival.Owner && !matchesMembership(req.Membership, resolved.Caller.Membership) {
+			if resolved.Caller.PrincipalID != nil && (req.Verb == domain.VerbJoin || req.Verb == domain.VerbLeave) {
+				request, err := s.cfg.Decode(req, resolved)
+				if err != nil {
+					result = commandError(core.ExitUsage, "", "invalid command arguments")
+					return errRefusalRollback
+				}
+				replay, found, err := domain.ReplayMembershipChange(ctx, tx, *resolved.Caller.PrincipalID, req.OpKey, request.Command)
+				if err != nil {
+					return err
+				}
+				if found {
+					result = replay
+					return errRefusalRollback
+				}
+			}
+			result = membershipChanged(req)
 			return errRefusalRollback
 		}
 		if req.Verb == wire.VerbOwnerReady || req.Verb == wire.VerbOwnerStop {
@@ -675,13 +699,14 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if err := acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller); err != nil {
 			return err
 		}
-		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation)
+		membership := callerMembership(resolved.Caller)
+		pendingAck, pendingRules := leafPendingReceipt(arrival, req.Generation, membership)
 		clearedAck, clearedRules, err := s.clearedReceipts(ctx, tx, resolved.Caller, time.Now())
 		if err != nil {
 			return err
 		}
 		boundedAck, undoAck, err := domain.AcknowledgeRoster(ctx, tx, resolved.Caller.BindingID,
-			max(req.Ack, pendingAck, clearedAck), max(leafRulesReceipt(arrival), pendingRules, clearedRules))
+			max(req.Ack, pendingAck, clearedAck), max(leafRulesReceipt(arrival, membership), pendingRules, clearedRules))
 		if err != nil {
 			return err
 		}
@@ -727,6 +752,25 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		if req.Verb == domain.VerbJoin || hookEnrolled(req, resolved.Caller, result) {
 			enrolledSession = ident.Identity{Vendor: resolved.Vendor, Key: resolved.SessionKey}
 			channelCreated = hookCreatedChannel(req, result)
+			selected, err := leafSelectedMembership(ctx, tx, req.KeyDigest)
+			if err != nil {
+				return err
+			}
+			if req.Verb == domain.VerbJoin && req.Membership == nil && membership.BindingID != 0 &&
+				selected.BindingID != 0 && selected.BindingID != membership.BindingID && resolved.Caller.PrincipalID != nil {
+				result = domain.Fail(core.ExitRefused, core.CodeBindingChanged, "moving channels requires a current membership selection",
+					"update crosshall or retry the command once the dispatcher is ready")
+				return errRefusalRollback
+			}
+			if selected.BindingID != 0 {
+				membershipToPublish = &selected
+				if isHook {
+					membership = selected
+				}
+			}
+		}
+		if req.Verb != domain.VerbJoin && membership.BindingID != 0 {
+			result.Membership = &membership
 		}
 		if refreshFiles {
 			if err := s.invalidateAdapterFile(req.Verb); err != nil {
@@ -763,6 +807,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		// The reply is acknowledged under the directory's new generation.
 		if generation != "" && err == nil && result.Status == core.ExitOK {
 			result.Data = withGeneration(result.Data, generation)
+		}
+	}
+	if membershipToPublish != nil && arrival.Dir != nil {
+		if err := ident.RepublishMembership(arrival.Dir, *membershipToPublish); err != nil {
+			s.logFailure(err)
+			return unknownOutcome("membership publication failed after commit", req.OpKey), nil
 		}
 	}
 	if enrolledSession.Key != "" {
@@ -819,7 +869,7 @@ func (s *server) clearedReceipts(ctx context.Context, tx store.Tx, caller core.C
 		if err := rows.Scan(&id.Vendor, &id.Key, &fileID, &generation); err != nil {
 			return 0, 0, err
 		}
-		c, r := ident.LeafReceipts(s.cfg.Rendezvous, id, fileID, generation)
+		c, r := ident.LeafReceipts(s.cfg.Rendezvous, id, fileID, generation, callerMembership(caller))
 		cursor, rules = max(cursor, c), max(rules, r)
 	}
 	return cursor, rules, rows.Err()
@@ -827,26 +877,22 @@ func (s *server) clearedReceipts(ctx context.Context, tx store.Tx, caller core.C
 
 // leafPendingReceipt reads the receipts a renderer left pending for the
 // request's generation, which the resolver checked is the published one.
-func leafPendingReceipt(arrival Arrival, generation string) (cursor, rules uint64) {
+func leafPendingReceipt(arrival Arrival, generation string, membership core.Membership) (cursor, rules uint64) {
 	if arrival.Owner || arrival.Dir == nil {
 		return 0, 0
 	}
-	return ident.PendingReceipt(arrival.Dir, generation)
+	return ident.PendingReceipt(arrival.Dir, generation, membership)
 }
 
 // leafRulesReceipt reads the roster cursor of the reply with which the CLI
 // printed the member rules, as it recorded it in the member's directory. A
 // hook's own output acknowledges nothing, but its request finds this record
 // like any other, so a prompt after one command knows the rules were given.
-func leafRulesReceipt(arrival Arrival) uint64 {
+func leafRulesReceipt(arrival Arrival, membership core.Membership) uint64 {
 	if arrival.Owner || arrival.Dir == nil {
 		return 0
 	}
-	data, err := ident.ReadPrivateFile(arrival.Dir, spool.RulesReceipt, 32)
-	if err != nil {
-		return 0
-	}
-	cursor, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	cursor, _ := ident.ReadRosterReceipt(arrival.Dir, spool.RulesReceipt, membership)
 	return cursor
 }
 

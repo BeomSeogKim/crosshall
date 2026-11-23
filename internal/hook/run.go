@@ -147,6 +147,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
+	membership, err := ident.LookupMembership(leaf)
+	if err != nil {
+		return "refused"
+	}
 	pid := e.LaunchRef
 	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
 	if err != nil {
@@ -173,6 +177,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
+	req.Membership = membership
 	if dispatcherGone(rv) {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
 	}
@@ -186,12 +191,20 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if clean || !want {
 		if !hookExpired(ctx) {
 			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				routeReq.Membership = membership
 				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 			}
 		}
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
+		return "refused"
+	}
+	if reply.Membership != nil {
+		membership = reply.Membership
+	}
+	if current, err := ident.ReadMembership(leaf); err != nil ||
+		membership != nil && current != *membership || membership == nil && current.Generation > 1 {
 		return "refused"
 	}
 	var result wire.HookResult
@@ -205,13 +218,16 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	reachSeen := confirmReach(ctx, leaf, gen, spec, result)
 	// The one acknowledgement request applies the start line and the reach line.
 	if (joinHintSeen || reachSeen) && !hookExpired(ctx) {
-		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
+		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{
+			Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck, Membership: membership,
+		}, true)
 	}
 	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {
 		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			routeReq.Membership = membership
 			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 		}
 	}

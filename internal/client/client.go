@@ -24,14 +24,16 @@ import (
 // Transport belongs to one CLI invocation. It retains the reply until the
 // caller has finished rendering it.
 type Transport struct {
-	spool       spool.Client
-	lookup      func(string) (string, bool)
-	pending     spool.Reply
-	entry       time.Time
-	startMember func(context.Context) (bool, error)
-	joinLaunch  func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch
-	bindLaunch  func(ident.Identity, domain.JoinLaunch) error
-	host        func(ident.Identity, func(string) (string, bool)) *wire.Host
+	spool                  spool.Client
+	lookup                 func(string) (string, bool)
+	pending                spool.Reply
+	entry                  time.Time
+	startMember            func(context.Context) (bool, error)
+	joinLaunch             func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch
+	bindLaunch             func(ident.Identity, domain.JoinLaunch) error
+	host                   func(ident.Identity, func(string) (string, bool)) *wire.Host
+	waitMembership         *wire.Membership
+	waitMembershipCaptured bool
 }
 
 // EnableHost lets each member command name the agent process that runs it.
@@ -115,6 +117,12 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 	}
 	req.OpKey = call.OpKey
 	req.OwnerAlerts = call.Owner && call.OwnerAlerts
+	if req.Verb == domain.VerbWait {
+		req.Membership = t.waitMembership
+	} else {
+		t.waitMembership = nil
+		t.waitMembershipCaptured = false
+	}
 	if strings.HasPrefix(req.Verb, "owner ") != call.Owner {
 		return localFailure(core.ExitRefused, core.CodeOwnerOnly, "command and ingress disagree"), nil
 	}
@@ -146,7 +154,15 @@ func (t *Transport) Do(ctx context.Context, call cli.Call) (core.Result, error) 
 			memberCtx, cancel = t.memberCommandContext(ctx)
 		}
 		defer cancel()
-		reply, err = t.spool.Member(memberCtx, id, req)
+		if req.Verb == domain.VerbWait && t.waitMembershipCaptured {
+			reply, err = t.spool.MemberPinned(memberCtx, id, req)
+		} else {
+			reply, err = t.spool.Member(memberCtx, id, req)
+		}
+		if req.Verb == domain.VerbWait && !t.waitMembershipCaptured && reply.MembershipCaptured {
+			t.waitMembership = reply.RequestMembership
+			t.waitMembershipCaptured = true
+		}
 	}
 	if err != nil && reply.Status != core.ExitUnavailable {
 		return core.Result{}, err

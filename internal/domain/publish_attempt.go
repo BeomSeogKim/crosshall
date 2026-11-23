@@ -396,10 +396,12 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 	var failures int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT a.state FROM publish_attempt a
 		JOIN publish_attempt this ON this.id = ?1 JOIN binding b ON b.id = this.binding_id
-		WHERE a.binding_id = this.binding_id AND a.launch_ref = this.launch_ref AND a.submitting_at_ms IS NOT NULL
+		WHERE a.binding_id IN (SELECT id FROM binding WHERE principal_id = this.principal_id)
+			AND a.launch_ref = this.launch_ref AND a.submitting_at_ms IS NOT NULL
 			AND a.state IN ('submitted', 'uncertain', 'not_submitted') AND a.outcome_seq > b.publish_resume_outcome
 			AND a.outcome_seq > COALESCE((SELECT MAX(n.outcome_seq) FROM publish_suspension s JOIN publish_attempt n ON n.id = s.notice
-				WHERE s.binding_id = this.binding_id AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)
+				WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = this.principal_id)
+					AND s.launch_ref = this.launch_ref AND s.reason = 'not_submitted'), 0)
 		ORDER BY a.outcome_seq DESC LIMIT ?2) WHERE state = 'not_submitted'`, id, publishFailuresToSuspend).Scan(&failures); err != nil {
 		return err
 	}
@@ -420,11 +422,12 @@ func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason stri
 	_, err := tx.ExecContext(ctx, `INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
 		SELECT a.binding_id, a.launch_ref, ?2, a.id, ?3,
 			CASE WHEN ?2 IN ('absorbed', 'not_submitted') AND (
-				SELECT COUNT(*) FROM publish_suspension s WHERE s.binding_id = a.binding_id
+				SELECT COUNT(*) FROM publish_suspension s
+					WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = a.principal_id)
 					AND s.launch_ref = a.launch_ref AND s.id > b.publish_resume_suspension
 					AND s.reason IN ('absorbed', 'not_submitted') AND (s.until_ms IS NULL OR s.until_ms > ?3)
 					AND s.notice > COALESCE((SELECT MAX(receipt.id) FROM publish_attempt receipt
-						WHERE receipt.binding_id = a.binding_id AND receipt.launch_ref = a.launch_ref
+						WHERE receipt.principal_id = a.principal_id AND receipt.launch_ref = a.launch_ref
 							AND receipt.observation = 'own_turn'), 0)
 			) + 1 >= ?5 THEN NULL ELSE ?4 END
 		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id WHERE a.id = ?1`,

@@ -21,6 +21,7 @@ const usage = `Usage: crosshall [--json] [--key <k>] <command>
 
 Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
+                                                    --move moves to the named channel
                                                     --rules prints the member rules again
   who                                               List the members of your channel
   read [<id>...]                                    Read the oldest unread messages, or the given ones
@@ -461,6 +462,10 @@ func parseJoin(args []string) (domain.Join, error) {
 			cmd.Rules = true
 			continue
 		}
+		if args[i] == "--move" {
+			cmd.Move = true
+			continue
+		}
 		if strings.HasPrefix(args[i], "-") {
 			return cmd, fmt.Errorf("unknown option %q for join", args[i])
 		}
@@ -473,6 +478,9 @@ func parseJoin(args []string) (domain.Join, error) {
 		}
 	}
 	if cmd.Channel == "" {
+		if cmd.Move {
+			return cmd, fmt.Errorf("name a destination channel with crosshall join <channel> --move")
+		}
 		root, err := RepoDefaultRoot("")
 		if err != nil {
 			return cmd, fmt.Errorf("%w; or specify a channel with crosshall join <channel>", err)

@@ -79,8 +79,12 @@ func (s *Service) returnByHost(ctx context.Context, tx store.Tx, caller *core.Ca
 	if err != nil {
 		return "", err
 	}
-	binding := b.id
-	caller.Role, caller.BindingID = core.RoleMember, &binding
+	membership := core.Membership{BindingID: b.id}
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM member_selection WHERE principal_id = ? AND binding_id = ?`,
+		principal, b.id).Scan(&membership.Generation); err != nil {
+		return "", err
+	}
+	caller.Role, caller.BindingID, caller.Membership = core.RoleMember, &membership.BindingID, &membership
 	if alias == b.alias {
 		return "", nil
 	}
@@ -106,6 +110,7 @@ func withReturnedAlias(result core.Result, alias string) (core.Result, error) {
 // dispatcher can probe.
 type HostedMember struct {
 	PrincipalID, BindingID, BindingEpoch int64
+	MembershipGeneration                 int64
 	PID, StartIdentity                   int64
 	PIDNamespace                         string
 }
@@ -114,8 +119,8 @@ type HostedMember struct {
 // and no governing launch: a member whose launch the process sweep checks
 // ends by that launch.
 func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit int) ([]HostedMember, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT h.principal_id, b.id, b.route_epoch, h.pid, h.start_identity, h.pid_namespace
-		FROM member_host h JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = h.principal_id)
+	rows, err := tx.QueryContext(ctx, `SELECT h.principal_id, b.id, b.route_epoch, s.generation, h.pid, h.start_identity, h.pid_namespace
+		FROM member_host h JOIN member_selection s ON s.principal_id = h.principal_id JOIN binding b ON b.id = s.binding_id
 		WHERE h.principal_id > ? AND b.state = 'live' AND NOT `+governingLaunch+`
 		ORDER BY h.principal_id LIMIT ?`, afterPrincipal, limit)
 	if err != nil {
@@ -125,7 +130,7 @@ func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit
 	var members []HostedMember
 	for rows.Next() {
 		var m HostedMember
-		if err := rows.Scan(&m.PrincipalID, &m.BindingID, &m.BindingEpoch, &m.PID, &m.StartIdentity, &m.PIDNamespace); err != nil {
+		if err := rows.Scan(&m.PrincipalID, &m.BindingID, &m.BindingEpoch, &m.MembershipGeneration, &m.PID, &m.StartIdentity, &m.PIDNamespace); err != nil {
 			return nil, err
 		}
 		members = append(members, m)
@@ -154,8 +159,9 @@ func DepartGoneHosts(ctx context.Context, tx store.Tx, gone []HostedMember, now 
 	for _, m := range gone {
 		res, err := tx.ExecContext(ctx, `DELETE FROM member_host AS h WHERE h.principal_id = ?1 AND h.pid = ?2
 			AND h.start_identity = ?3 AND h.pid_namespace = ?4 AND NOT `+governingLaunch+`
-			AND EXISTS (SELECT 1 FROM binding WHERE id = ?5 AND principal_id = ?1 AND route_epoch = ?6 AND state = 'live')`,
-			m.PrincipalID, m.PID, m.StartIdentity, m.PIDNamespace, m.BindingID, m.BindingEpoch)
+			AND EXISTS (SELECT 1 FROM member_selection s JOIN binding b ON b.id = s.binding_id
+				WHERE s.principal_id = ?1 AND s.binding_id = ?5 AND s.generation = ?7 AND b.route_epoch = ?6 AND b.state = 'live')`,
+			m.PrincipalID, m.PID, m.StartIdentity, m.PIDNamespace, m.BindingID, m.BindingEpoch, m.MembershipGeneration)
 		if err != nil {
 			return false, err
 		}

@@ -161,7 +161,11 @@ func currentAck(rv, leaf *os.Root, generation, effect, turn string) (wire.HookAc
 	if e != nil || err != nil {
 		return ack, errors.New("invalid stamp sequence")
 	}
-	ack = wire.HookAck{Kind: effect, Instance: marker.Instance, Generation: generation, Seq: notice}
+	membership, err := ident.ReadMembership(leaf)
+	if err != nil {
+		return ack, err
+	}
+	ack = wire.HookAck{Kind: effect, Instance: marker.Instance, Generation: generation, Seq: notice, Membership: membership}
 	if effect == "reminder" {
 		ack.Seq, ack.TurnRef = reminder, turn
 	}
@@ -170,6 +174,9 @@ func currentAck(rv, leaf *os.Root, generation, effect, turn string) (wire.HookAc
 
 func seenText(ack wire.HookAck) string {
 	text := fmt.Sprintf("%s %s %d", ack.Instance, ack.Generation, ack.Seq)
+	if ack.Membership.Generation > 1 {
+		text += fmt.Sprintf(" %d %d", ack.Membership.BindingID, ack.Membership.Generation)
+	}
 	if ack.Kind == "reminder" {
 		text += " " + ack.TurnRef
 	}
@@ -188,7 +195,18 @@ func stampClean(rv, leaf *os.Root, generation, effect, turn string) bool {
 func hasSeenNotice(leaf *os.Root, generation string) bool {
 	seen, err := ident.ReadPrivateFile(leaf, "seen-notice", 4096)
 	fields := strings.Fields(string(seen))
-	return err == nil && len(fields) == 3 && fields[1] == generation
+	if err != nil || len(fields) < 3 || fields[1] != generation {
+		return false
+	}
+	membership, err := ident.ReadMembership(leaf)
+	if err != nil {
+		return false
+	}
+	if membership.Generation <= 1 {
+		return len(fields) == 3
+	}
+	return len(fields) == 5 && fields[3] == strconv.FormatInt(membership.BindingID, 10) &&
+		fields[4] == strconv.FormatInt(membership.Generation, 10)
 }
 
 const seenJoinHint = "seen-join-hint"

@@ -63,7 +63,7 @@ func TestLoopGuardCutoverFencesBothUpgradePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer upgraded.Close()
-			if after := adapterLedgerSnapshot(t, upgraded.db, len(migrations)); after != before {
+			if after := adapterLedgerSnapshot(t, upgraded.db, 22); after != before {
 				t.Fatal("cutover changed prior ledger rows")
 			}
 			var wrong int

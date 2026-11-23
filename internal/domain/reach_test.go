@@ -204,6 +204,17 @@ func TestReachLineFlipsWithEachWayTheHallStopsReaching(t *testing.T) {
 	}
 }
 
+func TestReachLossNamesOwnerResumeForLastingLaunchSuspension(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.wantReach("available route", p.turn(), ReachBringsLine)
+	id := p.observed("absorbed")
+	p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+	want := fmt.Sprintf("%s Notices stay off until this session restarts. Your user can turn them on with crosshall owner publish resume %d.", ReachLostLine, p.binding.ID)
+	p.wantReach("lasting launch suspension", p.turn(), want)
+	p.wantReach("the hint was already printed", p.turn(), "")
+}
+
 func TestReachLineRespectsDoNotDisturb(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()

@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded. This requires no database migration.
+
 ## To v0.2.0-rc.3
 
 Upgrading from v0.2.0-rc.2 to v0.2.0-rc.3 moves the database from schema 21 to schema 22. A hall that ran rc.2 can already have recorded message levels and round positions. Migration 022 clears those positions and fences existing requests and members at the highest message ID. The round guard starts each path at zero, with the existing messages, deadlines, obligations and operation keys available.

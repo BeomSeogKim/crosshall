@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -64,6 +65,9 @@ func offerReach(ctx context.Context, tx store.Tx, b hookBinding, restored bool, 
 		out.ReachAck = &wire.HookReachAck{BindingID: b.id, RouteEpoch: epoch, Told: 1}
 	case !reach && toldBrings:
 		out.ReachLine = ReachLostLine
+		if state.LastingLaunchSuspension {
+			out.ReachLine += fmt.Sprintf(" Notices stay off until this session restarts. Your user can turn them on with crosshall owner publish resume %d.", b.id)
+		}
 		out.ReachAck = &wire.HookReachAck{BindingID: b.id, RouteEpoch: epoch, Told: 0}
 	}
 	return nil

@@ -10,7 +10,7 @@ Install: `git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKi
 
 Two agents, each in its own session in the same repository: you tell one to ask the other, the request is stored, the other answers, and nobody types into either session. The [quick start](#quick-start) gets you there with your own agents. [By hand, in three terminals](#by-hand-in-three-terminals) shows the same exchange with every command and its output, and a test runs it as written for every change. For the same exchange between two real agents, Codex CLI as the reviewer and Claude Code as the writer, see the [recording](docs/recordings/rc13.md); it was made with v0.1.0-rc.13, before `crosshall read` became the one step that picks up work.
 
-How to read the output of that exchange: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `stored -> waits for its next crosshall command` means the message is stored; the recipient sees it the next time it runs crosshall, or at once if it is inside a `crosshall wait`. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
+How to read the output of that exchange: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `stored -> not woken: no notice route; it sees this at its next crosshall command` means the message is stored and nothing will start a turn for the recipient: it sees the message the next time it runs crosshall, or at once if it is inside a `crosshall wait`. The `next:` line says what to do when nothing will tell a recipient; between two shells, you are the user it names. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
 
 What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - The sender of a message is the member that sent it. No text inside a message can claim another identity.
@@ -144,12 +144,12 @@ $ crosshall join demo --as writer
 - When a request is refused by the loop guard, do not retry it: reply or note what you have.
 - Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
-  @writer (you)  route  focus unset  last command 0s ago  pull
+  @writer (you)  route  focus unset  last command 0s ago  not woken: no notice route
   Working or idle is not shown: no vendor adapter reports it. The time is the member's last crosshall command.
 [crosshall] 0 unread, 0 owed.
 ```
 
-In the member list, `route` is the kind of identity (a shell opened with `crosshall run`; an agent shows its vendor), `focus unset` means the member has not said what it works on (`crosshall focus "..."` sets it), and `pull` means it receives messages by asking for them.
+In the member list, `route` is the kind of identity (a shell opened with `crosshall run`; an agent shows its vendor), `focus unset` means the member has not said what it works on (`crosshall focus "..."` sets it), and `not woken: no notice route` means nothing starts a turn for it: it sees new work when it runs a crosshall command.
 
 **3. The reviewer** opens another member shell and joins.
 
@@ -168,8 +168,8 @@ $ crosshall join demo --as reviewer
 - When a request is refused by the loop guard, do not retry it: reply or note what you have.
 - Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
-  @reviewer (you)  route  focus unset  last command 0s ago  pull
-  @writer          route  focus unset  last command 0s ago  pull
+  @reviewer (you)  route  focus unset  last command 0s ago  not woken: no notice route
+  @writer          route  focus unset  last command 0s ago  not woken: no notice route
   Working or idle is not shown: no vendor adapter reports it. The time is the member's last crosshall command.
 [crosshall] 0 unread, 0 owed.
 ```
@@ -181,7 +181,8 @@ $ crosshall join demo --as reviewer
 # writer
 $ crosshall ask @reviewer "What is missing from the install example?"
 #1 stored. due 02:43.
-  @reviewer  stored -> waits for its next crosshall command
+  @reviewer  stored -> not woken: no notice route; it sees this at its next crosshall command
+next: nothing will tell @reviewer. Ask a member the hall can wake (crosshall who), or tell your user.
 [crosshall] @reviewer joined (route, focus unset)
 [crosshall] 0 unread, 0 owed.
 ```
@@ -200,7 +201,8 @@ Reply with crosshall reply 1 "result", or use --more-time or --decline.
 [crosshall] 0 unread, 1 owed.
 $ crosshall reply 1 "It should name the minimum Go version."
 #2 answers #1 (to @writer).
-  @writer  stored -> waits for its next crosshall command
+  @writer  stored -> not woken: no notice route; it sees this at its next crosshall command
+next: nothing will tell @writer. Ask a member the hall can wake (crosshall who), or tell your user.
 [crosshall] 0 unread, 0 owed.
 ```
 
@@ -259,7 +261,8 @@ $ crosshall owner budget grant demo/@writer --rounds 8
 # writer
 $ crosshall ask @reviewer "Which upgrade step should we clarify?" --new
 #3 stored. due 03:41.
-  @reviewer  stored -> waits for its next crosshall command
+  @reviewer  stored -> not woken: no notice route; it sees this at its next crosshall command
+next: nothing will tell @reviewer. Ask a member the hall can wake (crosshall who), or tell your user.
 [crosshall] 0 unread, 0 owed.
 ```
 

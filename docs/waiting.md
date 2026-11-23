@@ -14,7 +14,7 @@ Every wait result ends with `[crosshall] N unread, M owed.`, read from the hall 
 
 By default, `crosshall wait` watches for new requests or notes addressed to you and replies to your requests. `--work-only` limits the wait to requests and replies. Notes stay available in the inbox. Use `--any` for new traffic between other channel members too. Your own sends never wake the wait. `--any` and `--work-only` are mutually exclusive.
 
-While your wait polls, the hall knows that it is running. A sender's line for you then says `stored -> its wait is running` for a message your wait accepts (a note does not end a `--work-only` wait), and `crosshall who` adds `woken by its wait` to your line. A wait counts as running for three seconds after its last poll. The dispatcher keeps this in memory only: its restart ends every wait.
+While your wait polls, the hall knows that it is running. A sender's line for you then says `stored -> its wait is running` for a message your wait accepts (a note does not end a `--work-only` wait), and `crosshall who` says `woken by its wait` for you. A wait counts as running for three seconds after its last poll. The dispatcher keeps this in memory only: its restart ends every wait.
 
 If the wait can no longer find the same message at its cursor, for example after restoring an older backup, it exits with code 3 and the JSON error code `wait_cursor_invalidated`. Run `crosshall inbox` to check for unread messages before waiting again.
 

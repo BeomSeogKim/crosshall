@@ -82,10 +82,7 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
 			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
-		LEFT JOIN `+currentBindingLaunch+`
-		LEFT JOIN adapter_policy ap ON ap.adapter = json_extract(l.profile, '$.adapter') AND ap.enabled = 1
-			AND l.fenced = 0 AND b.dnd = 0 AND (b.owner_hook_fence_ms IS NULL OR l.started_hook_at_ms > b.owner_hook_fence_ms)
-			AND b.id = (SELECT MIN(id) FROM binding WHERE principal_id = b.principal_id)
+		`+promptAdapter+`
 		ORDER BY c.id, b.id`)
 	if err != nil {
 		return core.Result{}, err

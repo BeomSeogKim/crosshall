@@ -1,1 +1,1 @@
-{"v":1,"registry":1,"batch":"5d2f8a1c3e7b9d0f4a6c8e2b1d3f5a70","day":"2026-11-24","app":{"version":"v0.2.0-rc.2","platform":"linux-amd64"},"sources":{"hooks":"missing","snapshot":"none"},"counts":{"hook.claude.start.clean":1,"join.cli":2,"msg.note":1,"suspend.absorbed.timed":1}}
+{"v":1,"registry":2,"batch":"5d2f8a1c3e7b9d0f4a6c8e2b1d3f5a70","day":"2026-11-24","app":{"version":"v0.2.0-rc.2","platform":"linux-amd64"},"sources":{"hooks":"missing","snapshot":"none"},"counts":{"hook.claude.start.clean":1,"join.cli":2,"msg.note":1,"suspend.absorbed.timed":1}}

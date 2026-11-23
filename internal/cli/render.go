@@ -192,11 +192,10 @@ func RenderRoster(w io.Writer, channel, topic string, members []domain.Member, o
 			unreported = true
 		}
 		route := m.Route
-		if m.Publish != nil {
+		if m.Wake.Wake != "" {
+			route = memberWakeText(m.Wake)
+		} else if m.Publish != nil {
 			route += "; publish: " + publishWords(*m.Publish)
-		}
-		if m.WaitRunning {
-			route += "; woken by its wait"
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", alias, m.Vendor, focus, activity, route)
 	}

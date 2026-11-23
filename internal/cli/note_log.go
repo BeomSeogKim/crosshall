@@ -139,7 +139,7 @@ func renderNoteLog(cmd domain.Command, data []byte, w io.Writer) error {
 		fmt.Fprintf(w, "#%d note stored; nobody owes an answer.\n", r.ID)
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		for _, d := range r.Recipients {
-			fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d))
+			fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d, true))
 		}
 		return tw.Flush()
 	case domain.Log:

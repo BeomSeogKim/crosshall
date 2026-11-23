@@ -135,6 +135,9 @@ type LedgerRecipient struct {
 	// ReplyNotice the one that offered the asker this recipient's reply.
 	Notice      *LedgerNotice `json:"notice,omitempty"`
 	ReplyNotice *LedgerNotice `json:"reply_notice,omitempty"`
+	// Wake is what will tell a live recipient about a request it has not
+	// picked up, as of the view.
+	Wake
 }
 
 type Receipt struct {
@@ -228,7 +231,7 @@ func (s *Service) waiting(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if !ok || caller.Role != core.RoleMember {
 		return notEnrolled(), nil
 	}
-	requests, err := ledgerRequests(ctx, tx, member.channel, member.principal, false, now)
+	requests, err := s.ledgerRequests(ctx, tx, member.channel, member.principal, false, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -246,7 +249,7 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 	if !ok || caller.Role != core.RoleMember {
 		return notEnrolled(), nil
 	}
-	ch, err := channelLedger(ctx, tx, channelRow{id: member.channel, name: member.name}, false, now)
+	ch, err := s.channelLedger(ctx, tx, channelRow{id: member.channel, name: member.name}, false, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -326,7 +329,7 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 	}
 	out := StatusResult{GeneratedAtMS: ms(now), Channels: make([]ChannelStatus, 0, len(channels))}
 	for _, ch := range channels {
-		status, err := channelLedger(ctx, tx, ch, true, now)
+		status, err := s.channelLedger(ctx, tx, ch, true, now)
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -335,10 +338,10 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 	return OK(out)
 }
 
-func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, now time.Time) (ChannelStatus, error) {
+func (s *Service) channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, now time.Time) (ChannelStatus, error) {
 	out := ChannelStatus{ID: ch.id, Name: ch.name, Bindings: []StatusBinding{}, Exchanges: []ExchangeRound{}, GuardStops: []GuardStop{}}
 	var err error
-	out.Requests, err = ledgerRequests(ctx, tx, ch.id, 0, owner, now)
+	out.Requests, err = s.ledgerRequests(ctx, tx, ch.id, 0, owner, now)
 	if err != nil || !owner {
 		return out, err
 	}
@@ -405,7 +408,7 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 }
 
 // A nonzero waitingFor scopes the view to an asker's unsettled or unread work.
-func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64, owner bool, now time.Time) ([]LedgerRequest, error) {
+func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64, owner bool, now time.Time) ([]LedgerRequest, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.sender_id, COALESCE(sb.alias, ''), m.exchange_id, m.due_at_ms, m.created_at_ms,
 		r.principal_id, b.id, r.alias_at_commit, o.state, COALESCE(b.state, 'departed'), r.picked_up_at_ms, o.settled_at_ms, o.more_time_at_ms,
 		EXISTS(SELECT 1 FROM message p JOIN recipient pr ON pr.message_id = p.id AND pr.principal_id = m.sender_id
@@ -441,6 +444,7 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		if err := json.Unmarshal([]byte(receipts), &r.Receipts); err != nil {
 			return nil, err
 		}
+		binding := r.BindingID
 		if !owner {
 			r.BindingID = nil
 		}
@@ -457,6 +461,12 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		if r.State == "open" {
 			if bindingState == "departed" {
 				r.BindingState = bindingState
+			}
+			// A request with a notice of its own shows that notice instead.
+			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && r.Notice == nil {
+				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
+					return nil, err
+				}
 			}
 			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
 				return nil, err

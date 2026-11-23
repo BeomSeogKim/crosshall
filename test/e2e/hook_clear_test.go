@@ -180,20 +180,44 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 func TestAReceiptRecordedAfterAClearIsKept(t *testing.T) {
 	w, _, c := m2World(t)
 	c.pid = strconv.Itoa(os.Getpid())
-	// A hook prints only within its budget, so each start is retried until
-	// it is recorded (#203): a busy machine can delay the dispatcher's reply.
+	member := &participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + c.key}}
+	if res := member.run("join", "missing-channel"); res.exit == 0 {
+		t.Fatal("provisional join unexpectedly succeeded")
+	}
+	oldLeaf := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
+	unblock := blockWelcomeReceipt(t, oldLeaf)
 	db := w.db()
-	c.fireUntil("SessionStart", map[string]any{"source": "startup"}, "a live member and its launch", func(string) bool {
+	startAcknowledged := func() bool {
 		var registered bool
 		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM principal_key k
 			JOIN binding b ON b.principal_id = k.principal_id
 			JOIN adapter_launch l ON l.principal_id = k.principal_id
 			WHERE k.vendor = 'claude' AND k.key = ? AND k.state = 'live' AND b.state = 'live'
-				AND l.ended_hook_at_ms IS NULL AND l.launch_ref LIKE ?)`,
+				AND b.start_line_seen = 1 AND l.ended_hook_at_ms IS NULL AND l.launch_ref LIKE ?)`,
 			c.key, "pid-"+c.pid+"-%").Scan(&registered); err != nil {
 			t.Fatal(err)
 		}
 		return registered
+	}
+	c.fireUntil("SessionStart", map[string]any{"source": "startup"}, "a live launch with its start line acknowledged", func(out string) bool {
+		if out != "" {
+			if got := hostContext(t, out); !strings.Contains(got, "Joined #checkout as @claude1") {
+				t.Fatalf("unexpected startup guidance: %q", got)
+			}
+			if unblock != nil {
+				unblock()
+				unblock = nil
+			}
+		}
+		if startAcknowledged() {
+			return true
+		}
+		if !hasWelcomeReceipt(t, oldLeaf) {
+			return false
+		}
+		// Import the receipt if the one-way acknowledgement expired.
+		member.run("wait", "--existing", "--timeout", "1s")
+		return startAcknowledged()
 	})
 	w.member().must("join", "checkout", "--as", "latepeer")
 	cleared := claudeSession{w: w, key: c.key + "-cleared", pid: c.pid, repo: c.repo}
@@ -206,7 +230,7 @@ func TestAReceiptRecordedAfterAClearIsKept(t *testing.T) {
 	if err := w.db().QueryRow(`SELECT MAX(seq) FROM roster_change`).Scan(&latest); err != nil {
 		t.Fatal(err)
 	}
-	oldLeaf := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
+
 	for _, receipt := range []string{"ack", "rules"} {
 		if err := os.WriteFile(filepath.Join(oldLeaf, receipt), []byte(strconv.FormatInt(latest, 10)+"\n"), 0600); err != nil {
 			t.Fatal(err)

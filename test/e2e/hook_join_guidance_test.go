@@ -86,7 +86,9 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 		// startLine submits prompts until one prints the start line, without the rules.
 		startLine := func(f *setupWorld, repo string) {
 			deadline := time.Now().Add(fixtureEventTimeout)
-			f.waitForWelcomeDelivery(repo, adapter.name, "UserPromptSubmit", prompt, deadline)
+			f.waitForWelcomeDelivery(adapter.name, "UserPromptSubmit", deadline, func(turn string) string {
+				return f.invokeHook(repo, adapter.name, "UserPromptSubmit", prompt(turn))
+			})
 			f.waitEnrollmentPackets(adapter.name, "UserPromptSubmit", deadline)
 		}
 		t.Run(adapter.name+" hook first", func(t *testing.T) {

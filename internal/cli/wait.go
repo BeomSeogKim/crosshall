@@ -14,7 +14,14 @@ const (
 	waitUsage     = "usage: crosshall wait [--any | --work-only] [--existing] [--timeout <positive duration, e.g. 30s>]"
 	waitFirstPoll = 100 * time.Millisecond
 	waitMaxPoll   = time.Second
+	// waitHostCheck is how many polls pass between checks that the agent
+	// that started the wait still runs.
+	waitHostCheck = 5
 )
+
+// CodeWaitHostGone ends a wait whose agent process has ended, so that a
+// running wait implies a live agent wherever the agent can be named.
+const CodeWaitHostGone core.Code = "wait_host_gone"
 
 type waitResult struct {
 	domain.InboxResult
@@ -57,6 +64,10 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 	}
 
 	probe, _ := env.Transport.(interface{ DispatcherRunning() bool })
+	var hostGone func() bool
+	if host, ok := env.Transport.(interface{ HostGone() func() bool }); ok {
+		hostGone = host.HostGone()
+	}
 	checkDispatcher := func() core.ExitCode {
 		if probe != nil && !probe.DispatcherRunning() {
 			return o.fail(core.ExitUnavailable, core.CodeDispatcherUnavailable, "dispatcher is unavailable",
@@ -99,12 +110,15 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 			return true
 		}
 	}
-	for {
+	for polls := 0; ; polls++ {
 		if waitCtx.Err() != nil {
 			return end()
 		}
 		if status := checkDispatcher(); status != core.ExitOK {
 			return status
+		}
+		if hostGone != nil && polls%waitHostCheck == waitHostCheck-1 && hostGone() {
+			return o.fail(core.ExitError, CodeWaitHostGone, "the agent that started this wait has ended", "")
 		}
 		result, err := env.Transport.Do(waitCtx, Call{Command: cmd})
 		if err != nil || result.Status != core.ExitOK {

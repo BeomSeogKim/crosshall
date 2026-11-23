@@ -142,3 +142,43 @@ func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 		})
 	}
 }
+
+type waitHostTransport struct {
+	waitTimingTransport
+	gone func() bool
+}
+
+func (f *waitHostTransport) HostGone() func() bool { return f.gone }
+
+func TestWaitEndsWhenItsAgentHasEnded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		checks := 0
+		transport := &waitHostTransport{
+			waitTimingTransport: waitTimingTransport{
+				fakeTransport: fakeTransport{result: okResult(t, domain.WaitSnapshot{Cursor: domain.WaitCursor{BindingID: 1}})},
+				start:         time.Now(),
+			},
+			gone: func() bool { checks++; return checks == 2 },
+		}
+		stdout, stderr, code := run(t, Env{Transport: transport}, "--json", "wait")
+		if code != core.ExitError || !strings.Contains(stdout, `"code":"`+string(CodeWaitHostGone)+`"`) {
+			t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+		}
+		// Checked before every fifth poll: the second check ends it, after nine polls.
+		if len(transport.polls) != 2*waitHostCheck-1 {
+			t.Fatalf("%d polls before the agent's end was found", len(transport.polls))
+		}
+	})
+}
+
+func TestWaitWithoutANamedAgentKeepsWaiting(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := &waitHostTransport{waitTimingTransport: waitTimingTransport{
+			fakeTransport: fakeTransport{result: okResult(t, domain.WaitSnapshot{Cursor: domain.WaitCursor{BindingID: 1}})},
+			start:         time.Now(),
+		}}
+		if _, stderr, code := run(t, Env{Transport: transport}, "wait", "--timeout", "20s"); code != core.ExitWaitTimeout {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+	})
+}

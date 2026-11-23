@@ -95,7 +95,7 @@ A route publishes when all of these hold:
 What a member sees:
 
 - `crosshall who` shows `publish: <state>` after the route: `off`, `candidate`, `available`, `held`, `suspended` or `capped`. A member sees the word only.
-- A send says `stored -> notice queued` only when a notice will offer that message. In every other case it says `stored -> waits for its next crosshall command`.
+- A send says `stored -> notice queued` only when a notice will offer that message, and `stored -> its wait is running` when no notice will but the member's own wait is polling and accepts it ([waiting](waiting.md)). In every other case it says `stored -> waits for its next crosshall command`.
 - `crosshall waiting` shows each notice behind a request: submitted or not, and whether the session's hook observed it.
 - `crosshall publish off` stops notices to your own session, and `crosshall publish on` allows them again; `on` never overrides an owner's off.
 

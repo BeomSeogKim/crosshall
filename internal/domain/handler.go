@@ -39,6 +39,8 @@ type Service struct {
 	// if the directory is the registered one (file identity) and carries
 	// the committed generation; otherwise none.
 	LeafReceipts func(vendor, key, fileID, generation string) (cursor, rules uint64)
+
+	waits waitPresence
 }
 
 var _ Handler = (*Service)(nil)
@@ -47,7 +49,7 @@ var _ Handler = (*Service)(nil)
 // result, not an error; an error means the transaction must be rolled back.
 func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, req Request) (core.Result, error) {
 	if cmd, ok := req.Command.(Wait); ok {
-		return waitSnapshot(ctx, tx, caller, cmd)
+		return waitSnapshot(ctx, tx, caller, cmd, &s.waits, s.now())
 	}
 	now := s.now()
 	returnedAs, err := s.returnByHost(ctx, tx, &caller, req, now)
@@ -667,6 +669,9 @@ func (s *Service) who(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil {
 		return core.Result{}, err
 	}
+	for i := range members {
+		members[i].WaitRunning = s.waits.running(members[i].binding, "", now)
+	}
 	seq, err := rosterSeq(ctx, tx, ch.id)
 	if err != nil {
 		return core.Result{}, err
@@ -723,7 +728,7 @@ func roster(ctx context.Context, tx store.Tx, channel, self int64, now time.Time
 		}
 		m.LastCommandAgoS = max((ms(now)-seen)/1000, 0)
 		m.State, m.Route, m.Self = "unknown", "pull", principal == self
-		m.principal = principal
+		m.principal, m.binding = principal, bindingID
 		collected = append(collected, memberRow{bindingID: bindingID, member: m})
 	}
 	if err := rows.Err(); err != nil {

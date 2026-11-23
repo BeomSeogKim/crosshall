@@ -5,6 +5,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **A running wait is named:** a send to a member whose own `crosshall wait` is polling and accepts the message says `stored -> its wait is running` instead of `waits for its next crosshall command`, and `crosshall who` adds `woken by its wait` to that member's line. A wait counts as running for three seconds after its last poll; the dispatcher keeps this in memory only. Rule 4 now asks for an untimed background wait where a background command's exit starts the next turn (Claude Code), and a bounded one elsewhere. A wait ends by itself, with `wait_host_gone`, within about five seconds of the end of the agent process it would name. A wait that times out in a session the hall delivers to now ends with `The hall brings new work to this session: no wait is needed.`, as documented; it used to name the wait command again (#236).
+- **Usage statistics question:** an answer it does not accept is followed by `Answer y or n.` and the prompt line, not the whole paragraph again. `ㅛ` and `ㅜ`, the y and n keys under a Korean input method, count as y and n.
 
 ## v0.2.0-rc.3 (2026-11-23)
 

@@ -80,6 +80,7 @@ type server struct {
 	readyLease      *os.File
 	cancel          context.CancelFunc
 	nextReap        time.Time
+	lastRetention   time.Time
 	lastLogged      string
 	adapterSequence uint64
 }
@@ -385,6 +386,7 @@ func (s *server) scan(ctx context.Context) error {
 	if reap {
 		s.nextReap = now.Add(time.Hour)
 	}
+	s.runRetention(ctx, now)
 	return s.publishReady(ctx, root)
 }
 

@@ -50,22 +50,23 @@ type choice struct {
 }
 
 type prompter struct {
-	s       Service
-	ops     operations
-	req     Request
-	out     io.Writer // questions and plans; stderr under --json
-	scanner *bufio.Scanner
-	now     func() time.Time
+	s     Service
+	ops   operations
+	req   Request
+	out   io.Writer // questions and plans; stderr under --json
+	input *bufio.Reader
+	now   func() time.Time
 }
 
 func (s Service) prompts(ctx context.Context, req Request, ops operations) error {
-	p := &prompter{s: s, ops: ops, req: req, out: req.Output, scanner: bufio.NewScanner(req.Input), now: time.Now}
+	p := &prompter{s: s, ops: ops, req: req, out: req.Output, input: bufio.NewReader(req.Input), now: time.Now}
 	if req.JSON {
 		p.out = req.Prompt
 		if p.out == nil {
 			p.out = io.Discard
 		}
 	}
+	var promptErr error
 	switch {
 	case req.Action == "status":
 		statuses, err := ops.Status(ctx)
@@ -74,11 +75,16 @@ func (s Service) prompts(ctx context.Context, req Request, ops operations) error
 		}
 		return RenderStatus(req.Output, statuses, req.JSON)
 	case req.Offer:
-		return p.offer(ctx)
+		promptErr = p.offer(ctx)
 	case req.Action == "uninstall":
 		return p.uninstall(ctx)
+	default:
+		promptErr = p.setup(ctx)
 	}
-	return p.setup(ctx)
+	if promptErr == nil && req.OfferTelemetry != nil {
+		return req.OfferTelemetry(p.input)
+	}
+	return promptErr
 }
 
 // offer is the installer's form. It asks only in an owner terminal when no
@@ -395,11 +401,15 @@ func (p *prompter) question(label string) (answer, error) {
 	if _, err := fmt.Fprintf(p.out, "%s [y/N] ", label); err != nil {
 		return answerSkip, err
 	}
-	if !p.scanner.Scan() {
+	line, err := p.input.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
 		fmt.Fprintln(p.out)
-		return answerSkip, p.scanner.Err()
+		return answerSkip, err
 	}
-	switch strings.ToLower(strings.TrimSpace(p.scanner.Text())) {
+	if line == "" {
+		fmt.Fprintln(p.out)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return answerYes, nil
 	case "n", "no":

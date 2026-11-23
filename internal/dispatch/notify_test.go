@@ -271,3 +271,35 @@ func TestNotifierHoldsNeitherTheLoopNorTheStore(t *testing.T) {
 		t.Fatalf("after the restart the command got %q, want only the second stop", got)
 	}
 }
+
+// The dispatcher loop calls tick between scans, so tick never waits for
+// the store: a long read, such as the daily usage build, holds the shared
+// reader, and requests must still be scanned while it does.
+func TestNotifierTickDoesNotWaitForTheStore(t *testing.T) {
+	db := notifyStore(t)
+	held, done := make(chan struct{}), make(chan struct{})
+	reading := make(chan error, 1)
+	go func() {
+		reading <- db.View(t.Context(), func(store.Tx) error {
+			close(held)
+			<-done
+			return nil
+		})
+	}()
+	<-held
+	// The reader is released after half a second either way, so a tick
+	// that waits for it shows as a slow tick rather than a hung test.
+	time.AfterFunc(500*time.Millisecond, func() { close(done) })
+	_, linux := notifyCommand("linux")
+	n := newNotifier(db, release, true, "", linux)
+	begin := time.Now()
+	n.tick(t.Context(), time.Now())
+	elapsed := time.Since(begin)
+	n.wait()
+	if err := <-reading; err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("tick waited %v for the reader", elapsed)
+	}
+}

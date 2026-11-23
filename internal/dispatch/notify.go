@@ -22,8 +22,9 @@ const (
 )
 
 // notifier shows a desktop notification for a round stop. Only release
-// builds show one, so tests and development halls stay quiet; the command
-// runs in a worker, never inside a request or the dispatcher loop.
+// builds show one, so tests and development halls stay quiet; the store
+// reads, the claim and the command run in a worker, never inside a request
+// or the dispatcher loop.
 type notifier struct {
 	db *store.Store
 	// path is empty when no notification can be shown.
@@ -68,11 +69,23 @@ func (n *notifier) recover(ctx context.Context) error {
 	return n.db.Update(ctx, func(tx store.Tx) error { return domain.FailUnfinishedDesktopAlerts(ctx, tx) })
 }
 
-// tick decides the pending stops; while a command runs it does nothing.
+// tick starts the worker that decides the pending stops and runs the
+// command; while one runs it does nothing. It never touches the store
+// itself, because the dispatcher loop calls it between scans and a long
+// read can hold the shared reader.
 func (n *notifier) tick(ctx context.Context, now time.Time) {
 	if !n.running.CompareAndSwap(false, true) {
 		return
 	}
+	n.workers.Add(1)
+	go func() {
+		defer n.workers.Done()
+		defer n.running.Store(false)
+		n.work(ctx, now)
+	}()
+}
+
+func (n *notifier) work(ctx context.Context, now time.Time) {
 	var pending bool
 	err := n.db.View(ctx, func(tx store.Tx) error {
 		var err error
@@ -87,27 +100,21 @@ func (n *notifier) tick(ctx context.Context, now time.Time) {
 			return err
 		})
 	}
-	if err != nil || len(alerts) == 0 {
-		n.running.Store(false)
-		if err != nil && ctx.Err() == nil {
+	if err != nil {
+		if ctx.Err() == nil {
 			log.Printf("dispatcher: desktop notification: %v", err)
 		}
 		return
 	}
-	n.workers.Add(1)
-	go func() {
-		defer n.workers.Done()
-		defer n.running.Store(false)
-		for _, alert := range alerts {
-			sent := n.show(ctx, alert) == nil
-			// A write lost to shutdown leaves the row sending, which the
-			// next start records as failed.
-			err := n.db.Update(ctx, func(tx store.Tx) error { return domain.FinishDesktopAlert(ctx, tx, alert.Seq, sent) })
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("dispatcher: desktop notification: %v", err)
-			}
+	for _, alert := range alerts {
+		sent := n.show(ctx, alert) == nil
+		// A write lost to shutdown leaves the row sending, which the
+		// next start records as failed.
+		err := n.db.Update(ctx, func(tx store.Tx) error { return domain.FinishDesktopAlert(ctx, tx, alert.Seq, sent) })
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("dispatcher: desktop notification: %v", err)
 		}
-	}()
+	}
 }
 
 func (n *notifier) show(ctx context.Context, alert domain.DesktopAlert) error {

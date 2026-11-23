@@ -2,8 +2,11 @@ package domain
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -108,12 +111,18 @@ type HostedMember struct {
 }
 
 // HostedMembers lists, after a principal, the live members that have a host
-// and no open launch: a member with an open launch ends by its launch.
-func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit int) ([]HostedMember, error) {
+// and no governing launch: a member whose launch something will end ends by
+// that launch. sessionEnd lists the adapters whose installed hooks report a
+// session end.
+func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit int, sessionEnd []string) ([]HostedMember, error) {
+	enders, err := json.Marshal(sessionEnd)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT h.principal_id, b.id, b.route_epoch, h.pid, h.start_identity, h.pid_namespace
 		FROM member_host h JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = h.principal_id)
-		WHERE h.principal_id > ? AND b.state = 'live' AND NOT `+openLaunch+`
-		ORDER BY h.principal_id LIMIT ?`, afterPrincipal, limit)
+		WHERE h.principal_id > ?1 AND b.state = 'live' AND NOT `+governingLaunch("h.principal_id", "?3")+`
+		ORDER BY h.principal_id LIMIT ?2`, afterPrincipal, limit, string(enders))
 	if err != nil {
 		return nil, err
 	}
@@ -129,19 +138,36 @@ func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit
 	return members, rows.Err()
 }
 
-const openLaunch = `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = h.principal_id
-	AND l.ended_hook_at_ms IS NULL AND l.fenced = 0)`
+// governingLaunch is true when the principal has an open launch that
+// something will end: a verified Claude Code launch, which the process sweep
+// checks whatever the adapter switch, or a verified launch of an enabled
+// adapter whose installed hooks report a session end (enders, a JSON array).
+// Any other open launch, such as Antigravity's session launch or one whose
+// adapter was switched off, would stay open: the member's host governs.
+func governingLaunch(principal, enders string) string {
+	return `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = ` + principal + `
+		AND l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND l.verified = 1 AND l.launch_ref <> '` + SessionLaunch + `'
+		AND (json_extract(l.profile, '$.adapter') = 'claude' AND l.launch_ref GLOB 'pid-*'
+			OR json_extract(l.profile, '$.adapter') IN (SELECT value FROM json_each(` + enders + `))
+				AND EXISTS (SELECT 1 FROM adapter_policy p WHERE p.adapter = json_extract(l.profile, '$.adapter') AND p.enabled = 1)))`
+}
 
 // DepartGoneHosts departs each member whose probed host was proven gone,
 // if nothing changed since the probe: the binding is the same live one, the
-// host row still names the probed process, and no launch opened.
-func DepartGoneHosts(ctx context.Context, tx store.Tx, gone []HostedMember, now time.Time) (bool, error) {
+// host row still names the probed process, and no governing launch opened.
+// Its open launches end with it, so a start older than the departure is a
+// stale callback and a later one restores the member.
+func DepartGoneHosts(ctx context.Context, tx store.Tx, gone []HostedMember, sessionEnd []string, now time.Time) (bool, error) {
+	enders, err := json.Marshal(sessionEnd)
+	if err != nil {
+		return false, err
+	}
 	changed := false
 	for _, m := range gone {
 		res, err := tx.ExecContext(ctx, `DELETE FROM member_host AS h WHERE h.principal_id = ?1 AND h.pid = ?2
-			AND h.start_identity = ?3 AND h.pid_namespace = ?4 AND NOT `+openLaunch+`
+			AND h.start_identity = ?3 AND h.pid_namespace = ?4 AND NOT `+governingLaunch("h.principal_id", "?7")+`
 			AND EXISTS (SELECT 1 FROM binding WHERE id = ?5 AND principal_id = ?1 AND route_epoch = ?6 AND state = 'live')`,
-			m.PrincipalID, m.PID, m.StartIdentity, m.PIDNamespace, m.BindingID, m.BindingEpoch)
+			m.PrincipalID, m.PID, m.StartIdentity, m.PIDNamespace, m.BindingID, m.BindingEpoch, string(enders))
 		if err != nil {
 			return false, err
 		}
@@ -161,7 +187,51 @@ func DepartGoneHosts(ctx context.Context, tx store.Tx, gone []HostedMember, now 
 		if err := endSessionBy(ctx, tx, b, m.PrincipalID, "process", now); err != nil {
 			return false, err
 		}
+		if err := endOpenLaunches(ctx, tx, m.PrincipalID, now); err != nil {
+			return false, err
+		}
 		changed = true
 	}
 	return changed, nil
+}
+
+// endOpenLaunches ends the launches a host departure leaves open, none of
+// which is governing, and what depends on them.
+func endOpenLaunches(ctx context.Context, tx store.Tx, principal int64, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, `SELECT launch_ref, json_extract(profile, '$.adapter') FROM adapter_launch
+		WHERE principal_id = ? AND ended_hook_at_ms IS NULL AND fenced = 0`, principal)
+	if err != nil {
+		return err
+	}
+	var refs, adapters []string
+	for rows.Next() {
+		var ref string
+		var adapter sql.NullString
+		if err := rows.Scan(&ref, &adapter); err != nil {
+			rows.Close()
+			return err
+		}
+		refs = append(refs, ref)
+		if adapter.Valid && !slices.Contains(adapters, adapter.String) {
+			adapters = append(adapters, adapter.String)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = MAX(?, started_hook_at_ms)
+		WHERE principal_id = ? AND ended_hook_at_ms IS NULL AND fenced = 0`, ms(now), principal); err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		if err := endLaunchPublishRoutes(ctx, tx, principal, ref, now); err != nil {
+			return err
+		}
+	}
+	for _, adapter := range adapters {
+		if err := refreshMemberAdapterCapabilities(ctx, tx, principal, adapter); err != nil {
+			return err
+		}
+	}
+	return nil
 }

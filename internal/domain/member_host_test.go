@@ -10,6 +10,10 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+// sessionEnders are the adapters whose installed hooks report a session end,
+// as the dispatcher passes them.
+var sessionEnders = []string{"claude", "codex"}
+
 // hostFixture is a channel with two members that joined by hand and named
 // hosts: "worker" in process 100 and "lead" in process 200. gone holds the
 // processes the service is told have ended.
@@ -69,7 +73,7 @@ func (f *hostFixture) sweep() {
 		f.t.Fatal(err)
 	}
 	defer tx.Rollback()
-	members, err := HostedMembers(f.t.Context(), tx, 0, 32)
+	members, err := HostedMembers(f.t.Context(), tx, 0, 32, sessionEnders)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -79,7 +83,7 @@ func (f *hostFixture) sweep() {
 			gone = append(gone, m)
 		}
 	}
-	if _, err := DepartGoneHosts(f.t.Context(), tx, gone, f.now); err != nil {
+	if _, err := DepartGoneHosts(f.t.Context(), tx, gone, sessionEnders, f.now); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -149,16 +153,77 @@ func TestGoneHostDepartsTheMemberAndKeepsItsWork(t *testing.T) {
 	}
 }
 
-func TestHostIsNotJudgedWhileALaunchIsOpen(t *testing.T) {
-	f := newHostFixture(t)
-	if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-		VALUES (?, 'pid-100-x', '{}', 1, 0)`, f.principal(f.worker)); err != nil {
-		t.Fatal(err)
+// Only an open launch that something will end keeps a member from being
+// judged by its host; any other is ended with the member.
+func TestOnlyALaunchThatCanEndKeepsTheHostFromJudging(t *testing.T) {
+	for _, c := range []struct {
+		name, adapter, ref string
+		verified, enabled  bool
+		governs            bool
+	}{
+		{"Claude process launch, adapter switched off", "claude", "pid-100-1", true, false, true},
+		{"verified launch of an enabled adapter with a session end", "codex", "thread-1", true, true, true},
+		{"the same launch after its adapter was switched off", "codex", "thread-1", true, false, false},
+		{"Antigravity session launch", "agy", SessionLaunch, false, true, false},
+		{"Claude launch without a launch ID", "claude", SessionLaunch, false, true, false},
+		{"verified launch of an adapter without a session end", "agy", "conv-1", true, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newHostFixture(t)
+			f.policy(c.adapter, c.enabled, 1)
+			worker := f.principal(f.worker)
+			if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
+				VALUES (?, ?, json_object('adapter', ?), ?, 0)`, worker, c.ref, c.adapter, c.verified); err != nil {
+				t.Fatal(err)
+			}
+			f.gone[100] = true
+			f.sweep()
+			state, _, _ := f.bindingState(f.worker)
+			open := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND ended_hook_at_ms IS NULL`, worker)
+			if c.governs && (state != "live" || open != 1) {
+				t.Fatalf("binding %s, open launches %d; want live with its launch open", state, open)
+			}
+			if !c.governs && (state != "departed" || open != 0) {
+				t.Fatalf("binding %s, open launches %d; want departed with its launch ended", state, open)
+			}
+		})
 	}
-	f.gone[100] = true
-	f.sweep()
-	if state, _, _ := f.bindingState(f.worker); state != "live" {
-		t.Fatalf("a member with an open launch was judged by its host: %s", state)
+}
+
+// A hook-joined member whose launch nothing ends (Antigravity's) is tracked
+// by its host. Its departure ends the launch: a start older than the
+// departure is a stale callback, a later one brings the member back.
+func TestHookJoinedMemberWithASessionLaunchDepartsByHost(t *testing.T) {
+	f, writer := adapterChannel(t)
+	h := &hostFixture{fixture: f, gone: map[int64]bool{}}
+	f.svc.ProcessGone = func(pid, identity int64) bool { return h.gone[pid] }
+	s := f.newSession("codex")
+	t0 := f.now.UnixMilli()
+	f.hook(s, start(SessionLaunch, "startup", t0))
+	wantOK(t, h.command(s, Who{}, "", &wire.Host{PID: 400, Start: 3}))
+	h.sweep()
+	if state, _, _ := h.bindingState(s); state != "live" {
+		t.Fatalf("a running host departed the member: %s", state)
+	}
+	h.gone[400] = true
+	f.now = f.now.Add(5 * time.Second)
+	h.sweep()
+	if state, byHook, _ := h.bindingState(s); state != "departed" || !byHook {
+		t.Fatalf("binding %s, by hook %v; want departed by its process", state, byHook)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE ended_hook_at_ms = ?`, ms(f.now)); n != 1 {
+		t.Fatalf("launches ended at the departure: %d", n)
+	}
+	f.hook(s, start(SessionLaunch, "resume", t0+1_000))
+	if state, _, _ := h.bindingState(s); state != "departed" {
+		t.Fatalf("a start older than the departure brought the member back: %s", state)
+	}
+	f.hook(s, start(SessionLaunch, "resume", ms(f.now)+1_000))
+	if state, _, alias := h.bindingState(s); state != "live" || alias != "codex1" {
+		t.Fatalf("binding %s as @%s; want live as @codex1 after a new start", state, alias)
+	}
+	if m := f.memberRow(writer, "codex1"); m.Alias != "codex1" {
+		t.Fatalf("the member is not in the roster: %+v", m)
 	}
 }
 
@@ -189,7 +254,7 @@ func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			probed, err := HostedMembers(t.Context(), tx, 0, 32)
+			probed, err := HostedMembers(t.Context(), tx, 0, 32, sessionEnders)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,7 +269,7 @@ func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed, err := DepartGoneHosts(t.Context(), tx, probed, f.now)
+			changed, err := DepartGoneHosts(t.Context(), tx, probed, sessionEnders, f.now)
 			if err != nil || changed {
 				t.Fatalf("changed %v, %v", changed, err)
 			}

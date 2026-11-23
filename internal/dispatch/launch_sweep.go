@@ -7,12 +7,16 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 const launchSweepInterval = time.Second
 const launchSweepBatch = 32
+
+// sessionEndAdapters are the adapters whose installed hooks end a launch.
+var sessionEndAdapters = hook.SessionEndAdapters()
 
 type launchSweep struct {
 	next      time.Time
@@ -52,7 +56,7 @@ func probeMemberHosts(ctx context.Context, db *store.Store, afterHost int64) (in
 	var members []domain.HostedMember
 	err := db.Update(ctx, func(tx store.Tx) error {
 		var err error
-		members, err = domain.HostedMembers(ctx, tx, afterHost, launchSweepBatch)
+		members, err = domain.HostedMembers(ctx, tx, afterHost, launchSweepBatch, sessionEndAdapters)
 		return err
 	})
 	if err != nil {
@@ -152,7 +156,7 @@ func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepRe
 		if err != nil {
 			return err
 		}
-		departed, err := domain.DepartGoneHosts(ctx, tx, result.goneHosts, now)
+		departed, err := domain.DepartGoneHosts(ctx, tx, result.goneHosts, sessionEndAdapters, now)
 		if err != nil || !changed && !departed {
 			return err
 		}

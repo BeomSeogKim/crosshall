@@ -64,3 +64,17 @@ func InstallSpecs() []InstallSpec {
 	}
 	return specs
 }
+
+// SessionEndAdapters lists the adapters whose installed hooks report a
+// session end: while such an adapter is enabled, its hook ends a verified
+// launch.
+func SessionEndAdapters() []string {
+	var adapters []string
+	for _, spec := range InstallSpecs() {
+		m, _ := loadManifest(spec.Adapter)
+		if slices.ContainsFunc(spec.Events, func(name string) bool { return m.Events[name].Fact == wire.HookSessionEnded }) {
+			adapters = append(adapters, spec.Adapter)
+		}
+	}
+	return adapters
+}

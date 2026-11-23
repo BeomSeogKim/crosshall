@@ -25,7 +25,7 @@ func turnEndFixture(t *testing.T, launch string) (*fixture, session, session) {
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, "join-reader"))
 	f.hook(reader, start(launch, "startup", f.now.UnixMilli()))
 	f.hook(reader, prompt(launch, "turn-1", f.now.UnixMilli()+1))
-	f.roots(writer, 20)
+
 	return f, reader, writer
 }
 
@@ -39,7 +39,7 @@ func (f *fixture) turnEndAsk(writer session, alias, key string) int64 {
 func TestTurnEndNoticeClaimsInboxAsksWithoutPickup(t *testing.T) {
 	f, reader, writer := turnEndFixture(t, "launch")
 	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
-	f.roots(reader, 1)
+
 	own := f.turnEndAsk(reader, "writer", "outgoing")
 	wantOK(t, f.run(writer, Read{IDs: []int64{own}}, "writer-read"))
 	reply := f.reply(writer, Reply{To: own, Body: "fixture answer", Outcome: OutcomeAnswer}, "answer")
@@ -255,7 +255,7 @@ func TestTurnEndNoticeAllowsAttestedSessionScopedLaunch(t *testing.T) {
 	open := prompt(SessionLaunch, "turn", f.now.UnixMilli()+1)
 	open.Profile = p
 	f.hook(reader, open)
-	f.roots(writer, 1)
+
 	id := f.turnEndAsk(writer, "reader", "unread")
 	finish := stop(SessionLaunch, "turn", f.now.UnixMilli()+1)
 	finish.Profile = p

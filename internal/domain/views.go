@@ -79,25 +79,21 @@ type StatusResult struct {
 	Channels      []ChannelStatus `json:"channels"`
 }
 
-// StatusSelf is the calling member's own credit: the root tokens that open a
-// new exchange and the balance of each exchange it asked in or was asked in.
-// The owner ledger has none.
+// StatusSelf reports the calling member's rounds.
 type StatusSelf struct {
-	Alias             string            `json:"alias"`
-	RootTokens        int64             `json:"root_tokens"`
-	NextRootTokenAtMS int64             `json:"next_root_token_at_ms,omitempty"`
-	Exchanges         []ExchangeBalance `json:"exchanges"`
+	Alias      string          `json:"alias"`
+	Round      int64           `json:"round"`
+	RoundLimit int64           `json:"round_limit"`
+	Exchanges  []ExchangeRound `json:"exchanges"`
 }
 
 type ChannelStatus struct {
-	ID                int64              `json:"id"`
-	Name              string             `json:"name"`
-	Bindings          []StatusBinding    `json:"bindings"`
-	Requests          []LedgerRequest    `json:"requests"`
-	Exchanges         []ExchangeBalance  `json:"exchanges"`
-	BudgetExhaustions []BudgetExhaustion `json:"budget_exhaustions"`
-	// JoinPool is the root tokens left for first joins; the owner ledger only.
-	JoinPool *int64 `json:"join_pool,omitempty"`
+	ID         int64           `json:"id"`
+	Name       string          `json:"name"`
+	Bindings   []StatusBinding `json:"bindings"`
+	Requests   []LedgerRequest `json:"requests"`
+	Exchanges  []ExchangeRound `json:"exchanges"`
+	GuardStops []GuardStop     `json:"guard_stops"`
 }
 
 type StatusBinding struct {
@@ -147,18 +143,21 @@ type Receipt struct {
 	Evidence string `json:"evidence"`
 }
 
-type ExchangeBalance struct {
+type ExchangeRound struct {
 	ID              int64 `json:"id"`
-	Granted         int64 `json:"granted"`
-	Spent           int64 `json:"spent"`
-	Remaining       int64 `json:"remaining"`
+	Round           int64 `json:"round"`
+	RoundLimit      int64 `json:"round_limit"`
 	ParentRequestID int64 `json:"parent_request_id,omitempty"`
 }
 
-type BudgetExhaustion struct {
-	ExchangeID int64 `json:"exchange_id"`
-	Episode    int64 `json:"episode"`
-	AtMS       int64 `json:"at_ms"`
+type GuardStop struct {
+	ExchangeID   int64  `json:"exchange_id,omitempty"`
+	Alias        string `json:"alias,omitempty"`
+	BindingID    int64  `json:"binding_id,omitempty"`
+	BindingState string `json:"binding_state,omitempty"`
+	AtMS         int64  `json:"at_ms"`
+	Round        int64  `json:"round"`
+	RoundLimit   int64  `json:"round_limit"`
 }
 
 func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {
@@ -262,30 +261,39 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 }
 
 func statusSelf(ctx context.Context, tx store.Tx, member memberView, now time.Time) (StatusSelf, error) {
-	out := StatusSelf{Exchanges: []ExchangeBalance{}}
+	out := StatusSelf{Exchanges: []ExchangeRound{}}
 	if err := tx.QueryRowContext(ctx, `SELECT alias FROM binding WHERE id = ?`, member.binding).Scan(&out.Alias); err != nil {
 		return out, err
 	}
-	budget, err := refillRoots(ctx, tx, member.binding, now)
+	level, limit, err := guardPosition(ctx, tx, member.principal, 0, 0)
 	if err != nil {
 		return out, err
 	}
-	out.RootTokens, out.NextRootTokenAtMS = budget.tokens, budget.nextAtMS
-	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.granted, e.spent FROM exchange e WHERE e.channel_id = ? AND EXISTS(
-		SELECT 1 FROM message m LEFT JOIN recipient r ON r.message_id = m.id
-		WHERE m.exchange_id = e.id AND m.kind = 'ask' AND (m.sender_id = ? OR r.principal_id = ?)) ORDER BY e.id`,
-		member.channel, member.principal, member.principal)
+	out.Round, out.RoundLimit = roundAt(level, ms(now)), limit
+	rows, err := tx.QueryContext(ctx, `WITH positions AS (
+        SELECT thread_root_id, level_ms FROM thread_position WHERE principal_id = ?1
+        UNION ALL
+        SELECT root.id, ask.level_ms FROM obligation o JOIN message ask ON ask.id = o.message_id
+        JOIN message root ON root.id = COALESCE(ask.thread_root_id, ask.id)
+        WHERE o.principal_id = ?1 AND o.state = 'open' AND ask.channel_id = ?2
+          AND ask.id > root.thread_reset_after_message_id
+    )
+    SELECT e.id, MAX(p.level_ms), MAX(root.thread_round_limit)
+    FROM positions p JOIN message root ON root.id = p.thread_root_id JOIN exchange e ON e.id = root.exchange_id
+    WHERE e.channel_id = ?2 AND p.level_ms > ?3
+    GROUP BY e.id ORDER BY MAX(p.level_ms) DESC, e.id LIMIT 3`, member.principal, member.channel, ms(now))
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var balance ExchangeBalance
-		if err := rows.Scan(&balance.ID, &balance.Granted, &balance.Spent); err != nil {
+		var round ExchangeRound
+		var level int64
+		if err := rows.Scan(&round.ID, &level, &round.RoundLimit); err != nil {
 			return out, err
 		}
-		balance.Remaining = balance.Granted - balance.Spent
-		out.Exchanges = append(out.Exchanges, balance)
+		round.Round = roundAt(level, ms(now))
+		out.Exchanges = append(out.Exchanges, round)
 	}
 	return out, rows.Err()
 }
@@ -328,33 +336,32 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 }
 
 func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, now time.Time) (ChannelStatus, error) {
-	out := ChannelStatus{ID: ch.id, Name: ch.name, Bindings: []StatusBinding{}, Exchanges: []ExchangeBalance{}, BudgetExhaustions: []BudgetExhaustion{}}
+	out := ChannelStatus{ID: ch.id, Name: ch.name, Bindings: []StatusBinding{}, Exchanges: []ExchangeRound{}, GuardStops: []GuardStop{}}
 	var err error
 	out.Requests, err = ledgerRequests(ctx, tx, ch.id, 0, owner, now)
-	if err != nil {
+	if err != nil || !owner {
 		return out, err
 	}
-	if owner {
-		var pool int64
-		if err := tx.QueryRowContext(ctx, `SELECT join_pool FROM channel WHERE id = ?`, ch.id).Scan(&pool); err != nil {
-			return out, err
-		}
-		out.JoinPool = &pool
-	}
-	rows, err := tx.QueryContext(ctx, "SELECT id, granted, spent, COALESCE(parent_request_id, 0) FROM exchange WHERE channel_id = ? ORDER BY id", ch.id)
+	rows, err := tx.QueryContext(ctx, `SELECT e.id, COALESCE(e.parent_request_id, 0), MAX(root.thread_round_limit),
+        MAX(CASE WHEN ask.id > root.thread_reset_after_message_id THEN ask.level_ms ELSE 0 END) AS level
+        FROM message ask JOIN message root ON root.id = COALESCE(ask.thread_root_id, ask.id)
+        JOIN exchange e ON e.id = root.exchange_id
+        WHERE ask.channel_id = ? AND ask.kind = 'ask'
+        GROUP BY e.id HAVING level > ? OR e.episode_open = 1 ORDER BY e.id`, ch.id, ms(now))
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var balance ExchangeBalance
-		if err := rows.Scan(&balance.ID, &balance.Granted, &balance.Spent, &balance.ParentRequestID); err != nil {
+		var round ExchangeRound
+		var level int64
+		if err := rows.Scan(&round.ID, &round.ParentRequestID, &round.RoundLimit, &level); err != nil {
 			return out, err
 		}
-		balance.Remaining = balance.Granted - balance.Spent
-		out.Exchanges = append(out.Exchanges, balance)
+		round.Round = roundAt(level, ms(now))
+		out.Exchanges = append(out.Exchanges, round)
 	}
-	if err := rows.Err(); err != nil || !owner {
+	if err := rows.Err(); err != nil {
 		return out, err
 	}
 	bindings, err := tx.QueryContext(ctx, "SELECT id, principal_id, alias, state FROM binding WHERE channel_id = ? ORDER BY id", ch.id)
@@ -372,19 +379,27 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 	if err := bindings.Err(); err != nil {
 		return out, err
 	}
-	events, err := tx.QueryContext(ctx, `SELECT e.id, row_number() OVER (PARTITION BY e.id ORDER BY ev.seq), ev.at_ms
-		FROM event ev JOIN exchange e ON ev.subject = 'exchange:' || e.id
-		WHERE ev.kind = 'budget_exhausted' AND e.channel_id = ? ORDER BY e.id, ev.seq`, ch.id)
+	events, err := tx.QueryContext(ctx, `WITH stopped(subject, exchange_id, alias, binding_id, binding_state) AS (
+        SELECT 'exchange:' || id, id, '', 0, '' FROM exchange WHERE channel_id = ?1 AND episode_open = 1
+        UNION ALL
+        SELECT 'principal:' || p.id, 0, b.alias, b.id, b.state FROM principal p JOIN binding b ON b.principal_id = p.id
+        WHERE b.channel_id = ?1 AND p.guard_told = 1
+    )
+    SELECT stopped.exchange_id, stopped.alias, stopped.binding_id, stopped.binding_state, e.at_ms, json_extract(e.detail, '$.round'),
+        json_extract(e.detail, '$.round_limit')
+    FROM stopped JOIN event e ON e.seq = (
+        SELECT MAX(seq) FROM event WHERE kind = ?2 AND subject = stopped.subject)
+    ORDER BY e.seq`, ch.id, guardStopped)
 	if err != nil {
 		return out, err
 	}
 	defer events.Close()
 	for events.Next() {
-		var e BudgetExhaustion
-		if err := events.Scan(&e.ExchangeID, &e.Episode, &e.AtMS); err != nil {
+		var stop GuardStop
+		if err := events.Scan(&stop.ExchangeID, &stop.Alias, &stop.BindingID, &stop.BindingState, &stop.AtMS, &stop.Round, &stop.RoundLimit); err != nil {
 			return out, err
 		}
-		out.BudgetExhaustions = append(out.BudgetExhaustions, e)
+		out.GuardStops = append(out.GuardStops, stop)
 	}
 	return out, events.Err()
 }

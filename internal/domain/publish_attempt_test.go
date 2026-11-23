@@ -29,8 +29,7 @@ func newPublishFixture(t *testing.T) *publishFixture {
 	f, writer := adapterChannel(t)
 	reader := f.newSession("claude")
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, "reader-join"))
-	f.roots(writer, 40)
-	f.roots(reader, 4)
+
 	beforeID := f.turnEndAsk(writer, "reader", "before-route")
 	enrollAndRoute(t, f, reader, publishTestLaunch, "startup", publishTestSocket, "default", f.now.UnixMilli(), 1)
 	binding := bindingIDOf(t, f, f.principalOf(reader))

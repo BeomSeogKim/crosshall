@@ -355,7 +355,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 			vendor = "unknown"
 		}
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO principal (kind, vendor, root_tokens, created_at_ms) VALUES ('session', ?, 0, ?)`, vendor, ms(now))
+			`INSERT INTO principal (kind, vendor, created_at_ms) VALUES ('session', ?, ?)`, vendor, ms(now))
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -389,9 +389,6 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	}
 	bindingID, err := res.LastInsertId()
 	if err != nil {
-		return core.Result{}, err
-	}
-	if err := drawJoinToken(ctx, tx, ch.id, principal, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := rosterChange(ctx, tx, ch.id, principal, "joined"); err != nil {

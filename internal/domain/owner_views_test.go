@@ -78,7 +78,6 @@ func TestOwnerWhoProjectsEvidenceAndOpenRequests(t *testing.T) {
 		t.Fatalf("binding without recent evidence: %+v", m)
 	}
 
-	f.roots(writer, 1)
 	request := f.ask(writer, Ask{To: []string{"claude1"}, Body: "review?"}, "")
 	wantOK(t, request)
 	id := decode[AskResult](t, request).ID

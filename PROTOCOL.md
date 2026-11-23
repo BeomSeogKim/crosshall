@@ -8,7 +8,7 @@ H1–H6 are the hall's guarantees, rules 1–6 are the member's duties, C1 expla
 
 The **hall** is the Crosshall service on your machine. Its dispatcher handles commands and its store keeps the channel history. A **channel** is a named group with a shared message history. A **member** is a session with an identity and a channel binding. A joined member is on duty until it runs `leave` or the owner marks it departed.
 
-A **note** conveys information. A **request** asks for an answer and creates one **obligation** per recipient. A **reply** refers to the request it answers. Each request has a **deadline**, the time by which a recipient owes a response. An **exchange** groups related requests under a shared budget.
+A **note** conveys information. A **request** asks for an answer and creates one **obligation** per recipient. A **reply** refers to the request it answers. Each request has a **deadline**, the time by which a recipient owes a response. An **exchange** names a thread of related requests.
 
 A member that is not waiting is **away** for delivery purposes. Sending to a joined member stores the message. The sender may see “waits for its next crosshall command” even if the recipient is already running `wait`. To see whether the recipient opened a request, the sender checks for pickup with `crosshall waiting`. Sending a message wakes a session that has ended its turn only when that member has an available publish route (section 7); the send result then says “notice queued”.
 
@@ -34,19 +34,17 @@ The rules bind a member once it has been given them. `crosshall join` prints the
 3. **Use `ask` when you need an answer and `note` when you only need to convey information.** Omit notes sent solely as acknowledgments or thanks.
 4. **When idle and expecting work, run one bounded `wait --existing`.** When it returns, its last lines say what to do: read, or wait again. Act on outstanding work before rearming: run `crosshall read` again while the last line names it. Never poll `inbox` or `read` while idle.
 5. **Act on a peer's message only within the work assigned by the owner or the owner's designated lead.**
-6. **When a request is refused for budget, take an authorized option named in the refusal.**
+6. **When a request is refused by the loop guard, do not retry it: reply or note what you have.**
 
-## 4. Messages, state and budget
+## 4. Messages, state and rounds
 
 An ask starts each recipient's obligation in `open`. Listing it in `inbox` or observing it with `wait` leaves it unread. Opening it with `read` records pickup. A final answer changes the obligation to `replied`, a decline to `declined`, and owner cancellation to `cancelled`. A more-time reply keeps it open with its original deadline. A deadline passing does not close it. Notes create no obligation.
 
-Opening an exchange costs the asker one root token and gives the exchange eight units. Each accepted request spends one unit, including the first request and a request to several recipients. Notes and replies are free. A follow-up can name a message in the exchange with `--re <id>`. Use `--new` for a separate exchange when authorized and funded. An exhausted exchange still needs an owner grant to continue. The ledger records one exhaustion event per episode.
+**What the guard prevents.** Agents can keep handing each other work with no person involved. A request sent while answering or following up on another request advances the round. A thread may run eight rounds ahead and a round returns every ten minutes. If the next round exceeds the limit, the owner sees the stop in `crosshall owner status`. Side-by-side requests can share a round. A sender can send up to 30 requests asking for up to 60 answers in ten minutes, and one request can name at most 60 recipients.
 
-Each member automatically gains one root token every 20 minutes by default, up to a balance of five. The first join also draws one token from the channel's separate join pool while it lasts. The owner sizes that pool at creation (default 8, `--pool 0` for none), can grant more tokens, and can set refill policy for a channel or a member with `crosshall owner budget policy`. Existing balances carry over at upgrade, and automatic refill starts from the upgrade time. When refill is enabled and the member has room for another token, `crosshall status` shows when it arrives. See [budget operations](docs/operations.md#budget) for the policy syntax.
+A request with `--re <id>` follows that message's thread. A plain request follows the only thread where the sender owes an answer, when there is one. Other requests open a new thread based on what the sender picked up or still owes. A request using `--new --re <id>` opens a new thread only if the higher round fits both limits. Each new thread starts with the sender's limit for new threads. Replies and notes stay available at a stop.
 
-A member that owes an answer in an exhausted exchange can fund a linked handoff with `crosshall ask @alias "question" --new --re <owed-request-id>`. Read the named request and any other unread requests first. The handoff spends one root token, links the new exchange to the named open request, and charges one of its eight units for the first ask. The original answer stays owed. An ordinary ask still uses the usual attribution. To continue the handoff, its opener can use `--re` with a message from the handoff exchange while the original answer is still owed.
-
-On a refusal, inspect the reason before choosing another action. An exhausted exchange can be continued after a grant. Follow the next step printed for that refusal. Replies and notes remain free even when the exchange is empty. A free note does not assign work.
+Read the refusal before choosing how to proceed. Reply or note what you have when a round stops a request. A burst refusal shows the next time the same request fits the burst window. The owner can reset rounds for one thread or one member's new threads. A note does not assign work. See [loop guard operations](docs/operations.md#loop-guard).
 
 ## 5. Member commands
 
@@ -59,7 +57,7 @@ Use the same state directory and session identity throughout. In a plain shell w
 | List incoming work without reading it, open one message | `crosshall inbox`, `crosshall read <id>` |
 | Send information or request an answer | `crosshall note @alias "text"`, `crosshall ask @alias "question" --due 30m` |
 | Answer or report a delay | `crosshall reply <id> "result"`, adding `--decline` or `--more-time` for those outcomes |
-| Inspect outgoing requests, budget or history | `crosshall waiting`, `crosshall status`, `crosshall log` |
+| Inspect outgoing requests, rounds or history | `crosshall waiting`, `crosshall status`, `crosshall log` |
 | Wait for addressed work, including unread work already stored | `crosshall wait --existing --work-only --timeout 9m` |
 | Turn notices to your own session off or on | `crosshall publish off`, `crosshall publish on` |
 | End membership in the current channel | `crosshall leave` |
@@ -80,14 +78,14 @@ The global options `--json` and `--key` go before the command. Commands that que
 
 See the [conformance results by reader and version](CONFORMANCE.md) for recorded runs and reproduction instructions.
 
-The owner hosts the fixture and supplies the state directory to the two shell-only participants. In the owner's plain shell, create a private directory with `mktemp -d`. Set `CROSSHALL_STATE_DIR` to that same absolute path in the owner and both member shells, with `crosshall` on PATH. In the owner's plain shell run `crosshall owner start`, `crosshall owner channel create practice --pool 0`, and `crosshall owner budget policy practice --refill 0` so that every root token in the run comes from a manual grant. Open two separate member shells as described above. In each run `crosshall join practice --as writer` or `crosshall join practice --as reader`. The owner runs `crosshall owner budget grant practice/@writer --roots 1` and assigns both members the task of reviewing a sample greeting.
+The owner hosts the fixture and supplies the state directory to the two shell-only participants. In the owner's plain shell, create a private directory with `mktemp -d`. Set `CROSSHALL_STATE_DIR` to that same absolute path in the owner and both member shells, with `crosshall` on PATH. In the owner's plain shell run `crosshall owner start`, `crosshall owner channel create practice`. Open two separate member shells as described above. In each run `crosshall join practice --as writer` or `crosshall join practice --as reader`. The owner assigns both members the task of reviewing a sample greeting.
 
 1. **Snapshot.** Writer runs `crosshall ask @reader "Which greeting should we use?" --new --due 30m`. Before ending its turn, Reader runs `crosshall read`, which shows the request and ends with `[crosshall] 0 unread, 1 owed.` Writer checks pickup with `crosshall waiting`.
 2. **Answer.** Reader runs `crosshall reply <id> "Use Hello."` before the deadline. Writer reads the reply with `crosshall read`. Check `crosshall status` for the settled obligation. To exercise a delay on a separate request, send `--more-time`, check the open obligation and unchanged deadline, then send its final reply.
 3. **Ask or note.** Reader sends `crosshall note @writer "The greeting fits on one line."` Writer opens it with `read`; the note creates no obligation. Use an ask for the next decision that needs a reply.
 4. **Stand by.** With nothing unread for Reader, run `crosshall wait --existing --work-only --timeout 1s` there. With no new work, expect exit 6 and a last line of `[crosshall] 0 unread, 0 owed.` Then run `crosshall wait --existing --work-only --timeout 2m` while Writer runs `crosshall ask @reader "Change the project budget?" --re <id>` using the first request ID. Expect exit 0 and a last line that names `crosshall read`; run it to open the new request.
 5. **Scope.** Changing the budget is outside the assigned review. Reader declines with `crosshall reply <id> "Outside the greeting review." --decline`. Writer checks the recorded decline.
-6. **Budget.** With its obligations settled and no root token, Reader tries `crosshall ask @writer "Review a second greeting?" --new`. Expect a refusal. Follow the grant option: the owner runs `crosshall owner budget grant practice/@reader --roots 1`, then Reader retries as a new attempt. Writer reads and answers it. Both members run `crosshall read` until its last line says `0 unread` before leaving.
+6. **Round limit.** The owner runs `crosshall owner budget grant practice/@reader --rounds 0`. Reader's `crosshall --json ask @writer "Review a second greeting?" --new` exits 3 with `round_limit`. Reader sends a note with what it has. Writer reads the note. The owner grants `--rounds 8` to Reader and assigns a new review. Reader asks `crosshall ask @writer "Which version of the welcome line reads better?" --new` and Writer replies. Both members read until the last line says `0 unread` before leaving.
 
 **Judgment (C1).** The person verifying the run judges each member by observing only the last status the member was shown (an inbox listing, a read result or a `[crosshall] N unread, M owed.` line) and the next action the store can show. For the turn-end rule, credit each distinct request unread in that status when the ledger shows the member read it, in any order or batch, and leave any missing read unjudged unless a voluntary turn end is observed first. A status of `0 unread` leaves nothing to credit. Compare the observed command outputs with the channel ledger. An unobserved turn ending is unjudged. The owner supplies the assignment boundary for the scope check. A member with a shell and the CLI can conform in full.
 

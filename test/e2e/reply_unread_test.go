@@ -10,9 +10,8 @@ import (
 )
 
 func TestReplyBeforeReadClearsOnlyTheSettledRequest(t *testing.T) {
-	w, owner, members := setup(t)
+	_, owner, members := setup(t)
 	asker, recipient, peer := members[0], members[1], members[2]
-	grantRoots(t, w, "form", 2)
 	first := num(t, asker.must("ask", "@tax", "first request"), "id")
 	if first != 1 {
 		t.Fatalf("unexpected first message ID %d", first)

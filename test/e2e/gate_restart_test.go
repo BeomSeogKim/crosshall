@@ -12,9 +12,8 @@ import (
 	"testing"
 )
 
-func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
+func TestOverdueRequestAndThreadRoundSurviveRestart(t *testing.T) {
 	w, owner, members := setup(t)
-	owner.must("owner", "budget", "grant", "checkout/@form", "--roots", "1")
 	ask := members[0].must("ask", "@tax", "Review the tax calculation", "--due", "1m")
 	due, ok := ask.obj["due_at_ms"].(float64)
 	if !ok || due <= 0 {
@@ -66,10 +65,9 @@ func TestOverdueRequestAndSpentBudgetSurviveRestart(t *testing.T) {
 		t.Fatalf("expected a picked-up, open, overdue request: %v", recipient)
 	}
 	exchangeID, ok := exchange["id"].(float64)
-	granted, hasGrant := exchange["granted"].(float64)
-	if !ok || exchangeID <= 0 || request["exchange_id"] != exchangeID || !hasGrant || granted < 1 ||
-		exchange["spent"] != float64(1) || exchange["remaining"] != granted-1 {
-		t.Fatalf("expected the request exchange to retain its debit: %v", exchange)
+	if !ok || exchangeID <= 0 || request["exchange_id"] != exchangeID ||
+		exchange["round"] != float64(1) || exchange["round_limit"] != float64(8) {
+		t.Fatalf("expected the request exchange to retain its round: %v", exchange)
 	}
 
 	restart()

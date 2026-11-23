@@ -117,7 +117,7 @@ func TestRefusalStepsAreUsableForTheirRecipient(t *testing.T) {
 	})
 	t.Run("archived channel on ask", func(t *testing.T) {
 		f, a, _, _ := channel3(t)
-		f.roots(a, 1)
+
 		if _, err := f.db.Exec(`UPDATE channel SET state = 'archived' WHERE name = 'checkout'`); err != nil {
 			t.Fatal(err)
 		}

@@ -180,7 +180,6 @@ func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool) {
 	if runtime.GOOS == "linux" && before.pidNamespace == "" {
 		t.Fatal("Linux startup did not persist its PID namespace")
 	}
-	grantRoots(t, w, "writer", 2)
 	var id int64
 	if knownIdentity {
 		id = num(t, writer.must("ask", "@claude1", "pending when the process exits"), "id")

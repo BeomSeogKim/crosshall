@@ -53,7 +53,6 @@ func TestManifestEvidenceCoversAnotherBuildsPublishAndStop(t *testing.T) {
 	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
 	writer := w.member()
 	writer.must("join", "checkout", "--as", "writer")
-	grantRoots(t, w, "writer", 2)
 	db := w.db()
 	committed := func(query string, args ...any) bool {
 		t.Helper()

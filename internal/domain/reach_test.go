@@ -269,7 +269,7 @@ func TestReachLineNeverReachesAMemberWithoutARoute(t *testing.T) {
 	f, writer := adapterChannel(t)
 	codex := f.newSession("codex")
 	wantOK(t, f.join(codex, Join{Channel: "checkout", Alias: "coder"}, "coder-join"))
-	f.roots(writer, 4)
+
 	f.turnEndAsk(writer, "coder", "work")
 	at := f.now.UnixMilli()
 	f.hook(codex, start("pid-77-start", "startup", at))

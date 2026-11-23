@@ -49,7 +49,7 @@ func TestNoteToTheWholeChannel(t *testing.T) {
 	d := f.newSession("claude")
 	wantOK(t, f.join(d, Join{Channel: "checkout", Alias: "gone"}, ""))
 	wantOK(t, f.run(d, Leave{}, "leave-d"))
-	f.roots(a, 1)
+
 	before := f.budget()
 
 	r := f.run(a, Note{All: true, Body: "deploy freeze at 17:00"}, "n1")
@@ -152,7 +152,7 @@ func TestChannelsDoNotLeak(t *testing.T) {
 
 func TestLogPagesAndRecordsNoPickup(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
+
 	var ids []int64
 	for i := 0; i < 5; i++ {
 		ids = append(ids, decode[NoteResult](t, f.run(a, Note{To: []string{"tax"}, Body: "n" + itoa(int64(i))}, "")).ID)
@@ -208,7 +208,7 @@ func logIDs(r LogResult) []int64 {
 // channel stays refused, and coming back restores the alias.
 func TestLeaveKeepsObligationsAndOneChannel(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
+
 	ask := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "review?"}, "ask"))
 
 	r := f.exec(f.resolved(b), Request{OpKey: "bye", Command: Leave{}})
@@ -272,7 +272,7 @@ func TestFocus(t *testing.T) {
 // settlement time and the lateness in the owner's ledger.
 func TestLateReplyStaysVisible(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
+
 	ask := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "review?", Due: "1m"}, "ask"))
 	f.pickUp(b, ask.ID)
 	f.now = f.now.Add(90 * time.Second)
@@ -306,7 +306,7 @@ func TestLateReplyStaysVisible(t *testing.T) {
 // free alias and keeps its own history; other alias changes stay refused.
 func TestReturnUnderANewAliasWhenTheOldOneIsTaken(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
+
 	ask := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "review?"}, "ask"))
 	wantOK(t, f.run(b, Leave{}, "bye"))
 	successor := f.newSession("codex")

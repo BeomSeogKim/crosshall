@@ -72,8 +72,7 @@ type AskResult struct {
 	ExchangeOpener         string     `json:"exchange_opener,omitempty"`
 	ExchangeOpenerDeparted bool       `json:"exchange_opener_departed,omitempty"`
 	DueAtMS                int64      `json:"due_at_ms"`
-	Debit                  int64      `json:"debit"`
-	Remaining              int64      `json:"remaining"`
+	Round                  int64      `json:"round"`
 	Recipients             []Delivery `json:"recipients"`
 }
 
@@ -263,43 +262,47 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
-	budget, err := refillRoots(ctx, tx, m.binding, now)
-	if err != nil {
-		return core.Result{}, err
-	}
-	a, refusal, err := attribute(ctx, tx, m, cmd, budget)
+	parent, refusal, err := askParent(ctx, tx, m, cmd.Re)
 	if err != nil || refusal != nil {
 		return deref(refusal), err
 	}
-	// A request costs one unit whatever the number of recipients (#29).
-	const n = int64(1)
-	if refusal, err := charge(ctx, tx, m, a, n, budget, now); err != nil || refusal != nil {
-		return deref(refusal), err
-	}
-
 	decision, err := guardForAsk(ctx, tx, m, cmd, len(to), now)
 	if err != nil {
 		return core.Result{}, err
 	}
-	exchange := a.exchange.id
-	if a.isNew {
-		if exchange, err = open(ctx, tx, m, a.parentRequestID, now); err != nil {
-			return core.Result{}, err
-		}
+	if decision.Reason != "" {
+		return refuseGuard(ctx, tx, m, cmd, to, decision, now)
+	}
+	threadRoot := decision.Path
+	if cmd.New {
+		threadRoot = 0
+	}
+	if err := endDrainedStop(ctx, tx, m.principal, threadRoot, decision.BaseMS, ms(now)); err != nil {
+		return core.Result{}, err
+	}
+	var exchange, parentRequestID int64
+	threadLimit := int64(guardDefaultRounds)
+	isNew := threadRoot == 0
+	if isNew {
+		threadLimit = decision.newThreadLimit
+		parentRequestID = parent
+		exchange, err = open(ctx, tx, m, parentRequestID)
+	} else {
+		exchange, err = exchangeForRoot(ctx, tx, threadRoot)
+	}
+	if err != nil {
+		return core.Result{}, err
 	}
 	due, _ := ParseDue(cmd.Due)
 	audienceMode := "explicit"
 	if cmd.All {
 		audienceMode = "all"
 	}
-	threadRoot := decision.Path
-	if cmd.New {
-		threadRoot = 0
-	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms, thread_root_id)
-		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0))`,
-		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot)
+		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms,
+		  thread_root_id, thread_round_limit)
+		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?)`,
+		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot, threadLimit)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -307,7 +310,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err != nil {
 		return core.Result{}, err
 	}
-	if a.isNew {
+	if isNew {
 		if _, err := tx.ExecContext(ctx, `UPDATE exchange SET root_message_id = ? WHERE id = ?`, id, exchange); err != nil {
 			return core.Result{}, err
 		}
@@ -321,24 +324,13 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 			return core.Result{}, err
 		}
 	}
-	if decision.Reason != "" {
-		if err := audit(ctx, tx, guardWouldRefuse, fmt.Sprintf("message:%d", id), m.principal, decision, now); err != nil {
-			return core.Result{}, err
-		}
-	}
-	if err := debit(ctx, tx, m, exchange, id, n, now); err != nil {
-		return core.Result{}, err
-	}
-	if err := setContext(ctx, tx, m.binding, exchange); err != nil {
-		return core.Result{}, err
-	}
 	if err := observe(ctx, tx, m.principal, now); err != nil {
 		return core.Result{}, err
 	}
 
 	out := AskResult{
-		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: a.isNew, ParentRequestID: a.parentRequestID,
-		DueAtMS: ms(now.Add(due)), Debit: n, Remaining: a.exchange.balance() - n,
+		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: isNew, ParentRequestID: parentRequestID,
+		DueAtMS: ms(now.Add(due)), Round: decision.Round,
 	}
 	r, err := askReceipt(ctx, tx, m.principal, out, now)
 	if err != nil {
@@ -419,7 +411,7 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]D
 }
 
 // Resolve the opener by principal, since a departed member's alias can be reused.
-// A replay keeps its original debit and refreshes delivery and display names.
+// A replay refreshes delivery and display names.
 func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult, now time.Time) (core.Result, error) {
 	if !out.NewExchange {
 		err := tx.QueryRowContext(ctx, `SELECT COALESCE(b.alias, ''), COALESCE(b.state = 'departed', 0)

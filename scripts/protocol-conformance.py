@@ -24,8 +24,9 @@ EVIDENCE = {
     "R3": "ask-obligates/note-does-not",
     "R4": "clear/timeout/clear/arrival/snapshot/read",
     "R5": "outside-assignment/declined",
-    "R6": "refused/authorized-grant/new-attempt/settled",
+    "R6": "round-limit/no-retry/note/owner-reset/new-request/settled",
 }
+PREVIOUS_R6 = "refused/authorized-grant/new-attempt/settled"
 NAMES = {"shell": "Bash", "claude": "Claude Code", "codex": "Codex", "agy": "Antigravity"}
 IDENTITY_ENV = ("CROSSHALL_ROUTE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
                 "ANTIGRAVITY_CONVERSATION_ID", "CODEX_VERSION", "AI_AGENT",
@@ -118,7 +119,6 @@ def exercise(writer, reader, owner, shell, spool, checks):
     """Validate only what the reader commands and public ledger actually show."""
     writer.call("join", "practice", "--as", "writer")
     reader.call("join", "practice", "--as", "reader")
-    owner.call("owner", "budget", "grant", "practice/@writer", "--roots", 1)
     first = writer.call("ask", "@reader", "Which greeting should we use?", "--new", "--due", "30m")
     msg = first["id"]
     read = open_mail(reader, msg, "ask", "writer")
@@ -184,11 +184,16 @@ def exercise(writer, reader, owner, shell, spool, checks):
     receipt(writer, outside["id"], "declined")
     checks["R5"] = EVIDENCE["R5"]
 
+    owner.call("owner", "budget", "grant", "practice/@reader", "--rounds", 0)
     refused = reader.call("ask", "@writer", "Review a second greeting?", "--new", exit_code=3)
-    require(refused["code"] == "no_root_credit" and "grant" in refused["hint"], "missing budget refusal or grant option")
-    choose(shell, "The owner can fund the authorized second greeting review. Enter grant or bypass.", "grant")
-    owner.call("owner", "budget", "grant", "practice/@reader", "--roots", 1)
-    fresh = reader.call("ask", "@writer", "Review a second greeting?", "--new")
+    require(refused["code"] == "round_limit" and "do not retry" in refused["hint"],
+            "missing round refusal or instruction")
+    choose(shell, "The loop guard has refused the new greeting request. Enter note or retry.", "note")
+    empty(writer)
+    note = reader.call("note", "@writer", "I have the draft and will share it for a separate review.")
+    open_mail(writer, note["id"], "note", "reader")
+    owner.call("owner", "budget", "grant", "practice/@reader", "--rounds", 8)
+    fresh = reader.call("ask", "@writer", "Which version of the welcome line reads better?", "--new")
     open_mail(writer, fresh["id"], "ask", "reader")
     answer = writer.call("reply", fresh["id"], "Keep the original.")
     open_mail(reader, answer["id"], "reply", "writer")
@@ -226,8 +231,7 @@ def run(args):
             require(dispatcher.poll() is None and time.monotonic() < deadline, "private dispatcher did not become ready")
             time.sleep(0.025)
         owner = Participant(binary, env, root, stack)
-        owner.call("owner", "channel", "create", "practice", "--pool", 0)
-        owner.call("owner", "budget", "policy", "practice", "--refill", 0)
+        owner.call("owner", "channel", "create", "practice")
         writer = Participant(binary, env, root, stack, shell=True)
         reader_env = dict(env)
         if args.reader != "shell":
@@ -262,8 +266,10 @@ def table(check):
         checks = list(row["checks"])
         require(checks == list(EVIDENCE)[:len(checks)], "receipt has an invalid check sequence")
         for rule, observed in row["checks"].items():
-            require(observed == EVIDENCE[rule], f"unexpected {rule} evidence for {row['agent']}")
+            require(observed == EVIDENCE[rule] or rule == "R6" and observed == PREVIOUS_R6, f"unexpected {rule} evidence for {row['agent']}")
         cells = ["pass" if rule in checks else "incomplete" for rule in EVIDENCE]
+        if row["checks"].get("R6") == PREVIOUS_R6:
+            cells[-1] = "previous rule"
         host = {"darwin": "macOS", "linux": "Linux"}.get(row["os"], row["os"])
         method = "scripted shell" if mode == "shell" else "assisted session"
         lines.append("| " + " | ".join([row["agent"], row["version"], method, row["crosshall"], host, *cells]) + " |")

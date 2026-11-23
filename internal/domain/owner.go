@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -26,11 +25,12 @@ type Cancel struct {
 func (Cancel) command()     {}
 func (Cancel) Verb() string { return VerbCancel }
 
-// BudgetGrant adds units to an exchange or root tokens to a channel member.
+// BudgetGrant resets a thread or a member's new-thread position.
 type BudgetGrant struct {
 	Channel    string `json:"channel"`
 	ExchangeID int64  `json:"exchange_id,omitempty"`
 	Alias      string `json:"alias,omitempty"`
+	Rounds     *int64 `json:"rounds,omitempty"`
 	Units      int64  `json:"units,omitempty"`
 	Roots      int64  `json:"roots,omitempty"`
 	Pool       int64  `json:"pool,omitempty"`
@@ -49,12 +49,7 @@ type BudgetGrantResult struct {
 	Channel    string `json:"channel"`
 	ExchangeID int64  `json:"exchange_id,omitempty"`
 	Alias      string `json:"alias,omitempty"`
-	Units      int64  `json:"units,omitempty"`
-	Roots      int64  `json:"roots,omitempty"`
-	Remaining  int64  `json:"remaining,omitempty"`
-	RootTokens int64  `json:"root_tokens,omitempty"`
-	Pool       int64  `json:"pool,omitempty"`
-	JoinPool   int64  `json:"join_pool,omitempty"`
+	Rounds     *int64 `json:"rounds,omitempty"`
 }
 
 func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Cancel, now time.Time) (core.Result, error) {
@@ -118,15 +113,27 @@ func (s *Service) cancel(ctx context.Context, tx store.Tx, caller core.Caller, r
 
 func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd BudgetGrant, now time.Time) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can grant credit", "run it from the owner's own shell, not an agent session"), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can reset rounds", "run it from the owner's own shell"), nil
 	}
-	exchange := cmd.ExchangeID > 0 && cmd.Units > 0 && cmd.Alias == "" && cmd.Roots == 0 && cmd.Pool == 0
-	member := cmd.ExchangeID == 0 && cmd.Units == 0 && ValidName(cmd.Alias) && cmd.Roots > 0 && cmd.Pool == 0
-	joinPool := cmd.ExchangeID == 0 && cmd.Units == 0 && cmd.Alias == "" && cmd.Roots == 0 && cmd.Pool > 0
-	if !ValidName(cmd.Channel) || (!exchange && !member && !joinPool) {
-		return Fail(core.ExitUsage, "", "grant positive units to one exchange, positive roots to one member, or positive tokens to a channel's join pool",
-			"crosshall owner budget grant <channel>/x<id> <units>, <channel>/@<alias> --roots <n>, or <channel> --pool <n>"), nil
+	if !ValidName(cmd.Channel) {
+		return Fail(core.ExitUsage, "", "invalid channel name", "crosshall owner budget grant <channel>/x<id> --rounds <n>"), nil
 	}
+	scope := "channel:" + cmd.Channel
+	if r, found, err := replayOwnerBudget(ctx, tx, req, scope, cmd); found || err != nil {
+		return r, err
+	}
+	if cmd.Roots != 0 || cmd.Pool != 0 {
+		return Refuse(core.CodeRetired, "this grant form is retired",
+			"crosshall owner budget grant <channel>/x<id> or <channel>/@<alias> with --rounds <n>"), nil
+	}
+
+	thread := cmd.ExchangeID > 0 && cmd.Alias == ""
+	member := cmd.ExchangeID == 0 && ValidName(cmd.Alias) && cmd.Units == 0
+	if (!thread && !member) || cmd.Units < 0 || (cmd.Rounds != nil && (*cmd.Rounds < 0 || cmd.Units != 0)) {
+		return Fail(core.ExitUsage, "", "grant non-negative rounds to one thread or one live member",
+			"crosshall owner budget grant <channel>/x<id> or <channel>/@<alias> with --rounds <n>"), nil
+	}
+
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
@@ -134,124 +141,86 @@ func (s *Service) grantBudget(ctx context.Context, tx store.Tx, caller core.Call
 	if !found {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), "crosshall owner status --all lists the channels"), nil
 	}
+	rounds := int64(guardDefaultRounds)
+	if cmd.Rounds != nil {
+		rounds = *cmd.Rounds
+	} else if cmd.Units != 0 {
+		rounds = cmd.Units
+	}
+
+	var r core.Result
+	if thread {
+		r, err = grantThreadRounds(ctx, tx, ch, cmd.ExchangeID, rounds)
+	} else {
+		r, err = grantMemberRounds(ctx, tx, ch, cmd.Alias, rounds)
+	}
+	if err != nil || r.Status != core.ExitOK || req.OpKey == "" {
+		return r, err
+	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
 		return core.Result{}, err
-	}
-	scope := "channel:" + ch.name
-	if r, found, err := replay(ctx, tx, owner, req.OpKey, scope, cmd); found || err != nil {
-		return r, err
-	}
-	var r core.Result
-	switch {
-	case exchange:
-		r, err = grantUnits(ctx, tx, ch, cmd, owner, now)
-	case joinPool:
-		r, err = grantJoinPool(ctx, tx, ch, cmd, owner, now)
-	default:
-		r, err = grantRoots(ctx, tx, ch, cmd, owner, now)
-	}
-	if err != nil || r.Status != core.ExitOK {
-		return r, err
 	}
 	return r, record(ctx, tx, owner, req.OpKey, scope, cmd, r, now)
 }
 
-func grantUnits(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant, owner int64, now time.Time) (core.Result, error) {
-	var granted, spent int64
-	err := tx.QueryRowContext(ctx, `SELECT granted, spent FROM exchange WHERE id = ? AND channel_id = ?`,
-		cmd.ExchangeID, ch.id).Scan(&granted, &spent)
+func replayOwnerBudget(ctx context.Context, tx store.Tx, req Request, scope string, cmd Command) (core.Result, bool, error) {
+	if req.OpKey == "" {
+		return core.Result{}, false, nil
+	}
+	var owner int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM principal WHERE kind = 'owner'`).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no exchange x%d in #%s", cmd.ExchangeID, ch.name), "crosshall owner status --channel "+ch.name), nil
+		return core.Result{}, false, nil
 	}
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, false, err
 	}
-	if granted > math.MaxInt64-cmd.Units {
-		return Fail(core.ExitUsage, "", "grant exceeds the exchange credit limit", "grant fewer units"), nil
-	}
-	granted += cmd.Units
-	if _, err := tx.ExecContext(ctx, `UPDATE exchange SET granted = ?, episode_open = 0 WHERE id = ?`,
-		granted, cmd.ExchangeID); err != nil {
-		return core.Result{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO budget_event (exchange_id, delta, reason, by_id, at_ms)
-		VALUES (?, ?, 'grant', ?, ?)`, cmd.ExchangeID, cmd.Units, owner, ms(now)); err != nil {
-		return core.Result{}, err
-	}
-	return OK(BudgetGrantResult{Channel: ch.name, ExchangeID: cmd.ExchangeID, Units: cmd.Units, Remaining: granted - spent})
+	return replay(ctx, tx, owner, req.OpKey, scope, cmd)
 }
 
-func grantRoots(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant, owner int64, now time.Time) (core.Result, error) {
-	var binding, principal int64
-	err := tx.QueryRowContext(ctx, `SELECT b.id, p.id FROM binding b
-		JOIN principal p ON p.id = b.principal_id
-		WHERE b.channel_id = ? AND b.alias = ? AND b.state = 'live' AND p.kind = 'session'`,
-		ch.id, cmd.Alias).Scan(&binding, &principal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", cmd.Alias, ch.name), "crosshall owner who --all"), nil
-	}
+func grantThreadRounds(ctx context.Context, tx store.Tx, ch channelRow, exchange, rounds int64) (core.Result, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 0 WHERE id = ? AND channel_id = ?`, exchange, ch.id)
 	if err != nil {
 		return core.Result{}, err
 	}
-	budget, err := refillRoots(ctx, tx, binding, now)
+	changed, err := result.RowsAffected()
 	if err != nil {
 		return core.Result{}, err
 	}
-	roots := budget.tokens
-	if roots > math.MaxInt64-cmd.Roots {
-		return Fail(core.ExitUsage, "", "grant exceeds the member root token limit", "grant fewer root tokens"), nil
+	if changed == 0 {
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no exchange x%d in #%s", exchange, ch.name), "crosshall owner status --channel "+ch.name), nil
 	}
-	roots += cmd.Roots
-	if _, err := tx.ExecContext(ctx, `UPDATE principal SET root_tokens = ? WHERE id = ?`, roots, principal); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE message
+        SET thread_reset_after_message_id = (SELECT COALESCE(MAX(id), 0) FROM message), thread_round_limit = ?
+        WHERE exchange_id = ? AND kind = 'ask' AND thread_root_id IS NULL`, rounds, exchange); err != nil {
 		return core.Result{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO budget_event (principal_id, delta, reason, by_id, at_ms)
-		VALUES (?, ?, 'roots', ?, ?)`, principal, cmd.Roots, owner, ms(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM thread_position WHERE thread_root_id IN (
+        SELECT id FROM message WHERE exchange_id = ? AND kind = 'ask' AND thread_root_id IS NULL)`, exchange); err != nil {
 		return core.Result{}, err
 	}
-	return OK(BudgetGrantResult{Channel: ch.name, Alias: cmd.Alias, Roots: cmd.Roots, RootTokens: roots})
+	return OK(BudgetGrantResult{Channel: ch.name, ExchangeID: exchange, Rounds: &rounds})
 }
 
-// grantJoinPool adds root tokens for the channel's future first joins.
-func grantJoinPool(ctx context.Context, tx store.Tx, ch channelRow, cmd BudgetGrant, owner int64, now time.Time) (core.Result, error) {
-	var pool int64
-	if err := tx.QueryRowContext(ctx, `SELECT join_pool FROM channel WHERE id = ?`, ch.id).Scan(&pool); err != nil {
+func grantMemberRounds(ctx context.Context, tx store.Tx, ch channelRow, alias string, rounds int64) (core.Result, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE principal SET round_limit = ?, any_level_ms = 0, guard_told = 0,
+        reset_after_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
+        WHERE id = (SELECT principal_id FROM binding WHERE channel_id = ? AND alias = ? AND state = 'live')`,
+		rounds, ch.id, alias)
+	if err != nil {
 		return core.Result{}, err
 	}
-	if pool > math.MaxInt64-cmd.Pool {
-		return Fail(core.ExitUsage, "", "grant exceeds the join pool limit", "grant fewer tokens"), nil
-	}
-	pool += cmd.Pool
-	if _, err := tx.ExecContext(ctx, `UPDATE channel SET join_pool = ? WHERE id = ?`, pool, ch.id); err != nil {
+	changed, err := result.RowsAffected()
+	if err != nil {
 		return core.Result{}, err
 	}
-	result := BudgetGrantResult{Channel: ch.name, Pool: cmd.Pool, JoinPool: pool}
-	if err := audit(ctx, tx, "join_pool_granted", "channel:"+ch.name, owner, result, now); err != nil {
-		return core.Result{}, err
+	if changed == 0 {
+		return noLiveBudgetMember(ch, alias), nil
 	}
-	return OK(result)
+	return OK(BudgetGrantResult{Channel: ch.name, Alias: alias, Rounds: &rounds})
 }
 
-// drawJoinToken gives a principal's first binding in a channel one root token
-// from the channel's join pool, while the pool lasts. The pool is the owner's
-// grant made in advance, so the event records the owner as the grantor.
-func drawJoinToken(ctx context.Context, tx store.Tx, channel, principal int64, now time.Time) error {
-	res, err := tx.ExecContext(ctx, `UPDATE channel SET join_pool = join_pool - 1 WHERE id = ? AND join_pool > 0`, channel)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
-		return err
-	}
-	owner, err := ownerPrincipal(ctx, tx, now)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE principal SET root_tokens = root_tokens + 1 WHERE id = ?`, principal); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO budget_event (principal_id, delta, reason, by_id, at_ms)
-		VALUES (?, 1, 'roots', ?, ?)`, principal, owner, ms(now))
-	return err
+func noLiveBudgetMember(ch channelRow, alias string) core.Result {
+	return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", alias, ch.name), "crosshall owner who --all")
 }

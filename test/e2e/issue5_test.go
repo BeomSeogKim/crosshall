@@ -81,9 +81,8 @@ func stages(row map[string]any) []string {
 // Ask, read, reply and waiting between three members, with the owner's
 // ledger showing each step.
 func TestThreeMemberCycleAndLedger(t *testing.T) {
-	w, owner, members := setup(t)
+	_, owner, members := setup(t)
 	form, tax, lint := members[0], members[1], members[2]
-	grantRoots(t, w, "form", 1)
 	q := form.must("ask", "@tax", "@lint", "check the refund rounding", "--due", "30m")
 	id := num(t, q, "id")
 	idArg := strconv.FormatInt(id, 10)
@@ -132,24 +131,22 @@ func TestThreeMemberCycleAndLedger(t *testing.T) {
 	}
 }
 
-// Two members asking each other back and forth are stopped by the budget;
-// the owner sees one notice, and a grant lets work continue.
-func TestBackAndForthIsStoppedByTheBudget(t *testing.T) {
-	w, owner, members := setup(t)
+// The owner sees one stop for a back-and-forth thread and can reset it.
+func TestBackAndForthIsStoppedByTheLoopGuard(t *testing.T) {
+	_, owner, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 1)
 	first := form.must("ask", "@tax", "round 1")
 	ex := num(t, first, "exchange")
-	pair := []*participant{tax, form}
+	pair := []*participant{form, tax}
 	for i := 2; i <= 8; i++ {
-		o := pair[i%2].must("ask", "@"+map[*participant]string{tax: "form", form: "tax"}[pair[i%2]], fmt.Sprintf("round %d", i))
-		if num(t, o, "exchange") != ex {
+		o := pair[(i-1)%2].must("ask", "@"+map[*participant]string{tax: "form", form: "tax"}[pair[(i-1)%2]], fmt.Sprintf("round %d", i))
+		if num(t, o, "exchange") != ex || num(t, o, "round") != int64(i) {
 			t.Fatalf("round %d left the exchange: %v", i, o.obj)
 		}
 	}
 	for i := 0; i < 3; i++ {
-		o := tax.run("ask", "@form", "one more")
-		if o.exit != 3 || o.obj["code"] != "budget_exhausted" {
+		o := form.run("ask", "@tax", "one more")
+		if o.exit != 3 || o.obj["code"] != "round_limit" {
 			t.Fatalf("refusal %d: exit %d %v", i, o.exit, o.obj)
 		}
 	}
@@ -157,7 +154,7 @@ func TestBackAndForthIsStoppedByTheBudget(t *testing.T) {
 	tax.must("reply", strconv.FormatInt(num(t, first, "id"), 10), "answer at zero")
 
 	status := owner.must("owner", "status", "--all")
-	notices := field(t, status.obj["channels"].([]any)[0].(map[string]any), "budget_exhaustions").([]any)
+	notices := field(t, status.obj["channels"].([]any)[0].(map[string]any), "guard_stops").([]any)
 	if len(notices) != 1 {
 		t.Fatalf("%d exhaustion notices for one episode: %v", len(notices), notices)
 	}
@@ -173,7 +170,6 @@ func TestLostResponsesForReplyReadAndGrant(t *testing.T) {
 	w, owner, members := setup(t)
 	form, tax, lint := members[0], members[1], members[2]
 	db := w.db()
-	grantRoots(t, w, "form", 1)
 	id := num(t, form.must("ask", "@tax", "@lint", "q"), "id")
 	idArg := strconv.FormatInt(id, 10)
 
@@ -232,8 +228,8 @@ func TestLostResponsesForReplyReadAndGrant(t *testing.T) {
 	if o := owner.run("owner", "budget", "grant", fmt.Sprintf("checkout/x%d", ex), "5", "--key", gkey); o.exit != 3 || o.obj["code"] != "key_conflict" {
 		t.Fatalf("changed amount: exit %d %v", o.exit, o.obj)
 	}
-	if n := count(fmt.Sprintf(`SELECT granted FROM exchange WHERE id = %d`, ex)); n != 8+3 {
-		t.Fatalf("granted %d, want 11", n)
+	if n := count(fmt.Sprintf(`SELECT thread_round_limit FROM message WHERE exchange_id = %d AND thread_root_id IS NULL`, ex)); n != 3 {
+		t.Fatalf("round limit %d, want 3", n)
 	}
 }
 
@@ -248,7 +244,6 @@ func ownerRequestVerb(key, verb, args string) (r wire.Request) {
 func TestAliasInsideTheTextReachesOnlyTheRecipient(t *testing.T) {
 	w, _, members := setup(t)
 	form := members[0]
-	grantRoots(t, w, "form", 1)
 	id := num(t, form.must("ask", "@tax", "@lint, is this ready?"), "id")
 	var body string
 	var recipients int

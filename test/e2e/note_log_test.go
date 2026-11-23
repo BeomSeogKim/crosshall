@@ -95,10 +95,9 @@ func TestChannelIsolationEndToEnd(t *testing.T) {
 
 // Leave, re-join and the one-channel rule through the binary, with log, focus and leave on the way.
 func TestLeaveRejoinAndOneChannelEndToEnd(t *testing.T) {
-	w, owner, members := setup(t)
+	_, owner, members := setup(t)
 	form, tax := members[0], members[1]
 	owner.must("owner", "channel", "create", "inventory")
-	grantRoots(t, w, "form", 1)
 	ask := num(t, form.must("ask", "@tax", "review?"), "id")
 
 	tax.must("focus", "refund rounding")

@@ -598,7 +598,6 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
 	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 	c.writer("join", "checkout", "--as", "writer")
-	c.owner("owner", "budget", "grant", "checkout/@writer", "--roots", "2")
 	c.installInteractive()
 	listed, _ := json.Marshal(map[string]any{"vendor": "claude", "vendor_version": c.version(),
 		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "interactive", "manifest_rev": "claude-2",
@@ -674,7 +673,6 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 		c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
 		c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 		c.writer("join", "checkout", "--as", "writer")
-		c.owner("owner", "budget", "grant", "checkout/@writer", "--roots", "1")
 		c.installInteractive()
 		version := c.version()
 		if tested {

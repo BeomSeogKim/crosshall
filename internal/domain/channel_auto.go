@@ -100,8 +100,8 @@ func createRepoChannel(ctx context.Context, tx store.Tx, repoRoot string, actor 
 		return channelRow{}, err
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO channel (name, topic, state, created_at_ms, join_pool) VALUES (?, '', 'active', ?, ?)`,
-		name, ms(now), DefaultJoinPool)
+		`INSERT INTO channel (name, topic, state, created_at_ms) VALUES (?, '', 'active', ?)`,
+		name, ms(now))
 	if err != nil {
 		return channelRow{}, err
 	}

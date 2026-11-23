@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Loop guard:** independent requests open their own threads, with eight rounds ahead by default and per-sender limits of 30 requests and 60 answers in ten minutes. Replies and notes stay available. The owner can see a round stop in the ledger and reset the affected thread or member. Schema 22 fences requests created before the switch and keeps their ledger history (#227).
+
 ## v0.2.0-rc.2 (2026-11-23)
 
 - **Sessions leave when their process exits:** for a Claude Code, Antigravity CLI or `crosshall run` member, crosshall records the process its commands run in when the command can name that process, whether the member joined by hand or through a hook, and departs the member once that process is proven gone, as a clean session end: the alias is freed and open requests stay (#224, #229). The member comes back by itself at its next command other than `wait` from a running process, under its old alias when that is free; otherwise the command says which alias it got. A member that left or that the owner departed does not come back this way. A Codex CLI member's exit is not tracked: its end hook departs nobody, so the owner departs it or it leaves by itself. `owner who --all` and `whoami --full` say how each member's exit is tracked (#228). The database moves to schema 21 (#226, #227).

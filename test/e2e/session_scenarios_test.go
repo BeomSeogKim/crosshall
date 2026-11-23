@@ -167,7 +167,7 @@ func TestRunAnnouncesMemberShellAndNestedIdentity(t *testing.T) {
 
 func TestAFormerMemberAndANewSessionGetTheSameEnrollmentMessage(t *testing.T) {
 	w := newWorld(t)
-	w.owner().must("owner", "channel", "create", "checkout", "--pool", "0")
+	w.owner().must("owner", "channel", "create", "checkout")
 	member := w.member()
 	checkNotInChannel := func() {
 		t.Helper()

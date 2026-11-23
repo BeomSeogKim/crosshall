@@ -3,7 +3,6 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,57 +54,10 @@ func TestEvaluateGuardRoundDecayAndBurstBoundaries(t *testing.T) {
 	}
 }
 
-func TestGuardRecordsRoundNineAfterLegacyAcceptanceAndOnlyOnce(t *testing.T) {
-	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
-	sent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "first"}, "first")
-	root := sent.ID
-	executeGuardFixture(t, f, `UPDATE exchange SET granted = 32 WHERE id = ?`, sent.Exchange)
-	var lastAsk Ask
-	var lastSender session
-	for round := 2; round <= 9; round++ {
-		lastSender = b
-		recipient := "form"
-		if round%2 == 1 {
-			lastSender, recipient = a, "tax"
-		}
-		wantOK(t, f.exec(f.caller(lastSender), Request{Command: Read{IDs: []int64{sent.ID}}}))
-		lastAsk = Ask{Re: sent.ID, To: []string{recipient}, Body: "continue"}
-		sent = f.guardAsk(lastSender, lastAsk, fmt.Sprint(round))
-		if got := f.messageLevel(sent.ID); got != ms(f.now)+int64(round)*roundDurationMS {
-			t.Fatalf("level at round %d = %d", round, got)
-		}
-		if got := f.anyGuardLevel(lastSender); got != ms(f.now)+int64(round-1)*roundDurationMS {
-			t.Fatalf("sending advanced the sender at round %d: %d", round, got)
-		}
-	}
-	before := f.state()
-	replayed := f.guardAsk(lastSender, lastAsk, "9")
-	if replayed.ID != sent.ID || f.state() != before {
-		t.Fatalf("replay changed the ledger: %+v", replayed)
-	}
-	got := f.guardEvent(sent.ID)
-	if got.Round != 9 || got.Reason != "round_limit" || got.Path != root ||
-		f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 1 {
-		t.Fatalf("round audit: %+v", got)
-	}
-	for _, result := range []core.Result{
-		f.exec(f.caller(lastSender), Request{Command: Status{}}),
-		f.owner(OwnerStatus{Channel: "checkout"}, ""),
-	} {
-		wantOK(t, result)
-		if strings.Contains(string(result.Data), "round_limit") || strings.Contains(string(result.Data), "level_ms") {
-			t.Fatalf("new guard data appeared in status: %s", result.Data)
-		}
-	}
-}
-
 func TestGuardKeepsMixedInboxPathsAndNewFallback(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprint("reverse=", reverse), func(t *testing.T) {
 			f, a, b, c := channel3(t)
-			f.roots(a, 2)
-			f.roots(c, 1)
 			deep := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "deep"}, "deep")
 			deepLevel := ms(f.now) + 8*roundDurationMS
 			executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, deepLevel, deep.ID)
@@ -134,13 +86,11 @@ func TestGuardKeepsMixedInboxPathsAndNewFallback(t *testing.T) {
 			if delegated.Exchange != fresh.Exchange || f.messageLevel(delegated.ID) != ms(f.now)+2*roundDurationMS {
 				t.Fatalf("fresh delegation used the unrelated deeper position: %+v", delegated)
 			}
-			executeGuardFixture(t, f, `UPDATE exchange SET granted = spent WHERE id = ?`, fresh.Exchange)
-			handoff := f.guardAsk(a, Ask{New: true, Re: fresh.ID, To: []string{"tax"}, Body: "open a handoff"}, "handoff")
-			if !handoff.NewExchange || handoff.ParentRequestID != fresh.ID {
-				t.Fatalf("legacy handoff changed: %+v", handoff)
-			}
-			if got := f.guardEvent(handoff.ID); got.Path != 0 || got.Round != 9 || got.Reason != "round_limit" {
-				t.Fatalf("new handoff should use any-path: %+v", got)
+			refused := f.ask(a, Ask{New: true, Re: fresh.ID, To: []string{"tax"}, Body: "open a handoff"}, "handoff")
+			wantCode(t, refused, core.ExitRefused, core.CodeRoundLimit)
+			got := f.stopEvent(fmt.Sprintf("principal:%d", *f.caller(a).PrincipalID))
+			if got.ThreadRootID != 0 || got.Round != 9 {
+				t.Fatalf("new handoff should use member-wide evaluation: %+v", got)
 			}
 		})
 	}
@@ -150,7 +100,6 @@ func TestGuardCountsUnreadAndExplicitParents(t *testing.T) {
 	for _, name := range []string{"inferred unread", "explicit unread", "explicit without obligation"} {
 		t.Run(name, func(t *testing.T) {
 			f, a, b, _ := channel3(t)
-			f.roots(a, 1)
 			parent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "deep request"}, "parent")
 			executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, ms(f.now)+8*roundDurationMS, parent.ID)
 			sender, target := b, "form"
@@ -161,9 +110,10 @@ func TestGuardCountsUnreadAndExplicitParents(t *testing.T) {
 			if name == "explicit without obligation" {
 				sender, target = a, "tax"
 			}
-			sent := f.guardAsk(sender, Ask{To: []string{target}, Re: reference, Body: "delegate"}, "delegate")
-			got := f.guardEvent(sent.ID)
-			if got.Round != 9 || got.Reason != "round_limit" || got.Path != parent.ID {
+			result := f.ask(sender, Ask{To: []string{target}, Re: reference, Body: "delegate"}, "delegate")
+			wantCode(t, result, core.ExitRefused, core.CodeRoundLimit)
+			got := f.stopEvent(fmt.Sprintf("exchange:%d", parent.Exchange))
+			if got.Round != 9 || got.ThreadRootID != parent.ID {
 				t.Fatalf("parent was ignored: %+v", got)
 			}
 			if f.anyGuardLevel(sender) != 0 ||
@@ -178,12 +128,12 @@ func TestGuardSeparatesIndependentRootsInOneExchange(t *testing.T) {
 	for _, explicit := range []bool{true, false} {
 		t.Run(fmt.Sprint("explicit=", explicit), func(t *testing.T) {
 			f, a, b, _ := channel3(t)
-			f.roots(a, 1)
 			first := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "first task"}, "first")
 			second := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "independent task"}, "second")
-			if first.Exchange != second.Exchange {
-				t.Fatalf("independent roots must share a legacy exchange: %d, %d", first.Exchange, second.Exchange)
+			if first.Exchange == second.Exchange {
+				t.Fatal("new roots must open distinct exchanges")
 			}
+			executeGuardFixture(t, f, `UPDATE message SET exchange_id = ? WHERE id = ?`, first.Exchange, second.ID)
 			deepLevel := ms(f.now) + 8*roundDurationMS
 			executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, deepLevel, first.ID)
 			result := f.reply(b, Reply{To: first.ID, Body: "answer the deep task"}, "reply")
@@ -203,7 +153,7 @@ func TestGuardSeparatesIndependentRootsInOneExchange(t *testing.T) {
 			if got := roundAt(f.messageLevel(sent.ID), ms(f.now)); got != 2 {
 				t.Fatalf("independent task reached round %d, want 2", got)
 			}
-			if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 0 {
+			if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardStopped) != 0 {
 				t.Fatal("independent task produced a refusal audit")
 			}
 		})
@@ -212,32 +162,38 @@ func TestGuardSeparatesIndependentRootsInOneExchange(t *testing.T) {
 
 func TestGuardLinkedHandoffUsesTheHigherParentEvaluation(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
-	f.roots(b, 1)
 	parent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "deep request"}, "parent")
-	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, ms(f.now)+8*roundDurationMS, parent.ID)
-	wantOK(t, f.exec(f.caller(b), Request{Command: Read{IDs: []int64{parent.ID}}}))
-	executeGuardFixture(t, f, `UPDATE principal SET any_level_ms = 0, reset_after_message_id = ? WHERE id = ?`,
-		parent.ID, *f.caller(b).PrincipalID)
-	executeGuardFixture(t, f, `UPDATE exchange SET granted = spent WHERE id = ?`, parent.Exchange)
-	sent := f.guardAsk(b, Ask{To: []string{"form"}, New: true, Re: parent.ID, Body: "handoff"}, "handoff")
-	got := f.guardEvent(sent.ID)
-	if !sent.NewExchange || sent.ParentRequestID != parent.ID || got.Path != parent.ID || got.Round != 9 {
-		t.Fatalf("handoff shed its parent round: send=%+v audit=%+v", sent, got)
+	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, ms(f.now)+7*roundDurationMS, parent.ID)
+	f.grantMember("tax", 8)
+	linked := f.guardAsk(b, Ask{To: []string{"form"}, New: true, Re: parent.ID, Body: "handoff without pickup"}, "handoff")
+	if !linked.NewExchange || linked.Exchange == parent.Exchange || linked.ParentRequestID != parent.ID || linked.Round != 8 {
+		t.Fatalf("linked handoff shed rounds or the parent link: %+v", linked)
 	}
-	if f.count(`SELECT COUNT(*) FROM message WHERE id = ? AND thread_root_id IS NULL`, sent.ID) != 1 {
+	if f.count(`SELECT COUNT(*) FROM message WHERE id = ? AND thread_root_id IS NULL`, linked.ID) != 1 {
 		t.Fatal("linked handoff must start its own thread")
+	}
+	follow := f.guardAsk(b, Ask{To: []string{"form"}, Re: parent.ID, Body: "plain follow-up"}, "follow")
+	if follow.Round != linked.Round || follow.Exchange != parent.Exchange {
+		t.Fatalf("continuation %+v and handoff %+v disagree on rounds", follow, linked)
+	}
+	r := f.reply(a, Reply{To: linked.ID, Body: "answer"}, "reply")
+	wantOK(t, r)
+	reply := decode[ReplyResult](t, r)
+	f.grantThread(linked.Exchange, 8)
+	f.grantMember("tax", 8)
+	viaReply := f.guardAsk(b, Ask{To: []string{"form"}, New: true, Re: reply.ID, Body: "linked to reply"}, "reply-link")
+	if viaReply.Round != 1 || viaReply.ParentRequestID != linked.ID || viaReply.Exchange == linked.Exchange {
+		t.Fatalf("link to a reply must name its request: %+v", viaReply)
 	}
 }
 
 func TestGuardFencesDelayedReplyAtItsOriginalRequest(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
 	parent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "before reset"}, "parent")
 	level := ms(f.now) + 8*roundDurationMS
 	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, level, parent.ID)
-	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, parent.ID, parent.ID)
-	executeGuardFixture(t, f, `UPDATE principal SET reset_after_message_id = ? WHERE id = ?`, parent.ID, *f.caller(a).PrincipalID)
+	f.grantThread(parent.Exchange, 8)
+	f.grantMember("form", 8)
 	r := f.reply(b, Reply{To: parent.ID, Body: "after reset"}, "answer")
 	wantOK(t, r)
 	reply := decode[ReplyResult](t, r)
@@ -256,12 +212,11 @@ func TestGuardFencesDelayedReplyAtItsOriginalRequest(t *testing.T) {
 
 func TestGuardLateReplyHonorsOnlyItsThreadFence(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
 	root := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "root"}, "root")
 	parent := f.guardAsk(a, Ask{To: []string{"tax"}, Re: root.ID, Body: "continuation"}, "parent")
 	level := ms(f.now) + 8*roundDurationMS
 	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, level, parent.ID)
-	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, parent.ID, root.ID)
+	f.grantThread(root.Exchange, 8)
 	result := f.reply(b, Reply{To: parent.ID, Body: "late reply"}, "answer")
 	wantOK(t, result)
 	reply := decode[ReplyResult](t, result)
@@ -273,8 +228,9 @@ func TestGuardLateReplyHonorsOnlyItsThreadFence(t *testing.T) {
 	if got := roundAt(f.messageLevel(linked.ID), ms(f.now)); got != 1 {
 		t.Fatalf("linked follow-up after the thread fence reached round %d, want 1", got)
 	}
-	newTask := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "new task"}, "new")
-	if got := f.guardEvent(newTask.ID); got.Path != 0 || got.Round != 9 || got.Reason != "round_limit" {
+	denied := f.ask(a, Ask{To: []string{"tax"}, Body: "new task"}, "new")
+	wantCode(t, denied, core.ExitRefused, core.CodeRoundLimit)
+	if got := f.stopEvent(fmt.Sprintf("principal:%d", *f.caller(a).PrincipalID)); got.ThreadRootID != 0 || got.Round != 9 {
 		t.Fatalf("parentless request should still see the late reply's level: %+v", got)
 	}
 	result = f.reply(b, Reply{To: linked.ID, Body: "reply to a post-fence request"}, "after-fence")
@@ -286,16 +242,17 @@ func TestGuardLateReplyHonorsOnlyItsThreadFence(t *testing.T) {
 
 func TestGuardBurstIncludesSettledAnswersAndExpiresAtTenMinutes(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
+	f.now = f.now.Truncate(time.Minute).Add(3 * time.Second)
 	send := Ask{All: true, Each: true, Body: "independent work"}
 	first := f.guardAsk(a, send, "burst-1")
-	executeGuardFixture(t, f, `UPDATE exchange SET granted = 64 WHERE id = ?`, first.Exchange)
 	wantOK(t, f.reply(b, Reply{To: first.ID, Body: "done"}, "settled"))
+	exchanges := map[int64]bool{first.Exchange: true}
 	checkLevel := func(got AskResult) {
 		t.Helper()
-		if f.messageLevel(got.ID) != ms(f.now)+roundDurationMS {
-			t.Fatalf("independent request %d advanced its round", got.ID)
+		if got.Round != 1 || !got.NewExchange || exchanges[got.Exchange] {
+			t.Fatalf("independent request did not open a new thread at round 1: %+v", got)
 		}
+		exchanges[got.Exchange] = true
 	}
 	var workers sync.WaitGroup
 	completed := make(chan core.Result, 12)
@@ -304,9 +261,6 @@ func TestGuardBurstIncludesSettledAnswersAndExpiresAtTenMinutes(t *testing.T) {
 	}
 	workers.Wait()
 	close(completed)
-	if len(completed) != 12 {
-		t.Fatalf("completed concurrent requests = %d, want 12", len(completed))
-	}
 	for result := range completed {
 		wantOK(t, result)
 		checkLevel(decode[AskResult](t, result))
@@ -314,45 +268,36 @@ func TestGuardBurstIncludesSettledAnswersAndExpiresAtTenMinutes(t *testing.T) {
 	for i := 14; i <= 30; i++ {
 		checkLevel(f.guardAsk(a, send, fmt.Sprintf("burst-%d", i)))
 	}
-	if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 0 {
-		t.Fatal("guard recorded a refusal at or below the burst ceilings")
+	before := f.state()
+	r := f.ask(a, send, "over")
+	wantCode(t, r, core.ExitRefused, core.CodeTooManyRequests)
+	retry := f.now.Add(11 * time.Minute).Truncate(time.Minute)
+	refusal := decode[Refusal](t, r)
+	if refusal.Message != "not sent: 30 requests from you in 10 minutes" ||
+		refusal.Hint != "it fits the burst limit again at "+retry.In(time.Local).Format("15:04")+". Nothing else lifts this." {
+		t.Fatalf("burst refusal %+v", refusal)
 	}
-	over := f.guardAsk(a, send, "over")
-	if got := f.guardEvent(over.ID); got.Requests != 31 || got.OwedAnswers != 62 || got.Reason != "too_many_requests" {
-		t.Fatalf("burst audit: %+v", got)
+	again := f.guardAsk(a, send, "burst-1")
+	if again.ID != first.ID || f.state() != before || len(exchanges) != 30 {
+		t.Fatal("burst refusal or replay changed the ledger")
 	}
-	f.now = f.now.Add(10 * time.Minute)
-	f.guardAsk(a, send, "aged")
-	if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 1 {
-		t.Fatal("the burst window retained sends exactly ten minutes old")
-	}
-}
-
-func TestGuardPreservesLegacyBudgetRefusal(t *testing.T) {
-	f, a, _, _ := channel3(t)
-	f.roots(a, 1)
-	cmd := Ask{To: []string{"tax"}, Body: "review"}
-	for i := 1; i <= 8; i++ {
-		f.guardAsk(a, cmd, fmt.Sprint(i))
-	}
-	executeGuardFixture(t, f, `UPDATE principal SET any_level_ms = ? WHERE id = ?`, ms(f.now)+8*roundDurationMS, *f.caller(a).PrincipalID)
-	before := f.count(`SELECT COUNT(*) FROM message`)
-	wantCode(t, f.ask(a, cmd, "exhausted"), core.ExitRefused, core.CodeBudgetExhausted)
-	if f.count(`SELECT COUNT(*) FROM message`) != before ||
-		f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 0 {
-		t.Fatal("old refused ask wrote a message or a shadow event")
-	}
+	f.now = f.now.Add(10*time.Minute - time.Millisecond)
+	wantCode(t, f.ask(a, send, "over"), core.ExitRefused, core.CodeTooManyRequests)
+	f.now = retry
+	executeGuardFixture(t, f, `UPDATE principal SET any_level_ms = ? WHERE id = ?`, ms(retry)+8*roundDurationMS, *f.caller(a).PrincipalID)
+	wantCode(t, f.ask(a, send, "over"), core.ExitRefused, core.CodeRoundLimit)
+	f.grantMember("form", 8)
+	checkLevel(f.guardAsk(a, send, "over"))
 }
 
 func TestGuardPreservesOldReplayAndUnreadReply(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
 	cmd := Ask{To: []string{"tax"}, Body: "before upgrade"}
 	first := f.guardAsk(a, cmd, "saved")
 	executeGuardFixture(t, f, `UPDATE message SET level_ms = 0 WHERE id = ?`, first.ID)
 	executeGuardFixture(t, f, `UPDATE principal SET any_level_ms = ? WHERE id = ?`, ms(f.now)+8*roundDurationMS, *f.caller(a).PrincipalID)
 	again := f.guardAsk(a, cmd, "saved")
-	if again.ID != first.ID || f.messageLevel(first.ID) != 0 || f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 0 {
+	if again.ID != first.ID || f.messageLevel(first.ID) != 0 || f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardStopped) != 0 {
 		t.Fatalf("old operation key changed: %+v", again)
 	}
 	r := f.reply(b, Reply{To: first.ID, Body: "answer after upgrade"}, "old-unread")
@@ -370,7 +315,7 @@ func TestGuardNotesUseAnyPathAndRespectPickupWatermark(t *testing.T) {
 	r := f.exec(f.caller(a), Request{OpKey: "note", Command: Note{All: true, Body: "information"}})
 	wantOK(t, r)
 	id := decode[NoteResult](t, r).ID
-	executeGuardFixture(t, f, `UPDATE principal SET reset_after_message_id = ? WHERE id = ?`, id, *f.caller(c).PrincipalID)
+	f.grantMember("a11y", 8)
 	for _, recipient := range []session{b, c} {
 		wantOK(t, f.exec(f.caller(recipient), Request{Command: Read{IDs: []int64{id}}}))
 	}
@@ -382,9 +327,8 @@ func TestGuardNotesUseAnyPathAndRespectPickupWatermark(t *testing.T) {
 
 func TestGuardPathWatermarkLeavesAnyPathIndependent(t *testing.T) {
 	f, a, b, _ := channel3(t)
-	f.roots(a, 1)
 	sent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "before reset"}, "before")
-	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, sent.ID, sent.ID)
+	f.grantThread(sent.Exchange, 8)
 	wantOK(t, f.exec(f.caller(b), Request{Command: Read{IDs: []int64{sent.ID}}}))
 	if f.anyGuardLevel(b) != f.messageLevel(sent.ID) || f.count(`SELECT COUNT(*) FROM thread_position`) != 0 {
 		t.Fatal("path reset leaked into the any-path position")
@@ -398,13 +342,13 @@ func (f *fixture) guardAsk(s session, cmd Ask, key string) AskResult {
 	return decode[AskResult](f.t, result)
 }
 
-func (f *fixture) guardEvent(id int64) guardDecision {
+func (f *fixture) stopEvent(subject string) guardStop {
 	f.t.Helper()
 	var raw []byte
-	if err := f.db.QueryRow(`SELECT detail FROM event WHERE kind = ? AND subject = ?`, guardWouldRefuse, fmt.Sprintf("message:%d", id)).Scan(&raw); err != nil {
+	if err := f.db.QueryRow(`SELECT detail FROM event WHERE kind = ? AND subject = ? ORDER BY seq DESC LIMIT 1`, guardStopped, subject).Scan(&raw); err != nil {
 		f.t.Fatal(err)
 	}
-	var out guardDecision
+	var out guardStop
 	if err := json.Unmarshal(raw, &out); err != nil {
 		f.t.Fatal(err)
 	}
@@ -434,4 +378,18 @@ func executeGuardFixture(t *testing.T, f *fixture, query string, args ...any) {
 	if _, err := f.db.Exec(query, args...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func rounds(n int64) *int64 { return &n }
+
+func pool(n int64) *int64 { return &n }
+
+func (f *fixture) grantMember(alias string, n int64) {
+	f.t.Helper()
+	wantOK(f.t, f.owner(BudgetGrant{Channel: "checkout", Alias: alias, Rounds: rounds(n)}, ""))
+}
+
+func (f *fixture) grantThread(exchange, n int64) {
+	f.t.Helper()
+	wantOK(f.t, f.owner(BudgetGrant{Channel: "checkout", ExchangeID: exchange, Rounds: rounds(n)}, ""))
 }

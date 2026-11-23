@@ -29,6 +29,19 @@ func HasPromptLine(adapter, revision string) bool {
 	return false
 }
 
+func HasSessionEnd(adapter, revision string) bool {
+	m, ok := loadManifest(adapter)
+	if !ok || m.Revision != revision {
+		return false
+	}
+	for _, name := range m.Install.Events {
+		if m.Events[name].Fact == wire.HookSessionEnded {
+			return true
+		}
+	}
+	return false
+}
+
 // InstallSpec describes a vendor's user-level hook file.
 type InstallSpec struct {
 	Adapter  string

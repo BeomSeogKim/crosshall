@@ -31,7 +31,9 @@ type Service struct {
 	// ProcessGone reports proof that a process (PID and start identity)
 	// no longer runs; nil proves nothing.
 	ProcessGone   func(pid, identity int64) bool
+	ProcessAlive  func(pid, identity int64) bool
 	HasPromptLine func(adapter, revision string) bool
+	HasSessionEnd func(adapter, revision string) bool
 	// LeafReceipts reads the roster receipts a session key's member
 	// directory holds and has not sent yet (the cursor and the rules one),
 	// if the directory is the registered one (file identity) and carries
@@ -684,7 +686,14 @@ func (s *Service) who(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if !hintAcked && req.Ack == 0 {
 		seq = 0
 	}
-	return OK(WhoResult{Channel: ch.name, Topic: ch.topic, Members: members, RosterSeq: seq})
+	out := WhoResult{Channel: ch.name, Topic: ch.topic, Members: members, RosterSeq: seq}
+	if req.Command.(Who).ExitTracking {
+		out.ExitTracking, _, err = s.exitTracking(ctx, tx, *caller.PrincipalID)
+		if err != nil {
+			return core.Result{}, err
+		}
+	}
+	return OK(out)
 }
 
 func notEnrolled() core.Result {

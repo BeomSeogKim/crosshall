@@ -60,6 +60,8 @@ type OwnerMember struct {
 	Reach         string         `json:"reach,omitempty"`
 	LastEvidence  *OwnerEvidence `json:"last_evidence"`
 	EvidenceStale bool           `json:"evidence_stale"`
+	ExitTracking  ExitTracking   `json:"exit_tracking,omitempty"`
+	HostAlive     bool           `json:"host_alive,omitempty"`
 	OpenRequests  []int64        `json:"open_request_ids"`
 	DepartToken   string         `json:"depart_token,omitempty"`
 }
@@ -168,6 +170,15 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 				return core.Result{}, err
 			}
 			if m.BindingState == "live" {
+				tracking, host, err := s.exitTracking(ctx, tx, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
+				m.ExitTracking = tracking
+				if tracking != ExitUntracked && s.ProcessAlive != nil && s.judgeableHost(&host) && s.ProcessAlive(host.PID, host.Start) {
+					m.HostAlive = true
+					m.EvidenceStale = false
+				}
 				m.DepartToken, err = departureToken(ctx, tx, m.BindingID, m.principal)
 				if err != nil {
 					return core.Result{}, err

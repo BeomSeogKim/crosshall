@@ -45,7 +45,9 @@ If a join committed before its hook could deliver the line, the next eligible ho
 
 The hook checks membership immediately before writing the line. A write already in progress can finish after the member leaves.
 
-Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
+Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check. A hand-joined Antigravity member without an adapter launch can be tracked through its `agy` ancestor. `/clear` keeps the same CLI process, so an older conversation stays joined until the CLI exits. The Antigravity adapter supplies a startup hook only.
+
+Codex CLI 0.171.0 can run commands through a shared app server. The server can stay alive after a client exits and serve a later client. Exit tracking for Codex uses the adapter's end hook when available.
 
 ## The turn-end check
 

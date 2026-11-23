@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	Endpoint = ""
+	// Endpoint is the receiver of release builds; telemetry.Receiver gives
+	// other builds none.
+	Endpoint = "https://telemetry.addylog.dev/v1/report"
 
 	Unset = "unset"
 	On    = "on"

@@ -1,6 +1,6 @@
 # Usage statistics
 
-crosshall can send one usage report a day to Adrian Studio, its maintainer, to decide what to fix and build. It is off until a person answers the question in their own terminal, and this document lists everything a report can hold. This build has no receiver configured, so it asks nothing and sends nothing.
+crosshall can send one usage report a day to Adrian Studio, its maintainer, to decide what to fix and build. It is off until a person answers the question in their own terminal, and this document lists everything a report can hold. Release builds send reports to `https://telemetry.addylog.dev/v1/report`; a build not made from a release tag has no receiver, so it asks nothing and sends nothing.
 
 ## What is sent, and when
 
@@ -89,7 +89,7 @@ A variable or file can only turn sending off. The dispatcher records the day it 
 
 ## The request
 
-`POST <endpoint>` with `Content-Type: application/json`, the report as the body (under 16 KiB), and `User-Agent: crosshall/<version>`. curl runs with an empty environment and ignores `~/.curlrc`; it uses HTTPS only, uses no proxy, follows no redirect, sends no cookie and gives up after 10 seconds.
+`POST https://telemetry.addylog.dev/v1/report` with `Content-Type: application/json`, the report as the body (under 16 KiB), and `User-Agent: crosshall/<version>`. curl runs with an empty environment and ignores `~/.curlrc`; it uses HTTPS only, uses no proxy, follows no redirect, sends no cookie and gives up after 10 seconds.
 
 | Answer | What the dispatcher does |
 | --- | --- |

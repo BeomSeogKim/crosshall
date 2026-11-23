@@ -26,6 +26,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/telemetry"
 	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 	"github.com/BeomSeogKim/crosshall/internal/telemetrysend"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -167,7 +168,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	launches.start(ctx, db, time.Now())
 	usage := telemetrysend.New(telemetrysend.Config{
 		StateRoot: cfg.StateRoot, Rendezvous: cfg.Rendezvous, Version: cfg.Version,
-		Endpoint: telemetryconfig.Endpoint, PolicyPath: telemetryconfig.ManagedOffPath,
+		Endpoint: telemetry.Receiver(cfg.Version), PolicyPath: telemetryconfig.ManagedOffPath,
 		Curl: telemetryconfig.CurlPath, Vetoed: telemetryconfig.EnvironmentOff(),
 	}, db)
 	defer func() {

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 )
 
 // Report is one day's report in its canonical member order.
@@ -95,6 +97,16 @@ func AppVersion(version string) string {
 		return version
 	}
 	return "dev"
+}
+
+// Receiver is the endpoint a build of version uses: the shipping receiver
+// for a release tag, none for any other build, which then neither asks nor
+// sends.
+func Receiver(version string) string {
+	if AppVersion(version) == "dev" {
+		return ""
+	}
+	return telemetryconfig.Endpoint
 }
 
 // Round rounds a count down to the value ladder; below 1 it is 0, which is

@@ -59,7 +59,10 @@ type Delivery struct {
 	PickedUpAtMS int64  `json:"picked_up_at_ms,omitempty"`
 	SettledAtMS  int64  `json:"settled_at_ms,omitempty"`
 	MoreTimeAtMS int64  `json:"more_time_at_ms,omitempty"`
-	Next         string `json:"next,omitempty"`
+	// Next is the earlier sentence for a stored recipient, kept for old
+	// readers; Wake says the same with its reason.
+	Next string `json:"next,omitempty"`
+	Wake
 }
 
 // AskResult is the data of a committed request.
@@ -255,7 +258,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		if err := json.Unmarshal(r.Data, &out); err != nil {
 			return core.Result{}, err
 		}
-		return askReceipt(ctx, tx, m.principal, out, &s.waits, now)
+		return s.askReceipt(ctx, tx, m.principal, out, now)
 	}
 
 	to, refusal, err := audience(ctx, tx, m, cmd)
@@ -332,8 +335,15 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		ID: id, Channel: m.channelName, Exchange: exchange, NewExchange: isNew, ParentRequestID: parentRequestID,
 		DueAtMS: ms(now.Add(due)), Round: decision.Round,
 	}
-	r, err := askReceipt(ctx, tx, m.principal, out, &s.waits, now)
+	r, err := s.askReceipt(ctx, tx, m.principal, out, now)
 	if err != nil {
+		return core.Result{}, err
+	}
+	var sent AskResult
+	if err := json.Unmarshal(r.Data, &sent); err != nil {
+		return core.Result{}, err
+	}
+	if err := recordWakes(ctx, tx, m.principal, id, sent.Recipients, now); err != nil {
 		return core.Result{}, err
 	}
 	return r, record(ctx, tx, m.principal, req.OpKey, scope, cmd, r, now)
@@ -357,11 +367,12 @@ func receipt(ctx context.Context, tx store.Tx, msg, principal int64, stage, evid
 	return err
 }
 
-// deliveries reads the current state of every recipient of a message.
-func deliveries(ctx context.Context, tx store.Tx, msg int64, waits *waitPresence, now time.Time) ([]Delivery, error) {
+// deliveries reads the current state of every recipient of a message, and
+// for a stored one what will tell it.
+func (s *Service) deliveries(ctx context.Context, tx store.Tx, msg int64, now time.Time) ([]Delivery, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT r.alias_at_commit, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms,
-		        COALESCE(b.state, 'departed'), COALESCE(b.id, 0), m.kind, `+notMoreTime+`
+		`SELECT r.alias_at_commit, r.principal_id, r.picked_up_at_ms, o.state, o.settled_at_ms, o.more_time_at_ms,
+		        COALESCE(b.state, 'departed'), COALESCE(b.id, 0)
 		 FROM recipient r JOIN message m ON m.id = r.message_id
 		 LEFT JOIN obligation o ON o.message_id = r.message_id AND o.principal_id = r.principal_id
 		 LEFT JOIN binding b ON b.principal_id = r.principal_id AND b.channel_id = m.channel_id
@@ -370,17 +381,21 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, waits *waitPresence
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Delivery
+	var (
+		out       []Delivery
+		stored    []int
+		bindings  []int64
+		principal []int64
+	)
 	for rows.Next() {
 		var (
 			d                         Delivery
 			picked, settled, moreTime sql.NullInt64
 			state                     sql.NullString
-			binding, kind             string
-			bindingID                 int64
-			wakesWait                 bool
+			binding                   string
+			bindingID, principalID    int64
 		)
-		if err := rows.Scan(&d.Alias, &picked, &state, &settled, &moreTime, &binding, &bindingID, &kind, &wakesWait); err != nil {
+		if err := rows.Scan(&d.Alias, &principalID, &picked, &state, &settled, &moreTime, &binding, &bindingID); err != nil {
 			return nil, err
 		}
 		d.PickedUpAtMS, d.SettledAtMS, d.MoreTimeAtMS = picked.Int64, settled.Int64, moreTime.Int64
@@ -395,29 +410,34 @@ func deliveries(ctx context.Context, tx store.Tx, msg int64, waits *waitPresence
 			// Delivery follows the recipient's binding, not its alias.
 			d.State, d.Next = "stored", "held until it rejoins"
 		default:
-			d.State, d.Next = "stored", "waits for its next crosshall command"
-			// Anything short of a notice that will offer this message is pull,
-			// and says exactly what pull says.
-			queued, err := publishQueued(ctx, tx, bindingID, msg, now)
-			if err != nil {
-				return nil, err
-			}
-			switch {
-			case queued:
-				d.Next = "notice queued"
-			case wakesWait && waits.running(bindingID, kind, now):
-				// A request for more time ends no wait.
-				d.Next = WaitRunning
-			}
+			d.State = "stored"
+			stored, bindings, principal = append(stored, len(out)), append(bindings, bindingID), append(principal, principalID)
 		}
 		out = append(out, d)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i, at := range stored {
+		w, err := s.messageWake(ctx, tx, bindings[i], principal[i], msg, now)
+		if err != nil {
+			return nil, err
+		}
+		out[at].Wake, out[at].Next = w, "waits for its next crosshall command"
+		switch w.Wake {
+		case WakeNotice:
+			out[at].Next = "notice queued"
+		case WakeWait:
+			out[at].Next = WaitRunning
+		}
+	}
+	return out, nil
 }
 
 // Resolve the opener by principal, since a departed member's alias can be reused.
 // A replay refreshes delivery and display names.
-func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult, waits *waitPresence, now time.Time) (core.Result, error) {
+func (s *Service) askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult, now time.Time) (core.Result, error) {
 	if !out.NewExchange {
 		err := tx.QueryRowContext(ctx, `SELECT COALESCE(b.alias, ''), COALESCE(b.state = 'departed', 0)
 			FROM exchange e LEFT JOIN binding b ON b.principal_id = e.opened_by_id
@@ -427,7 +447,7 @@ func askReceipt(ctx context.Context, tx store.Tx, sender int64, out AskResult, w
 			return core.Result{}, err
 		}
 	}
-	d, err := deliveries(ctx, tx, out.ID, waits, now)
+	d, err := s.deliveries(ctx, tx, out.ID, now)
 	if err != nil {
 		return core.Result{}, err
 	}

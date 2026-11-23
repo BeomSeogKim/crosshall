@@ -29,8 +29,8 @@ type Member struct {
 	Observed *Observed `json:"observed,omitempty"`
 	// Publish is the member's publish route status (candidate only in slice 1).
 	Publish *PublishStatus `json:"publish,omitempty"`
-	// WaitRunning is set by who when the member's wait is polling.
-	WaitRunning bool `json:"wait_running,omitempty"`
+	// Wake is what will tell the member about new work; set in who.
+	Wake
 
 	principal, binding int64
 }

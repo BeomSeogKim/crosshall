@@ -35,8 +35,7 @@ func TestSendLineShowsARunningWait(t *testing.T) {
 		t.Helper()
 		for _, m := range tax.must("who").obj["members"].([]any) {
 			if row := m.(map[string]any); row["alias"] == "form" {
-				running, _ := row["wait_running"].(bool)
-				return running
+				return row["wake"] == "wait"
 			}
 		}
 		t.Fatal("who lists no @form")

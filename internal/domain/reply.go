@@ -92,7 +92,7 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 		if err != nil || r.Status != core.ExitOK {
 			return r, err
 		}
-		return withCurrentReplyDelivery(ctx, tx, r, m.principal, now)
+		return withCurrentReplyDelivery(ctx, tx, r, m.principal, &s.waits, now)
 	}
 
 	var (
@@ -187,7 +187,7 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 	if err := observe(ctx, tx, m.principal, now); err != nil {
 		return core.Result{}, err
 	}
-	if out.Delivery, err = replyDelivery(ctx, tx, id, now); err != nil {
+	if out.Delivery, err = replyDelivery(ctx, tx, id, &s.waits, now); err != nil {
 		return core.Result{}, err
 	}
 	r, err := OK(out)
@@ -197,8 +197,8 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 	return r, record(ctx, tx, m.principal, req.OpKey, scope, cmd, r, now)
 }
 
-func replyDelivery(ctx context.Context, tx store.Tx, id int64, now time.Time) (Delivery, error) {
-	d, err := deliveries(ctx, tx, id, now)
+func replyDelivery(ctx context.Context, tx store.Tx, id int64, waits *waitPresence, now time.Time) (Delivery, error) {
+	d, err := deliveries(ctx, tx, id, waits, now)
 	if err != nil {
 		return Delivery{}, err
 	}
@@ -210,12 +210,12 @@ func replyDelivery(ctx context.Context, tx store.Tx, id int64, now time.Time) (D
 
 // Refresh both sides on replay: the asker may have read the reply and the
 // recipient may have read the original request since the first response.
-func withCurrentReplyDelivery(ctx context.Context, tx store.Tx, r core.Result, principal int64, now time.Time) (core.Result, error) {
+func withCurrentReplyDelivery(ctx context.Context, tx store.Tx, r core.Result, principal int64, waits *waitPresence, now time.Time) (core.Result, error) {
 	var out ReplyResult
 	if err := json.Unmarshal(r.Data, &out); err != nil {
 		return core.Result{}, err
 	}
-	d, err := replyDelivery(ctx, tx, out.ID, now)
+	d, err := replyDelivery(ctx, tx, out.ID, waits, now)
 	if err != nil {
 		return core.Result{}, err
 	}

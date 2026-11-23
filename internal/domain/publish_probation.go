@@ -14,7 +14,7 @@ func recordPublishProbation(ctx context.Context, tx store.Tx, attempt int64, obs
 			json_extract(l.profile, '$.mode'), json_extract(l.profile, '$.manifest_rev'), 'publish', ?2 = 'own_turn',
 			CASE WHEN ?2 <> 'own_turn' THEN ?3 END, NULLIF(?2, 'own_turn'), CASE WHEN ?2 <> 'own_turn' THEN r.id END
 		FROM publish_attempt r JOIN adapter_launch l ON l.principal_id = r.principal_id AND l.launch_ref = r.launch_ref
-		WHERE r.id = ?1 AND l.verified = 1 AND `+store.CapabilityCovered("r.adapter", "l.profile", "'publish'")+`
+		WHERE r.id = ?1 AND (l.verified = 1 OR `+store.ThreadRoutedAdapter("r.adapter")+`) AND `+store.CapabilityCovered("r.adapter", "l.profile", "'publish'")+`
 		AND NOT EXISTS (SELECT 1 FROM capability_evidence e
 			WHERE (e.vendor, e.vendor_version, e.platform, e.mode, e.manifest_rev, e.cap) =
 			(r.adapter, json_extract(l.profile, '$.vendor_version'), json_extract(l.profile, '$.platform'),
@@ -34,18 +34,22 @@ const currentBindingLaunch = `adapter_launch l ON l.rowid = (
 	WHERE latest.principal_id = b.principal_id AND latest.ended_hook_at_ms IS NULL
 	ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)`
 
-const resumableBindingBuild = `b.state = 'live' AND l.verified = 1 AND l.fenced = 0
+// resumableBindingBuild: a binding's current launch, verified or of a
+// thread-routed adapter (whose launches never are), runs the stopped build.
+func resumableBindingBuild() string {
+	return `b.state = 'live' AND (l.verified = 1 OR ` + store.ThreadRoutedAdapter("json_extract(l.profile, '$.adapter')") + `) AND l.fenced = 0
 	AND cb.vendor = json_extract(l.profile, '$.adapter')
 	AND cb.vendor_version = json_extract(l.profile, '$.vendor_version')
 	AND cb.platform = json_extract(l.profile, '$.platform')
 	AND cb.mode = json_extract(l.profile, '$.mode')
 	AND cb.manifest_rev = json_extract(l.profile, '$.manifest_rev')`
+}
 
 func liftPublishBuildForBinding(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE capability_build AS cb SET lifted_at_ms = MAX(?1, stopped_at_ms)
 		WHERE cb.cap = 'publish' AND `+store.CapabilityBuildStopped("cb")+` AND EXISTS (
 			SELECT 1 FROM binding b JOIN `+currentBindingLaunch+`
-			WHERE b.id = ?2 AND `+resumableBindingBuild+`)`, ms(now), binding)
+			WHERE b.id = ?2 AND `+resumableBindingBuild()+`)`, ms(now), binding)
 	if err != nil {
 		return false, err
 	}

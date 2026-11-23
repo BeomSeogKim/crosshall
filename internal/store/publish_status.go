@@ -54,9 +54,9 @@ var PublishProfileCovered = CapabilityCovered("r.adapter", "l.profile", "'publis
 // PublishAdapterSends holds when the route's adapter can publish: it has a
 // notice format and a transport that sends. Whether the route itself names
 // an address is the adapter's to resolve (publish.Registry.Address).
-func PublishAdapterSends() string { return routeAdapterIn(publish.Adapters().Senders()) }
+func PublishAdapterSends() string { return adapterIn("r.adapter", publish.Adapters().Senders()) }
 
-func routeAdapterIn(names []string) string {
+func adapterIn(column string, names []string) string {
 	if len(names) == 0 {
 		return "0"
 	}
@@ -64,13 +64,13 @@ func routeAdapterIn(names []string) string {
 	for i, name := range names {
 		quoted[i] = "'" + strings.ReplaceAll(name, "'", "''") + "'"
 	}
-	return "r.adapter IN (" + strings.Join(quoted, ", ") + ")"
+	return column + " IN (" + strings.Join(quoted, ", ") + ")"
 }
 
-// PublishThreadRouted holds when the route's adapter addresses a session's
-// thread on the server that hosts it (publish.Adapter.ThreadRouted) and the
-// route names both.
-func PublishThreadRouted() string {
+// ThreadRoutedAdapter holds when the adapter named by column addresses a
+// session's thread on the server that hosts it (publish.Adapter.ThreadRouted):
+// its launches are never verified ones.
+func ThreadRoutedAdapter(column string) string {
 	var names []string
 	registry := publish.Adapters()
 	for _, name := range registry.Names() {
@@ -78,7 +78,14 @@ func PublishThreadRouted() string {
 			names = append(names, name)
 		}
 	}
-	return "(" + routeAdapterIn(names) + ` AND r.thread_id IS NOT NULL AND r.host_pid IS NOT NULL AND r.host_start IS NOT NULL)`
+	return adapterIn(column, names)
+}
+
+// PublishThreadRouted holds when route r is thread-routed and names its
+// thread, its server and that server's home.
+func PublishThreadRouted() string {
+	return "(" + ThreadRoutedAdapter("r.adapter") + ` AND r.thread_id IS NOT NULL AND r.host_pid IS NOT NULL
+		AND r.host_start IS NOT NULL AND r.vendor_home IS NOT NULL)`
 }
 
 // PublishLaunchBinds holds when the current launch l may publish on route
@@ -90,10 +97,10 @@ func PublishLaunchBinds() string {
 
 // PublishLane is the queue route r's notices hold once proven by p, which
 // one open notice at a time may use (publish_attempt.lane): the thread of
-// a thread-routed route, whose server hosts other threads too, else the
-// proven process.
+// a thread-routed route in its home, whose server hosts other threads too
+// and whose thread IDs are the home's own, else the proven process.
 func PublishLane() string {
-	return "CASE WHEN " + PublishThreadRouted() + ` THEN 'thread:' || r.adapter || ':' || r.thread_id
+	return "CASE WHEN " + PublishThreadRouted() + ` THEN 'thread:' || r.adapter || ':' || r.thread_id || ':' || r.vendor_home
 		ELSE 'process:' || p.process_pid || ':' || p.process_start_ms END`
 }
 
@@ -132,10 +139,11 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		proven, activated                                                  bool
 		owner, vendor, hall                                                sql.NullBool
 		host                                                               publish.Queue
+		home                                                               string
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
 			r.launch_verified = 1 OR `+PublishThreadRouted()+`, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''),
-			COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0), b.state, b.dnd, b.publish_quiet, b.publish_owner,
+			COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0), COALESCE(r.vendor_home, ''), b.state, b.dnd, b.publish_quiet, b.publish_owner,
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
 			COALESCE(`+PublishLaunchBinds()+`, 0),
@@ -149,7 +157,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
-		&principal, &verified, &mode, &socketPath, &threadID, &host.PID, &host.StartMS, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
+		&principal, &verified, &mode, &socketPath, &threadID, &host.PID, &host.StartMS, &home, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
 		&hall, &current, &profile, &proven, &activated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
@@ -252,7 +260,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	}
 	state.State = "candidate"
 	adapters := publish.Adapters()
-	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID, Host: host}
+	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID, Host: host, Home: home}
 	_, why := adapters.Address(adapter, route)
 	var reach string
 	if a, ok := adapters.Lookup(adapter); ok {

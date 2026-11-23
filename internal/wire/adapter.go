@@ -42,10 +42,13 @@ type HookEnrollArgs struct {
 	// Host is the managed server that runs the hook, for a vendor whose
 	// sessions are its clients (Profile.Mode daemon): it holds the
 	// session's thread.
-	Host     *Host  `json:"host,omitempty"`
-	EventRef string `json:"event_ref"`
-	Source   string `json:"source"`
-	RepoRoot string `json:"repo_root"`
+	Host *Host `json:"host,omitempty"`
+	// VendorHome is the vendor home that server serves, with symbolic links
+	// resolved, sent with Host.
+	VendorHome string `json:"vendor_home,omitempty"`
+	EventRef   string `json:"event_ref"`
+	Source     string `json:"source"`
+	RepoRoot   string `json:"repo_root"`
 	// Repository names the whole repository of RepoRoot's worktree, and
 	// CreateChannel says the hook found a real work tree there, so the
 	// repository may get its own channel. The dispatcher resolves the

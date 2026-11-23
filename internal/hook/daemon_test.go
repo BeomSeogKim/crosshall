@@ -94,16 +94,21 @@ func TestCodexModeComesFromTheHooksHost(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			standInHost(t, tc.exe, tc.args, tc.readable)
-			version, mode, host := daemonBuild(*m.Daemon, environment(tc.env))
+			version, mode, host, served := daemonBuild(*m.Daemon, environment(tc.env))
 			if version != tc.version || mode != tc.mode {
 				t.Fatalf("build = %s %s, want %s %s", version, mode, tc.version, tc.mode)
 			}
-			want := (*wire.Host)(nil)
+			want, wantHome := (*wire.Host)(nil), ""
 			if mode == publish.ModeDaemon {
 				want = &wire.Host{PID: standInPID, Start: standInStart, NS: proc.PIDNamespace()}
+				wantHome = tc.env["CODEX_HOME"]
+				if wantHome == "" {
+					wantHome = filepath.Join(tc.env["HOME"], ".codex")
+				}
+				wantHome, _ = filepath.EvalSymlinks(wantHome)
 			}
-			if (host == nil) != (want == nil) || host != nil && *host != *want {
-				t.Fatalf("host = %+v, want %+v", host, want)
+			if (host == nil) != (want == nil) || host != nil && *host != *want || served != wantHome {
+				t.Fatalf("host = %+v in %q, want %+v in %q", host, served, want, wantHome)
 			}
 		})
 	}
@@ -111,8 +116,8 @@ func TestCodexModeComesFromTheHooksHost(t *testing.T) {
 	// later be another process.
 	standInHost(t, server, serving, true)
 	processStart = func(int) (proc.Start, error) { return proc.Start{}, errors.New("unreadable") }
-	if _, mode, host := daemonBuild(*m.Daemon, environment(map[string]string{"CODEX_HOME": home})); mode != publish.ModeDaemon || host != nil {
-		t.Fatalf("unreadable start: mode %s host %+v", mode, host)
+	if _, mode, host, served := daemonBuild(*m.Daemon, environment(map[string]string{"CODEX_HOME": home})); mode != publish.ModeDaemon || host != nil || served != "" {
+		t.Fatalf("unreadable start: mode %s host %+v home %q", mode, host, served)
 	}
 }
 

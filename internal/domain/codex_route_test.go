@@ -14,18 +14,21 @@ func codexProfile(mode string) wire.HookProfile {
 	return wire.HookProfile{Adapter: "codex", ManifestRev: "codex-1", VendorVersion: "0.171.0", Platform: "darwin-arm64", Mode: mode}
 }
 
-// codexServer is the managed server Codex daemon starts name as their host.
+// codexServer is the managed server Codex daemon starts name as their
+// host, and codexHome the home it serves.
 var codexServer = wire.Host{PID: 4242, Start: 99}
+
+const codexHome = "/home/fixture/.codex"
 
 // codexStart is a Codex SessionStart: always session-scoped, with the mode
 // its hook read from the process that runs it, and in daemon mode that
-// server.
+// server and its home.
 func codexStart(source, mode string, at int64) HookEnroll {
 	cmd := start(SessionLaunch, source, at)
 	cmd.Profile = codexProfile(mode)
 	if mode == publish.ModeDaemon {
 		host := codexServer
-		cmd.Host = &host
+		cmd.Host, cmd.VendorHome = &host, codexHome
 	}
 	return cmd
 }

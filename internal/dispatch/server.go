@@ -24,6 +24,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
+	"github.com/BeomSeogKim/crosshall/internal/setup"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/telemetry"
@@ -145,7 +146,8 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
-	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence, stamps: s.applyAdapterStamps}
+	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence, stamps: s.applyAdapterStamps,
+		homes: func(adapter string) string { return setup.InstalledConfigDir(cfg.StateRoot, adapter) }}
 	sends := len(publish.Adapters().Senders()) > 0
 	if err := pub.recover(ctx, time.Now()); err != nil {
 		return err

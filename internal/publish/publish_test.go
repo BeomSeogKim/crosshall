@@ -12,6 +12,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"os/exec"
+	"time"
 )
 
 func TestShippedAdaptersKeepTheirRouteRules(t *testing.T) {
@@ -45,10 +46,11 @@ func TestShippedAdaptersKeepTheirRouteRules(t *testing.T) {
 	if codex.AcceptsSocket(sock) {
 		t.Error("codex accepted a socket")
 	}
-	host := Queue{PID: 7, StartMS: 9}
-	if claude.SessionRoute("s", "interactive", host) != (Route{}) ||
-		codex.SessionRoute("thread-1", ModeDaemon, host) != (Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: host}) {
-		t.Error("only a Codex session reference is its thread, with the launch's mode and host")
+	launch := Route{Mode: ModeDaemon, Host: Queue{PID: 7, StartMS: 9}, Home: "/home/u/.codex"}
+	want := launch
+	want.ThreadID = "thread-1"
+	if claude.SessionRoute("s", launch) != (Route{}) || codex.SessionRoute("thread-1", launch) != want {
+		t.Error("only a Codex session reference is its thread, with the launch's mode, server and home")
 	}
 	if claude.ThreadRouted() || !codex.ThreadRouted() {
 		t.Error("only Codex routes a thread on its server")
@@ -65,13 +67,15 @@ func TestCodexReachesOnlyADaemonThread(t *testing.T) {
 	for mode, want := range map[string]string{
 		ModeDaemon: "", ModeInProcess: CodexNoDaemon, "unverified": CodexDaemonUnverified, "": CodexDaemonUnverified,
 	} {
-		if got := codex.Reach(Route{ThreadID: "thread-1", Mode: mode, Host: server}); got != want {
+		if got := codex.Reach(Route{ThreadID: "thread-1", Mode: mode, Host: server, Home: "/h"}); got != want {
 			t.Errorf("reach of a %q thread = %q, want %q", mode, got, want)
 		}
 	}
-	for _, host := range []Queue{{}, {PID: 7}, {StartMS: 9}} {
-		if got := codex.Reach(Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: host}); got != CodexDaemonUnverified {
-			t.Errorf("reach of a daemon thread with server %+v = %q", host, got)
+	for _, r := range []Route{{Host: Queue{}, Home: "/h"}, {Host: Queue{PID: 7}, Home: "/h"}, {Host: Queue{StartMS: 9}, Home: "/h"},
+		{Host: server}, {Host: server, Home: "relative"}} {
+		r.ThreadID, r.Mode = "thread-1", ModeDaemon
+		if got := codex.Reach(r); got != CodexDaemonUnverified {
+			t.Errorf("reach of a daemon thread with server %+v in %q = %q", r.Host, r.Home, got)
 		}
 	}
 	if claude.Reach(Route{}) != "" {
@@ -81,10 +85,10 @@ func TestCodexReachesOnlyADaemonThread(t *testing.T) {
 	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeInProcess}); address != "" || why != CodexNoDaemon {
 		t.Errorf("in-process address = %q, %q", address, why)
 	}
-	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server}); address != "thread-1" || why != "" {
+	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server, Home: "/h"}); address != "thread-1" || why != "" {
 		t.Errorf("daemon address = %q, %q", address, why)
 	}
-	if _, why := Shipped().Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server}); why != "no sender for codex" {
+	if _, why := Shipped().Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server, Home: "/h"}); why != "no sender for codex" {
 		t.Errorf("shipped codex address reason = %q", why)
 	}
 }
@@ -153,15 +157,17 @@ func TestOnlyClaudeSendsInTheShippedBuild(t *testing.T) {
 // fixture is an adapter this build does not ship.
 type fixture struct{ transport Transport }
 
-func (fixture) Resolve(r Route) (string, string)             { return r.ThreadID, "" }
-func (fixture) ModeEligible(string) bool                     { return true }
-func (fixture) AcceptsSocket(string) bool                    { return false }
-func (fixture) SessionRoute(ref, mode string, _ Queue) Route { return Route{ThreadID: ref, Mode: mode} }
-func (fixture) ThreadRouted() bool                           { return false }
-func (fixture) Reach(Route) string                           { return "" }
-func (fixture) Notice(ids []int64) (string, bool)            { return "fixture " + notice.IDList(ids), true }
-func (fixture) Echo(prompt string) (string, bool)            { return strings.CutPrefix(prompt, "fixture ") }
-func (f fixture) Transport() Transport                       { return f.transport }
+func (fixture) Resolve(r Route) (string, string) { return r.ThreadID, "" }
+func (fixture) ModeEligible(string) bool         { return true }
+func (fixture) AcceptsSocket(string) bool        { return false }
+func (fixture) SessionRoute(ref string, launch Route) Route {
+	return Route{ThreadID: ref, Mode: launch.Mode}
+}
+func (fixture) ThreadRouted() bool                { return false }
+func (fixture) Reach(Route) string                { return "" }
+func (fixture) Notice(ids []int64) (string, bool) { return "fixture " + notice.IDList(ids), true }
+func (fixture) Echo(prompt string) (string, bool) { return strings.CutPrefix(prompt, "fixture ") }
+func (f fixture) Transport() Transport            { return f.transport }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }
@@ -218,15 +224,40 @@ func TestThePublishCoreNamesNoVendor(t *testing.T) {
 }
 
 // The Codex transport proves the server a session's start named: the same
-// process, run as the managed server. It has no sender yet.
+// process, run as the managed server from the release tree of the home
+// setup installed the hooks into. It has no sender yet.
 func TestCodexProvesTheServerItsStartNamed(t *testing.T) {
 	tr := Shipped()["codex"].Transport()
 	if tr.Prove == nil || tr.Send != nil {
 		t.Fatal("the Codex transport must prove and must not send")
 	}
-	run := func(args ...string) Queue {
+	// The stand-in server is this test binary, which waits in
+	// TestCodexServerStandIn when the environment asks it to.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// installed copies it into a home's release tree, as Codex installs
+	// its managed server there.
+	installed := func(home string) string {
 		t.Helper()
-		cmd := exec.Command("/bin/sh", append([]string{"-c", "sleep 30; :"}, args...)...)
+		exe := filepath.Join(home, "packages", "app-server-daemon", "releases", "0.171.0-aarch64-apple-darwin", "bin", "codex")
+		raw, err := os.ReadFile(self)
+		if err == nil {
+			err = os.MkdirAll(filepath.Dir(exe), 0o700)
+		}
+		if err == nil {
+			err = os.WriteFile(exe, raw, 0o700)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return exe
+	}
+	run := func(exe string, args ...string) Queue {
+		t.Helper()
+		cmd := exec.Command(exe, append([]string{"-test.run=^TestCodexServerStandIn$", "--"}, args...)...)
+		cmd.Env = append(os.Environ(), codexStandIn+"=1")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -237,23 +268,52 @@ func TestCodexProvesTheServerItsStartNamed(t *testing.T) {
 		}
 		return Queue{PID: int64(cmd.Process.Pid), StartMS: start.Identity}
 	}
-	probe := func(host Queue) Probe {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	other, _ := filepath.EvalSymlinks(t.TempDir())
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	// Each home's release is installed once: rewriting the file of a
+	// running stand-in could end it.
+	homeExe, otherExe := installed(home), installed(other)
+	daemon := []string{"app-server", "--listen", "unix://", "--managed-daemon"}
+	server := run(homeExe, daemon...)
+	probe := func(host Queue, routeHome, installedHome string) Probe {
 		return Probe{Target: Target{Adapter: "codex", Address: "thread-1"},
-			Route: Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: host}}
+			Route:         Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: host, Home: routeHome},
+			InstalledHome: installedHome}
 	}
-	server := run("app-server", "--listen", "unix://", "--managed-daemon")
-	proven, ok := tr.Prove(t.Context(), probe(server))
-	if !ok || proven.Queue != server || proven.StartedAtMS <= 0 {
-		t.Fatalf("managed server: %+v, %v", proven, ok)
+	for name, installedHome := range map[string]string{"the installed home": home, "the installed home through a link": link} {
+		proven, ok := tr.Prove(t.Context(), probe(server, home, installedHome))
+		if !ok || proven.Queue != server || proven.StartedAtMS <= 0 {
+			t.Fatalf("managed server of %s: %+v, %v", name, proven, ok)
+		}
 	}
-	for name, host := range map[string]Queue{
-		"another start of the PID":       {PID: server.PID, StartMS: server.StartMS + 1},
-		"no server named":                {},
-		"a server without the daemon":    run("app-server", "--listen", "unix://"),
-		"a process that is not a server": run(),
+	for name, p := range map[string]Probe{
+		"another start of the PID":            probe(Queue{PID: server.PID, StartMS: server.StartMS + 1}, home, home),
+		"no server named":                     probe(Queue{}, home, home),
+		"a server without the daemon":         probe(run(homeExe, "app-server", "--listen", "unix://"), home, home),
+		"a process that is not a server":      probe(run(homeExe), home, home),
+		"no home installed":                   probe(server, home, ""),
+		"a route of another home":             probe(server, other, home),
+		"a daemon of another installation":    probe(run(otherExe, daemon...), other, home),
+		"another home's daemon on this route": probe(run(otherExe, daemon...), home, home),
+		"a daemon outside any release tree":   probe(run(self, daemon...), home, home),
 	} {
-		if proven, ok := tr.Prove(t.Context(), probe(host)); ok {
+		if proven, ok := tr.Prove(t.Context(), p); ok {
 			t.Errorf("%s proved: %+v", name, proven)
 		}
 	}
+}
+
+const codexStandIn = "CROSSHALL_CODEX_SERVER_STAND_IN"
+
+// TestCodexServerStandIn is the stand-in managed server of
+// TestCodexProvesTheServerItsStartNamed: it waits until killed.
+func TestCodexServerStandIn(t *testing.T) {
+	if os.Getenv(codexStandIn) != "1" {
+		t.Skip("runs only as a stand-in server")
+	}
+	time.Sleep(30 * time.Second)
 }

@@ -194,7 +194,7 @@ func ownerStoppedBuilds(ctx context.Context, tx store.Tx) ([]OwnerStoppedBuild, 
 	rows, err := tx.QueryContext(ctx, `SELECT cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.stopped_at_ms,
 		cb.stop_ref, cb.stop_reason, COALESCE(MAX(pa.binding_id), MIN(b.id)),
 		COALESCE(MAX(CASE WHEN pa.id IS NOT NULL THEN b.alias END), '') FROM binding b JOIN `+currentBindingLaunch+`
-		JOIN capability_build cb ON `+resumableBindingBuild+`
+		JOIN capability_build cb ON `+resumableBindingBuild()+`
 		LEFT JOIN publish_attempt pa ON pa.id = cb.stop_ref AND pa.binding_id = b.id
 		WHERE cb.cap = 'publish' AND `+store.CapabilityBuildStopped("cb")+`
 		GROUP BY cb.vendor, cb.vendor_version, cb.platform, cb.mode, cb.manifest_rev

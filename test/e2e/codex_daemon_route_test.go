@@ -56,6 +56,10 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 	f.apply("", "setup", "codex", "--apply")
 	repo := f.enrollmentRepo()
 	daemon := buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
+	codexHome, err := filepath.EvalSymlinks(filepath.Dir(f.paths["codex"]))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A shell that runs more than the hook stays between it and the server,
 	// as a hook command of several commands would; one that runs only the
 	// hook may replace itself with it.
@@ -82,13 +86,13 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 	// the route shows it.
 	startUntil := func(source string, underDaemon, keepShell bool, want string) {
 		t.Helper()
-		var mode, version string
+		var mode, version, home string
 		var pid, host int
 		for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(100 * time.Millisecond) {
 			pid = start(source, underDaemon, keepShell)
-			err := db.QueryRow(`SELECT COALESCE(r.mode, ''), json_extract(l.profile, '$.vendor_version'), COALESCE(r.host_pid, 0)
+			err := db.QueryRow(`SELECT COALESCE(r.mode, ''), json_extract(l.profile, '$.vendor_version'), COALESCE(r.host_pid, 0), COALESCE(r.vendor_home, '')
 				FROM publish_route r JOIN adapter_launch l ON l.principal_id = r.principal_id AND l.launch_ref = r.launch_ref
-				WHERE r.adapter = 'codex' AND r.state = 'active'`).Scan(&mode, &version, &host)
+				WHERE r.adapter = 'codex' AND r.state = 'active'`).Scan(&mode, &version, &host, &home)
 			if err == nil && mode == want {
 				break
 			}
@@ -96,11 +100,11 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 				t.Fatalf("codex route mode %q (version %q, %v), want %q; %s", mode, version, err, want, f.enrollmentEvidence("codex"))
 			}
 		}
-		if want == "daemon" && (version != "0.171.0" || host != pid) {
-			t.Fatalf("daemon launch version %q host %d, want the server's release and process %d", version, host, pid)
+		if want == "daemon" && (version != "0.171.0" || host != pid || home != codexHome) {
+			t.Fatalf("daemon launch version %q host %d in %q, want the server's release, process %d and %q", version, host, home, pid, codexHome)
 		}
-		if want != "daemon" && host != 0 {
-			t.Fatalf("a %s launch named a server %d", want, host)
+		if want != "daemon" && (host != 0 || home != "") {
+			t.Fatalf("a %s launch named a server %d in %q", want, host, home)
 		}
 	}
 

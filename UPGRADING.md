@@ -8,7 +8,7 @@ An unknown notice receipt suspends its session's notices for 30 minutes. If an o
 
 Migration 023 records whether a session received the owner resume command for a lasting suspension. A session that already received the old reach-loss line gets the command at its next prompt while the suspension is in effect. The dispatcher backs up a schema 22 store as `store-v22-*.sqlite3` before migrating it. To return to v0.2.0-rc.3, stop the dispatcher and restore that copy before restarting the older binary. Restoring the copy discards changes made since the upgrade.
 
-Migration 025 records the server process a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
+Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
 
 ## To v0.2.0-rc.3
 

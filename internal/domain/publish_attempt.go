@@ -143,11 +143,11 @@ func ActivatePublishRoutes(ctx context.Context, tx store.Tx, now time.Time) erro
 }
 
 const publishRouteColumns = `r.adapter, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''),
-	COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0)`
+	COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0), COALESCE(r.vendor_home, '')`
 
 // routeScan is where a row's publishRouteColumns are scanned to.
 func routeScan(adapter *string, route *publish.Route) []any {
-	return []any{adapter, &route.Mode, &route.SocketPath, &route.ThreadID, &route.Host.PID, &route.Host.StartMS}
+	return []any{adapter, &route.Mode, &route.SocketPath, &route.ThreadID, &route.Host.PID, &route.Host.StartMS, &route.Home}
 }
 
 // routeAddress resolves a selected route's address through its adapter.
@@ -246,6 +246,7 @@ func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, p
 		return false, err
 	}
 	route.Address, _ = routeAddress(route.Adapter, route.Route)
+	route.InstalledHome = proof.Probe.InstalledHome
 	if route != proof.Probe {
 		return false, nil
 	}

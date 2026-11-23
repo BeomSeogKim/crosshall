@@ -3,6 +3,7 @@ package publish
 import (
 	"context"
 	"math"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -33,9 +34,10 @@ func (codex) ModeEligible(string) bool { return true }
 func (codex) AcceptsSocket(string) bool { return false }
 
 // SessionRoute: a Codex session reference is its thread, the launch's
-// mode says whether the managed server holds it, and host is that server.
-func (codex) SessionRoute(sessionRef, launchMode string, host Queue) Route {
-	return Route{ThreadID: sessionRef, Mode: launchMode, Host: host}
+// mode says whether the managed server holds it, and its host and home
+// name that server.
+func (codex) SessionRoute(sessionRef string, launch Route) Route {
+	return Route{ThreadID: sessionRef, Mode: launch.Mode, Host: launch.Host, Home: launch.Home}
 }
 
 // ThreadRouted: a notice is queued on the thread in the managed server.
@@ -46,7 +48,7 @@ func (codex) ThreadRouted() bool { return true }
 // sees one (#236). The server must also be named, so it can be proven.
 func (codex) Reach(r Route) string {
 	switch {
-	case r.Mode == ModeDaemon && r.Host.PID > 0 && r.Host.StartMS > 0:
+	case r.Mode == ModeDaemon && r.Host.PID > 0 && r.Host.StartMS > 0 && filepath.IsAbs(r.Home):
 		return ""
 	case r.Mode == ModeInProcess:
 		return CodexNoDaemon
@@ -71,24 +73,36 @@ func (codex) Echo(prompt string) (string, bool) {
 // Transport proves the managed server; it has no sender yet.
 func (codex) Transport() Transport { return Transport{Prove: proveCodexServer} }
 
-// codexServerArgs are the arguments the managed server runs with, as the
-// Codex hook manifest names them.
-var codexServerArgs = []string{"app-server", "--managed-daemon"}
+// The managed server's release tree under its home, and the arguments it
+// runs with, as the Codex hook manifest names them.
+var (
+	codexReleases   = filepath.Join("packages", "app-server-daemon", "releases")
+	codexServerArgs = []string{"app-server", "--managed-daemon"}
+)
 
 // proveCodexServer proves the server a Codex session's start named still
-// runs as the managed server: the same process, by PID and start identity,
-// with the managed server's arguments.
+// runs as the managed server of the home setup installed the hooks into:
+// the same process, by PID and start identity, run from that home's
+// release tree with the managed server's arguments.
 func proveCodexServer(_ context.Context, probe Probe) (Proven, bool) {
 	host := probe.Route.Host
-	if host.PID <= 1 || host.PID > math.MaxInt32 || host.StartMS <= 0 {
+	if host.PID <= 1 || host.PID > math.MaxInt32 || host.StartMS <= 0 || !filepath.IsAbs(probe.InstalledHome) {
+		return Proven{}, false
+	}
+	home := realPath(probe.InstalledHome)
+	if probe.Route.Home != home {
 		return Proven{}, false
 	}
 	start, err := proc.StartOf(int(host.PID))
 	if err != nil || start.AtMS <= 0 {
 		return Proven{}, false
 	}
-	_, args, err := proc.Command(int(host.PID))
+	exe, args, err := proc.Command(int(host.PID))
 	if err != nil || len(args) == 0 {
+		return Proven{}, false
+	}
+	rel, err := filepath.Rel(filepath.Join(home, codexReleases), realPath(exe))
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return Proven{}, false
 	}
 	for _, want := range codexServerArgs {
@@ -102,4 +116,13 @@ func proveCodexServer(_ context.Context, probe Probe) (Proven, bool) {
 		return Proven{}, false
 	}
 	return Proven{Queue: host, StartedAtMS: start.AtMS}, true
+}
+
+// realPath resolves symbolic links where it can, as the hook does: a home
+// under /tmp is /private/tmp to the kernel on macOS.
+func realPath(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"modernc.org/sqlite"
 )
@@ -84,9 +85,13 @@ var migrations = []string{
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
 }
 
-// Store owns the dispatcher's single SQLite connection.
+// Store owns the dispatcher's single SQLite write connection, and opens a
+// read-only one for long reads on first use.
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	readDSN string
+	readMu  sync.Mutex
+	reader  *sql.DB
 }
 
 // Open configures and migrates the store after the caller takes the dispatcher
@@ -111,7 +116,8 @@ func Open(ctx context.Context, stateRoot string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db: db}
+	read := url.Values{"_txlock": {"deferred"}, "_pragma": {"query_only(ON)", "busy_timeout(5000)"}}
+	s := &Store{db: db, readDSN: (&url.URL{Scheme: "file", Path: path, RawQuery: read.Encode()}).String()}
 	if err := s.initialize(ctx, stateRoot, previous); err != nil {
 		db.Close()
 		return nil, err
@@ -259,4 +265,37 @@ func (s *Store) Update(ctx context.Context, apply func(Tx) error) error {
 }
 
 // Close closes the dispatcher's database connection.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	var err error
+	if s.reader != nil {
+		err = s.reader.Close()
+	}
+	return errors.Join(s.db.Close(), err)
+}
+
+// View runs read in a read transaction on a connection of its own. In WAL
+// mode it sees one snapshot and neither waits for nor holds the write
+// connection, so a long read does not delay the dispatcher's requests.
+func (s *Store) View(ctx context.Context, read func(Tx) error) error {
+	s.readMu.Lock()
+	if s.reader == nil {
+		reader, err := sql.Open("sqlite", s.readDSN)
+		if err != nil {
+			s.readMu.Unlock()
+			return err
+		}
+		reader.SetMaxOpenConns(1)
+		reader.SetMaxIdleConns(1)
+		s.reader = reader
+	}
+	reader := s.reader
+	s.readMu.Unlock()
+	tx, err := reader.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	return read(tx)
+}

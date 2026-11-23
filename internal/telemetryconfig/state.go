@@ -44,7 +44,27 @@ type DayState struct {
 	Attempts   int       `json:"attempts,omitempty"`
 	// Accepted is set once the receiver answered 204, before the batch is
 	// moved to sent/, so a failed move never leads to a second request.
-	Accepted bool `json:"accepted,omitempty"`
+	Accepted   bool      `json:"accepted,omitempty"`
+	AcceptedAt time.Time `json:"accepted_at,omitzero"`
+}
+
+// EligibleFrom is the first day that lies wholly after the setting turned
+// on and after the last opt-out a dispatcher saw. No earlier day is built
+// or sent, whatever is still on disk.
+func EligibleFrom(setting Setting, st *State) time.Time {
+	from := setting.ChangedAt
+	if st.SuppressedThrough.After(from) {
+		from = st.SuppressedThrough
+	}
+	return NextFullDay(from)
+}
+
+// Sendable reports whether the pending batch of day may still be sent: it
+// belongs to the current consent interval and the receiver has not
+// accepted it.
+func (st *State) Sendable(day string, eligible time.Time) bool {
+	d := st.Days[day]
+	return d != nil && !d.Accepted && day >= eligible.UTC().Format(time.DateOnly)
 }
 
 // Suppress records an opt-out seen at t; the cutoff never moves back.
@@ -149,8 +169,8 @@ type Pending struct {
 	NextAttempt time.Time
 }
 
-// ReadPending returns the dispatcher's state and its oldest pending batch,
-// if any, without changing anything.
+// ReadPending returns the dispatcher's state and the batch it sends next,
+// chosen as the dispatcher chooses it, without changing anything.
 func ReadPending(stateRoot string) (*State, *Pending, error) {
 	dir, err := openTelemetryDir(stateRoot, false)
 	if errors.Is(err, os.ErrNotExist) {
@@ -164,15 +184,26 @@ func ReadPending(stateRoot string) (*State, *Pending, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	days, err := ListDays(dir, "pending")
-	if err != nil || len(days) == 0 {
+	setting, err := readMode(dir)
+	if err != nil || setting.Mode != On {
 		return st, nil, err
 	}
-	body, err := ReadDayFile(dir, "pending", days[0])
+	days, err := ListDays(dir, "pending")
 	if err != nil {
 		return nil, nil, err
 	}
-	return st, &Pending{Day: days[0], Body: body, NextAttempt: st.NextAttempt(days[0])}, nil
+	eligible := EligibleFrom(setting, st)
+	for _, day := range days {
+		if !st.Sendable(day, eligible) {
+			continue
+		}
+		body, err := ReadDayFile(dir, "pending", day)
+		if err != nil {
+			return nil, nil, err
+		}
+		return st, &Pending{Day: day, Body: body, NextAttempt: st.NextAttempt(day)}, nil
+	}
+	return st, nil, nil
 }
 
 func writeFile(dir *os.Root, name string, data []byte) error {

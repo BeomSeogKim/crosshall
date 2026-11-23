@@ -63,9 +63,10 @@ type Config struct {
 	Vetoed bool
 	Curl   string
 	// caFile, timeout and beforeSend are set only by tests.
-	caFile     string
-	timeout    time.Duration
-	beforeSend func()
+	caFile       string
+	timeout      time.Duration
+	beforeSend   func()
+	afterPrepare func()
 }
 
 // Sender is driven by the dispatcher loop: Tick at start and once a minute.
@@ -74,7 +75,12 @@ type Sender struct {
 	db   *store.Store
 	busy sync.Mutex
 	wg   sync.WaitGroup
+	// base and started are the running round's clock: at() is the
+	// dispatcher's time now.
+	base, started time.Time
 }
+
+func (s *Sender) at() time.Time { return s.base.Add(time.Since(s.started)) }
 
 // New returns a sender for one dispatcher.
 func New(cfg Config, db *store.Store) *Sender {
@@ -106,6 +112,7 @@ func (s *Sender) Tick(ctx context.Context, now time.Time) {
 }
 
 func (s *Sender) round(ctx context.Context, now time.Time) error {
+	s.base, s.started = now, time.Now()
 	var interval time.Time
 	var days []time.Time
 	err := s.locked(func(dir *os.Root, setting telemetryconfig.Setting, st *state) error {
@@ -113,11 +120,14 @@ func (s *Sender) round(ctx context.Context, now time.Time) error {
 			return nil
 		}
 		interval = setting.ChangedAt
-		days = toFreeze(st, s.eligibleFrom(setting, st), now)
+		days = toFreeze(st, telemetryconfig.EligibleFrom(setting, st), now)
 		return nil
 	})
 	if err != nil || interval.IsZero() {
 		return err
+	}
+	if s.cfg.afterPrepare != nil {
+		s.cfg.afterPrepare()
 	}
 	for _, d := range days {
 		if err := s.freeze(ctx, interval, d, now); err != nil {
@@ -130,7 +140,7 @@ func (s *Sender) round(ctx context.Context, now time.Time) error {
 			return nil
 		}
 		var err error
-		next, err = due(dir, st, interval, now)
+		next, err = due(dir, st, telemetryconfig.EligibleFrom(setting, st), interval, now)
 		return err
 	})
 	if err != nil || next == nil {
@@ -143,7 +153,8 @@ func (s *Sender) round(ctx context.Context, now time.Time) error {
 }
 
 // locked runs fn under the setting's lock with the state read, and writes
-// the state back when fn changed it.
+// the state back when fn changed it. An opt-out seen here, at any step of a
+// round, is recorded at once and empties the queue.
 func (s *Sender) locked(fn func(dir *os.Root, setting telemetryconfig.Setting, st *state) error) error {
 	return telemetryconfig.Locked(s.cfg.StateRoot, func(dir *os.Root, setting telemetryconfig.Setting) error {
 		st, err := telemetryconfig.ReadState(dir)
@@ -153,6 +164,12 @@ func (s *Sender) locked(fn func(dir *os.Root, setting telemetryconfig.Setting, s
 		before, err := json.Marshal(st)
 		if err != nil {
 			return err
+		}
+		if setting.Mode == telemetryconfig.On && s.suppressed() {
+			st.Suppress(s.at())
+			if err := dir.RemoveAll("pending"); err != nil {
+				log.Printf("dispatcher: usage report: %v", err)
+			}
 		}
 		err = fn(dir, setting, st)
 		if after, _ := json.Marshal(st); !bytes.Equal(before, after) {
@@ -175,17 +192,16 @@ func (s *Sender) prepare(dir *os.Root, setting telemetryconfig.Setting, st *stat
 		return false
 	}
 	if s.suppressed() {
-		// Days this dispatcher saw suppressed are never reported.
-		st.Suppress(now)
-		report(dir.RemoveAll("pending"))
+		// locked recorded it: days this dispatcher saw suppressed are
+		// never reported.
 		return false
 	}
 	if st.StoppedVersion == s.cfg.Version {
 		report(dir.RemoveAll("pending"))
 		return false
 	}
-	report(prunePending(dir, st, now))
 	report(s.recoverDays(dir, st, setting, now))
+	report(prunePending(dir, st, now))
 	return s.curlPresent()
 }
 
@@ -204,16 +220,6 @@ func (s *Sender) current(setting telemetryconfig.Setting, interval time.Time) bo
 	return setting.Mode == telemetryconfig.On && setting.ChangedAt.Equal(interval) && !s.suppressed()
 }
 
-// eligibleFrom is the first day that lies wholly after the setting turned
-// on and after the last opt-out a dispatcher saw.
-func (s *Sender) eligibleFrom(setting telemetryconfig.Setting, st *state) time.Time {
-	from := setting.ChangedAt
-	if st.SuppressedThrough.After(from) {
-		from = st.SuppressedThrough
-	}
-	return telemetryconfig.NextFullDay(from)
-}
-
 func dayName(t time.Time) string { return t.UTC().Format(time.DateOnly) }
 
 // toFreeze lists the closed eligible days not frozen yet, oldest first.
@@ -228,8 +234,8 @@ func toFreeze(st *state, eligible, now time.Time) []time.Time {
 	return days
 }
 
-// freeze builds day d once: the hook file is counted and the store read in
-// a transaction of its own, then the batch is written under the setting's
+// freeze builds day d once: the hook file is counted outside the store and
+// the store read on its read-only connection, then the batch is written under the setting's
 // lock if the consent interval is still the one it was built for.
 func (s *Sender) freeze(ctx context.Context, interval, d, now time.Time) error {
 	var token [16]byte
@@ -245,7 +251,7 @@ func (s *Sender) freeze(ctx context.Context, interval, d, now time.Time) error {
 		}
 	}
 	var r telemetry.Report
-	if err := s.db.Update(ctx, func(tx store.Tx) error {
+	if err := s.db.View(ctx, func(tx store.Tx) error {
 		var err error
 		r, err = telemetry.Build(ctx, tx, in)
 		return err
@@ -266,7 +272,7 @@ func (s *Sender) freeze(ctx context.Context, interval, d, now time.Time) error {
 			return nil
 		}
 		// The week figures count only days of this consent interval.
-		eligible := s.eligibleFrom(setting, st)
+		eligible := telemetryconfig.EligibleFrom(setting, st)
 		active, unobserved := int64(1), r.Unobserved10m
 		for back := 1; back < 7; back++ {
 			prior := d.AddDate(0, 0, -back)
@@ -298,24 +304,31 @@ func (s *Sender) freeze(ctx context.Context, interval, d, now time.Time) error {
 	})
 }
 
-// recoverDays adopts batches the state does not know, as after a restart
-// between writing a batch and the state, and finishes the archive move of
-// batches the receiver accepted.
+// recoverDays finishes the archive move of batches the receiver accepted,
+// deletes batches from before the current eligibility cutoff, which an off
+// or an opt-out whose cleanup failed can leave behind, and adopts batches
+// the state does not know, as after a restart between writing a batch and
+// the state.
 func (s *Sender) recoverDays(dir *os.Root, st *state, setting telemetryconfig.Setting, now time.Time) error {
 	pending, err := telemetryconfig.ListDays(dir, "pending")
 	if err != nil {
 		return err
 	}
-	eligible := s.eligibleFrom(setting, st)
+	eligible := telemetryconfig.EligibleFrom(setting, st)
 	for _, name := range pending {
 		info := st.Days[name]
 		if info != nil && info.Accepted {
-			if err := archive(dir, name); err != nil {
+			if err := archive(dir, name, info.AcceptedAt); err != nil {
 				return err
 			}
 			continue
 		}
 		if info != nil {
+			if !st.Sendable(name, eligible) {
+				if err := dir.Remove(filepath.Join("pending", name+".json")); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		body, err := telemetryconfig.ReadDayFile(dir, "pending", name)
@@ -350,17 +363,17 @@ type job struct {
 	now      time.Time
 }
 
-// due returns the oldest pending batch when its time has come. A first
+// due returns the oldest sendable batch when its time has come. A first
 // attempt needs PostGap since the last one; a retry of the same batch does
-// not.
-func due(dir *os.Root, st *state, interval, now time.Time) (*job, error) {
+// not. A batch from before the eligibility cutoff is never selected.
+func due(dir *os.Root, st *state, eligible, interval, now time.Time) (*job, error) {
 	days, err := telemetryconfig.ListDays(dir, "pending")
 	if err != nil {
 		return nil, err
 	}
 	for _, name := range days {
 		info := st.Days[name]
-		if info == nil || info.Accepted {
+		if !st.Sendable(name, eligible) {
 			continue
 		}
 		if now.Before(st.NextAttempt(name)) {
@@ -489,13 +502,13 @@ func (s *Sender) finish(j job, res result) error {
 func apply(dir *os.Root, st *state, info *dayState, j job, res result, version string) error {
 	switch {
 	case res.status == 204:
-		st.LastStatus, info.Accepted = "204", true
+		st.LastStatus, info.Accepted, info.AcceptedAt = "204", true, j.now
 		// The acceptance is in the state even when the move fails; a
 		// later round finishes the move without a second request.
 		if err := telemetryconfig.WriteState(dir, st); err != nil {
 			return err
 		}
-		return archive(dir, j.day)
+		return archive(dir, j.day, j.now)
 	case slices.Contains([]int{400, 413, 415, 422}, res.status):
 		st.LastStatus = strconv.Itoa(res.status)
 		return dir.Remove(filepath.Join("pending", j.day+".json"))
@@ -515,14 +528,20 @@ func apply(dir *os.Root, st *state, info *dayState, j job, res result, version s
 	return nil
 }
 
-// archive moves an accepted batch from pending/ to sent/.
-func archive(dir *os.Root, name string) error {
+// archive moves an accepted batch from pending/ to sent/. The copy's time
+// is its acceptance, from which it is kept keepSentDays.
+func archive(dir *os.Root, name string, accepted time.Time) error {
 	body, err := telemetryconfig.ReadDayFile(dir, "pending", name)
 	if err != nil {
 		return err
 	}
 	if err := telemetryconfig.WriteDayFile(dir, "sent", name, body); err != nil {
 		return err
+	}
+	if !accepted.IsZero() {
+		if err := dir.Chtimes(filepath.Join("sent", name+".json"), accepted, accepted); err != nil {
+			return err
+		}
 	}
 	return dir.Remove(filepath.Join("pending", name+".json"))
 }
@@ -572,38 +591,48 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 func (w *limitedWriter) Bytes() []byte { return w.buf }
 
 // prunePending deletes batches older than maxAgeDays unsent and forgets
-// days older than the week figures need.
+// days older than the week figures need. An accepted batch whose move to
+// sent/ is still owed is kept with its record, whatever its age.
 func prunePending(dir *os.Root, st *state, now time.Time) error {
 	today := now.UTC().Truncate(day)
 	days, err := telemetryconfig.ListDays(dir, "pending")
 	if err != nil {
 		return err
 	}
+	owed := map[string]bool{}
 	for _, name := range days {
-		if name < dayName(today.AddDate(0, 0, -maxAgeDays)) {
+		if info := st.Days[name]; info != nil && info.Accepted {
+			owed[name] = true
+		} else if name < dayName(today.AddDate(0, 0, -maxAgeDays)) {
 			if err := dir.Remove(filepath.Join("pending", name+".json")); err != nil {
 				return err
 			}
 		}
 	}
 	for name := range st.Days {
-		if name < dayName(today.AddDate(0, 0, -maxAgeDays-6)) {
+		if name < dayName(today.AddDate(0, 0, -maxAgeDays-6)) && !owed[name] {
 			delete(st.Days, name)
 		}
 	}
 	return nil
 }
 
-// pruneSent deletes sent copies after keepSentDays, in every state.
+// pruneSent deletes sent copies keepSentDays after their acceptance, in
+// every state.
 func pruneSent(dir *os.Root, now time.Time) error {
 	sent, err := telemetryconfig.ListDays(dir, "sent")
 	if err != nil {
 		return err
 	}
-	oldest := dayName(now.UTC().Truncate(day).AddDate(0, 0, -keepSentDays))
+	oldest := now.Add(-keepSentDays * day)
 	for _, name := range sent {
-		if name < oldest {
-			if err := dir.Remove(filepath.Join("sent", name+".json")); err != nil {
+		path := filepath.Join("sent", name+".json")
+		info, err := dir.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(oldest) {
+			if err := dir.Remove(path); err != nil {
 				return err
 			}
 		}

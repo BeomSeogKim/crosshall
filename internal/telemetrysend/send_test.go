@@ -525,7 +525,7 @@ func TestOptOutIsRecordedWithoutCurl(t *testing.T) {
 	h.cfg.Vetoed = true
 	h.tick(New(h.cfg, h.db), d0.Add(time.Hour))
 	st := h.readState(t)
-	if !st.SuppressedThrough.Equal(d0.Add(time.Hour)) {
+	if at := st.SuppressedThrough; at.Before(d0.Add(time.Hour)) || at.After(d0.Add(time.Hour+time.Minute)) {
 		t.Fatalf("suppressed through %v", st.SuppressedThrough)
 	}
 }
@@ -635,7 +635,7 @@ func TestAcceptedBatchIsNotSentTwice(t *testing.T) {
 	}
 }
 
-// Sent copies are deleted after 30 days in every state.
+// Sent copies are deleted 30 days after their acceptance in every state.
 func TestSentCopiesExpireWhileOff(t *testing.T) {
 	for name, prepare := range map[string]func(h *hall){
 		"off":           func(h *hall) { h.setMode("off", d0.AddDate(0, 0, -40)) },
@@ -659,8 +659,10 @@ func TestSentCopiesExpireWhileOff(t *testing.T) {
 			if err := os.Mkdir(sent, 0700); err != nil {
 				t.Fatal(err)
 			}
-			for _, d := range []string{"2026-09-26", "2026-10-20"} {
-				if err := os.WriteFile(filepath.Join(sent, d+".json"), []byte("{}"), 0600); err != nil {
+			// Copies are kept by their acceptance, the file's time.
+			for d, accepted := range map[string]time.Time{"2026-09-26": d0.AddDate(0, 0, -45), "2026-10-20": d0.AddDate(0, 0, -20)} {
+				path := filepath.Join(sent, d+".json")
+				if err := errors.Join(os.WriteFile(path, []byte("{}"), 0600), os.Chtimes(path, accepted, accepted)); err != nil {
 					t.Fatal(err)
 				}
 			}

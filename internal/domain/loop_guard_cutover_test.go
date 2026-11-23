@@ -132,6 +132,185 @@ func TestGuardShallowLegacySiblingDoesNotRearmAStillStoppedRoot(t *testing.T) {
 	}
 }
 
+func TestGuardLinkedNewCarriesTheHigherRoundUnderBothLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		member bool
+		limit  int64
+	}{
+		{"member zero", true, 0},
+		{"thread zero", false, 0},
+		{"member one", true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, a, b, _ := channel3(t)
+			parent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "assignment"}, "")
+			wantOK(t, f.run(b, Read{IDs: []int64{parent.ID}}, ""))
+			standalone := Ask{To: []string{"form"}, Body: "follow-up", Re: parent.ID}
+			if tc.member {
+				f.grantMember("tax", tc.limit)
+				standalone.New, standalone.Re = true, 0
+			} else {
+				f.grantThread(parent.Exchange, tc.limit)
+			}
+
+			before := f.count(`SELECT COUNT(*) FROM message`)
+			linked := Ask{To: []string{"form"}, Body: "linked follow-up", New: true, Re: parent.ID}
+			result := f.ask(b, linked, "linked")
+			wantCode(t, result, core.ExitRefused, core.CodeRoundLimit)
+			scope := fmt.Sprintf("exchange:%d", parent.Exchange)
+			if tc.member {
+				scope = fmt.Sprintf("principal:%d", *f.caller(b).PrincipalID)
+			}
+			stop := f.stopEvent(scope)
+			if stop.Round != 2 || stop.RoundLimit != tc.limit || f.count(`SELECT COUNT(*) FROM message`) != before {
+				t.Fatalf("linked ask used the wrong round or limit: %+v", stop)
+			}
+			if tc.limit == 0 {
+				wantCode(t, f.ask(b, standalone, "standalone"), core.ExitRefused, core.CodeRoundLimit)
+				if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardStopped) != 1 {
+					t.Fatal("linked and standalone refusals recorded duplicate stops")
+				}
+			} else if sent := f.guardAsk(b, standalone, "standalone"); sent.Round != 1 {
+				t.Fatalf("independent ask at the member limit: %+v", sent)
+			}
+		})
+	}
+}
+
+func TestGuardNewRootKeepsTheMemberGrantLimit(t *testing.T) {
+	for _, mode := range []string{"plain", "new", "linked", "linked parent limit one"} {
+		t.Run(mode, func(t *testing.T) {
+			f, a, _, c := channel3(t)
+			open := Ask{To: []string{"tax"}, Body: "new assignment"}
+			if mode == "linked" || mode == "linked parent limit one" {
+				parent := f.guardAsk(c, Ask{To: []string{"form"}, Body: "parent assignment"}, "")
+				open.Re = parent.ID
+				if mode == "linked parent limit one" {
+					f.grantThread(parent.Exchange, 1)
+				}
+			}
+			open.New = mode != "plain"
+			f.grantMember("form", 2)
+			root := f.guardAsk(a, open, "root")
+			ledger := decode[StatusResult](t, f.owner(OwnerStatus{Channel: "checkout"}, ""))
+			var limit int64
+			for _, thread := range ledger.Channels[0].Exchanges {
+				if thread.ID == root.Exchange {
+					limit = thread.RoundLimit
+				}
+			}
+			if !root.NewExchange || limit != 2 {
+				t.Errorf("new root after a two-round grant: %+v, owner limit %d", root, limit)
+			}
+			follow := Ask{Re: root.ID, To: []string{"tax"}, Body: "follow-up"}
+			if root.Round == 1 {
+				sent := f.guardAsk(a, follow, "round-two")
+				if sent.Round != 2 {
+					t.Fatalf("expected round two on the new root: %+v", sent)
+				}
+				follow.Re = sent.ID
+			}
+			wantCode(t, f.ask(a, follow, "round-three"), core.ExitRefused, core.CodeRoundLimit)
+		})
+	}
+}
+
+func TestGuardShallowBranchCannotRearmAStopOnItsRoot(t *testing.T) {
+	f, a, b, c := channel3(t)
+	root := f.guardAsk(a, Ask{To: []string{"tax", "a11y"}, Body: "original assignment"}, "")
+	f.now = f.now.Add(10 * time.Minute)
+	tip := root
+	for round := int64(1); round <= 8; round++ {
+		sender, to := a, "tax"
+		if round%2 == 0 {
+			sender, to = b, "form"
+		}
+		tip = f.guardAsk(sender, Ask{To: []string{to}, Body: "deep branch", Re: tip.ID}, "")
+		if tip.Round != round {
+			t.Fatalf("branch round %d: %+v", round, tip)
+		}
+	}
+
+	deep := Ask{Re: tip.ID, To: []string{"tax"}, Body: "one more round"}
+	wantCode(t, f.ask(a, deep, "deep"), core.ExitRefused, core.CodeRoundLimit)
+	shallow := f.guardAsk(c, Ask{Re: root.ID, To: []string{"form"}, Body: "shallow branch"}, "")
+	if shallow.Round != 1 || shallow.Exchange != root.Exchange {
+		t.Fatalf("shallow branch on the same root: %+v", shallow)
+	}
+	wantCode(t, f.ask(a, deep, "deep"), core.ExitRefused, core.CodeRoundLimit)
+	if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardStopped) != 1 {
+		t.Fatal("a shallow branch rearmed the deep stop")
+	}
+
+	f.now = f.now.Add(80 * time.Minute)
+	if sent := f.guardAsk(a, deep, "deep"); sent.Round != 1 ||
+		f.count(`SELECT episode_open FROM exchange WHERE id = ?`, root.Exchange) != 0 {
+		t.Fatalf("a fully drained branch did not clear the stop: %+v", sent)
+	}
+}
+
+func TestGuardDrainedLinkedNewRearmsOnlyItsAdmissionScope(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	root := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "original assignment"}, "")
+	principal := *f.caller(a).PrincipalID
+	deep := ms(f.now) + 8*roundDurationMS
+	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, deep, root.ID)
+	executeGuardFixture(t, f, `UPDATE principal SET any_level_ms = ? WHERE id = ?`, deep, principal)
+
+	newAsk := Ask{New: true, To: []string{"tax"}, Body: "new assignment"}
+	wantCode(t, f.ask(a, newAsk, ""), core.ExitRefused, core.CodeRoundLimit)
+	continuation := Ask{Re: root.ID, To: []string{"tax"}, Body: "continue"}
+	wantCode(t, f.ask(a, continuation, ""), core.ExitRefused, core.CodeRoundLimit)
+	f.now = f.now.Add(80 * time.Minute)
+	newAsk.Re = root.ID
+	sent := f.guardAsk(a, newAsk, "")
+	if !sent.NewExchange || sent.Round != 1 ||
+		f.count(`SELECT guard_told FROM principal WHERE id = ?`, principal) != 0 ||
+		f.count(`SELECT episode_open FROM exchange WHERE id = ?`, root.Exchange) != 1 {
+		t.Fatalf("linked new thread must clear the drained member stop: %+v", sent)
+	}
+}
+
+func TestGuardOwnerCanSeeAMemberStopAcrossDepartureAndReturn(t *testing.T) {
+	f, a, _, _ := channel3(t)
+	f.grantMember("form", 0)
+	wantCode(t, f.ask(a, Ask{New: true, To: []string{"tax"}, Body: "stopped"}, ""), core.ExitRefused, core.CodeRoundLimit)
+	readStops := func() []GuardStop {
+		t.Helper()
+		ledger := decode[StatusResult](t, f.owner(OwnerStatus{Channel: "checkout"}, ""))
+		return ledger.Channels[0].GuardStops
+	}
+	first := readStops()
+	if len(first) != 1 || first[0].Alias != "form" || first[0].BindingID == 0 || first[0].BindingState != "live" ||
+		first[0].RoundLimit != 0 {
+		t.Fatalf("active member stop: %+v", first)
+	}
+	wantOK(t, f.run(a, Leave{}, "leave"))
+	departed := first[0]
+	departed.BindingState = "departed"
+	afterLeave := readStops()
+	if len(afterLeave) != 1 || afterLeave[0] != departed {
+		t.Errorf("departed member stop: %+v, want %+v", afterLeave, departed)
+	}
+	replacement := f.newSession("route")
+	wantOK(t, f.join(replacement, Join{Channel: "checkout", Alias: "form"}, "join"))
+	f.grantMember("form", 8)
+	if afterReuse := readStops(); len(afterReuse) != 1 || afterReuse[0] != departed {
+		t.Fatalf("alias reuse moved or resolved the original stop: %+v", afterReuse)
+	}
+	wantOK(t, f.join(a, Join{Channel: "checkout", Alias: "form-back"}, "return"))
+	returned := first[0]
+	returned.Alias = "form-back"
+	if afterReturn := readStops(); len(afterReturn) != 1 || afterReturn[0] != returned {
+		t.Fatalf("returning member stop: %+v, want %+v", afterReturn, returned)
+	}
+	f.grantMember("form-back", 8)
+	if afterGrant := readStops(); len(afterGrant) != 0 {
+		t.Fatalf("grant did not resolve the member stop: %+v", afterGrant)
+	}
+}
+
 func TestGuardAnswerBurstAndOversizedAudienceWriteNothing(t *testing.T) {
 	f, a, _, _ := channel3(t)
 	audience := []string{"tax", "a11y"}

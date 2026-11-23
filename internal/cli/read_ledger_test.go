@@ -126,15 +126,19 @@ func TestStatusPrintsCurrentRoundsAndStops(t *testing.T) {
 	status.Channels[0].GuardStops = []domain.GuardStop{
 		{ExchangeID: 12, AtMS: base.UnixMilli(), RoundLimit: 8},
 		{Alias: "tax", AtMS: base.UnixMilli(), RoundLimit: 8},
+		{Alias: "tax", BindingID: 4, BindingState: "departed", AtMS: base.UnixMilli(), RoundLimit: 0},
 	}
 	transport.result = okResult(t, status)
 	out, stderr, code = run(t, Env{Transport: transport}, "owner", "status")
-	want := "#checkout\n  x12: round 3 of 8, handoff for #17\n  x12 stopped at 14:31 (round limit 8)\n  @tax stopped at 14:31 (new threads, round limit 8)\n"
+	want := "#checkout\n  x12: round 3 of 8, handoff for #17\n  x12 stopped at 14:31 (round limit 8)\n  @tax stopped at 14:31 (new threads, round limit 8)\n" +
+		"  @tax (departed, binding 4) stopped at 14:31 (new threads, round limit 0)\n"
 	if code != core.ExitOK || stderr != "" || out != want {
 		t.Fatalf("owner status exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
 	out, _, code = run(t, Env{Transport: transport}, "--json", "owner", "status")
-	if code != core.ExitOK || !strings.Contains(out, `"guard_stops":[`) || strings.Contains(out, `"join_pool"`) || strings.Contains(out, `"budget_exhaustions"`) {
+	if code != core.ExitOK || !strings.Contains(out, `"guard_stops":[`) ||
+		!strings.Contains(out, `"binding_id":4,"binding_state":"departed"`) ||
+		strings.Contains(out, `"join_pool"`) || strings.Contains(out, `"budget_exhaustions"`) {
 		t.Fatalf("owner status JSON exit=%d stdout=%q", code, out)
 	}
 }

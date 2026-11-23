@@ -42,7 +42,7 @@ An ask starts each recipient's obligation in `open`. Listing it in `inbox` or ob
 
 **What the guard prevents.** Agents can keep handing each other work with no person involved. A request sent while answering or following up on another request advances the round. A thread may run eight rounds ahead and a round returns every ten minutes. If the next round exceeds the limit, the owner sees the stop in `crosshall owner status`. Side-by-side requests can share a round. A sender can send up to 30 requests asking for up to 60 answers in ten minutes, and one request can name at most 60 recipients.
 
-A request with `--re <id>` follows that message's thread. A plain request follows the only thread where the sender owes an answer, when there is one. Other requests open a new thread based on what the sender picked up or still owes. A new thread linked using `--new --re <id>` uses the higher round of those two evaluations. Replies and notes stay available at a stop.
+A request with `--re <id>` follows that message's thread. A plain request follows the only thread where the sender owes an answer, when there is one. Other requests open a new thread based on what the sender picked up or still owes. A request using `--new --re <id>` opens a new thread only if the higher round fits both limits. Each new thread starts with the sender's limit for new threads. Replies and notes stay available at a stop.
 
 Read the refusal before choosing how to proceed. Reply or note what you have when a round stops a request. A burst refusal shows the next time the same request fits the burst window. The owner can reset rounds for one thread or one member's new threads. A note does not assign work. See [loop guard operations](docs/operations.md#loop-guard).
 

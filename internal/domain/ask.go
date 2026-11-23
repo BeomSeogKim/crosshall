@@ -273,16 +273,18 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if decision.Reason != "" {
 		return refuseGuard(ctx, tx, m, cmd, to, decision, now)
 	}
-	if err := endDrainedStop(ctx, tx, m.principal, decision, ms(now)); err != nil {
-		return core.Result{}, err
-	}
 	threadRoot := decision.Path
 	if cmd.New {
 		threadRoot = 0
 	}
+	if err := endDrainedStop(ctx, tx, m.principal, threadRoot, decision.BaseMS, ms(now)); err != nil {
+		return core.Result{}, err
+	}
 	var exchange, parentRequestID int64
+	threadLimit := int64(guardDefaultRounds)
 	isNew := threadRoot == 0
 	if isNew {
+		threadLimit = decision.newThreadLimit
 		parentRequestID = parent
 		exchange, err = open(ctx, tx, m, parentRequestID)
 	} else {
@@ -297,9 +299,10 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		audienceMode = "all"
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms, thread_root_id)
-		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0))`,
-		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot)
+		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms,
+		  thread_root_id, thread_round_limit)
+		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?)`,
+		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot, threadLimit)
 	if err != nil {
 		return core.Result{}, err
 	}

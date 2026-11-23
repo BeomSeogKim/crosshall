@@ -21,14 +21,15 @@ const (
 )
 
 type guardDecision struct {
-	BaseMS      int64
-	LevelMS     int64  `json:"level_ms"`
-	Round       int64  `json:"round"`
-	RoundLimit  int64  `json:"round_limit"`
-	Requests    int64  `json:"requests"`
-	OwedAnswers int64  `json:"owed_answers"`
-	Path        int64  `json:"thread_root_id,omitempty"`
-	Reason      string `json:"reason"`
+	newThreadLimit int64
+	BaseMS         int64
+	LevelMS        int64  `json:"level_ms"`
+	Round          int64  `json:"round"`
+	RoundLimit     int64  `json:"round_limit"`
+	Requests       int64  `json:"requests"`
+	OwedAnswers    int64  `json:"owed_answers"`
+	Path           int64  `json:"thread_root_id,omitempty"`
+	Reason         string `json:"reason"`
 }
 
 func evaluateGuard(now, position, limit, requests, owedAnswers int64, recipients int) guardDecision {
@@ -55,6 +56,7 @@ type guardStop struct {
 	Round        int64    `json:"round"`
 	RoundLimit   int64    `json:"round_limit"`
 	ThreadRootID int64    `json:"thread_root_id"`
+	DrainsAtMS   int64    `json:"drains_at_ms"`
 }
 
 func refuseGuard(ctx context.Context, tx store.Tx, m member, cmd Ask, targets []target, d guardDecision, now time.Time) (core.Result, error) {
@@ -79,7 +81,7 @@ func refuseGuard(ctx context.Context, tx store.Tx, m member, cmd Ask, targets []
 
 	const guidance = "do not retry or reroute it. crosshall reply and crosshall note still work. The stop is recorded for the owner."
 	detail := guardStop{Channel: m.channelName, Sender: m.alias, Recipients: sortedUnique(cmd.To),
-		Round: d.Round, RoundLimit: d.RoundLimit, ThreadRootID: d.Path}
+		Round: d.Round, RoundLimit: d.RoundLimit, ThreadRootID: d.Path, DrainsAtMS: d.BaseMS}
 	if cmd.All {
 		for _, t := range targets {
 			detail.Recipients = append(detail.Recipients, t.alias)
@@ -183,18 +185,21 @@ func recordGuardStop(ctx context.Context, tx store.Tx, updated sql.Result, err e
 	return audit(ctx, tx, guardStopped, subject, principal, detail, now)
 }
 
-func endDrainedStop(ctx context.Context, tx store.Tx, principal int64, d guardDecision, now int64) error {
-	if d.BaseMS > now {
+func endDrainedStop(ctx context.Context, tx store.Tx, principal, threadRoot, base, now int64) error {
+	if base > now {
 		return nil
 	}
-	if d.Path != 0 {
+	if threadRoot != 0 {
 		_, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 0 WHERE episode_open = 1
 			AND id = (SELECT exchange_id FROM message WHERE id = ?1)
-			AND ?1 = (SELECT json_extract(detail, '$.thread_root_id') FROM event
-				WHERE kind = ?2 AND subject = 'exchange:' || exchange.id ORDER BY seq DESC LIMIT 1)`, d.Path, guardStopped)
+			AND (SELECT json_extract(detail, '$.thread_root_id') = ?1
+				AND COALESCE(json_extract(detail, '$.drains_at_ms'), 0) <= ?3 FROM event
+				WHERE kind = ?2 AND subject = 'exchange:' || exchange.id ORDER BY seq DESC LIMIT 1)`, threadRoot, guardStopped, now)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE principal SET guard_told = 0 WHERE id = ? AND guard_told = 1`, principal)
+	_, err := tx.ExecContext(ctx, `UPDATE principal SET guard_told = 0 WHERE id = ?1 AND guard_told = 1
+		AND (SELECT COALESCE(json_extract(detail, '$.drains_at_ms'), 0) <= ?3 FROM event
+			WHERE kind = ?2 AND subject = 'principal:' || ?1 ORDER BY seq DESC LIMIT 1)`, principal, guardStopped, now)
 	return err
 }
 
@@ -253,14 +258,17 @@ func guardForAsk(ctx context.Context, tx store.Tx, m member, cmd Ask, recipients
 	if err != nil {
 		return guardDecision{}, err
 	}
+	newThreadLimit := limit
 	if cmd.New && path != 0 {
 		anyLevel, anyLimit, err := guardPosition(ctx, tx, m.principal, 0, 0)
 		if err != nil {
 			return guardDecision{}, err
 		}
-		if anyLevel > level || anyLevel == level && anyLimit < limit {
-			path, level, limit = 0, anyLevel, anyLimit
+		newThreadLimit = anyLimit
+		if anyLimit < limit || anyLimit == limit && anyLevel > level {
+			path = 0
 		}
+		level, limit = max(level, anyLevel), min(limit, anyLimit)
 	}
 	var requests, answers int64
 
@@ -274,6 +282,7 @@ func guardForAsk(ctx context.Context, tx store.Tx, m member, cmd Ask, recipients
 	}
 	decision := evaluateGuard(at, level, limit, requests+1, answers+int64(recipients), recipients)
 	decision.Path = path
+	decision.newThreadLimit = newThreadLimit
 	return decision, nil
 }
 

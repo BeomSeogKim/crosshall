@@ -313,7 +313,11 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				if stop.ExchangeID != 0 {
 					fmt.Fprintf(w, "  x%d stopped at %s (round limit %d)\n", stop.ExchangeID, ledgerTime(stop.AtMS), stop.RoundLimit)
 				} else {
-					fmt.Fprintf(w, "  @%s stopped at %s (new threads, round limit %d)\n", stop.Alias, ledgerTime(stop.AtMS), stop.RoundLimit)
+					member := "@" + stop.Alias
+					if stop.BindingState == "departed" {
+						member = fmt.Sprintf("%s (departed, binding %d)", member, stop.BindingID)
+					}
+					fmt.Fprintf(w, "  %s stopped at %s (new threads, round limit %d)\n", member, ledgerTime(stop.AtMS), stop.RoundLimit)
 				}
 			}
 		}

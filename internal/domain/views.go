@@ -151,11 +151,13 @@ type ExchangeRound struct {
 }
 
 type GuardStop struct {
-	ExchangeID int64  `json:"exchange_id,omitempty"`
-	Alias      string `json:"alias,omitempty"`
-	AtMS       int64  `json:"at_ms"`
-	Round      int64  `json:"round"`
-	RoundLimit int64  `json:"round_limit"`
+	ExchangeID   int64  `json:"exchange_id,omitempty"`
+	Alias        string `json:"alias,omitempty"`
+	BindingID    int64  `json:"binding_id,omitempty"`
+	BindingState string `json:"binding_state,omitempty"`
+	AtMS         int64  `json:"at_ms"`
+	Round        int64  `json:"round"`
+	RoundLimit   int64  `json:"round_limit"`
 }
 
 func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, now time.Time) (core.Result, error) {
@@ -377,13 +379,13 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 	if err := bindings.Err(); err != nil {
 		return out, err
 	}
-	events, err := tx.QueryContext(ctx, `WITH stopped(subject, exchange_id, alias) AS (
-        SELECT 'exchange:' || id, id, '' FROM exchange WHERE channel_id = ?1 AND episode_open = 1
+	events, err := tx.QueryContext(ctx, `WITH stopped(subject, exchange_id, alias, binding_id, binding_state) AS (
+        SELECT 'exchange:' || id, id, '', 0, '' FROM exchange WHERE channel_id = ?1 AND episode_open = 1
         UNION ALL
-        SELECT 'principal:' || p.id, 0, b.alias FROM principal p JOIN binding b ON b.principal_id = p.id
-        WHERE b.channel_id = ?1 AND b.state = 'live' AND p.guard_told = 1
+        SELECT 'principal:' || p.id, 0, b.alias, b.id, b.state FROM principal p JOIN binding b ON b.principal_id = p.id
+        WHERE b.channel_id = ?1 AND p.guard_told = 1
     )
-    SELECT stopped.exchange_id, stopped.alias, e.at_ms, json_extract(e.detail, '$.round'),
+    SELECT stopped.exchange_id, stopped.alias, stopped.binding_id, stopped.binding_state, e.at_ms, json_extract(e.detail, '$.round'),
         json_extract(e.detail, '$.round_limit')
     FROM stopped JOIN event e ON e.seq = (
         SELECT MAX(seq) FROM event WHERE kind = ?2 AND subject = stopped.subject)
@@ -394,7 +396,7 @@ func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, 
 	defer events.Close()
 	for events.Next() {
 		var stop GuardStop
-		if err := events.Scan(&stop.ExchangeID, &stop.Alias, &stop.AtMS, &stop.Round, &stop.RoundLimit); err != nil {
+		if err := events.Scan(&stop.ExchangeID, &stop.Alias, &stop.BindingID, &stop.BindingState, &stop.AtMS, &stop.Round, &stop.RoundLimit); err != nil {
 			return out, err
 		}
 		out.GuardStops = append(out.GuardStops, stop)

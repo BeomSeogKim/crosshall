@@ -52,11 +52,11 @@ For the default installation only (no `CROSSHALL_STATE_DIR`, no `XDG_STATE_HOME`
 
 A thread can run eight rounds ahead by default. A round returns every ten minutes. A new thread uses the sender's own round position when there is no known parent. The guard also allows up to 30 requests asking for up to 60 answers per sender in any rolling ten minutes. A request can ask at most 60 recipients. Replies and notes stay available. A slow chain can continue as rounds return, and there is no hall-wide cap. Limits apply to individual members and threads, so a series of new members can also increase traffic.
 
-A round stop appears once in `crosshall owner status` until that path drains and accepts a request or the owner resets it. A burst refusal gives the earliest minute when the request fits the burst window. Owner grants reset rounds only.
+A round stop appears in `crosshall owner status` until the position that triggered it drains and the path accepts a request, or until the owner resets it. A departed member's stop remains visible with its binding ID. A burst refusal gives the earliest minute when the request fits the burst window. Owner grants reset rounds only.
 
 - `crosshall owner budget policy <channel>[/@<alias>]` shows the guard's limits.
 - `crosshall owner budget grant <channel>/x<id> --rounds <n>` resets the thread. For an exchange from before the upgrade that contains several roots, the grant resets all its roots.
-- `crosshall owner budget grant <channel>/@<alias> --rounds <n>` resets the live member's ability to start new threads. A thread reset and a member reset each leave the other scope intact.
+- `crosshall owner budget grant <channel>/@<alias> --rounds <n>` resets the live member's round position for new threads and sets the limit inherited by each thread it opens afterward.
 
 Both grants default to eight rounds. Use zero to stop that path until the next grant. The positional form `grant <channel>/x<id> <n>` also sets the thread's round limit. `grant --roots`, `grant --pool`, `policy --refill`, and `policy --ceiling` return `retired`. Channel creation accepts an old `--pool` flag with a warning.
 

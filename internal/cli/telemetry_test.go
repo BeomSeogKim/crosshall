@@ -198,3 +198,17 @@ func temporaryPolicyPath(t *testing.T, fixture string) func(string) string {
 		return fixture
 	}
 }
+
+func TestTelemetryStatusSaysWhenCurlIsMissing(t *testing.T) {
+	t.Setenv(telemetryconfig.TelemetryEnv, "")
+	t.Setenv(telemetryconfig.DoNotTrackEnv, "")
+	for curl, missing := range map[string]bool{"/nonexistent/curl": true, os.Args[0]: false} {
+		env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"), TelemetryCurl: curl,
+			ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off"))}
+		stdout, stderr, code := run(t, env, "owner", "telemetry", "on")
+		said := strings.Contains(stdout, "Nothing is sent: reports are sent with "+curl+", which is not installed.")
+		if code != core.ExitOK || said != missing {
+			t.Fatalf("curl %s: code=%d, stdout=%s, stderr=%s", curl, code, stdout, stderr)
+		}
+	}
+}

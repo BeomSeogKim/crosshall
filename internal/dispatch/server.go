@@ -26,6 +26,8 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
+	"github.com/BeomSeogKim/crosshall/internal/telemetrysend"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -163,6 +165,16 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 	var launches launchSweep
 	launches.start(ctx, db, time.Now())
+	usage := telemetrysend.New(telemetrysend.Config{
+		StateRoot: cfg.StateRoot, Rendezvous: cfg.Rendezvous, Version: cfg.Version,
+		Endpoint: telemetryconfig.Endpoint, PolicyPath: telemetryconfig.ManagedOffPath,
+		Curl: telemetryconfig.CurlPath, Vetoed: telemetryconfig.EnvironmentOff(),
+	}, db)
+	defer func() {
+		cancel()
+		usage.Wait()
+	}()
+	var nextUsage time.Time
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -194,6 +206,10 @@ func Serve(ctx context.Context, cfg Config) error {
 		if publishTick {
 			now := time.Now()
 			launches.start(ctx, db, now)
+			if !now.Before(nextUsage) {
+				usage.Tick(ctx, now)
+				nextUsage = now.Add(time.Minute)
+			}
 			if sends {
 				logPublishFailure(pub.tick(ctx, now, false))
 			}

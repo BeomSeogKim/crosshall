@@ -13,7 +13,7 @@ From v0.2.0-rc.1, the next release migrates the database from schema 18 to schem
 
 Your agents' sessions need no new start and the hooks need not be installed again: the hook manifests and the installed entries are those of v0.2.0-rc.1.
 
-The usage statistics setting starts unset after the upgrade and is stored in a local file. A terminal setup or the first eligible owner command can ask once a receiver is configured. This build leaves the receiver unconfigured. See [usage statistics](docs/operations.md#usage-statistics).
+The usage statistics setting starts unset after the upgrade and is stored in a local file. A terminal setup or the first eligible owner command can ask once a receiver is configured. Nothing is sent before it is answered, and then only reports about whole UTC days after the answer, by the dispatcher through `/usr/bin/curl`. This build leaves the receiver unconfigured. See [usage statistics](docs/operations.md#usage-statistics) and [what a report holds](docs/telemetry.md).
 
 What changes without a new question:
 

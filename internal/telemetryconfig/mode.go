@@ -25,6 +25,10 @@ const (
 	DoNotTrackEnv = "DO_NOT_TRACK"
 
 	ManagedOffPath = "/etc/crosshall/telemetry-off"
+
+	// CurlPath is the program the dispatcher sends a report with, so that no
+	// TLS code is linked into the binary every hook starts.
+	CurlPath = "/usr/bin/curl"
 )
 
 type Setting struct {
@@ -165,6 +169,34 @@ func setMode(stateRoot, mode, source, onlyIf string, now func() time.Time) (Sett
 		}
 	}
 	return setting, true, nil
+}
+
+// Locked runs fn with the telemetry directory open and the setting's lock
+// held, so that turning the setting off cannot interleave with a change fn
+// makes. When the directory does not exist the setting is unset and fn does
+// not run.
+func Locked(stateRoot string, fn func(dir *os.Root, setting Setting) error) error {
+	dir, err := openTelemetryDir(stateRoot, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	lock, err := spool.OpenServerFile(dir, "mode.lock", os.O_RDWR|os.O_CREATE)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	setting, err := readMode(dir)
+	if err != nil {
+		return err
+	}
+	return fn(dir, setting)
 }
 
 func openTelemetryDir(stateRoot string, create bool) (*os.Root, error) {

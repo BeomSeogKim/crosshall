@@ -69,6 +69,7 @@ func Build(ctx context.Context, tx store.Tx, in Input) (Report, error) {
 	if b.err != nil {
 		return Report{}, b.err
 	}
+	r.Unobserved10m = raw["notice.unobserved_10m"]
 	r.Counts = make(map[string]int64)
 	for key, n := range raw {
 		if v := Round(n); v > 0 && registry.has(key) {

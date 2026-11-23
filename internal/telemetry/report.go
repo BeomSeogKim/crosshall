@@ -21,6 +21,9 @@ type Report struct {
 	Sources  Sources          `json:"sources"`
 	Switches *Switches        `json:"switches,omitempty"`
 	Counts   map[string]int64 `json:"counts"`
+	// Unobserved10m is the day's notice.unobserved_10m before rounding,
+	// which the sender keeps locally for later days' week figures.
+	Unobserved10m int64 `json:"-"`
 }
 
 // App names the release and platform that built the report.

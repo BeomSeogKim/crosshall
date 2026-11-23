@@ -134,6 +134,12 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 		fields["decision_source"] = setting.Source
 		fields["decided_at"] = setting.ChangedAt
 	}
+	curlMissing := false
+	if setting.Mode == telemetryconfig.On && env.TelemetryCurl != "" {
+		info, err := os.Stat(env.TelemetryCurl)
+		curlMissing = err != nil || !info.Mode().IsRegular()
+		fields["curl_missing"] = curlMissing
+	}
 	if setting.Mode == telemetryconfig.On && !environmentOff && !managedOff {
 		day := telemetryconfig.NextFullDay(setting.ChangedAt).Format(time.DateOnly)
 		fields["eligible_from_day"] = day
@@ -157,6 +163,9 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	}
 	if managedOff {
 		fmt.Fprintln(out, "Sending is disabled by /etc/crosshall/telemetry-off.")
+	}
+	if curlMissing {
+		fmt.Fprintf(out, "Nothing is sent: reports are sent with %s, which is not installed.\n", env.TelemetryCurl)
 	}
 	if env.TelemetryEndpoint == "" {
 		fmt.Fprintln(out, "Receiver: not configured")

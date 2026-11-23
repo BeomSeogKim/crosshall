@@ -4,7 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
-- **Hand-joined sessions can leave when their host exits:** crosshall records the process for eligible Claude Code, Antigravity CLI and `crosshall run` members, including an Antigravity member that joined through its startup hook. A resumed session can pick up its existing requests from a live host. `owner who --all` and `whoami --full` report how exits are tracked. The database moves to schema 20 (#226).
+- **Sessions leave when their process exits:** for a Claude Code, Antigravity CLI or `crosshall run` member, crosshall records the process its commands run in, whether the member joined by hand or through a hook, and departs the member once that process is proven gone, as a clean session end: the alias is freed and open requests stay (#224, #229). The member comes back by itself at its next command from a running process, under its old alias when that is free; otherwise the command says which alias it got. A member that left or that the owner departed does not come back this way. A Codex CLI member's exit is not tracked: its end hook departs nobody, so the owner departs it or it leaves by itself. `owner who --all` and `whoami --full` say how each member's exit is tracked (#228). The database moves to schema 21 (#226, #227).
 
 - **No end-of-turn check where the hall reaches you:** a session the hall can start a turn in is told so at a prompt, and then ends a turn that showed no pending line without a `crosshall read`. When the hall stops reaching it, the next prompt says so and the check applies again. The database moves to schema 19 (#121).
 

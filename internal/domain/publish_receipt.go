@@ -99,8 +99,15 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	END`, principal, cmd.LaunchRef, cmd.TurnRef, cmd.HookAtMS).Scan(&observation); err != nil {
 		return false, err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET observed_at_ms = ?, observation = ?
-		WHERE id = ? AND observed_at_ms IS NULL`, ms(now), observation, id)
+	var cause sql.NullString
+	if observation == "unknown" {
+		if err := tx.QueryRowContext(ctx, unknownCauseSQL, principal, cmd.LaunchRef, cmd.HookAtMS, typedAheadPrefix).
+			Scan(&cause); err != nil {
+			return false, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET observed_at_ms = ?, observation = ?, unknown_cause = ?
+		WHERE id = ? AND observed_at_ms IS NULL`, ms(now), observation, cause, id)
 	if err != nil {
 		return false, err
 	}
@@ -116,6 +123,40 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	}
 	return true, nil
 }
+
+// unknownCauseSQL names the condition that kept an unknown receipt from
+// being the session's own turn, judged on the launch's last turn as the
+// classifier saw it (?1 principal, ?2 launch, ?3 the receipt's hook time,
+// ?4 the typed-ahead prefix):
+//   - open_placeholder: that turn, still running, is a typed-ahead
+//     placeholder;
+//   - unfinished_turn: it had no Stop by then, and another turn's activity
+//     was seen since it opened;
+//   - activity_since_stop: it had its Stop, and something was seen since;
+//   - no_turn_but_facts: the launch has no turn since its start, but facts.
+//
+// With no turn since the start, a turn still running from before it is
+// the last turn.
+const unknownCauseSQL = `WITH previous AS (
+	SELECT t.turn_ref, t.finishing_hook_at_ms, t.opened_hook_at_ms, t.rowid FROM turn t JOIN adapter_launch l
+		ON l.principal_id = t.principal_id AND l.launch_ref = t.launch_ref
+	WHERE t.principal_id = ?1 AND t.launch_ref = ?2
+		AND t.opened_hook_at_ms <= ?3 AND (t.opened_hook_at_ms >= l.started_hook_at_ms
+			OR t.finishing_hook_at_ms BETWEEN l.started_hook_at_ms AND ?3)
+), running AS (
+	SELECT turn_ref, finishing_hook_at_ms, opened_hook_at_ms, rowid FROM turn
+	WHERE principal_id = ?1 AND launch_ref = ?2 AND opened_hook_at_ms <= ?3
+		AND (finishing_hook_at_ms IS NULL OR finishing_hook_at_ms > ?3)
+), last_turn AS (
+	SELECT turn_ref, finishing_hook_at_ms FROM (
+		SELECT *, 0 AS late FROM previous UNION ALL SELECT *, 1 FROM running WHERE NOT EXISTS (SELECT 1 FROM previous)
+	) ORDER BY late, opened_hook_at_ms DESC, rowid DESC LIMIT 1
+)
+SELECT COALESCE((SELECT CASE
+	WHEN finishing_hook_at_ms <= ?3 THEN 'activity_since_stop'
+	WHEN substr(turn_ref, 1, length(?4)) = ?4 THEN 'open_placeholder'
+	ELSE 'unfinished_turn'
+END FROM last_turn), 'no_turn_but_facts')`
 
 // duplicatePrompt holds for a recorded prompt o that opened no turn: one
 // repeating a prompt already handled (#174). It is no activity of the

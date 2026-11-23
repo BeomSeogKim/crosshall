@@ -118,7 +118,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 					focus = "focus unset"
 				}
 				state := member.BindingState
-				if member.EvidenceStale {
+				if member.HostAlive {
+					state += ", alive"
+				} else if member.EvidenceStale {
 					state += ", stale"
 				}
 				route := member.Route
@@ -137,6 +139,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 					member.Alias, member.BindingID, state, member.Vendor, focus, route, ownerEvidenceText(member))
 				if member.Observed != nil {
 					fmt.Fprintf(w, "; last observed: %s", observedText(member.Observed))
+				}
+				if member.ExitTracking != "" {
+					fmt.Fprintf(w, "; %s", member.ExitTracking.Description())
 				}
 				if len(member.OpenRequests) > 0 {
 					fmt.Fprint(w, "; open requests:")

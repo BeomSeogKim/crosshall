@@ -103,11 +103,11 @@ func TestReadmeOwnerWhoMatchesTheCommand(t *testing.T) {
 		Members: []domain.OwnerMember{
 			{Member: domain.Member{Alias: "claude1", Vendor: "claude", BindingID: 1, LastCommandAgoS: 1,
 				Publish: &domain.PublishStatus{State: "available"}},
-				BindingState: "live", Reach: "notice", DepartToken: departureToken},
+				BindingState: "live", Reach: "notice", ExitTracking: domain.ExitByHooks, DepartToken: departureToken},
 			{Member: domain.Member{Alias: "codex1", Vendor: "codex", BindingID: 2,
 				Publish:  &domain.PublishStatus{State: "candidate", Reason: "no sender for codex"},
 				Observed: &domain.Observed{Fact: domain.FactPromptSubmitted, Source: "codex", Current: true}},
-				BindingState: "live", Reach: "prompt", DepartToken: strings.Repeat("a", 24)},
+				BindingState: "live", Reach: "prompt", ExitTracking: domain.ExitUntracked, DepartToken: strings.Repeat("a", 24)},
 		},
 	}}}
 	env := Env{Transport: &fakeTransport{result: okResult(t, result)}}

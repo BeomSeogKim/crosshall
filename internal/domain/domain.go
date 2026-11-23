@@ -105,7 +105,9 @@ func (Join) command() {}
 func (Join) Verb() string { return VerbJoin }
 
 // Who lists members in the caller's channel.
-type Who struct{}
+type Who struct {
+	ExitTracking bool `json:"exit_tracking,omitempty"`
+}
 
 func (Who) command() {}
 

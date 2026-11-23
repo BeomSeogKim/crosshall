@@ -4,7 +4,9 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded. This requires no database migration.
+An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded.
+
+Migration 023 records whether a session received the owner resume command for a lasting suspension. A session that already received the old reach-loss line gets the command at its next prompt while the suspension is in effect. The dispatcher backs up a schema 22 store as `store-v22-*.sqlite3` before migrating it. To return to v0.2.0-rc.3, stop the dispatcher and restore that copy before restarting the older binary. Restoring the copy discards changes made since the upgrade.
 
 ## To v0.2.0-rc.3
 

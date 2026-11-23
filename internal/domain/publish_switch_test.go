@@ -31,7 +31,7 @@ func (p *publishFixture) publishState() store.PublishState {
 		}
 	}
 	visible := state
-	visible.LastingLaunchSuspension = false
+	visible.RecoveryHint = store.PublishRecoveryHint{}
 	if owner == nil || *owner != visible {
 		p.t.Fatalf("owner who shows %+v, the store %+v", owner, state)
 	}

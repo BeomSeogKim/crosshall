@@ -59,16 +59,19 @@ func offerReach(ctx context.Context, tx store.Tx, b hookBinding, restored bool, 
 	}
 	reach := found && ReachesForNewWork(state, now)
 	toldBrings := told.Valid && told.Int64 == 1
+	hint := state.RecoveryHint
+	offerHint := hint.SuspensionID != 0 && hint.State != store.RecoveryHintAcknowledged
 	switch {
 	case reach && (!toldBrings || restored):
 		out.ReachLine = ReachBringsLine
 		out.ReachAck = &wire.HookReachAck{BindingID: b.id, RouteEpoch: epoch, Told: 1}
-	case !reach && toldBrings:
+	case !reach && (toldBrings || offerHint):
 		out.ReachLine = ReachLostLine
-		if state.LastingLaunchSuspension {
-			out.ReachLine += fmt.Sprintf(" Notices stay off until this session restarts. Your user can turn them on with crosshall owner publish resume %d.", b.id)
-		}
 		out.ReachAck = &wire.HookReachAck{BindingID: b.id, RouteEpoch: epoch, Told: 0}
+		if offerHint {
+			out.ReachLine += fmt.Sprintf(" Your user can turn notices back on with crosshall owner publish resume %d.", b.id)
+			out.ReachAck.SuspensionID = hint.SuspensionID
+		}
 	}
 	return nil
 }
@@ -79,14 +82,10 @@ func reachDue(reach bool, told sql.NullInt64) bool {
 	return reach != toldBrings && (reach || told.Valid)
 }
 
-// MarkReachChanges moves the notice stamp of each live member whose reach
-// changed since the dispatcher last looked and differs from what it was
-// told, so that its next prompt asks the dispatcher instead of taking the
-// hook's clean path, and is told. It decides by state, not by event: the
-// sites that change reach call it in their own transaction, and the
-// dispatcher's sweep calls it as the net, also for changes that have no
-// event (a held notice outliving HeldReachBound, a suspension or the cap
-// ending). A member never reached and never told is never marked.
+// MarkReachChanges moves the notice stamp for a new recovery hint or a
+// change in reach the member has not heard about. The stamp keeps the next
+// prompt off the hook's clean path until it receives the line. The dispatcher
+// sweep also catches changes without an event, such as an expiring suspension.
 func MarkReachChanges(ctx context.Context, tx store.Tx, now time.Time) (bool, error) {
 	type member struct {
 		binding, principal int64
@@ -120,15 +119,21 @@ func MarkReachChanges(ctx context.Context, tx store.Tx, now time.Time) (bool, er
 		if reach {
 			seen = 1
 		}
-		if m.seen.Valid && m.seen.Int64 == seen {
-			continue
+		reachChanged := !m.seen.Valid || m.seen.Int64 != seen
+		if reachChanged {
+			if _, err := tx.ExecContext(ctx, `UPDATE binding SET reach_seen = ? WHERE id = ?`, seen, m.binding); err != nil {
+				return false, err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE binding SET reach_seen = ? WHERE id = ?`, seen, m.binding); err != nil {
-			return false, err
+		hint := state.RecoveryHint
+		markHint := hint.SuspensionID != 0 && hint.State == store.RecoveryHintPending
+		if markHint {
+			if _, err := tx.ExecContext(ctx, `UPDATE publish_suspension SET recovery_hint = ? WHERE id = ?`,
+				store.RecoveryHintMarked, hint.SuspensionID); err != nil {
+				return false, err
+			}
 		}
-		// Once marked, the next prompt asks, and keeps asking until the
-		// hook confirms the line: marking again would add nothing.
-		if !reachDue(reach, m.told) {
+		if !markHint && !(reachChanged && reachDue(reach, m.told)) {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_dirty (principal_id, notice) VALUES (?, 1)

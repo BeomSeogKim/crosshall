@@ -16,6 +16,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -43,6 +44,24 @@ func (t *Transport) EnableHost(host func(ident.Identity, func(string) (string, b
 func (t *Transport) EnableJoinLaunch(propose func(ident.Identity, func(string) (string, bool), time.Time) *domain.JoinLaunch,
 	bind func(ident.Identity, domain.JoinLaunch) error) {
 	t.joinLaunch, t.bindLaunch = propose, bind
+}
+
+// HostGone names the agent process a member command would name and returns
+// a check that reports proof it has ended, or nil when no process can be
+// named. A wait uses it to end with the agent that started it.
+func (t *Transport) HostGone() func() bool {
+	if t.host == nil {
+		return nil
+	}
+	id, err := ident.ResolveEnvironment(t.lookup)
+	if err != nil {
+		return nil
+	}
+	host := t.host(id, t.lookup)
+	if host == nil {
+		return nil
+	}
+	return func() bool { return proc.ProcessGone(host.PID, host.Start) }
 }
 
 func New(s spool.Client) *Transport {

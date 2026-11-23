@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -42,65 +43,92 @@ type WaitSnapshot struct {
 	*MemberInboxSummary
 }
 
-func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait) (core.Result, error) {
+// waitSnapshot also records in waits whether the caller's wait keeps
+// running: it does unless the snapshot holds something that ends it.
+func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, waits *waitPresence, now time.Time) (core.Result, error) {
+	result, poll, err := waitSnapshotOf(ctx, tx, caller, cmd, now)
+	switch {
+	case err != nil || poll.binding == 0:
+	case poll.ends:
+		waits.forget(poll.binding)
+	default:
+		waits.saw(poll.binding, cmd.WorkOnly, now)
+	}
+	return result, err
+}
+
+// snapshotPoll names the binding a successful snapshot answered, zero for a
+// refusal, and whether the snapshot ends the wait.
+type snapshotPoll struct {
+	binding int64
+	ends    bool
+}
+
+func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
 	if caller.Role != core.RoleMember {
-		return notEnrolled(), nil
+		return notEnrolled(), snapshotPoll{}, nil
 	}
 	member, ok, err := lookupLedgerMember(ctx, tx, caller)
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	if !ok {
-		return notEnrolled(), nil
+		return notEnrolled(), snapshotPoll{}, nil
 	}
 	summary, err := memberInboxSummary(ctx, tx, member.principal, member.channel)
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	if cmd.Any && cmd.WorkOnly {
-		return waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "crosshall wait --any, or crosshall wait --work-only", &summary)
+		return noPoll(waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "crosshall wait --any, or crosshall wait --work-only", &summary))
 	}
 	if cmd.Cursor != nil && cmd.Cursor.BindingID != member.binding {
-		return waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", &summary)
+		return noPoll(waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", &summary))
 	}
 	if cmd.Cursor != nil && cmd.Cursor.MessageID < 0 {
-		return waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary)
+		return noPoll(waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary))
 	}
 
+	// Delivers lets a timeout say that this session needs no wait.
+	delivers, err := publishDelivers(ctx, tx, member.binding, now)
+	if err != nil {
+		return core.Result{}, snapshotPoll{}, err
+	}
 	out := WaitSnapshot{
 		Cursor:             WaitCursor{BindingID: member.binding},
-		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}},
+		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers},
 		MemberInboxSummary: &summary,
 	}
 	// Message IDs increase across channels. Use the indexed high-water mark
 	// so empty polls do not repeatedly scan other channels' messages.
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&out.Cursor.MessageID); err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	if cmd.Cursor != nil && cmd.Cursor.MessageID > out.Cursor.MessageID {
-		return WaitCursorInvalidated(&summary)
+		return noPoll(WaitCursorInvalidated(&summary))
 	}
 	out.CursorFingerprint, err = waitMessageFingerprint(ctx, tx, out.Cursor.MessageID)
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	if cmd.Cursor == nil {
 		if cmd.Existing {
 			out.InboxResult, err = inboxItems(ctx, tx, member, cmd.WorkOnly)
 			if err != nil {
-				return core.Result{}, err
+				return core.Result{}, snapshotPoll{}, err
 			}
+			out.Delivers = delivers
 			out.Cancelled = nil // a cancellation is not work: it never ends or rides on a wait
 		}
-		return OK(out)
+		return out.polled(member.binding)
 	}
 	if cmd.Cursor.MessageID == out.Cursor.MessageID {
 		out.PriorCursorFingerprint = out.CursorFingerprint
-		return OK(out)
+		return out.polled(member.binding)
 	}
 	out.PriorCursorFingerprint, err = waitMessageFingerprint(ctx, tx, cmd.Cursor.MessageID)
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.kind, COALESCE(b.alias, ''), m.due_at_ms
@@ -115,27 +143,38 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 				WHERE oc.message_id = m.id AND oc.principal_id = ? AND oc.state <> 'open')
 		ORDER BY m.id`, cmd.Cursor.MessageID, member.channel, member.principal, cmd.WorkOnly, cmd.Any, member.principal, member.principal)
 	if err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item InboxItem
 		if err := rows.Scan(&item.ID, &item.Kind, &item.Sender, &item.DueAtMS); err != nil {
-			return core.Result{}, err
+			return core.Result{}, snapshotPoll{}, err
 		}
 		out.Unread = append(out.Unread, item)
 	}
 	if err := rows.Err(); err != nil {
-		return core.Result{}, err
+		return core.Result{}, snapshotPoll{}, err
 	}
 	if cmd.Existing && len(out.Unread) != 0 {
 		inbox, err := inboxItems(ctx, tx, member, cmd.WorkOnly)
 		if err != nil {
-			return core.Result{}, err
+			return core.Result{}, snapshotPoll{}, err
 		}
 		out.Owed = inbox.Owed
 	}
-	return OK(out)
+	return out.polled(member.binding)
+}
+
+// polled returns the snapshot with its binding. Something unread ends the
+// wait.
+func (out WaitSnapshot) polled(binding int64) (core.Result, snapshotPoll, error) {
+	r, err := OK(out)
+	return r, snapshotPoll{binding: binding, ends: len(out.Unread) != 0}, err
+}
+
+func noPoll(r core.Result, err error) (core.Result, snapshotPoll, error) {
+	return r, snapshotPoll{}, err
 }
 
 func waitMessageFingerprint(ctx context.Context, tx store.Tx, id int64) (string, error) {

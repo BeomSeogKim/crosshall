@@ -63,7 +63,9 @@ A release family is the major and minor version of the agent that runs, `other` 
 
 ## Where reports go
 
-To the maintainer's own server, reached through Cloudflare's network. The server keeps each report 180 days with the day it arrived, and stores neither your IP address nor the time of day; a daily copy is kept in Google Drive for the same period. Anyone can post a report to the endpoint, so the figures are read with that in mind.
+To `telemetry.addylog.dev`, the maintainer's own server, reached through Cloudflare's network. The server keeps each report 180 days with the day it arrived, and stores no IP address, no request header and no time of day. A daily copy is encrypted before it is uploaded to the maintainer's Google Drive, through an app that can see only the files it created, and is deleted after the same 180 days. Reports are used only to decide what to fix and build in crosshall; they are not sold or shared. Anyone can post a report to the endpoint, so the figures are read with that in mind.
+
+The same notice is published at [addylog.dev/crosshall/telemetry](https://addylog.dev/crosshall/telemetry/), with a way to contact Adrian Studio.
 
 A report carries no identifier, but it is not unconnectable: the network path sees the address it came from, and with few users a rare platform or version can point to one machine. The counts describe how much one person or team worked with their agents that day.
 

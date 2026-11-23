@@ -56,3 +56,6 @@ func processStartMS(pid int) (int64, error) {
 	start, err := processStart(pid)
 	return start.AtMS, err
 }
+
+// StartOf returns the start of a running pid.
+func StartOf(pid int) (Start, error) { return processStart(pid) }

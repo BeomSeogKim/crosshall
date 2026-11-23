@@ -836,14 +836,27 @@ func (s *Service) settleLaunches(ctx context.Context, tx store.Tx, principal int
 
 // endSession keeps the principal and its obligations so the next start can restore it.
 func endSession(ctx context.Context, tx store.Tx, b hookBinding, principal int64, now time.Time) error {
+	return endSessionBy(ctx, tx, b, principal, "", now)
+}
+
+// endSessionBy ends a session; by names the evidence when it is not the
+// adapter's own end ("process": the member's host was proven gone).
+func endSessionBy(ctx context.Context, tx store.Tx, b hookBinding, principal int64, by string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ?, departed_by_hook = 1 WHERE id = ?`,
 		ms(now), b.id); err != nil {
+		return err
+	}
+	if err := forgetHost(ctx, tx, principal); err != nil {
 		return err
 	}
 	if err := rosterChange(ctx, tx, b.channel, principal, "departed"); err != nil {
 		return err
 	}
-	return audit(ctx, tx, "session_ended", "binding:"+strconv.FormatInt(b.id, 10), principal, map[string]string{"alias": b.alias}, now)
+	detail := map[string]string{"alias": b.alias}
+	if by != "" {
+		detail["by"] = by
+	}
+	return audit(ctx, tx, "session_ended", "binding:"+strconv.FormatInt(b.id, 10), principal, detail, now)
 }
 
 // --- offers -----------------------------------------------------------------

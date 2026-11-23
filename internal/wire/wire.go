@@ -26,6 +26,17 @@ type Request struct {
 	Args          json.RawMessage `json:"args"`
 	// Reply defaults to true. Only member observations may request no reply.
 	Reply *bool `json:"reply,omitempty"`
+	// Host is the agent process that runs a member command, when the
+	// client could identify it.
+	Host *Host `json:"host,omitempty"`
+}
+
+// Host names a process by its PID, its start identity and the PID
+// namespace the PID belongs to.
+type Host struct {
+	PID   int64  `json:"pid"`
+	Start int64  `json:"start"`
+	NS    string `json:"ns,omitempty"`
 }
 
 // Response correlates a command result with the attempt that produced it.

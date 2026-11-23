@@ -445,6 +445,9 @@ type ledgerTrailer struct {
 	JoinHint string `json:"join_hint"`
 	// Delivers marks a wait timeout for a member the hall delivers to.
 	Delivers bool `json:"delivers"`
+	// RejoinedAs is the new alias of a member a command brought back after
+	// its session ended, when the old one was taken.
+	RejoinedAs string `json:"rejoined_as"`
 }
 
 // PrintFirstRules prints the member rules a first command carries and the
@@ -463,6 +466,9 @@ func PrintFirstRules(w io.Writer, data []byte) error {
 }
 
 func printLedgerTrailer(w io.Writer, cmd domain.Command, trailer ledgerTrailer, success bool) {
+	if trailer.RejoinedAs != "" {
+		fmt.Fprintf(w, "[crosshall] You are back as @%s: your old alias was taken.\n", trailer.RejoinedAs)
+	}
 	if _, isJoin := cmd.(domain.Join); !isJoin {
 		if trailer.JoinHint != "" {
 			fmt.Fprintln(w, trailer.JoinHint)

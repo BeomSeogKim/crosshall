@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 // OwnerGate is called after parsing the owner command prefix.
@@ -70,14 +71,19 @@ func childEnvironment(environ []string) []string {
 	child := make([]string, 0, len(environ)+1)
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
-		if name == RouteVariable || isVendorVariable(name) {
+		if name == RouteVariable || name == HostVariable || isVendorVariable(name) {
 			continue
 		}
 		child = append(child, entry)
 	}
 	var random [16]byte
 	rand.Read(random[:])
-	return append(child, RouteVariable+"="+hex.EncodeToString(random[:]))
+	child = append(child, RouteVariable+"="+hex.EncodeToString(random[:]))
+	// The command keeps this process's PID and start when it replaces it.
+	if start, err := proc.StartOf(os.Getpid()); err == nil && start.Identity > 0 {
+		child = append(child, fmt.Sprintf("%s=%d:%d", HostVariable, os.Getpid(), start.Identity))
+	}
+	return child
 }
 
 func isVendorVariable(name string) bool {

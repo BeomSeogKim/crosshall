@@ -28,7 +28,10 @@ type Service struct {
 	LaunchAlive        func(ref string, startedHookAtMS int64) bool
 	LaunchProcess      func(ref string) (string, bool)
 	LaunchPIDNamespace func() string
-	HasPromptLine      func(adapter, revision string) bool
+	// ProcessGone reports proof that a process (PID and start identity)
+	// no longer runs; nil proves nothing.
+	ProcessGone   func(pid, identity int64) bool
+	HasPromptLine func(adapter, revision string) bool
 	// LeafReceipts reads the roster receipts a session key's member
 	// directory holds and has not sent yet (the cursor and the rules one),
 	// if the directory is the registered one (file identity) and carries
@@ -45,11 +48,27 @@ func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, r
 		return waitSnapshot(ctx, tx, caller, cmd)
 	}
 	now := s.now()
+	returnedAs, err := s.returnByHost(ctx, tx, &caller, req, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	switch req.Command.(type) {
+	case Join, HookEnroll, HookEvent, HookRoute: // a join records its host itself; hooks name none
+	default:
+		if caller.Role == core.RoleMember && caller.PrincipalID != nil {
+			if err := s.noteHost(ctx, tx, *caller.PrincipalID, req.Host, now); err != nil {
+				return core.Result{}, err
+			}
+		}
+	}
 	result, err := s.handleCommand(ctx, tx, caller, req, now)
 	if err != nil {
 		return core.Result{}, err
 	}
-	return withMemberOutput(ctx, tx, caller, req, result, now)
+	if result, err = withMemberOutput(ctx, tx, caller, req, result, now); err != nil {
+		return core.Result{}, err
+	}
+	return withReturnedAlias(result, returnedAs)
 }
 
 func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Caller, req Request, now time.Time) (core.Result, error) {
@@ -554,6 +573,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			return core.Result{}, err
 		}
 		out.Changes = changes
+	}
+	if err := s.noteHost(ctx, tx, principal, req.Host, now); err != nil {
+		return core.Result{}, err
 	}
 	r, err := OK(out)
 	if err != nil {

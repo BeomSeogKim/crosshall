@@ -104,6 +104,9 @@ func (s *Service) ownerDepart(ctx context.Context, tx store.Tx, caller core.Call
 	if err := invalidatePublishRouteForLeave(ctx, tx, cmd.BindingID, now); err != nil {
 		return core.Result{}, err
 	}
+	if err := forgetHost(ctx, tx, principal); err != nil {
+		return core.Result{}, err
+	}
 	if err := rosterChange(ctx, tx, channel, principal, "departed"); err != nil {
 		return core.Result{}, err
 	}

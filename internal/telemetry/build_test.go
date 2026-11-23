@@ -143,6 +143,7 @@ var fixtureSQL = []string{
 	`INSERT INTO waiter_lease (principal_id, lease_token, holder, armed_at_ms, renewed_at_ms, expires_at_ms, state, reason)
 		VALUES (3, 'zqxmarker', 'zqxmarker', 0, 0, 0, 'live', 'zqxmarker')`,
 	`INSERT INTO publish_route_proof (binding_id, generation, process_pid, process_start_ms) VALUES (1, 1, 4242, 1)`,
+	`INSERT INTO member_host (principal_id, pid, start_identity, pid_namespace, seen_at_ms) VALUES (3, 4343, 1, 'zqxmarker', 0)`,
 }
 
 func openFixture(t *testing.T) *store.Store {

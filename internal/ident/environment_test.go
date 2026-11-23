@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 func lookupMap(values map[string]string) func(string) (string, bool) {
@@ -94,10 +95,17 @@ func TestVersionEvidence(t *testing.T) {
 }
 
 func TestChildEnvironment(t *testing.T) {
-	original := []string{"CLAUDE_CODE_SESSION_ID=parent", "CODEX_THREAD_ID=parent", "ANTIGRAVITY_CONVERSATION_ID=parent", RouteVariable + "=old", "PATH=/bin"}
+	original := []string{"CLAUDE_CODE_SESSION_ID=parent", "CODEX_THREAD_ID=parent", "ANTIGRAVITY_CONVERSATION_ID=parent", RouteVariable + "=old",
+		HostVariable + "=1:1", "PATH=/bin"}
 	child := childEnvironment(original)
-	if len(child) != 2 || !slices.Contains(child, "PATH=/bin") {
-		t.Fatalf("unexpected child environment %v", child)
+	start, err := proc.StartOf(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command replaces this process, so this process is its host.
+	host := fmt.Sprintf("%s=%d:%d", HostVariable, os.Getpid(), start.Identity)
+	if len(child) != 3 || !slices.Contains(child, "PATH=/bin") || !slices.Contains(child, host) {
+		t.Fatalf("unexpected child environment %v, want %s", child, host)
 	}
 	for _, entry := range child {
 		if value, ok := strings.CutPrefix(entry, RouteVariable+"="); ok && validRoute(value) {

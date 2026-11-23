@@ -15,15 +15,19 @@ const launchSweepInterval = time.Second
 const launchSweepBatch = 32
 
 type launchSweep struct {
-	next    time.Time
-	after   int64
-	pending <-chan launchSweepResult
+	next      time.Time
+	after     int64
+	afterHost int64
+	pending   <-chan launchSweepResult
 }
 
 type launchSweepResult struct {
 	after  int64
 	probes []domain.ClaudeLaunchProbe
-	err    error
+	// afterHost and goneHosts are the same for members a host tracks.
+	afterHost int64
+	goneHosts []domain.HostedMember
+	err       error
 }
 
 func (s *launchSweep) start(ctx context.Context, db *store.Store, now time.Time) {
@@ -33,9 +37,50 @@ func (s *launchSweep) start(ctx context.Context, db *store.Store, now time.Time)
 	s.next = now.Add(launchSweepInterval)
 	result := make(chan launchSweepResult, 1)
 	s.pending = result
-	go func(after int64) {
-		result <- probeClaudeLaunches(ctx, db, after)
-	}(s.after)
+	go func(after, afterHost int64) {
+		r := probeClaudeLaunches(ctx, db, after)
+		if r.err == nil {
+			r.afterHost, r.goneHosts, r.err = probeMemberHosts(ctx, db, afterHost)
+		}
+		result <- r
+	}(s.after, s.afterHost)
+}
+
+// probeMemberHosts returns the members, of one batch after afterHost, whose
+// host is proven gone, and where the next batch starts.
+func probeMemberHosts(ctx context.Context, db *store.Store, afterHost int64) (int64, []domain.HostedMember, error) {
+	var members []domain.HostedMember
+	err := db.Update(ctx, func(tx store.Tx) error {
+		var err error
+		members, err = domain.HostedMembers(ctx, tx, afterHost, launchSweepBatch)
+		return err
+	})
+	if err != nil {
+		return afterHost, nil, err
+	}
+	next := int64(0)
+	if len(members) == launchSweepBatch {
+		next = members[len(members)-1].PrincipalID
+	}
+	pidNamespace := proc.PIDNamespace()
+	var gone []domain.HostedMember
+	for _, m := range members {
+		if err := ctx.Err(); err != nil {
+			return afterHost, nil, err
+		}
+		if hostGone(runtime.GOOS, pidNamespace, m, proc.ProcessGone) {
+			gone = append(gone, m)
+		}
+	}
+	return next, gone, nil
+}
+
+// hostGone reports whether a member's host is proven gone: it was recorded
+// before the last boot, or it is in the dispatcher's own namespace and the
+// process check proves it. An unknown or foreign namespace is never gone.
+func hostGone(platform, dispatcher string, m domain.HostedMember, processGone func(pid, identity int64) bool) bool {
+	sameNamespace, previousBoot := compareLaunchPIDNamespaces(platform, dispatcher, m.PIDNamespace)
+	return previousBoot || sameNamespace && processGone(m.PID, m.StartIdentity)
 }
 
 func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) launchSweepResult {
@@ -97,13 +142,18 @@ func compareLaunchPIDNamespaces(platform, dispatcher, launch string) (sameNamesp
 
 func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepResult) error {
 	r.pending = nil
-	r.after = result.after
-	if result.err != nil || len(result.probes) == 0 {
+	r.after, r.afterHost = result.after, result.afterHost
+	if result.err != nil || len(result.probes) == 0 && len(result.goneHosts) == 0 {
 		return result.err
 	}
 	return s.db.Update(ctx, func(tx store.Tx) error {
-		changed, err := domain.ApplyClaudeLaunchProbes(ctx, tx, result.probes, time.Now())
-		if err != nil || !changed {
+		now := time.Now()
+		changed, err := domain.ApplyClaudeLaunchProbes(ctx, tx, result.probes, now)
+		if err != nil {
+			return err
+		}
+		departed, err := domain.DepartGoneHosts(ctx, tx, result.goneHosts, now)
+		if err != nil || !changed && !departed {
 			return err
 		}
 		return s.applyAdapterStamps(ctx, tx)

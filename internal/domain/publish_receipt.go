@@ -149,8 +149,8 @@ const unknownCauseSQL = `WITH previous AS (
 		AND (finishing_hook_at_ms IS NULL OR finishing_hook_at_ms > ?3)
 ), last_turn AS (
 	SELECT turn_ref, finishing_hook_at_ms FROM (
-		SELECT *, 0 AS late FROM previous UNION ALL SELECT *, 1 FROM running WHERE NOT EXISTS (SELECT 1 FROM previous)
-	) ORDER BY late, opened_hook_at_ms DESC, rowid DESC LIMIT 1
+		SELECT * FROM previous UNION ALL SELECT * FROM running WHERE NOT EXISTS (SELECT 1 FROM previous)
+	) ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
 )
 SELECT COALESCE((SELECT CASE
 	WHEN finishing_hook_at_ms <= ?3 THEN 'activity_since_stop'

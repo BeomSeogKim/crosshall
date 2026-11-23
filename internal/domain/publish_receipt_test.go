@@ -536,6 +536,50 @@ func TestPublishReceiptAfterAnOrphanStopRecordsNoTurnButFacts(t *testing.T) {
 	p.unknownCause(id, "no_turn_but_facts")
 }
 
+// Fable, #259 review: a turn still running from before the launch's start
+// is not the last turn while the launch has a turn since its start, even
+// one that opened earlier and finished after the start.
+func TestPublishReceiptCauseIgnoresATurnRunningFromBeforeTheStart(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "finished", at+5))
+	p.hook(p.reader, prompt(publishTestLaunch, "running", at+8)) // no Stop
+	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+10, 1)
+	p.proveRoute()
+	p.hook(p.reader, stop(publishTestLaunch, "finished", at+12))
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
+	ask := p.turnEndAsk(p.writer, "reader", "running-from-before")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask}))
+	p.unknownCause(id, "activity_since_stop")
+}
+
+// Fable, #259 review: a turn that finished before the launch's latest start
+// is not its last turn; with no turn since, the start's other facts decide.
+func TestPublishReceiptCauseCountsTurnsSinceTheLaunchStart(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "before", at+10))
+	p.hook(p.reader, stop(publishTestLaunch, "before", at+20))
+	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+30, 1)
+	p.proveRoute()
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
+	ask := p.turnEndAsk(p.writer, "reader", "after-compact-start")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask}))
+	p.unknownCause(id, "no_turn_but_facts")
+}
+
 // Fable: a publish notice the session observed counts as already told for
 // the prompt line, like a turn-end announcement; a notice claimed but not
 // observed does not, since the session may never have seen it.

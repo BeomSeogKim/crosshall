@@ -243,6 +243,45 @@ func TestReachOffersRecoveryAfterGenericLossWasAcknowledged(t *testing.T) {
 	p.wantReach("stop after acknowledgment", p.turn(), "")
 }
 
+func TestReachRearmsUnprintedRecoveryWhenPublishingReturns(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		printed bool
+	}{{"unprinted", false}, {"already printed", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			p.wantReach("available route", p.turn(), ReachBringsLine)
+			id := p.observed("absorbed")
+			p.wantReach("generic loss acknowledged", p.turn(), ReachLostLine)
+			p.clearStamps()
+			p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+			p.sweep()
+			if !p.marked() {
+				t.Fatal("the pending hint did not raise the notice stamp")
+			}
+			hint := fmt.Sprintf("%s Your user can turn notices back on with crosshall owner publish resume %d.", ReachLostLine, p.binding.ID)
+			if test.printed {
+				p.wantReach("hint printed before switch off", p.turn(), hint)
+			}
+			wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "off"}, "recovery-off"))
+			got := p.turn()
+			p.wantReach("the off switch hides the hint", got, "")
+			if got.Ack == nil || got.Ack.Kind != "notice" {
+				t.Fatalf("a prompt while off could not consume the notice stamp: %+v", got)
+			}
+			p.clearStamps()
+			wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "default"}, "recovery-default"))
+			p.wantStampMove("publishing restored", !test.printed)
+			if test.printed {
+				hint = ""
+			}
+			p.wantReach("next prompt after restoring publishing", p.turn(), hint)
+			p.wantReach("after print acknowledgment", p.turn(), "")
+		})
+	}
+}
+
 func TestReachRecoveryWithAStoppedBuildNamesAWorkingCommand(t *testing.T) {
 	p := newProbationFixture(t)
 	p.wantReach("available route", p.turn(), ReachBringsLine)

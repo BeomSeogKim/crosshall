@@ -114,6 +114,14 @@ func MarkReachChanges(ctx context.Context, tx store.Tx, now time.Time) (bool, er
 		if err != nil {
 			return false, err
 		}
+		if state.State == "off" {
+			// A prompt can consume the stamp while an off switch hides the hint.
+			// Leave an unprinted hint pending so it raises a fresh stamp on return.
+			if _, err := tx.ExecContext(ctx, `UPDATE publish_suspension SET recovery_hint = ?
+				WHERE binding_id = ? AND recovery_hint = ?`, store.RecoveryHintPending, m.binding, store.RecoveryHintMarked); err != nil {
+				return false, err
+			}
+		}
 		reach := found && ReachesForNewWork(state, now)
 		seen := int64(0)
 		if reach {

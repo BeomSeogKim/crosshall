@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 // gitRepository lays out the least Git itself accepts as a repository.
@@ -121,6 +126,15 @@ func TestInstallingHooksKeepsAnOffSetOnAFreshHall(t *testing.T) {
 // with no channel gets the repository's own channel, and a session in a
 // linked worktree of that repository joins the same one.
 func TestAutomaticJoiningGivesARepositoryItsChannel(t *testing.T) {
+	testRepositoryChannel(t, false)
+}
+
+func TestLinkedWorktreeWelcomeAfterDispatcherStall(t *testing.T) {
+	testRepositoryChannel(t, true)
+}
+
+func testRepositoryChannel(t *testing.T, stall bool) {
+	t.Helper()
 	f := newSetupWorld(t)
 	f.apply("", "setup", "claude", "codex", "--apply")
 	owner := f.owner()
@@ -137,9 +151,87 @@ func TestAutomaticJoiningGivesARepositoryItsChannel(t *testing.T) {
 	if got := startAs(f, "claude", "one", repo); got != "" || joinedChannel(f, "claude", "one") != "shop-api" {
 		t.Fatalf("first start in the repository printed %q and joined %q", got, joinedChannel(f, "claude", "one"))
 	}
-	if got := startAs(f, "codex", "two", worktree); !strings.Contains(got, "Joined #shop-api as @codex1, with @claude1. ") ||
-		strings.Contains(got, "Before voluntarily ending any turn") {
-		t.Fatalf("start in a linked worktree printed %q", got)
+	t.Cleanup(func() {
+		if t.Failed() {
+			f.logDispatcher()
+		}
+	})
+	var dispatcher *os.Process
+	if stall {
+		pids := f.dispatcherPIDs()
+		if len(pids) != 1 {
+			t.Fatalf("want one fixture dispatcher, got %v", pids)
+		}
+		var err error
+		dispatcher, err = os.FindProcess(pids[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		pauseFixtureProcess(t, dispatcher)
+	}
+
+	deadline := time.Now().Add(fixtureEventTimeout)
+	prompt := func(turn int) worktreeCallback {
+		fields := fmt.Sprintf(`"prompt_id":"prompt-%d","turn_id":"turn-%d","prompt":"synthetic"`, turn, turn)
+		return linkedWorktreeCallback(f, worktree, "UserPromptSubmit", fields)
+	}
+	const welcome = "[crosshall] Joined #shop-api as @codex1, with @claude1. `crosshall join shop-api --rules` prints the member rules."
+	offer := linkedWorktreeCallback(f, worktree, "SessionStart", `"source":"startup"`)
+	printed := false
+	turn := 0
+	for {
+		if stall && turn < 2 {
+			if !offer.expired || offer.output != "" || offer.bindings != 0 || offer.receipted {
+				t.Fatal("paused dispatcher should leave the callback silent and enrollment pending")
+			}
+			if turn == 1 {
+				resumeFixtureProcess(t, dispatcher)
+			}
+		}
+		if offer.bindings != 0 && (offer.bindings != 1 || offer.channel != "shop-api") {
+			t.Fatalf("linked worktree joined %q with %d live bindings", offer.channel, offer.bindings)
+		}
+		if offer.output != "" {
+			if got := hostContext(t, offer.output); got != welcome || offer.bindings != 1 {
+				t.Fatalf("linked worktree welcome %q, live bindings %d, channel %q", got, offer.bindings, offer.channel)
+			}
+			if !offer.expired && !offer.receipted {
+				t.Fatal("callback finished within budget after printing the welcome without recording delivery")
+			}
+			printed = true
+		}
+		if printed && offer.receipted {
+			if offer.bindings != 1 {
+				t.Fatal("receipted welcome has no live binding")
+			}
+			break
+		}
+		// A timed-out callback can leave enrollment pending. A callback
+		// that wrote its welcome can also expire before recording receipt.
+		if offer.output == "" && (!offer.expired || offer.receipted) {
+			t.Fatal("callback returned silently without a pending timed-out welcome")
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("linked worktree did not receive and confirm its welcome")
+		}
+		turn++
+		offer = prompt(turn)
+	}
+	for {
+		turn++
+		later := prompt(turn)
+		if later.output != "" {
+			t.Fatalf("a later linked worktree prompt repeated output %q", later.output)
+		}
+		if later.processed && later.receipted {
+			if later.bindings != 1 || later.channel != "shop-api" {
+				t.Fatalf("later prompt has %d live bindings in %q", later.bindings, later.channel)
+			}
+			break
+		}
+		if !later.expired || !time.Now().Before(deadline) {
+			t.Fatal("a later prompt did not confirm once-only delivery")
+		}
 	}
 	// Now it has company, and its next prompt says so, once.
 	if got := nextPrompt(f, "claude", "one", repo); !strings.Contains(got, "Joined #shop-api as @claude1, with @codex1. ") {
@@ -155,6 +247,70 @@ func TestAutomaticJoiningGivesARepositoryItsChannel(t *testing.T) {
 		filepath.Base(root) != "Shop API" {
 		t.Fatalf("channels %d, defaults %d, root %q (%v)", channels, defaults, root, err)
 	}
+}
+
+type worktreeCallback struct {
+	output    string
+	bindings  int
+	channel   string
+	receipted bool
+	expired   bool
+	processed bool
+}
+
+// Capture the records appended by this installed callback and the state of its
+// own session. Consecutive calls can append byte-for-byte identical counters.
+func linkedWorktreeCallback(f *setupWorld, dir, event, fields string) worktreeCallback {
+	t := f.t
+	t.Helper()
+	const adapter, session = "codex", "two"
+	before, err := f.hookCounterRecords(adapter, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both installed adapters give each callback one second, even when the
+	// dispatcher is stalled. Keep this outer guard independent of its reply.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	began := time.Now()
+	out, runErr := sessionHookCommand(ctx, f, adapter, session, dir, event, fields).Output()
+	elapsed := time.Since(began)
+	after, err := f.hookCounterRecords(adapter, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) < len(before) || len(after) > len(before)+1 {
+		t.Fatalf("%s counter records changed from %q to %q", event, before, after)
+	}
+	delta := after[len(before):]
+	result := worktreeCallback{output: string(out)}
+	if len(delta) == 1 {
+		outcome := strings.Fields(delta[0])[2]
+		result.expired = outcome == "deadline"
+		result.processed = outcome == "rpc" || outcome == "clean"
+	} else {
+		// A callback suspended through its whole budget can drop its counter.
+		result.expired = elapsed >= hook.Budget
+	}
+	var stage string
+	var seen bool
+	err = f.db().QueryRow(`SELECT COALESCE(MAX(CASE WHEN l.principal_id IS NULL THEN 'provisional' ELSE l.state END), 'absent'),
+		COUNT(b.id), COALESCE(MAX(c.name), ''), COALESCE(MAX(b.start_line_seen), 0)
+		FROM leaf l LEFT JOIN binding b ON b.principal_id = l.principal_id AND b.state = 'live'
+		LEFT JOIN channel c ON c.id = b.channel_id WHERE l.vendor = ? AND l.key = ?`, adapter, session).
+		Scan(&stage, &result.bindings, &result.channel, &seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := (ident.Identity{Vendor: adapter, Key: session}).Digest()
+	receipt := hasWelcomeReceipt(t, filepath.Join(f.rendezvous(), "m", digest[:16]))
+	result.receipted = receipt || seen
+	t.Logf("%s/%s %s: %d output bytes, elapsed %s, new counters %q, leaf %q, live bindings %d, channel %q, local receipt %t, store acknowledged %t",
+		adapter, session, event, len(out), elapsed, delta, stage, result.bindings, result.channel, receipt, seen)
+	if runErr != nil {
+		t.Fatalf("installed %s %s of session %s: %v", adapter, event, session, runErr)
+	}
+	return result
 }
 
 // The owner's explicit default for a worktree wins over the repository's
@@ -528,13 +684,18 @@ func nextPrompt(f *setupWorld, adapter, session, dir string) string {
 
 func fireHook(f *setupWorld, adapter, session, dir, event, fields string) string {
 	f.t.Helper()
-	cmd := f.installedHookCommand(f.t.Context(), dir, adapter, event, fields)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, session, dir, fields))
-	out, err := cmd.Output()
+	out, err := sessionHookCommand(f.t.Context(), f, adapter, session, dir, event, fields).Output()
 	if err != nil {
 		f.t.Fatalf("%s %s of session %s: %v", adapter, event, session, err)
 	}
 	return string(out)
+}
+
+func sessionHookCommand(ctx context.Context, f *setupWorld, adapter, session, dir, event, fields string) *exec.Cmd {
+	f.t.Helper()
+	cmd := f.installedHookCommand(ctx, dir, adapter, event, fields)
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q,"cwd":%q,%s}`, event, session, dir, fields))
+	return cmd
 }
 
 // startAs starts a session of the adapter in dir and returns its welcome,

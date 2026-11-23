@@ -72,8 +72,9 @@ func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID,
 	if sessionRef == "" {
 		return nil
 	}
+	route := a.SessionRoute(sessionRef, cmd.Profile.Mode)
 	return upsertPublishRoute(ctx, tx, bindingID, bindingEpoch, principal, adapter, sessionRef, cmd.LaunchRef, cmd.LaunchVerified,
-		cmd.Epoch, "", "", a.SessionThread(sessionRef), cmd.HookAtMS, now)
+		cmd.Epoch, route.Mode, "", route.ThreadID, cmd.HookAtMS, now)
 }
 
 func upsertPublishRoute(ctx context.Context, tx store.Tx, bindingID, bindingEpoch, principal int64, adapter, sessionRef, launchRef string,

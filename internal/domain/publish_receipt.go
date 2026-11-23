@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/notice"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -17,20 +18,33 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	if ids == nil {
 		return false, rejectPublishReceipt(ctx, tx, b.id, principal, "malformed", now)
 	}
-	if !cmd.LaunchVerified || cmd.Fact != FactPromptSubmitted || cmd.HookAtMS > ms(now)+futureSlackMS {
+	if cmd.Fact != FactPromptSubmitted || cmd.HookAtMS > ms(now)+futureSlackMS {
 		return false, nil
+	}
+	sessionKey = resolveSessionKey(ctx, tx, sessionKey, principal, cmd.Profile.Adapter)
+	// A bound launch is matched by its launch. A session-scoped one, which
+	// no process names, only by the thread its session is: the address its
+	// notice was queued to (#236).
+	var thread string
+	if !cmd.LaunchVerified {
+		if a, ok := publish.Lookup(cmd.Profile.Adapter); ok && cmd.LaunchRef == SessionLaunch {
+			thread = a.SessionRoute(sessionKey, "").ThreadID
+		}
+		if thread == "" {
+			return false, nil
+		}
 	}
 	var id, fenceAt int64
 	var current bool
-	sessionKey = resolveSessionKey(ctx, tx, sessionKey, principal, cmd.Profile.Adapter)
 	err := tx.QueryRowContext(ctx, `SELECT a.id, a.submitting_at_ms,
 		(r.state = 'active' AND r.generation = a.generation AND r.binding_epoch = a.binding_epoch
 			AND r.adapter = a.adapter AND r.session_ref = a.session_ref AND r.launch_ref = a.launch_ref
 			AND r.policy_epoch = a.policy_epoch AND a.launch_ref = ?)
 		FROM publish_attempt a JOIN publish_route r ON r.binding_id = a.binding_id
 		WHERE a.binding_id = ? AND a.principal_id = ? AND a.adapter = ? AND a.session_ref = ?
+			AND (? = '' OR r.thread_id = ?)
 			AND a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state IN ('submitting', 'submitted', 'uncertain')`,
-		cmd.LaunchRef, b.id, principal, cmd.Profile.Adapter, sessionKey).Scan(&id, &fenceAt, &current)
+		cmd.LaunchRef, b.id, principal, cmd.Profile.Adapter, sessionKey, thread, thread).Scan(&id, &fenceAt, &current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

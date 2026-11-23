@@ -71,6 +71,13 @@ type Probe struct {
 	StartedHookAtMS int64
 }
 
+// Modes of a launch whose vendor runs a managed server, as its hooks report
+// them from the process that runs them.
+const (
+	ModeDaemon    = "daemon"     // the session is a client of the managed server
+	ModeInProcess = "in_process" // the session runs its server itself
+)
+
 // Route is what a vendor's hooks registered for one member session.
 type Route struct {
 	Mode       string
@@ -89,9 +96,14 @@ type Adapter interface {
 	ModeEligible(mode string) bool
 	// AcceptsSocket reports whether a reported socket path may be stored.
 	AcceptsSocket(path string) bool
-	// SessionThread is the thread address an enrolled session's reference
-	// names, empty when the adapter registers its address another way.
-	SessionThread(sessionRef string) string
+	// SessionRoute is the route an enrolled session registers: the thread
+	// its reference names and the launch's mode, or nothing when the adapter
+	// registers its route another way.
+	SessionRoute(sessionRef, launchMode string) Route
+	// Reach says why the adapter's sender cannot reach the session that
+	// registered a route at all, whatever its address: the owner's reason,
+	// empty when it can.
+	Reach(Route) string
 	// Notice renders the notice for message IDs; ok is false while the
 	// adapter has no notice format.
 	Notice(ids []int64) (line string, ok bool)
@@ -185,6 +197,9 @@ func (r Registry) Sends(name string) bool {
 func (r Registry) Address(adapter string, route Route) (address, reason string) {
 	if !r.Sends(adapter) {
 		return "", "no sender for " + adapter
+	}
+	if why := r[adapter].Reach(route); why != "" {
+		return "", why
 	}
 	return r[adapter].Resolve(route)
 }

@@ -14,7 +14,9 @@ func TestExitTrackingModes(t *testing.T) {
 		{name: "enabled end hook", adapter: "codex", launch: "session", host: true, enabled: true, want: ExitByHooks},
 		{name: "verified process launch", adapter: "claude", launch: "pid-100-stable", want: ExitByProcess},
 		{name: "host without a launch", host: true, want: ExitByProcess},
-		{name: "Antigravity startup hook", adapter: "agy", launch: "session", host: true, enabled: true, want: ExitUntracked},
+		{name: "Antigravity startup hook", adapter: "agy", launch: "session", host: true, enabled: true, want: ExitByProcess},
+		{name: "Antigravity startup hook without a host", adapter: "agy", launch: "session", enabled: true, want: ExitUntracked},
+		{name: "end hook switched off", adapter: "codex", launch: "session", host: true, want: ExitByProcess},
 		{name: "no launch or host", want: ExitUntracked},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

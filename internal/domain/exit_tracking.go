@@ -53,7 +53,11 @@ func (s *Service) exitTracking(ctx context.Context, tx store.Tx, principal int64
 		if launchProcess && s.LaunchPIDNamespace != nil && namespace == s.LaunchPIDNamespace() {
 			return ExitByProcess, host, nil
 		}
-	} else if s.judgeableHost(&host) {
+	}
+	// A launch that neither a hook nor the process sweep will end, such as
+	// Antigravity's startup launch, leaves the member to its host, as the
+	// sweep does.
+	if s.judgeableHost(&host) {
 		return ExitByProcess, host, nil
 	}
 	return ExitUntracked, host, nil

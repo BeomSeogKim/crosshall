@@ -4,7 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
-- **Hand-joined sessions can leave when their host exits:** crosshall records the process for eligible Claude Code, Antigravity CLI and `crosshall run` members. A resumed session can pick up its existing requests from a live host. `owner who --all` and `whoami --full` report how exits are tracked. The database moves to schema 20 (#226).
+- **Hand-joined sessions can leave when their host exits:** crosshall records the process for eligible Claude Code, Antigravity CLI and `crosshall run` members, including an Antigravity member that joined through its startup hook. A resumed session can pick up its existing requests from a live host. `owner who --all` and `whoami --full` report how exits are tracked. The database moves to schema 20 (#226).
 
 - **No end-of-turn check where the hall reaches you:** a session the hall can start a turn in is told so at a prompt, and then ends a turn that showed no pending line without a `crosshall read`. When the hall stops reaching it, the next prompt says so and the check applies again. The database moves to schema 19 (#121).
 

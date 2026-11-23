@@ -47,9 +47,7 @@ The hook checks membership immediately before writing the line. A write already 
 
 Antigravity's adapter handles the CLI's `SessionStart` with a single workspace and a CLI conversation path. It supplies startup context and can join the workspace's configured channel. The CLI's `/hooks` command shows the installed event. Antigravity members still use the normal inbox and wait commands for incoming work. Antigravity has no Crosshall publish, idle wake or turn-end check.
 
-With the Antigravity hook installed, a session that runs the startup hook has no exit tracking. After the CLI exits, the owner departs the member by hand. See [when a member goes quiet](operations.md#when-a-member-goes-quiet).
-
-A hand-joined member whose session skipped the startup hook can be tracked through its `agy` ancestor. `/clear` keeps the same CLI process, so an older conversation stays joined until the CLI exits.
+An Antigravity member is tracked through its `agy` ancestor process from its first crosshall command, whether it joined by hand or through the startup hook: when the CLI exits, the member departs. The launch the startup hook records does not change this, because no Antigravity hook ends it. `/clear` keeps the same CLI process, so an older conversation stays joined until the CLI exits. A process with another name, such as the IDE's language server, is not tracked; the owner departs such a member by hand. See [when a member goes quiet](operations.md#when-a-member-goes-quiet).
 
 Codex CLI 0.171.0 can run commands through a shared app server. The server can stay alive after a client exits and serve a later client. Exit tracking for Codex uses the adapter's end hook when available.
 

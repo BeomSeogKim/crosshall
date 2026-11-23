@@ -32,6 +32,7 @@ type hookEvent struct {
 	Notice     string `json:"notification_type"`
 	StopActive bool   `json:"stop_hook_active"`
 	Process    string `json:"-"` // CLAUDE_PID in the hook's environment
+	record     string // immutable payload file written by the probe
 }
 
 // terminal is one interactive Claude Code session on a pseudo-terminal.
@@ -133,6 +134,7 @@ func (c *conformance) events() []hookEvent {
 			continue
 		}
 		e.Process = process
+		e.record = record
 		out = append(out, e)
 	}
 	return out

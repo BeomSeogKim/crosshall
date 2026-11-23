@@ -134,18 +134,41 @@ func TestClaudeCodeInteractiveTypedAheadDuringTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	term.await("Stop after the tool result", func() bool { return c.count(named("Stop")) > 0 })
-	stopped := time.Now()
 	blocks := c.secondRequestBlocks()
 	if len(blocks) != 2 || blocks[0].Type != "tool_result" || blocks[0].ToolID != "toolu_fixture01" || blocks[0].IsError ||
 		blocks[1].Type != "text" || !strings.Contains(blocks[1].Text, prompt) {
 		t.Fatalf("expected the successful Bash result followed by the typed prompt, got %+v", blocks)
 	}
-	term.awaitWithin(90*time.Second, "idle_prompt after Stop", func() bool {
-		return c.count(func(e hookEvent) bool { return e.Name == "Notification" && e.Notice == "idle_prompt" }) > 0
+	// Each probe record was last written when its callback was captured.
+	// The test goroutine may first observe either record much later.
+	session := c.events()[0].Session
+	const latestIdle = 90 * time.Second
+	var elapsed time.Duration
+	term.awaitWithin(latestIdle, "idle_prompt after Stop", func() bool {
+		var stop hookEvent
+		for _, event := range inSession(c.events(), session) {
+			if event.Name == "Stop" {
+				stop = event
+			}
+			if stop.record != "" && event.Name == "Notification" && event.Notice == "idle_prompt" {
+				elapsed = event.captureTime(t).Sub(stop.captureTime(t))
+				return true
+			}
+		}
+		return false
 	})
-	if elapsed := time.Since(stopped); elapsed < 55*time.Second {
-		t.Fatalf("idle_prompt arrived %s after Stop, want about a minute", elapsed)
+	if elapsed < 55*time.Second || elapsed > latestIdle {
+		t.Fatalf("idle_prompt arrived %s after Stop, want 55s to %s", elapsed, latestIdle)
 	}
 	term.exit()
 	c.checkTypedAheadShape("UserPromptSubmit A, UserPromptSubmit A, Stop A")
+}
+
+func (event hookEvent) captureTime(t *testing.T) time.Time {
+	t.Helper()
+	info, err := os.Stat(event.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.ModTime()
 }

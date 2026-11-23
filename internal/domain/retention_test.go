@@ -54,29 +54,40 @@ func (f *fixture) turns(principal int64, launch string) []turnRow {
 	return out
 }
 
-// An op exactly at the cut is kept and replays; one millisecond older it
-// is deleted, and the same key then runs as a new command (#256).
+// The cut is the start of the pass's UTC day less the window: an op at the
+// cut is kept and replays, one a millisecond older is deleted, and a second
+// pass the same day deletes nothing more. Past the cut, the same key runs
+// as a new command (#256).
 func TestRetentionDeletesOpsOlderThanTheWindowAndTheirKeysRunAnew(t *testing.T) {
 	f, writer := adapterChannel(t)
 	reader := f.newSession("claude")
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, ""))
-	t0 := f.now
-	note := Note{To: []string{"reader"}, Body: "once"}
+	y, m, d := f.now.UTC().Date()
+	cut := time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
+	f.now = cut.Add(-time.Millisecond)
+	wantOK(t, f.run(writer, Note{To: []string{"reader"}, Body: "older"}, "older-key"))
+	f.now = cut
+	note := Note{To: []string{"reader"}, Body: "at the cut"}
 	first := decode[NoteResult](t, f.run(writer, note, "note-key")).ID
 
-	f.now = t0.Add(window)
-	f.prune()
-	if n := f.count(`SELECT COUNT(*) FROM op WHERE op_key = 'note-key'`); n != 1 {
-		t.Fatalf("an op at the cut was deleted (%d left)", n)
+	for _, now := range []time.Time{cut.Add(window), cut.Add(window + 24*time.Hour - time.Millisecond)} {
+		f.now = now
+		f.prune()
+		if n := f.count(`SELECT COUNT(*) FROM op WHERE op_key = 'older-key'`); n != 0 {
+			t.Fatalf("an op older than the cut was kept (%d)", n)
+		}
+		if n := f.count(`SELECT COUNT(*) FROM op WHERE op_key = 'note-key'`); n != 1 {
+			t.Fatalf("an op at the cut was deleted on the pass at %v", now)
+		}
 	}
 	if again := decode[NoteResult](t, f.run(writer, note, "note-key")).ID; again != first {
 		t.Fatalf("a key inside the window ran again: %d, want the replay of %d", again, first)
 	}
 
-	f.now = t0.Add(window + time.Millisecond)
+	f.now = cut.Add(window + 24*time.Hour)
 	f.prune()
 	if n := f.count(`SELECT COUNT(*) FROM op WHERE op_key = 'note-key'`); n != 0 {
-		t.Fatalf("an op older than the window was kept (%d)", n)
+		t.Fatalf("an op older than the next day's cut was kept (%d)", n)
 	}
 	if anew := decode[NoteResult](t, f.run(writer, note, "note-key")).ID; anew == first {
 		t.Fatal("a key past the window still replayed")
@@ -98,7 +109,7 @@ func TestRetentionKeepsTheLatestHookOpAndTheDepartureToken(t *testing.T) {
 	latest := f.count(`SELECT MAX(rowid) FROM op WHERE principal_id = ? AND scope = 'hook'`, principal)
 	token := f.departToken(binding, principal)
 
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	f.prune()
 	if n := f.count(`SELECT COUNT(*) FROM op WHERE principal_id = ? AND scope = 'hook'`, principal); n != 1 {
 		t.Fatalf("%d hook ops left, want only the latest", n)
@@ -135,7 +146,7 @@ func TestRetentionKeepsTheNewestCommandAndTheNewestRow(t *testing.T) {
 	if n := f.count(`SELECT COUNT(*) FROM observation WHERE principal_id = ? AND kind = 'command'`, principal); n < 2 {
 		t.Fatalf("fixture recorded %d commands", n)
 	}
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	before := f.who(reader).Data
 	token := f.departToken(binding, principal)
 	f.prune()
@@ -174,7 +185,7 @@ func TestRetentionKeepsEveryFactOfARunningLaunch(t *testing.T) {
 		t.Fatalf("fixture has no open placeholder: %+v", before)
 	}
 
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	f.prune()
 	if n := f.count(`SELECT COUNT(*) FROM observation WHERE principal_id = ? AND launch_ref = 'pid-1'`, principal); n != facts {
 		t.Fatalf("%d of %d facts of a running launch left", n, facts)
@@ -215,7 +226,7 @@ func TestRetentionClearsAnEndedLaunchAndItsResumeStartsOver(t *testing.T) {
 		t.Fatal("fixture: the session-scoped launch recorded an end")
 	}
 
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	f.prune()
 	if n := f.count(`SELECT COUNT(*) FROM observation WHERE principal_id = ? AND kind IN ('prompt_submitted', 'turn_finishing')`,
 		principal); n != 0 {
@@ -262,7 +273,7 @@ func TestRetentionClearsADepartedPrincipal(t *testing.T) {
 		t.Fatal("fixture has no hook facts")
 	}
 
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	f.prune()
 	if kept := f.count(`SELECT COUNT(*) FROM observation WHERE principal_id = ?`, principal); kept != keep {
 		t.Fatalf("%d observations left, want the newest row and the newest command (%d)", kept, keep)
@@ -303,7 +314,7 @@ func TestRetentionKeepsTheLastFactOfAnIdleMember(t *testing.T) {
 		t.Fatal("fixture has no last fact")
 	}
 
-	f.now = f.now.Add(window + time.Hour)
+	f.now = f.now.Add(window + 24*time.Hour)
 	f.prune()
 	if after := latest(); after == nil || after.Fact != before.Fact || after.AtMS != before.AtMS || after.Source != before.Source {
 		t.Fatalf("last fact %+v after the pass, want %+v", after, before)

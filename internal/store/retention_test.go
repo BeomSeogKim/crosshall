@@ -16,7 +16,7 @@ func TestRetentionDeletesInBoundedChunks(t *testing.T) {
 	defer db.Close()
 	seedAdapterLedger(t, db)
 	now := time.UnixMilli(1_900_000_000_000)
-	old := now.Add(-RetentionWindow - time.Hour).UnixMilli()
+	old := now.Add(-RetentionWindow - 25*time.Hour).UnixMilli()
 	if err := db.Update(ctx, func(tx Tx) error {
 		for i := range 7 {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO op (principal_id, op_key, scope, verb, payload_hash, result, at_ms)
@@ -38,7 +38,7 @@ func TestRetentionDeletesInBoundedChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var chunks []int64
-	got, err := pruneSteps(ctx, retentionCut(now), keep, 3, func(apply func(Tx) error) error {
+	got, err := pruneSteps(ctx, now, keep, 3, func(apply func(Tx) error) error {
 		return db.Update(ctx, func(tx Tx) error {
 			before := countOps(t, tx)
 			if err := apply(tx); err != nil {

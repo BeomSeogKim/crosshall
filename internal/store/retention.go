@@ -6,8 +6,8 @@ import (
 )
 
 // RetentionWindow is how long op and observation rows are kept beyond what
-// their readers need (#256): an operation key replays for this long, and
-// a hook fact of an ended launch is kept this long.
+// their readers need (#256): an operation key replays for at least this
+// long, and a hook fact of an ended launch is kept this long.
 const RetentionWindow = 7 * 24 * time.Hour
 
 // retentionChunk bounds the rows one write transaction deletes, so hooks
@@ -62,19 +62,23 @@ func runningLaunch(alias string) string {
 		AND EXISTS (SELECT 1 FROM binding b WHERE b.principal_id = ` + alias + `.principal_id AND b.state = 'live')`
 }
 
+// retentionSteps run in order on each daily pass. Each deletes rows older
+// than its window, counted back from the start of the pass's UTC day, so a
+// second pass on the same day deletes nothing.
 var retentionSteps = []struct {
 	name   string
+	window time.Duration
 	delete string // ?1 cut, ?2 kept op rowids, ?3 kept observation seqs, ?4 limit
 }{
-	{"ops", `DELETE FROM op WHERE rowid IN (SELECT rowid FROM op
+	{"ops", RetentionWindow, `DELETE FROM op WHERE rowid IN (SELECT rowid FROM op
 		WHERE at_ms < ?1 AND rowid NOT IN (SELECT value FROM json_each(?2)) LIMIT ?4)`},
-	{"observations", `DELETE FROM observation WHERE seq IN (SELECT o.seq FROM observation o
+	{"observations", RetentionWindow, `DELETE FROM observation WHERE seq IN (SELECT o.seq FROM observation o
 		WHERE o.observed_at_ms < ?1 AND o.seq NOT IN (SELECT value FROM json_each(?3))
 			AND (o.kind = 'command' OR NOT (` + runningLaunch("o") + `)) LIMIT ?4)`},
 	// The turns of a launch whose facts are all gone, unless a turn-end
 	// notice references them: the ledger can no longer rebuild them, and a
 	// resumed launch rebuilds its turns from its new facts.
-	{"turns", `DELETE FROM turn WHERE rowid IN (SELECT t.rowid FROM turn t
+	{"turns", RetentionWindow, `DELETE FROM turn WHERE rowid IN (SELECT t.rowid FROM turn t
 		WHERE t.opened_hook_at_ms < ?1 AND NOT (` + runningLaunch("t") + `)
 			AND NOT EXISTS (SELECT 1 FROM observation o WHERE o.principal_id = t.principal_id
 				AND o.launch_ref = t.launch_ref AND o.kind IN ('prompt_submitted', 'turn_finishing'))
@@ -83,10 +87,15 @@ var retentionSteps = []struct {
 		LIMIT ?4)`},
 }
 
-func retentionCut(now time.Time) int64 { return now.Add(-RetentionWindow).UnixMilli() }
+// retentionCut is the oldest time a step keeps on the pass at now.
+func retentionCut(now time.Time, window time.Duration) int64 {
+	y, m, d := now.UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Add(-window).UnixMilli()
+}
 
-func pruneChunk(ctx context.Context, tx Tx, step int, cut int64, keep retentionKeep, limit int) (int64, error) {
-	res, err := tx.ExecContext(ctx, retentionSteps[step].delete, cut, keep.ops, keep.observations, limit)
+func pruneChunk(ctx context.Context, tx Tx, step int, now time.Time, keep retentionKeep, limit int) (int64, error) {
+	res, err := tx.ExecContext(ctx, retentionSteps[step].delete, retentionCut(now, retentionSteps[step].window),
+		keep.ops, keep.observations, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -104,9 +113,9 @@ func (r *RetentionResult) add(step int, n int64) {
 	}
 }
 
-// PruneRetention deletes the op, observation and turn rows past
-// RetentionWindow that no reader needs, in write transactions of at most
-// retentionChunk rows each.
+// PruneRetention runs the daily retention steps: it deletes the op,
+// observation and turn rows past RetentionWindow that no reader needs, in
+// write transactions of at most retentionChunk rows each.
 func (s *Store) PruneRetention(ctx context.Context, now time.Time) (RetentionResult, error) {
 	var keep retentionKeep
 	if err := s.View(ctx, func(tx Tx) (err error) {
@@ -115,7 +124,7 @@ func (s *Store) PruneRetention(ctx context.Context, now time.Time) (RetentionRes
 	}); err != nil {
 		return RetentionResult{}, err
 	}
-	return pruneSteps(ctx, retentionCut(now), keep, retentionChunk, func(apply func(Tx) error) error {
+	return pruneSteps(ctx, now, keep, retentionChunk, func(apply func(Tx) error) error {
 		return s.Update(ctx, apply)
 	})
 }
@@ -126,16 +135,16 @@ func PruneRetentionTx(ctx context.Context, tx Tx, now time.Time) (RetentionResul
 	if err != nil {
 		return RetentionResult{}, err
 	}
-	return pruneSteps(ctx, retentionCut(now), keep, retentionChunk, func(apply func(Tx) error) error { return apply(tx) })
+	return pruneSteps(ctx, now, keep, retentionChunk, func(apply func(Tx) error) error { return apply(tx) })
 }
 
-func pruneSteps(ctx context.Context, cut int64, keep retentionKeep, limit int, update func(func(Tx) error) error) (RetentionResult, error) {
+func pruneSteps(ctx context.Context, now time.Time, keep retentionKeep, limit int, update func(func(Tx) error) error) (RetentionResult, error) {
 	var out RetentionResult
 	for step := range retentionSteps {
 		for {
 			var n int64
 			if err := update(func(tx Tx) (err error) {
-				n, err = pruneChunk(ctx, tx, step, cut, keep, limit)
+				n, err = pruneChunk(ctx, tx, step, now, keep, limit)
 				return err
 			}); err != nil {
 				return out, err

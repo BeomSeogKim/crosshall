@@ -277,6 +277,10 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		return deref(refusal), err
 	}
 
+	decision, err := guardForAsk(ctx, tx, m, cmd, len(to), now)
+	if err != nil {
+		return core.Result{}, err
+	}
 	exchange := a.exchange.id
 	if a.isNew {
 		if exchange, err = open(ctx, tx, m, a.parentRequestID, now); err != nil {
@@ -288,10 +292,14 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if cmd.All {
 		audienceMode = "all"
 	}
+	threadRoot := decision.Path
+	if cmd.New {
+		threadRoot = 0
+	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms)
-		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?)`,
-		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now))
+		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms, thread_root_id)
+		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0))`,
+		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -310,6 +318,11 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO obligation (message_id, principal_id) VALUES (?, ?)`, id, t.principal); err != nil {
+			return core.Result{}, err
+		}
+	}
+	if decision.Reason != "" {
+		if err := audit(ctx, tx, guardWouldRefuse, fmt.Sprintf("message:%d", id), m.principal, decision, now); err != nil {
 			return core.Result{}, err
 		}
 	}

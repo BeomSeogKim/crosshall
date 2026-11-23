@@ -182,8 +182,9 @@ func (s *Service) note(ctx context.Context, tx store.Tx, caller core.Caller, req
 		mode = "all"
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, audience_mode, body, created_at_ms)
-		 VALUES (?, ?, 'note', ?, ?, ?)`, m.channel, m.principal, mode, cmd.Body, ms(now))
+		`INSERT INTO message (channel_id, sender_id, kind, audience_mode, body, created_at_ms, level_ms)
+		 VALUES (?1, ?2, 'note', ?3, ?4, ?5, (SELECT any_level_ms FROM principal WHERE id = ?2))`,
+		m.channel, m.principal, mode, cmd.Body, ms(now))
 	if err != nil {
 		return core.Result{}, err
 	}

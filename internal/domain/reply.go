@@ -184,11 +184,6 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 			out.LateByMS = late
 		}
 	}
-	if exchange.Valid {
-		if err := setContext(ctx, tx, m.binding, exchange.Int64); err != nil {
-			return core.Result{}, err
-		}
-	}
 	if err := observe(ctx, tx, m.principal, now); err != nil {
 		return core.Result{}, err
 	}

@@ -41,7 +41,6 @@ func TestSendSaysWhatWillTellEachRecipient(t *testing.T) {
 	agy.must("join", "setup-check", "--as", "agy")
 	sender := f.member()
 	sender.must("join", "setup-check", "--as", "sender")
-	f.owner().must("owner", "budget", "grant", "setup-check/@sender", "--roots", "1")
 
 	type wake struct {
 		Alias   string `json:"alias"`

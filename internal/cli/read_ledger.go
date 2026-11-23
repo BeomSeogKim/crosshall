@@ -114,40 +114,80 @@ func ledgerOwnerCall(args []string) (Call, error) {
 			call.Command = cmd
 			return call, nil
 		}
-		if len(args) >= 4 && args[1] == "grant" {
-			ch, target, ok := ledgerTarget(args[2])
-			if ok && len(args) == 4 && strings.HasPrefix(target, "x") {
-				id, idErr := parsePositive(target[1:])
-				units, unitsErr := parsePositive(args[3])
-				if idErr == nil && unitsErr == nil {
-					call.Command = domain.BudgetGrant{Channel: ch, ExchangeID: id, Units: units}
-					return call, nil
-				}
+		if len(args) >= 2 && args[1] == "grant" {
+			cmd, err := parseBudgetGrant(args[2:])
+			if err != nil {
+				return Call{}, err
 			}
-			if alias, member := strings.CutPrefix(target, "@"); ok && member && domain.ValidName(alias) {
-				value, last, found, err := flagValue(args, 3, "--roots")
-				roots, countErr := parsePositive(value)
-				if found && err == nil && countErr == nil && last == len(args)-1 {
-					call.Command = domain.BudgetGrant{Channel: ch, Alias: alias, Roots: roots}
-					return call, nil
-				}
-			}
-			if ch := strings.TrimPrefix(args[2], "#"); !strings.Contains(ch, "/") && domain.ValidName(ch) {
-				value, last, found, err := flagValue(args, 3, "--pool")
-				count, countErr := parsePositive(value)
-				if found && err == nil && countErr == nil && last == len(args)-1 {
-					call.Command = domain.BudgetGrant{Channel: ch, Pool: count}
-					return call, nil
-				}
-			}
+			call.Command = cmd
+			return call, nil
 		}
-		return Call{}, fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> <units> | <channel>/@<alias> --roots <count> | <channel> --pool <count>")
+		return Call{}, fmt.Errorf("usage: crosshall owner budget <grant|policy>")
 	}
 	return Call{}, fmt.Errorf("unknown owner command %q", args[0])
 }
 
+func parseBudgetGrant(args []string) (domain.BudgetGrant, error) {
+	usage := fmt.Errorf("usage: crosshall owner budget grant <channel>/x<id> or <channel>/@<alias> [--rounds <n>]")
+	if len(args) == 0 {
+		return domain.BudgetGrant{}, usage
+	}
+	ch, path, ok := ledgerTarget(args[0])
+	if !ok {
+		ch = strings.TrimPrefix(args[0], "#")
+		value, last, found, err := flagValue(args, 1, "--pool")
+		count, countErr := parsePositive(value)
+		if domain.ValidName(ch) && found && err == nil && countErr == nil && last == len(args)-1 {
+			return domain.BudgetGrant{Channel: ch, Pool: count}, nil
+		}
+		return domain.BudgetGrant{}, usage
+	}
+	cmd := domain.BudgetGrant{Channel: ch}
+	if id, thread := strings.CutPrefix(path, "x"); thread {
+		var err error
+		if cmd.ExchangeID, err = parsePositive(id); err != nil {
+			return domain.BudgetGrant{}, usage
+		}
+	} else if alias, member := strings.CutPrefix(path, "@"); member && domain.ValidName(alias) {
+		cmd.Alias = alias
+	} else {
+		return domain.BudgetGrant{}, usage
+	}
+	if len(args) == 1 {
+		return cmd, nil
+	}
+	if value, last, found, err := flagValue(args, 1, "--rounds"); found {
+		rounds, countErr := strconv.ParseInt(value, 10, 64)
+		if err == nil && countErr == nil && rounds >= 0 && last == len(args)-1 {
+			cmd.Rounds = &rounds
+			return cmd, nil
+		}
+		return domain.BudgetGrant{}, usage
+	}
+	if cmd.ExchangeID > 0 && len(args) == 2 {
+		rounds, err := strconv.ParseInt(args[1], 10, 64)
+		if err == nil && rounds >= 0 {
+			if rounds == 0 {
+				cmd.Rounds = &rounds
+			} else {
+				cmd.Units = rounds
+			}
+			return cmd, nil
+		}
+	}
+	if cmd.Alias != "" {
+		value, last, found, err := flagValue(args, 1, "--roots")
+		roots, countErr := parsePositive(value)
+		if found && err == nil && countErr == nil && last == len(args)-1 {
+			cmd.Roots = roots
+			return cmd, nil
+		}
+	}
+	return domain.BudgetGrant{}, usage
+}
+
 func parseBudgetPolicy(args []string) (domain.BudgetPolicy, error) {
-	usage := fmt.Errorf("usage: crosshall owner budget policy <channel>[/@<alias>] [--refill <N/h|0>] [--ceiling <N>]")
+	usage := fmt.Errorf("usage: crosshall owner budget policy <channel>[/@<alias>]")
 	var cmd domain.BudgetPolicy
 	if len(args) == 0 {
 		return cmd, usage
@@ -256,9 +296,6 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		}
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s\n", ch.Name)
-			if ch.JoinPool != nil {
-				fmt.Fprintf(w, "  join pool: %d root token(s) for first joins\n", *ch.JoinPool)
-			}
 			for _, binding := range ch.Bindings {
 				fmt.Fprintf(w, "  @%s (%s, binding %d)\n", binding.Alias, binding.State, binding.ID)
 			}
@@ -266,28 +303,30 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 				printLedgerRequest(w, req, true, r.GeneratedAtMS)
 			}
 			for _, ex := range ch.Exchanges {
-				fmt.Fprintf(w, "  x%d: %d remaining (%d spent of %d)", ex.ID, ex.Remaining, ex.Spent, ex.Granted)
+				fmt.Fprintf(w, "  x%d: round %d of %d", ex.ID, ex.Round, ex.RoundLimit)
 				if ex.ParentRequestID != 0 {
 					fmt.Fprintf(w, ", handoff for #%d", ex.ParentRequestID)
 				}
 				fmt.Fprintln(w)
 			}
-			for _, event := range ch.BudgetExhaustions {
-				fmt.Fprintf(w, "  x%d exhausted at %s (episode %d)\n", event.ExchangeID, ledgerTime(event.AtMS), event.Episode)
+			for _, stop := range ch.GuardStops {
+				if stop.ExchangeID != 0 {
+					fmt.Fprintf(w, "  x%d stopped at %s (round limit %d)\n", stop.ExchangeID, ledgerTime(stop.AtMS), stop.RoundLimit)
+				} else {
+					member := "@" + stop.Alias
+					if stop.BindingState == "departed" {
+						member = fmt.Sprintf("%s (departed, binding %d)", member, stop.BindingID)
+					}
+					fmt.Fprintf(w, "  %s stopped at %s (new threads, round limit %d)\n", member, ledgerTime(stop.AtMS), stop.RoundLimit)
+				}
 			}
 		}
-		if s := r.Self; s != nil {
-			parts := make([]string, 0, len(s.Exchanges))
-			for _, ex := range s.Exchanges {
-				parts = append(parts, fmt.Sprintf("x%d (%d remaining)", ex.ID, ex.Remaining))
+		if self := r.Self; self != nil {
+			for _, ex := range self.Exchanges {
+				fmt.Fprintf(w, "Round %d of %d on x%d.\n", ex.Round, ex.RoundLimit, ex.ID)
 			}
-			taking := "no exchange"
-			if len(parts) > 0 {
-				taking = strings.Join(parts, ", ")
-			}
-			fmt.Fprintf(w, "You (@%s): %d root token(s) to open a new exchange; taking part in %s.\n", s.Alias, s.RootTokens, taking)
-			if s.NextRootTokenAtMS > 0 {
-				fmt.Fprintf(w, "Next root token at %s.\n", ledgerTime(s.NextRootTokenAtMS))
+			if self.Round > 0 {
+				fmt.Fprintf(w, "Round %d of %d for new threads.\n", self.Round, self.RoundLimit)
 			}
 		}
 	case domain.Cancel:
@@ -305,16 +344,12 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		if r.ExchangeID != 0 {
-			unit := "unit"
-			if r.Units != 1 {
-				unit = "units"
-			}
-			fmt.Fprintf(w, "#%s/x%d: added %d %s, %d remaining.\n", r.Channel, r.ExchangeID, r.Units, unit, r.Remaining)
-		} else if r.Pool != 0 {
-			fmt.Fprintf(w, "#%s: added %d root token(s) to the join pool, %d in the pool.\n", r.Channel, r.Pool, r.JoinPool)
+		if r.Rounds == nil {
+			fmt.Fprintln(w, "Previously recorded grant.")
+		} else if r.ExchangeID != 0 {
+			fmt.Fprintf(w, "#%s/x%d: reset. It may run %d rounds ahead.\n", r.Channel, r.ExchangeID, *r.Rounds)
 		} else {
-			fmt.Fprintf(w, "#%s/@%s: added %d root token(s), %d available.\n", r.Channel, r.Alias, r.Roots, r.RootTokens)
+			fmt.Fprintf(w, "#%s/@%s: reset. Its new threads may run %d rounds ahead.\n", r.Channel, r.Alias, *r.Rounds)
 		}
 	case domain.BudgetPolicy:
 		var r domain.BudgetPolicyResult
@@ -325,7 +360,12 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		if r.Alias != "" {
 			target += "/@" + r.Alias
 		}
-		fmt.Fprintf(w, "%s: root token refill %d/h, automatic ceiling %d.\n", target, r.Refill, r.Ceiling)
+		if r.RoundLimit == nil {
+			fmt.Fprintln(w, "Previously recorded policy.")
+		} else {
+			fmt.Fprintf(w, "%s: %d rounds ahead, one round returns every %d minutes. At most %d requests and %d answers owed per %d minutes.\n",
+				target, *r.RoundLimit, r.RoundMinutes, r.RequestLimit, r.AnswerLimit, r.WindowMinutes)
+		}
 	default:
 		return fmt.Errorf("no plain form for %T", cmd)
 	}

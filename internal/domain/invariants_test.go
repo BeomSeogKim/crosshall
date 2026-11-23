@@ -24,10 +24,6 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 	f, a, b, c := channel3(t)
 	sessions := []session{a, b, c}
 	aliases := []string{"form", "tax", "a11y"}
-	for _, alias := range aliases {
-		wantOK(t, f.owner(BudgetGrant{Channel: "checkout", Alias: alias, Roots: 2}, "roots-"+alias))
-	}
-
 	var asks []AskResult
 	deadlines := map[int64]int64{}
 	previous := map[invariantRecipientKey]invariantRecipient{}
@@ -70,7 +66,7 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 			command = Cancel{Channel: "checkout", ID: target.ID}
 			owner = true
 		case 10:
-			command = BudgetGrant{Channel: "checkout", ExchangeID: target.Exchange, Units: int64(1 + random.Intn(3))}
+			command = BudgetGrant{Channel: "checkout", ExchangeID: target.Exchange, Rounds: rounds(int64(random.Intn(4)))}
 			owner = true
 		case 11:
 			command = Note{To: []string{aliases[other]}, Body: "FYI"}
@@ -88,8 +84,8 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 		if result.Status != core.ExitOK && result.Status != core.ExitRefused {
 			t.Fatalf("unexpected exit %d (%s): %s", result.Status, result.Code, result.Data)
 		}
-		if result.Code == core.CodeBudgetExhausted {
-			covered["unfunded exchange"] = true
+		if result.Code == core.CodeRoundLimit {
+			covered["round limit"] = true
 		}
 		if ask, ok := command.(Ask); ok && result.Status == core.ExitOK {
 			sent := decode[AskResult](t, result)
@@ -107,7 +103,7 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 			}
 		}
 
-		assertInvariantCredit(t, f)
+		assertInvariantThread(t, f)
 		current := invariantRecipients(t, f)
 		for key, before := range previous {
 			after := current[key]
@@ -123,30 +119,23 @@ func TestRandomizedDomainInvariants(t *testing.T) {
 		previous = current
 	}
 
-	for _, state := range []string{"open", "replied", "declined", "cancelled", "overdue", "repeat read", "unfunded exchange"} {
+	for _, state := range []string{"open", "replied", "declined", "cancelled", "overdue", "repeat read", "round limit"} {
 		if !covered[state] {
 			t.Errorf("sequence did not exercise %s", state)
 		}
 	}
 }
 
-func assertInvariantCredit(t *testing.T, f *fixture) {
+func assertInvariantThread(t *testing.T, f *fixture) {
 	t.Helper()
-	// A request costs one unit whatever its audience, so an exchange's spend
-	// equals its number of requests.
-	var exchange, spent, granted, asks int64
-	err := f.db.QueryRow(`SELECT id, spent, granted, asks FROM (
-		SELECT e.id, e.spent, e.granted, (
-			SELECT COUNT(*) FROM message m WHERE m.exchange_id = e.id AND m.kind = 'ask'
-		) AS asks FROM exchange e
-	) WHERE spent > granted OR spent <> asks ORDER BY id LIMIT 1`).Scan(&exchange, &spent, &granted, &asks)
-	if err == sql.ErrNoRows {
-		return
+	if n := f.count(`SELECT COUNT(*) FROM message ask JOIN message root ON root.id = COALESCE(ask.thread_root_id, ask.id)
+        JOIN exchange e ON e.id = ask.exchange_id WHERE ask.kind = 'ask' AND
+        (ask.exchange_id <> root.exchange_id OR e.root_message_id <> root.id OR root.thread_root_id IS NOT NULL)`); n != 0 {
+		t.Fatalf("%d requests do not belong to their original thread", n)
 	}
-	if err != nil {
-		t.Fatal(err)
+	if n := f.count(`SELECT COUNT(*) FROM budget_event`); n != 0 {
+		t.Fatalf("new requests wrote %d legacy budget events", n)
 	}
-	t.Fatalf("exchange %d spent %d of %d for %d requests", exchange, spent, granted, asks)
 }
 
 type invariantRecipientKey struct {

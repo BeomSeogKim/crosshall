@@ -15,9 +15,8 @@ import (
 )
 
 func TestAskPickupEvidenceAndThreadAnswer(t *testing.T) {
-	w, owner, members := setup(t)
+	_, owner, members := setup(t)
 	sender, recipient := members[0], members[1]
-	grantRoots(t, w, "form", 1)
 	const question, answer = "Which column has the invoice date?", "Use the posting date."
 	id := num(t, sender.must("ask", "@tax", question), "id")
 	arg := strconv.FormatInt(id, 10)
@@ -69,7 +68,6 @@ func TestAskPickupEvidenceAndThreadAnswer(t *testing.T) {
 func TestFanoutAtomicityAndWaitingUntilRepliesAreRead(t *testing.T) {
 	w, _, members := setup(t)
 	sender, tax, lint := members[0], members[1], members[2]
-	grantRoots(t, w, "form", 1)
 	ask := sender.must("ask", "@tax", "@lint", "Check the invoice totals")
 	id := num(t, ask, "id")
 	arg := strconv.FormatInt(id, 10)
@@ -94,7 +92,7 @@ func TestFanoutAtomicityAndWaitingUntilRepliesAreRead(t *testing.T) {
 	}
 	before := committed()
 	if before.messages != 1 || before.recipients != 2 || before.obligations != 2 || before.receipts != 2 ||
-		before.exchanges != 1 || before.spent != 1 || num(t, ask, "debit") != 1 {
+		before.exchanges != 1 || before.spent != 0 || before.budgetEvents != 0 || num(t, ask, "round") != 1 {
 		t.Fatalf("two-target ask: %+v, response %s", before, ask.stdout)
 	}
 	bad := sender.run("ask", "@tax", "@lint", "@missing", "Another check")

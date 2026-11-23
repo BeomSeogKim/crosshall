@@ -1,7 +1,7 @@
 package domain
 
 import (
-	"math"
+	"strings"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -14,7 +14,6 @@ type ownerAskFixture struct {
 
 func seedOwnerAsk(t *testing.T, f *fixture) ownerAskFixture {
 	t.Helper()
-	// Grant-only channels: every root token here is the owner's grant.
 	wantOK(t, f.owner(CreateChannel{Name: "checkout", Pool: pool(0)}, "channel"))
 	wantOK(t, f.owner(CreateChannel{Name: "inventory", Pool: pool(0)}, "other-channel"))
 	thread := ownerAskFixture{
@@ -148,74 +147,124 @@ func TestOwnerCancelSettlesOnlyOpenRecipientsAndReplays(t *testing.T) {
 	}
 }
 
-func TestOwnerBudgetGrantsExactTargetsAndReplays(t *testing.T) {
+func TestGuardGrantsScopeTargetsAndReplay(t *testing.T) {
 	f := newFixture(t)
 	thread := seedOwnerAsk(t, f)
 	owner := core.Caller{Role: core.RoleOwner}
 	other := f.newSession("route")
 	wantOK(t, f.join(other, Join{Channel: "inventory", Alias: "review"}, "join"))
-	units := BudgetGrant{Channel: "checkout", ExchangeID: thread.exchange, Units: 5}
-	roots := BudgetGrant{Channel: "checkout", Alias: "review", Roots: 2}
-	wantCode(t, f.ownerMutation(f.caller(thread.sender), units, "no-role"), core.ExitRefused, core.CodeOwnerOnly)
-	wantCode(t, f.ownerMutation(owner, BudgetGrant{Channel: "inventory", ExchangeID: thread.exchange, Units: 1}, "wrong-exchange"), core.ExitRefused, core.CodeNotFound)
+	legacy := BudgetGrant{Channel: "checkout", ExchangeID: thread.exchange, Units: 5}
+	member := BudgetGrant{Channel: "checkout", Alias: "review", Rounds: rounds(0)}
+	wantCode(t, f.ownerMutation(f.caller(thread.sender), legacy, "no-role"), core.ExitRefused, core.CodeOwnerOnly)
+	wantCode(t, f.owner(BudgetGrant{Channel: "inventory", ExchangeID: thread.exchange}, "wrong-exchange"), core.ExitRefused, core.CodeNotFound)
 
-	exchange := decode[BudgetGrantResult](t, f.ownerMutation(owner, units, "units"))
-	if exchange != (BudgetGrantResult{Channel: "checkout", ExchangeID: thread.exchange, Units: 5, Remaining: 5}) {
-		t.Fatalf("exchange grant %+v", exchange)
+	r := f.owner(legacy, "thread")
+	wantOK(t, r)
+	exchange := decode[BudgetGrantResult](t, r)
+	if exchange.Rounds == nil || *exchange.Rounds != 5 || exchange.ExchangeID != thread.exchange {
+		t.Fatalf("legacy positional grant: %+v", exchange)
 	}
-	if replayed := decode[BudgetGrantResult](t, f.ownerMutation(owner, units, "units")); replayed != exchange {
-		t.Fatalf("replayed exchange grant %+v", replayed)
+	again := f.owner(legacy, "thread")
+	wantOK(t, again)
+	if string(r.Data) != string(again.Data) {
+		t.Fatalf("replayed exchange grant: %s", again.Data)
 	}
-	wantCode(t, f.ownerMutation(owner, BudgetGrant{Channel: "checkout", ExchangeID: thread.exchange, Units: 6}, "units"), core.ExitRefused, core.CodeKeyConflict)
-	if n := f.count(`SELECT count(*) FROM exchange WHERE granted = 7 AND spent = 2 AND episode_open = 0 AND episode_count = 1`); n != 1 {
-		t.Fatalf("budget was not granted or episode reopened: %d", n)
+	wantCode(t, f.owner(BudgetGrant{Channel: "checkout", ExchangeID: thread.exchange, Units: 6}, "thread"), core.ExitRefused, core.CodeKeyConflict)
+	if n := f.count(`SELECT count(*) FROM exchange WHERE granted = 2 AND spent = 2 AND episode_open = 0 AND episode_count = 1`); n != 1 {
+		t.Fatalf("thread reset changed legacy accounting or missed the stop: %d", n)
 	}
-	person := decode[BudgetGrantResult](t, f.ownerMutation(owner, roots, "roots"))
-	if person != (BudgetGrantResult{Channel: "checkout", Alias: "review", Roots: 2, RootTokens: 2}) {
-		t.Fatalf("root grant %+v", person)
+	r = f.owner(member, "member")
+	wantOK(t, r)
+	got := decode[BudgetGrantResult](t, r)
+	if got.Rounds == nil || *got.Rounds != 0 || got.Alias != "review" {
+		t.Fatalf("member grant: %+v", got)
 	}
-	if n := f.count("SELECT root_tokens FROM principal WHERE id = ?", *f.caller(other).PrincipalID); n != 0 {
-		t.Fatalf("other channel's alias received roots: %d", n)
+	if n := f.count("SELECT round_limit FROM principal WHERE id = ?", *f.caller(other).PrincipalID); n != 8 {
+		t.Fatalf("other channel's alias was reset to %d", n)
 	}
-	if _, err := f.db.Exec(`UPDATE binding SET state = 'departed' WHERE principal_id = ?`, *f.caller(thread.first).PrincipalID); err != nil {
-		t.Fatal(err)
+	cmd := Ask{To: []string{"sender"}, New: true, Body: "isolated"}
+	wantCode(t, f.ask(thread.first, cmd, "ask"), core.ExitRefused, core.CodeRoundLimit)
+	f.grantMember("review", 8)
+	if sent := f.guardAsk(thread.first, cmd, "ask"); sent.Round != 1 {
+		t.Fatalf("member grant did not clear the stop: %+v", sent)
 	}
-	if retry := decode[BudgetGrantResult](t, f.ownerMutation(owner, roots, "roots")); retry != person {
-		t.Fatalf("replay did not precede live-target check: %+v", retry)
+	executeGuardFixture(t, f, `UPDATE binding SET state = 'departed' WHERE principal_id = ?`, *f.caller(thread.first).PrincipalID)
+	if retry := f.owner(member, "member"); string(retry.Data) != string(r.Data) {
+		t.Fatalf("retry did not precede the live-target check: %s", retry.Data)
 	}
-	wantCode(t, f.ownerMutation(owner, roots, "root-after-leave"), core.ExitRefused, core.CodeNotFound)
-	if n := f.count(`SELECT count(*) FROM budget_event WHERE reason IN ('grant', 'roots')`); n != 2 {
-		t.Fatalf("budget events: %d", n)
+	wantCode(t, f.ownerMutation(owner, member, "after-leave"), core.ExitRefused, core.CodeNotFound)
+	if n := f.count(`SELECT count(*) FROM budget_event`); n != 0 {
+		t.Fatalf("grants wrote legacy events: %d", n)
 	}
 }
 
-func TestOwnerBudgetRejectsOverflowWithoutWriting(t *testing.T) {
-	f := newFixture(t)
-	thread := seedOwnerAsk(t, f)
-	owner := core.Caller{Role: core.RoleOwner}
-	reviewer := *f.caller(thread.first).PrincipalID
-	if _, err := f.db.Exec("UPDATE principal SET root_tokens = 1 WHERE id = ?", reviewer); err != nil {
-		t.Fatal(err)
+func TestGuardGrantResetsBothRootsOfOneOldExchange(t *testing.T) {
+	f, a, b, _ := channel3(t)
+	first := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "first"}, "")
+	second := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "second"}, "")
+	executeGuardFixture(t, f, `UPDATE message SET exchange_id = ?, level_ms = ? WHERE id = ?`,
+		first.Exchange, ms(f.now)+8*roundDurationMS, second.ID)
+	wantOK(t, f.run(b, Read{IDs: []int64{first.ID, second.ID}}, ""))
+	f.grantThread(first.Exchange, 0)
+	if f.anyGuardLevel(b) != f.messageLevel(second.ID) || f.count(`SELECT COUNT(*) FROM thread_position`) != 0 {
+		t.Fatal("thread grant touched the member position or missed a root")
 	}
-	for i, cmd := range []BudgetGrant{
-		{Channel: "checkout", ExchangeID: thread.exchange, Units: math.MaxInt64},
-		{Channel: "checkout", Alias: "review", Roots: math.MaxInt64},
-		{Channel: "checkout", ExchangeID: thread.exchange, Alias: "review", Units: 1, Roots: 1},
-	} {
-		if r := f.ownerMutation(owner, cmd, "overflow"); r.Status != core.ExitUsage {
-			t.Fatalf("invalid grant %d was not rejected: %+v", i, r)
+	for _, id := range []int64{first.ID, second.ID} {
+		r := f.ask(b, Ask{Re: id, To: []string{"form"}, Body: "follow"}, "")
+		wantCode(t, r, core.ExitRefused, core.CodeRoundLimit)
+	}
+	if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardStopped) != 1 {
+		t.Fatal("two roots of the same historical exchange recorded two stops")
+	}
+	f.grantThread(first.Exchange, 8)
+	for _, id := range []int64{first.ID, second.ID} {
+		got := f.guardAsk(b, Ask{Re: id, To: []string{"form"}, Body: "follow"}, "")
+		if got.Round != 1 || got.Exchange != first.Exchange {
+			t.Fatalf("root %d was not reset: %+v", id, got)
 		}
 	}
-	if n := f.count("SELECT count(*) FROM budget_event"); n != 0 {
-		t.Fatalf("invalid grant wrote budget events: %d", n)
+}
+
+func TestRetiredBudgetFormsAndOldGrantReplay(t *testing.T) {
+	f, _, _, _ := channel3(t)
+	legacy := BudgetGrant{Channel: "checkout", Alias: "tax", Roots: 3}
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := f.count("SELECT count(*) FROM op WHERE op_key = 'overflow'"); n != 0 {
-		t.Fatalf("refusal reserved an operation key: %d", n)
+	defer tx.Rollback()
+	actor, err := ownerPrincipal(t.Context(), tx, f.now)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := f.count("SELECT root_tokens FROM principal WHERE id = ?", reviewer); n != 1 {
-		t.Fatalf("root tokens changed: %d", n)
+	saved, err := OK(map[string]any{"channel": "checkout", "alias": "tax", "roots": 3, "root_tokens": 4})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := f.count("SELECT granted FROM exchange WHERE id = ?", thread.exchange); n != 2 {
-		t.Fatalf("exchange grant changed: %d", n)
+	if err := record(t.Context(), tx, actor, "old", "channel:checkout", legacy, saved, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.owner(legacy, "old"); got.Status != core.ExitOK || string(got.Data) != string(saved.Data) {
+		t.Fatalf("old grant replay: %+v", got)
+	}
+	before := f.state()
+	for _, cmd := range []Command{legacy, BudgetGrant{Channel: "checkout", Pool: 3},
+		BudgetPolicy{Channel: "checkout", Refill: rounds(0)}, BudgetPolicy{Channel: "checkout", Ceiling: rounds(3)}} {
+		got := f.owner(cmd, "retired")
+		wantCode(t, got, core.ExitRefused, core.CodeRetired)
+		if hint := decode[Refusal](t, got).Hint; !strings.Contains(hint, "--rounds") {
+			t.Fatalf("retired help: %s", hint)
+		}
+	}
+	if f.state() != before {
+		t.Fatal("retired forms changed the store")
+	}
+	created := f.owner(CreateChannel{Name: "new", Pool: pool(9)}, "create")
+	wantOK(t, created)
+	if !decode[ChannelResult](t, created).PoolIgnored || f.count(`SELECT join_pool FROM channel WHERE name = 'new'`) != 0 {
+		t.Fatal("channel creation applied the retired pool option")
 	}
 }

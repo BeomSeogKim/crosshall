@@ -21,7 +21,7 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
 	owner.must("owner", "start")
-	owner.must("owner", "channel", "create", "checkout", "--pool", "0")
+	owner.must("owner", "channel", "create", "checkout")
 	peer := w.member()
 	peer.mustFixtureWrite("join", "checkout", "--as", "form")
 	repo, err := filepath.EvalSymlinks(t.TempDir())
@@ -125,7 +125,7 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
 	owner.must("owner", "start")
-	owner.must("owner", "channel", "create", "checkout", "--pool", "0")
+	owner.must("owner", "channel", "create", "checkout")
 	w.member().mustFixtureWrite("join", "checkout", "--as", "form")
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

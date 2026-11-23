@@ -78,7 +78,9 @@ func TestReadBatchAuthorizationAndSnapshotRetry(t *testing.T) {
 	sibling := ledgerMember(t, f, "checkout", "observer")
 	x := ledgerMember(t, f, "outside", "outside-a")
 	y := ledgerMember(t, f, "outside", "outside-b")
-	id, exchange := seedAsk(t, f, "checkout", "private to the channel", a, b)
+	id, _ := seedAsk(t, f, "checkout", "private to the channel", a, b)
+	level := ms(f.now) + roundDurationMS
+	ledgerExec(t, f, "UPDATE message SET level_ms = ? WHERE id = ?", level, id)
 	foreign, _ := seedAsk(t, f, "outside", "other channel", x, y)
 
 	wantCode(t, actLedger(f, b, Read{IDs: []int64{id, foreign}}, "bad"),
@@ -113,9 +115,9 @@ func TestReadBatchAuthorizationAndSnapshotRetry(t *testing.T) {
 	if strings.Contains(saved, "private to the channel") || !strings.Contains(saved, "items") {
 		t.Fatalf("operation log copied the body: %s", saved)
 	}
-	gotExchange := f.count("SELECT context_exchange_id FROM binding WHERE principal_id=?", ledgerCaller(t, f, b))
-	if int64(gotExchange) != exchange {
-		t.Fatalf("pickup context = %d, want %d", gotExchange, exchange)
+	position := f.count("SELECT level_ms FROM thread_position WHERE thread_root_id = ? AND principal_id = ?", id, ledgerCaller(t, f, b))
+	if int64(position) != level || f.count("SELECT COUNT(*) FROM binding WHERE context_exchange_id IS NOT NULL") != 0 {
+		t.Fatalf("pickup position = %d, want %d with no legacy context", position, level)
 	}
 }
 
@@ -166,7 +168,7 @@ func TestMoreTimeIsWaitingStatusAndHistory(t *testing.T) {
 	asker := f.newSession("claude")
 	started := f.now.UnixMilli()
 	f.hook(asker, start("pid-1", "startup", started))
-	f.roots(asker, 1)
+
 	request := decode[AskResult](t, f.ask(asker, Ask{To: []string{"writer"}, Body: "review"}, ""))
 	initial := decode[WaitSnapshot](t, f.run(asker, Wait{}, ""))
 	f.now = f.now.Add(time.Second)
@@ -233,7 +235,7 @@ func TestMoreTimeIsWaitingStatusAndHistory(t *testing.T) {
 
 func TestOpenRequestIsOnTimeAtItsDeadline(t *testing.T) {
 	f, sender, recipient, _ := channel3(t)
-	f.roots(sender, 1)
+
 	request := decode[AskResult](t, f.ask(sender, Ask{To: []string{"tax"}, Body: "time check"}, ""))
 	f.now = time.UnixMilli(request.DueAtMS)
 
@@ -251,7 +253,7 @@ func TestOpenRequestIsOnTimeAtItsDeadline(t *testing.T) {
 	}
 }
 
-func TestOwnerStatusProjectsDurableLedgerAndEpisodeOrder(t *testing.T) {
+func TestOwnerStatusProjectsDurableLedgerAndActiveStop(t *testing.T) {
 	f := newFixture(t)
 	wantOK(t, f.owner(CreateChannel{Name: "checkout"}, ""))
 	wantOK(t, f.owner(CreateChannel{Name: "other"}, ""))
@@ -261,11 +263,8 @@ func TestOwnerStatusProjectsDurableLedgerAndEpisodeOrder(t *testing.T) {
 	due := ms(f.now.Add(time.Minute))
 	wantOK(t, actLedger(f, b, Read{IDs: []int64{ask}}, "pickup"))
 	f.now = f.now.Add(2 * time.Minute)
-	ledgerExec(t, f, "UPDATE exchange SET spent=granted,episode_open=1,episode_count=2 WHERE id=?", exchange)
-	ledgerExec(t, f, `INSERT INTO event(kind,subject,actor_id,detail,at_ms) VALUES
-		('budget_exhausted','exchange:' || ?,?, '{"needed":1}',?),
-		('budget_exhausted','exchange:' || ?,?, '{"needed":2}',?)`,
-		exchange, ledgerCaller(t, f, a), ms(f.now)-1, exchange, ledgerCaller(t, f, a), ms(f.now))
+	ledgerExec(t, f, "UPDATE message SET level_ms = ? WHERE id = ?", ms(f.now)+8*roundDurationMS, ask)
+	wantCode(t, f.ask(a, Ask{Re: ask, To: []string{"reader"}, Body: "stopped"}, ""), core.ExitRefused, core.CodeRoundLimit)
 	first := decode[StatusResult](t, f.owner(OwnerStatus{}, ""))
 	if len(first.Channels) != 2 || len(first.Channels[0].Bindings) != 2 || len(first.Channels[0].Requests) != 1 {
 		t.Fatalf("missing ledger rows: %+v", first)
@@ -274,8 +273,8 @@ func TestOwnerStatusProjectsDurableLedgerAndEpisodeOrder(t *testing.T) {
 	r := channel.Requests[0].Recipients[0]
 	if r.State != "open" || r.BindingID == nil || r.OverdueSinceMS == nil || *r.OverdueSinceMS != due ||
 		len(r.Receipts) != 2 || r.Receipts[0].AtMS > r.Receipts[1].AtMS ||
-		channel.Exchanges[0].Spent != 8 || channel.Exchanges[0].Remaining != 0 ||
-		len(channel.BudgetExhaustions) != 2 || channel.BudgetExhaustions[1].Episode != 2 {
+		len(channel.Exchanges) != 1 || channel.Exchanges[0].ID != exchange || channel.Exchanges[0].Round != 8 ||
+		len(channel.GuardStops) != 1 || channel.GuardStops[0].RoundLimit != 8 {
 		t.Fatalf("incorrect ledger projection: %+v", channel)
 	}
 	f.now = f.now.Add(time.Second)
@@ -285,7 +284,7 @@ func TestOwnerStatusProjectsDurableLedgerAndEpisodeOrder(t *testing.T) {
 	}
 	member := decode[StatusResult](t, actLedger(f, a, Status{}, ""))
 	if len(member.Channels) != 1 || len(member.Channels[0].Bindings) != 0 ||
-		len(member.Channels[0].BudgetExhaustions) != 0 || member.Channels[0].Requests[0].Recipients[0].BindingID != nil {
+		len(member.Channels[0].GuardStops) != 0 || member.Channels[0].Requests[0].Recipients[0].BindingID != nil {
 		t.Fatalf("member status exposed owner data: %+v", member)
 	}
 	wantCode(t, actLedger(f, a, OwnerStatus{}, ""), core.ExitRefused, core.CodeOwnerOnly)

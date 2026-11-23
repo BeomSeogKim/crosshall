@@ -48,7 +48,6 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 
 	writer := f.member()
 	writer.must("join", "setup-check", "--as", "writer")
-	owner.must("owner", "budget", "grant", "setup-check/@writer", "--roots", "1")
 	id := num(t, writer.must("ask", "@claude1", "Check this after the upgrade"), "id")
 	got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"after-upgrade"`)
 	if !strings.Contains(got, "[crosshall] pending: "+strconv.FormatInt(id, 10)) {
@@ -68,7 +67,6 @@ func TestOwnerViewsIncludeDepartedBindingsAndDoNotPickUpMessages(t *testing.T) {
 	stock.must("note", "@reader", "inventory only")
 	oldTax.must("leave")
 	replacement.must("join", "checkout", "--as", "tax")
-	grantRoots(t, w, "form", 1)
 	ask := num(t, form.must("ask", "@tax", "checkout only"), "id")
 
 	roster := owner.must("owner", "who", "--all")

@@ -2,6 +2,22 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.2.0-rc.3
+
+Upgrading from v0.2.0-rc.2 to v0.2.0-rc.3 moves the database from schema 21 to schema 22. A hall that ran rc.2 can already have recorded message levels and round positions. Migration 022 clears those positions and fences existing requests and members at the highest message ID. The round guard starts each path at zero, with the existing messages, deadlines, obligations and operation keys available.
+
+1. Stop your agents' crosshall commands, including any background `crosshall wait`.
+2. Run `crosshall owner stop`.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the v0.2.0-rc.3 dispatcher also saves a `store-v21-*.sqlite3` backup beside the database.
+4. Install v0.2.0-rc.3 using the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
+5. Run `crosshall owner start`.
+
+To roll back, stop the v0.2.0-rc.3 dispatcher, restore the schema 21 database from your pre-upgrade copy and restart the v0.2.0-rc.2 binary. Restoring the copy discards messages and other changes made since the upgrade.
+
+The loop guard replaces exchange units, root tokens and the join pool. Each independent request opens its own exchange. Rule 6 tells members to reply or note what they have when a request stops. Owner status shows active stops, and `owner budget grant <channel>/x<id> --rounds <n>` and `owner budget grant <channel>/@<alias> --rounds <n>` reset the corresponding scope. A positional number on the thread form sets rounds. `grant --roots`, `grant --pool`, `policy --refill` and `policy --ceiling` exit 3 with `retired`. `owner channel create --pool` still creates the channel, prints a warning and returns `pool_ignored: true` in JSON.
+
+In `ask --json`, `round` replaces `debit` and `remaining`. Exchange fields stay. In member and owner status JSON, `round`, `round_limit` and `guard_stops` replace `granted`, `spent`, `remaining`, `root_tokens`, `next_root_token_at_ms`, `join_pool` and `budget_exhaustions`. Replaying a previously stored mutation key still returns its committed result.
+
 ## To v0.2.0-rc.2
 
 From v0.2.0-rc.1, this release migrates the database from schema 18 to schema 21. Migration 19 records the reachability advice a member received. Migration 20 adds `member_host` to record the process hosting a member. Migration 21 adds the records of budget rounds; this release only records them and changes no behavior. The first v0.2.0-rc.2 dispatcher start copies the schema 18 database to `store-v18-*.sqlite3` beside `store.sqlite3`; v0.2.0-rc.1 does not start on schema 21, so keep that copy if you may go back.

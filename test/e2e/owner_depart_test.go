@@ -140,8 +140,7 @@ func TestOwnerDepartRejectsInterveningCommandWithSameClock(t *testing.T) {
 func TestOwnerDepartKeepsOpenWorkForTheReturningKey(t *testing.T) {
 	w, owner, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 1)
-	grantRoots(t, w, "tax", 2)
+	owner.must("owner", "budget", "grant", "checkout/@tax", "--rounds", "3")
 	id := num(t, form.must("ask", "@tax", "review the totals before release", "--due", "10m"), "id")
 	message := strconv.FormatInt(id, 10)
 	tax.must("read", message)
@@ -190,8 +189,8 @@ func TestOwnerDepartKeepsOpenWorkForTheReturningKey(t *testing.T) {
 		t.Fatalf("a new key inherited the original binding or requests: %+v", replacement)
 	}
 	mail := fresh.must("inbox")
-	if len(ids(mail.obj["unread"])) != 0 || len(ids(mail.obj["owed"])) != 0 || departureCredits(t, fresh) != 0 {
-		t.Fatalf("a fresh key inherited the old key's mail or credits: %s", mail.stdout)
+	if len(ids(mail.obj["unread"])) != 0 || len(ids(mail.obj["owed"])) != 0 || departureRoundLimit(t, fresh) != 8 {
+		t.Fatalf("a fresh key inherited the old key's mail or round limit: %s", mail.stdout)
 	}
 
 	// Bare same-key return keeps the original binding, and cannot take the
@@ -202,11 +201,10 @@ func TestOwnerDepartKeepsOpenWorkForTheReturningKey(t *testing.T) {
 		t.Fatalf("bare join did not allocate a generated route alias: %s", returned.stdout)
 	}
 	returnedRow := liveDepartureBinding(t, owner, alias)
-	// The original two tokens and one refill from the 30-minute clock jump follow the binding.
-	credits := departureCredits(t, tax)
+	limit := departureRoundLimit(t, tax)
 	if returnedRow.ID != selected.ID || !slices.Equal(returnedRow.OpenRequestIDs, []int64{id}) ||
-		!slices.Contains(ids(tax.must("inbox").obj["owed"]), id) || credits != 3 {
-		t.Fatalf("bare join lost the original binding, open request, or credits: %+v with %d roots", returnedRow, credits)
+		!slices.Contains(ids(tax.must("inbox").obj["owed"]), id) || limit != 3 {
+		t.Fatalf("bare join lost the original binding, open request, or round limit: %+v with limit %d", returnedRow, limit)
 	}
 
 	// The retry of the recorded departure cannot act on the returning session.
@@ -231,12 +229,12 @@ func pendingDepartureRecipient(t *testing.T, asker *participant, id int64) map[s
 	return row
 }
 
-func departureCredits(t *testing.T, p *participant) int64 {
+func departureRoundLimit(t *testing.T, p *participant) int64 {
 	t.Helper()
 	status := p.must("status")
 	self, ok := status.obj["self"].(map[string]any)
 	if !ok {
-		t.Fatalf("status omitted the member credit summary: %s", status.stdout)
+		t.Fatalf("status omitted the member round summary: %s", status.stdout)
 	}
-	return num(t, outcome{obj: self}, "root_tokens")
+	return num(t, outcome{obj: self}, "round_limit")
 }

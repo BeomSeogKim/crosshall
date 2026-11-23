@@ -78,11 +78,15 @@ var memberHostSchema string
 //go:embed migrations/021_loop_guard.sql
 var loopGuardSchema string
 
+//go:embed migrations/022_loop_guard_cutover.sql
+var loopGuardCutoverSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
+	loopGuardCutoverSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

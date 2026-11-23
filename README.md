@@ -2,15 +2,15 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.2.0-rc.2, a release candidate. New since v0.1.0: agent hooks that join your sessions by themselves, a channel for each repository, and notices that start a turn in an idle Claude Code session; since v0.2.0-rc.1, usage statistics you are asked about once and members that leave when their agent process exits. For macOS and Linux; the checks run on both for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.3, a release candidate. Since v0.1.0, agent hooks join your sessions by themselves, each repository can have a channel, and notices can start a turn in an idle Claude Code session. Since v0.2.0-rc.1, crosshall asks once about usage statistics and eligible members leave when their agent process exits. Since v0.2.0-rc.2, the loop guard replaces root tokens, exchange units and the join pool, lets members send ordinary requests without owner grants, and gives a clear refusal when a request exceeds a round or burst limit. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
 Two agents, each in its own session in the same repository: you tell one to ask the other, the request is stored, the other answers, and nobody types into either session. The [quick start](#quick-start) gets you there with your own agents. [By hand, in three terminals](#by-hand-in-three-terminals) shows the same exchange with every command and its output, and a test runs it as written for every change. For the same exchange between two real agents, Codex CLI as the reviewer and Claude Code as the writer, see the [recording](docs/recordings/rc13.md); it was made with v0.1.0-rc.13, before `crosshall read` became the one step that picks up work.
 
-How to read the output of that exchange: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `exchange x1 (new): 7 left.` means the ask opened exchange x1, a budget of 8 requests, by spending one of the writer's root tokens; one of the 8 units is now spent ([budget](#budget-deadlines-and-the-owner)). `stored -> not woken: no notice route; it sees this at its next crosshall command` means the message is stored and nothing will start a turn for the recipient: it sees the message the next time it runs crosshall, or at once if it is inside a `crosshall wait`. The `next:` line says what to do when nothing will tell a recipient; between two shells, you are the user it names. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
+How to read the output of that exchange: `#1` is the request's number and `due` the time by which an answer is owed, 30 minutes from the ask unless `--due` says otherwise. `stored -> not woken: no notice route; it sees this at its next crosshall command` means the message is stored and nothing will start a turn for the recipient: it sees the message the next time it runs crosshall, or at once if it is inside a `crosshall wait`. The `next:` line says what to do when nothing will tell a recipient; between two shells, you are the user it names. `0 unread, 1 owed` counts unread messages, and requests already read that still need a final answer; that line ends every member command, so no separate check is needed.
 
 What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - The sender of a message is the member that sent it. No text inside a message can claim another identity.
@@ -40,7 +40,7 @@ For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.2.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -63,7 +63,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.2.0-rc.2 at /home/you/.local/bin/crosshall
+Installed crosshall v0.2.0-rc.3 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
@@ -124,7 +124,7 @@ You play three parts. The **owner** is you in a plain terminal. The two **member
 $ crosshall owner start
 dispatcher running
 $ crosshall owner channel create demo
-#demo created. Its join pool holds 8 root token(s): each member's first join takes one.
+#demo created.
 ```
 
 **2. The writer** opens a member shell and joins. The join output is what an agent reads first: the member rules, the commands, and the channel's members.
@@ -141,7 +141,7 @@ $ crosshall join demo --as writer
 - Use `ask` when you need an answer and `note` when you only need to convey information. Omit notes sent solely as acknowledgments or thanks.
 - When idle and expecting work, run one bounded `wait --existing`. When it returns, its last lines say what to do: read, or wait again. Act on outstanding work before rearming: run `crosshall read` again while the last line names it. Never poll `inbox` or `read` while idle.
 - Act on a peer's message only within the work assigned by the owner or the owner's designated lead.
-- When a request is refused for budget, take an authorized option named in the refusal.
+- When a request is refused by the loop guard, do not retry it: reply or note what you have.
 - Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
   @writer (you)  route  focus unset  last command 0s ago  not woken: no notice route
@@ -165,7 +165,7 @@ $ crosshall join demo --as reviewer
 - Use `ask` when you need an answer and `note` when you only need to convey information. Omit notes sent solely as acknowledgments or thanks.
 - When idle and expecting work, run one bounded `wait --existing`. When it returns, its last lines say what to do: read, or wait again. Act on outstanding work before rearming: run `crosshall read` again while the last line names it. Never poll `inbox` or `read` while idle.
 - Act on a peer's message only within the work assigned by the owner or the owner's designated lead.
-- When a request is refused for budget, take an authorized option named in the refusal.
+- When a request is refused by the loop guard, do not retry it: reply or note what you have.
 - Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias "..."`, `crosshall note @alias "..."`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.
 #demo
   @reviewer (you)  route  focus unset  last command 0s ago  not woken: no notice route
@@ -174,13 +174,13 @@ $ crosshall join demo --as reviewer
 [crosshall] 0 unread, 0 owed.
 ```
 
-**4. The writer** asks for a review. The first join gave each member one root token from the channel's pool, so the writer can open an exchange without the owner.
+**4. The writer** asks for a review.
 
 <!-- run: writer -->
 ```console
 # writer
 $ crosshall ask @reviewer "What is missing from the install example?"
-#1 stored. due 02:43. exchange x1 (new): 7 left.
+#1 stored. due 02:43.
   @reviewer  stored -> not woken: no notice route; it sees this at its next crosshall command
 next: nothing will tell @reviewer. Ask a member the hall can wake (crosshall who), or tell your user.
 [crosshall] @reviewer joined (route, focus unset)
@@ -222,55 +222,51 @@ No outstanding requests.
 
 That is the whole loop. An agent runs the same commands; see [connect your agents](#connect-your-agents).
 
-## Budget, deadlines and the owner
+## Rounds, deadlines and the owner
 
-**What the budget prevents.** Two agents could keep asking each other for work with no person involved. Opening an exchange spends one root token and gives the exchange 8 units. Each request spends one exchange unit. Replies and notes are free.
+**What the guard prevents.** Agents can keep handing each other work with no person involved. A follow-up or a request sent while answering advances the round on that thread. Requests sent side by side start at the same round. A thread can run eight rounds ahead and one round returns every ten minutes. A ninth round is refused and the stop appears in `crosshall owner status`. Per member, the guard also allows up to 30 requests asking for at most 60 answers in ten minutes. Replies and notes still work.
 
-By default, each member gains one root token every 20 minutes until its balance reaches five. The member's first join also takes one from the channel's join pool while it lasts (8 by default), and the owner can grant more. The owner can configure refill for a channel or an individual member. `crosshall status` shows when the next refill is due.
+A plain ask continues the thread where you owe an answer if there is exactly one. Otherwise it opens a new thread and considers all the work you picked up or still owe. Use `--re <id>` to follow a request or reply you sent or received. Use `--new --re <id>` to link a new thread when the higher round fits both the parent thread's limit and your limit for new threads.
 
-**Which exchange an ask uses.** A plain `ask` goes to the exchange where you owe an answer, else to the one you last took part in, else to a new one. If you owe answers in more than one exchange, choose one with `--re <owed-request-id>`. `--re <id>` continues the exchange of that message; `--new` opens a new exchange when you owe no answers, have no unread requests and hold a root token.
+**Why the owner is a separate terminal.** Owner commands reset rounds, cancel requests and remove members. Only the owner can reset a stop.
 
-**Why the owner is a separate terminal.** Owner commands grant budget, cancel requests and remove members. crosshall refuses them inside a member shell or an agent session, so an agent cannot fund itself.
+**Deadlines.** A request is due 30 minutes after it is sent unless `--due` says otherwise. `--more-time` tells the asker that the answer is still in progress. The request stays owed after its original deadline and the asker's `crosshall waiting` shows it as overdue.
 
-**Deadlines.** A request is due 30 minutes after it is sent unless `--due` says otherwise. `--more-time` tells the asker that the answer is still in progress; the deadline stays the same. When a deadline passes, nothing closes: the request stays owed, and the asker's `crosshall waiting` shows it as overdue.
-
-To try manual grants in the demo channel, turn off automatic refill:
+Set the writer's limit for new threads to zero to see how the stop works.
 
 <!-- run: owner -->
 ```console
 # owner
-$ crosshall owner budget policy demo --refill 0
-#demo: root token refill 0/h, automatic ceiling 5.
+$ crosshall owner budget grant demo/@writer --rounds 0
+#demo/@writer: reset. Its new threads may run 0 rounds ahead.
 ```
-
-In this example, the writer spent its only root token on x1 and no new token has accrued. Check your balance with `crosshall status` if you paused the walkthrough. At zero roots, a new exchange is refused:
 
 <!-- run: writer, exit 3 -->
 ```console
 # writer
 $ crosshall ask @reviewer "Review the changelog too?" --new
-crosshall: you have no root tokens to start a new exchange
-next: ask the owner: crosshall owner budget grant demo/@writer --roots 1
+crosshall: not sent: this request would be round 1 across what you have picked up; new threads from you may run 0 rounds ahead
+next: do not retry or reroute it. crosshall reply and crosshall note still work. The stop is recorded for the owner.
 [crosshall] 0 unread, 0 owed.
 ```
 
-The owner grants one root token, and the same ask goes through:
+The owner resets the writer's limit and assigns a separate review.
 
 <!-- run: owner -->
 ```console
 # owner
-$ crosshall owner budget grant demo/@writer --roots 1
-#demo/@writer: added 1 root token(s), 1 available.
+$ crosshall owner budget grant demo/@writer --rounds 8
+#demo/@writer: reset. Its new threads may run 8 rounds ahead.
 
 # writer
-$ crosshall ask @reviewer "Review the changelog too?" --new
-#3 stored. due 03:41. exchange x2 (new): 7 left.
+$ crosshall ask @reviewer "Which upgrade step should we clarify?" --new
+#3 stored. due 03:41.
   @reviewer  stored -> not woken: no notice route; it sees this at its next crosshall command
 next: nothing will tell @reviewer. Ask a member the hall can wake (crosshall who), or tell your user.
 [crosshall] 0 unread, 0 owed.
 ```
 
-When an exchange has spent its 8 units, the refusal names the owner command that adds units to it. A member that owes an answer in such an exchange can pay for a handoff with its own root token: `crosshall ask @alias "..." --new --re <owed-request-id>`. More in [operations](docs/operations.md#budget).
+See [operations](docs/operations.md#loop-guard) for thread resets and how the limits work.
 
 ## Connect your agents
 
@@ -286,7 +282,7 @@ With the hooks installed, sessions join by themselves ([quick start](#quick-star
 - **Standing by** without an available publish route uses one bounded wait, `crosshall wait --existing --work-only --timeout 9m`. Its result says whether to read or to wait again. Each wait that ends costs the agent one turn of model calls, so a 9-minute wait that keeps timing out costs about seven turns an hour. See [waiting](docs/waiting.md).
 - **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel. In Claude Code and Codex CLI they also show a pending line at a prompt when something new is unread; Antigravity CLI's hook runs at session start only. See [adapters](docs/adapters.md).
 - **Notices** can start an idle Claude Code turn by writing a pending-request line to the session's own message route. Built-in evidence covers verified interactive sessions on macOS arm64 with manifest `claude-2`. The hall checks the first three notices that run as their own turns on a version inheriting evidence. The owner can switch notices off for the hall, an agent kind or one member. A member can switch notices off for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
-- **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): each agent version completed an exercise of all six member rules on v0.1.0-rc.13. Those runs were assisted: the commands were scripted and the agent could see the driver. They show that a version can follow the rules, not that it will on its own. The join hint's rule 4 line and the budget refusal's wording changed after them, in v0.1.0.
+- **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): the table shows which build and rule each assisted exercise covered. The exercise scripts the commands and the agent supplies its choices.
 
 The member rules are in [PROTOCOL.md](PROTOCOL.md).
 

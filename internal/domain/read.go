@@ -238,11 +238,6 @@ func recordPickup(ctx context.Context, tx store.Tx, member memberView, msg ReadM
 		VALUES (?, ?, 'picked_up', 1, ?, 'cli')`, msg.ID, member.principal, ms(now)); err != nil {
 		return err
 	}
-	if msg.Exchange != nil {
-		if _, err := tx.ExecContext(ctx, "UPDATE binding SET context_exchange_id = ? WHERE id = ?", *msg.Exchange, member.binding); err != nil {
-			return err
-		}
-	}
 	origin := msg.ID
 	if msg.InReplyTo != nil {
 		origin = *msg.InReplyTo

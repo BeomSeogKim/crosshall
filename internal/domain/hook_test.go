@@ -186,9 +186,8 @@ func TestHookSessionReplay(t *testing.T) {
 	if outputs[6].Enrollment != "restored" || outputs[6].Alias != "claude1" || outputs[6].Hint != "" {
 		t.Fatalf("restart %+v", outputs[6])
 	}
-	// One root token from the join pool at the first join; a restore draws none.
-	if f.count(`SELECT root_tokens FROM principal p JOIN principal_key k ON k.principal_id = p.id WHERE k.key = ?`, s.key) != 1 {
-		t.Fatal("an auto-enrolled principal does not hold exactly its join token")
+	if f.count(`SELECT round_limit FROM principal p JOIN principal_key k ON k.principal_id = p.id WHERE k.key = ?`, s.key) != guardDefaultRounds {
+		t.Fatal("an auto-enrolled principal did not start with the default round limit")
 	}
 
 	before := f.rows()
@@ -679,7 +678,7 @@ func TestContextResetGivesOneCueInsteadOfRepeats(t *testing.T) {
 	if got := f.hook(s, start("pid-1", "compact", t0+600)); got.Cue != "" || got.PendingLine != "" {
 		t.Fatalf("compact with nothing waiting: %+v", got)
 	}
-	f.roots(writer, 4)
+
 	ask := f.turnEndAsk(writer, "claude1", "offered then read")
 	note := f.noteTo(writer, "claude1", 1)
 	if got := f.hook(s, start("pid-1", "clear", t0+1_000)); got.PendingLine != pendingLine(ask, note[0]) || got.Cue != pointer {

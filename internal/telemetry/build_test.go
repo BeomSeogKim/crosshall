@@ -530,3 +530,19 @@ func TestIdleDayIsNotActive(t *testing.T) {
 		t.Fatal("the fixture day is not active")
 	}
 }
+
+func TestBudgetExhaustedCountsLegacyAndGuardStops(t *testing.T) {
+	s := openFixture(t)
+	err := s.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `INSERT INTO event (kind, subject, actor_id, detail, at_ms) VALUES
+			('loop_guard_stopped', 'principal:2', 2, '{}', ?),
+			('loop_guard_would_refuse', 'message:1', 2, '{}', ?)`, day.UnixMilli(), day.UnixMilli())
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := buildReport(t, s, fixtureInput()).Counts["budget.exhausted"]; got != 2 {
+		t.Fatalf("budget.exhausted = %d, want 2", got)
+	}
+}

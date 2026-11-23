@@ -85,7 +85,6 @@ func TestCodexExecTurnEndConformance(t *testing.T) {
 			codexMust(t, codexCLI(exe, env, "owner", "adapter", "set", "codex", "--enabled", "on"))
 			peer := append(slices.Clone(env), "CROSSHALL_ROUTE=0123456789abcdef0123456789abcdef")
 			codexMust(t, codexCLI(exe, peer, "join", "fixture", "--as", "gate-peer"))
-			codexMust(t, codexCLI(exe, env, "owner", "budget", "grant", "fixture/@gate-peer", "--roots", "1"))
 			evidence := codexEvidence{"codex", version, platform, "exec", manifest.Revision, time.Now().UnixMilli(), []codexResult{
 				{"turn_end", "tested", "Fixture-only launch attestation for the isolated exec continuation check."},
 			}}

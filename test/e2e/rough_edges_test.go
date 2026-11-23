@@ -55,27 +55,25 @@ func TestOwnerLogPagesEndToEnd(t *testing.T) {
 	}
 }
 
-func TestMemberStatusShowsItsOwnBudgetEndToEnd(t *testing.T) {
-	w, _, members := setup(t)
+func TestMemberStatusShowsItsOwnRoundsEndToEnd(t *testing.T) {
+	_, _, members := setup(t)
 	form, tax, lint := members[0], members[1], members[2]
-	grantRoots(t, w, "form", 2)
 	ask := form.must("ask", "@tax", "check the rounding")
 	exchange := num(t, ask, "exchange")
-
 	for _, tc := range []struct {
 		p         *participant
-		tokens    float64
+		round     float64
 		exchanges int
-	}{{form, 1, 1}, {tax, 0, 1}, {lint, 0, 0}} {
+	}{{form, 0, 0}, {tax, 1, 1}, {lint, 0, 0}} {
 		self, _ := tc.p.must("status").obj["self"].(map[string]any)
 		list, _ := self["exchanges"].([]any)
-		if self == nil || self["root_tokens"] != tc.tokens || len(list) != tc.exchanges {
-			t.Fatalf("self %v, want %v token(s) and %d exchange(s)", self, tc.tokens, tc.exchanges)
+		if self == nil || self["round"] != tc.round || self["round_limit"] != float64(8) || len(list) != tc.exchanges {
+			t.Fatalf("unexpected member rounds: %v", self)
 		}
 		if tc.exchanges == 1 {
 			x := list[0].(map[string]any)
-			if x["id"] != float64(exchange) || x["remaining"] != float64(7) {
-				t.Fatalf("exchange %v, want x%d with 7 remaining", x, exchange)
+			if x["id"] != float64(exchange) || x["round"] != float64(1) {
+				t.Fatalf("exchange %v, want x%d at round 1", x, exchange)
 			}
 		}
 	}

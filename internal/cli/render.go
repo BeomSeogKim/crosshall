@@ -50,6 +50,12 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 		}
 		return result.Status
 	}
+	if _, ok := cmd.(domain.CreateChannel); ok {
+		var channel domain.ChannelResult
+		if json.Unmarshal(result.Data, &channel) == nil && channel.PoolIgnored {
+			fmt.Fprintln(stderr, "crosshall: --pool was ignored.")
+		}
+	}
 	if opts.json {
 		fields := map[string]any{}
 		if len(result.Data) > 0 {
@@ -105,11 +111,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		if r.JoinPool > 0 {
-			fmt.Fprintf(w, "#%s created. Its join pool holds %d root token(s): each member's first join takes one.\n", r.Channel, r.JoinPool)
-		} else {
-			fmt.Fprintf(w, "#%s created, with no join pool.\n", r.Channel)
-		}
+		fmt.Fprintf(w, "#%s created.\n", r.Channel)
 	case domain.Join:
 		var r domain.JoinResult
 		if err := json.Unmarshal(data, &r); err != nil {

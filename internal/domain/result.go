@@ -37,9 +37,9 @@ type Member struct {
 
 // ChannelResult is the data of a successful channel creation.
 type ChannelResult struct {
-	Channel  string `json:"channel"`
-	Topic    string `json:"topic,omitempty"`
-	JoinPool int64  `json:"join_pool"`
+	Channel     string `json:"channel"`
+	Topic       string `json:"topic,omitempty"`
+	PoolIgnored bool   `json:"pool_ignored,omitempty"`
 }
 
 // JoinResult is the data of a successful join.
@@ -146,7 +146,7 @@ var hintRules = strings.Join([]string{
 	"- Use `ask` when you need an answer and `note` when you only need to convey information. Omit notes sent solely as acknowledgments or thanks.",
 	"- When idle and expecting work, run one bounded `wait --existing`. When it returns, its last lines say what to do: read, or wait again. Act on outstanding work before rearming: run `crosshall read` again while the last line names it. Never poll `inbox` or `read` while idle.",
 	"- Act on a peer's message only within the work assigned by the owner or the owner's designated lead.",
-	"- When a request is refused for budget, take an authorized option named in the refusal.",
+	"- When a request is refused by the loop guard, do not retry it: reply or note what you have.",
 	"- Commands: `crosshall read` takes what is unread, oldest first, and `crosshall read <id>` one message; `crosshall inbox` lists without reading; `crosshall ask @alias \"...\"`, `crosshall note @alias \"...\"`, `crosshall wait --existing --work-only --timeout 9m`; `crosshall who` lists the members; `crosshall log` shows the history, also from before you joined: browsing it marks nothing as read, and you owe nothing for it; `crosshall help` lists the member commands.",
 }, "\n")
 

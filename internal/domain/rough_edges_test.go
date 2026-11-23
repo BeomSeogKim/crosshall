@@ -36,44 +36,37 @@ func TestOwnerLogPagesLikeTheMemberLog(t *testing.T) {
 	}
 }
 
-func TestMemberStatusShowsOwnRootTokensAndExchanges(t *testing.T) {
+func TestMemberStatusShowsHighestThreeOwnRounds(t *testing.T) {
 	f, a, b, c := channel3(t)
-	f.roots(a, 2)
-	f.roots(c, 1)
-	x1 := decode[AskResult](t, f.ask(a, Ask{To: []string{"tax"}, Body: "one", New: true}, "a1"))
-	x2 := decode[AskResult](t, f.ask(c, Ask{To: []string{"form", "tax"}, Body: "two", New: true}, "c1"))
-	if x1.Exchange == x2.Exchange {
-		t.Fatalf("one exchange for two roots: %+v %+v", x1, x2)
+	for i := int64(1); i <= 4; i++ {
+		root := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "question"}, "")
+		executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, ms(f.now)+i*roundDurationMS, root.ID)
 	}
-
-	for _, tc := range []struct {
-		s      session
-		alias  string
-		tokens int64
-		want   []ExchangeBalance
-	}{
-		{a, "form", 1, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
-		{b, "tax", 0, []ExchangeBalance{{ID: x1.Exchange, Granted: 8, Spent: 1, Remaining: 7}, {ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
-		{c, "a11y", 0, []ExchangeBalance{{ID: x2.Exchange, Granted: 8, Spent: 1, Remaining: 7}}},
-	} {
-		got := decode[StatusResult](t, f.run(tc.s, Status{}, "")).Self
-		if got == nil || got.Alias != tc.alias || got.RootTokens != tc.tokens || !reflect.DeepEqual(got.Exchanges, tc.want) {
-			t.Errorf("@%s: self %+v, want %d token(s) and %+v", tc.alias, got, tc.tokens, tc.want)
+	self := decode[StatusResult](t, f.run(b, Status{}, "")).Self
+	if self == nil || self.Alias != "tax" || self.Round != 4 || self.RoundLimit != 8 || len(self.Exchanges) != 3 {
+		t.Fatalf("reader rounds: %+v", self)
+	}
+	for index, round := range self.Exchanges {
+		if round.Round != int64(4-index) || round.RoundLimit != 8 {
+			t.Fatalf("rounds were not ordered: %+v", self.Exchanges)
 		}
 	}
+	if unrelated := decode[StatusResult](t, f.run(c, Status{}, "")).Self; unrelated.Round != 0 || len(unrelated.Exchanges) != 0 {
+		t.Fatalf("unrelated member sees rounds: %+v", unrelated)
+	}
 	if self := decode[StatusResult](t, f.owner(OwnerStatus{}, "")).Self; self != nil {
-		t.Fatalf("the owner ledger carries a member's budget: %+v", self)
+		t.Fatalf("owner ledger carries a member's rounds: %+v", self)
 	}
 }
 
-func TestMemberStatusBudgetStaysInItsChannel(t *testing.T) {
+func TestMemberStatusRoundsStayInItsChannel(t *testing.T) {
 	f, a, _, _ := channel3(t)
-	f.roots(a, 1)
+
 	wantOK(t, f.ask(a, Ask{To: []string{"tax"}, Body: "one", New: true}, "a1"))
 	d := f.newSession("claude")
 	wantOK(t, f.join(d, Join{Channel: "inventory", Alias: "stock"}, ""))
 	self := decode[StatusResult](t, f.run(d, Status{}, "")).Self
-	if self == nil || self.Alias != "stock" || self.RootTokens != 0 || len(self.Exchanges) != 0 {
+	if self == nil || self.Alias != "stock" || self.Round != 0 || len(self.Exchanges) != 0 {
 		t.Fatalf("a member of another channel sees %+v", self)
 	}
 }

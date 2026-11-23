@@ -17,14 +17,12 @@ import (
 func TestRestoreDepartedBindingAfterAliasReuse(t *testing.T) {
 	w := newWorld(t)
 	owner, original, successor, fresh, editor := w.owner(), w.member(), w.member(), w.member(), w.member()
-	// Grant-only, so the credits the test follows are the owner's grants.
-	owner.must("owner", "channel", "create", "checkout", "--pool", "0")
+	owner.must("owner", "channel", "create", "checkout")
 	editor.must("join", "checkout", "--as", "editor")
 	originalJoin := []string{"join", "checkout", "--as", "reviewer", "--key", "original-join"}
 	original.must(originalJoin...)
 	departed := restoreBinding(t, owner, "live")
-	grantRoots(t, w, "reviewer", 1)
-	grantRoots(t, w, "editor", 1)
+	owner.must("owner", "budget", "grant", "checkout/@reviewer", "--rounds", "3")
 	first := num(t, editor.must("ask", "@reviewer", "Check the draft."), "id")
 	original.must("leave")
 
@@ -73,8 +71,10 @@ func TestRestoreDepartedBindingAfterAliasReuse(t *testing.T) {
 	}
 	refused(successor.run("reply", firstID, "wrong recipient"), 3, "not_obligated")
 	successor.must("reply", secondID, "Final copy approved.")
-	refused(successor.run("ask", "@editor", "Open another review.", "--new"), 3, "no_root_credit")
-	grantRoots(t, w, "reviewer", 2)
+	if at := departureRoundLimit(t, successor); at != 8 {
+		t.Fatalf("new alias holder inherited round limit %d", at)
+	}
+	owner.must("owner", "budget", "grant", "checkout/@reviewer", "--rounds", "0")
 	successor.must("leave")
 
 	fresh.must("join", "checkout")
@@ -89,7 +89,9 @@ func TestRestoreDepartedBindingAfterAliasReuse(t *testing.T) {
 	refused(fresh.run("reply", secondID, "wrong recipient"), 3, "not_obligated")
 	fresh.must("reply", firstID, "The draft is ready.")
 	fresh.must("ask", "@editor", "Open the original member's last review.", "--new")
-	refused(fresh.run("ask", "@editor", "Open a further review.", "--new"), 3, "no_root_credit")
+	if at := departureRoundLimit(t, fresh); at != 3 {
+		t.Fatalf("restored binding got round limit %d, want 3", at)
+	}
 }
 
 func restoreBinding(t *testing.T, owner *participant, state string) domain.StatusBinding {

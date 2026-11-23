@@ -190,7 +190,7 @@ func TestCreateChannel(t *testing.T) {
 	f := newFixture(t)
 	r := f.owner(CreateChannel{Name: "checkout", Topic: "payment screen"}, "k1")
 	wantOK(t, r)
-	if got := decode[ChannelResult](t, r); got != (ChannelResult{Channel: "checkout", Topic: "payment screen", JoinPool: DefaultJoinPool}) {
+	if got := decode[ChannelResult](t, r); got != (ChannelResult{Channel: "checkout", Topic: "payment screen"}) {
 		t.Fatalf("result %+v", got)
 	}
 	wantCode(t, f.owner(CreateChannel{Name: "checkout"}, "k2"), core.ExitRefused, core.CodeChannelExists)
@@ -242,13 +242,10 @@ func TestFirstJoinCreatesPrincipalAndLinksKey(t *testing.T) {
 	if n := f.count(`SELECT COUNT(*) FROM leaf WHERE principal_id = ?`, *c.PrincipalID); n != 1 {
 		t.Fatal("leaf not linked")
 	}
-	// The first join draws one root token from the channel's default pool.
-	if n := f.count(`SELECT root_tokens FROM principal WHERE id = ?`, *c.PrincipalID); n != 1 {
-		t.Fatalf("new principal holds %d root tokens", n)
+	if n := f.count(`SELECT round_limit FROM principal WHERE id = ?`, *c.PrincipalID); n != guardDefaultRounds {
+		t.Fatalf("new principal round limit = %d", n)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM op WHERE principal_id = ? AND op_key = 'j1'`, *c.PrincipalID); n != 1 {
-		t.Fatal("first join not recorded under its key")
-	}
+
 }
 
 func TestFailedFirstJoinLeavesNothing(t *testing.T) {

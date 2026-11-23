@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,74 +70,76 @@ func TestBudgetPolicyRejectsInvalidArgumentsLocally(t *testing.T) {
 	}
 }
 
-func TestBudgetPolicyPrintsEffectiveSettings(t *testing.T) {
+func TestBudgetPolicyAndGrantPrintRoundSettings(t *testing.T) {
+	zero := int64(0)
+	transport := &fakeTransport{result: okResult(t, domain.BudgetPolicyResult{
+		Channel: "checkout", Alias: "tax", RoundLimit: &zero,
+		RoundMinutes: 10, WindowMinutes: 10, RequestLimit: 30, AnswerLimit: 60,
+	})}
+	out, stderr, code := run(t, Env{Transport: transport}, "owner", "budget", "policy", "checkout/@tax")
+	want := "#checkout/@tax: 0 rounds ahead, one round returns every 10 minutes. At most 30 requests and 60 answers owed per 10 minutes.\n"
+	if code != core.ExitOK || stderr != "" || out != want {
+		t.Fatalf("policy exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
 	for _, tc := range []struct {
-		target, alias string
-		refill        int64
-		want          string
+		target string
+		result domain.BudgetGrantResult
+		want   string
 	}{
-		{"checkout", "", 3, "#checkout: root token refill 3/h, automatic ceiling 5.\n"},
-		{"checkout/@tax", "tax", 0, "#checkout/@tax: root token refill 0/h, automatic ceiling 5.\n"},
+		{"checkout/@tax", domain.BudgetGrantResult{Channel: "checkout", Alias: "tax", Rounds: &zero}, "#checkout/@tax: reset. Its new threads may run 0 rounds ahead.\n"},
+		{"checkout/x3", domain.BudgetGrantResult{Channel: "checkout", ExchangeID: 3, Rounds: &zero}, "#checkout/x3: reset. It may run 0 rounds ahead.\n"},
 	} {
-		ft := &fakeTransport{result: okResult(t, domain.BudgetPolicyResult{
-			Channel: "checkout", Alias: tc.alias, Refill: tc.refill, Ceiling: 5,
-		})}
-		out, stderr, code := run(t, Env{Transport: ft}, "owner", "budget", "policy", tc.target)
+		transport.result = okResult(t, tc.result)
+		out, stderr, code = run(t, Env{Transport: transport}, "owner", "budget", "grant", tc.target, "--rounds", "0")
 		if code != core.ExitOK || stderr != "" || out != tc.want {
-			t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", code, out, stderr, tc.want)
+			t.Fatalf("grant exit=%d stdout=%q stderr=%q", code, out, stderr)
 		}
 	}
 }
 
-func TestStatusShowsNextRootTokenWhenScheduled(t *testing.T) {
+func TestStatusPrintsCurrentRoundsAndStops(t *testing.T) {
 	defer func(f func() time.Time) { now = f }(now)
-	base := time.Date(2026, 11, 18, 23, 50, 0, 0, time.Local)
+	base := time.Date(2026, 11, 18, 14, 31, 0, 0, time.Local)
 	now = func() time.Time { return base }
-	for _, tc := range []struct {
-		next int64
-		want string
-	}{
-		{0, ""},
-		{base.Add(20 * time.Minute).UnixMilli(), "Next root token at Nov 19 00:10.\n"},
-	} {
-		ft := &fakeTransport{result: okResult(t, domain.StatusResult{
-			Self: &domain.StatusSelf{Alias: "tax", NextRootTokenAtMS: tc.next},
-		})}
-		out, stderr, code := run(t, Env{Transport: ft}, "status")
-		want := "No channels.\nYou (@tax): 0 root token(s) to open a new exchange; taking part in no exchange.\n" + tc.want
-		if code != core.ExitOK || stderr != "" || out != want {
-			t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", code, out, stderr, want)
-		}
-		out, stderr, code = run(t, Env{Transport: ft}, "--json", "status")
-		var body struct {
-			Self map[string]json.RawMessage
-		}
-		if err := json.Unmarshal([]byte(out), &body); err != nil || code != core.ExitOK || stderr != "" {
-			t.Fatalf("exit=%d stdout=%q stderr=%q err=%v", code, out, stderr, err)
-		}
-		if next, present := body.Self["next_root_token_at_ms"]; tc.next == 0 && present ||
-			tc.next > 0 && string(next) != strconv.FormatInt(tc.next, 10) {
-			t.Fatalf("wrong next_root_token_at_ms: %s", next)
-		}
+	thread := domain.ExchangeRound{ID: 12, Round: 3, RoundLimit: 8}
+	status := domain.StatusResult{
+		Self:     &domain.StatusSelf{Alias: "tax", Round: 3, RoundLimit: 8, Exchanges: []domain.ExchangeRound{thread}},
+		Channels: []domain.ChannelStatus{{Name: "checkout"}},
 	}
-}
+	transport := &fakeTransport{result: okResult(t, status)}
+	out, stderr, code := run(t, Env{Transport: transport}, "status")
+	if code != core.ExitOK || stderr != "" || out != "#checkout\nRound 3 of 8 on x12.\nRound 3 of 8 for new threads.\n" {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	out, _, code = run(t, Env{Transport: transport}, "--json", "status")
+	var self struct {
+		Self map[string]json.RawMessage
+	}
+	if err := json.Unmarshal([]byte(out), &self); err != nil || code != core.ExitOK ||
+		string(self.Self["round"]) != "3" || string(self.Self["round_limit"]) != "8" || self.Self["root_tokens"] != nil {
+		t.Fatalf("status JSON exit=%d stdout=%q err=%v", code, out, err)
+	}
 
-func TestBudgetGrantPrintsUnitOrUnits(t *testing.T) {
-	for _, tc := range []struct {
-		arg   string
-		units int64
-		want  string
-	}{
-		{"1", 1, "#checkout/x3: added 1 unit, 5 remaining.\n"},
-		{"2", 2, "#checkout/x3: added 2 units, 5 remaining.\n"},
-	} {
-		ft := &fakeTransport{result: okResult(t, domain.BudgetGrantResult{
-			Channel: "checkout", ExchangeID: 3, Units: tc.units, Remaining: 5,
-		})}
-		stdout, stderr, code := run(t, Env{Transport: ft}, "owner", "budget", "grant", "checkout/x3", tc.arg)
-		if code != core.ExitOK || stdout != tc.want || stderr != "" {
-			t.Fatalf("grant %s: exit=%d stdout=%q stderr=%q want=%q", tc.arg, code, stdout, stderr, tc.want)
-		}
+	status.Self = nil
+	thread.ParentRequestID = 17
+	status.Channels[0].Exchanges = []domain.ExchangeRound{thread}
+	status.Channels[0].GuardStops = []domain.GuardStop{
+		{ExchangeID: 12, AtMS: base.UnixMilli(), RoundLimit: 8},
+		{Alias: "tax", AtMS: base.UnixMilli(), RoundLimit: 8},
+		{Alias: "tax", BindingID: 4, BindingState: "departed", AtMS: base.UnixMilli(), RoundLimit: 0},
+	}
+	transport.result = okResult(t, status)
+	out, stderr, code = run(t, Env{Transport: transport}, "owner", "status")
+	want := "#checkout\n  x12: round 3 of 8, handoff for #17\n  x12 stopped at 14:31 (round limit 8)\n  @tax stopped at 14:31 (new threads, round limit 8)\n" +
+		"  @tax (departed, binding 4) stopped at 14:31 (new threads, round limit 0)\n"
+	if code != core.ExitOK || stderr != "" || out != want {
+		t.Fatalf("owner status exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	out, _, code = run(t, Env{Transport: transport}, "--json", "owner", "status")
+	if code != core.ExitOK || !strings.Contains(out, `"guard_stops":[`) ||
+		!strings.Contains(out, `"binding_id":4,"binding_state":"departed"`) ||
+		strings.Contains(out, `"join_pool"`) || strings.Contains(out, `"budget_exhaustions"`) {
+		t.Fatalf("owner status JSON exit=%d stdout=%q", code, out)
 	}
 }
 

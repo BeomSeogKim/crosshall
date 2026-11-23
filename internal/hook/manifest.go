@@ -52,6 +52,21 @@ type manifest struct {
 	ModeEnv        string            `json:"mode_env"`
 	ModeField      string            `json:"mode_field"`
 	Modes          map[string]string `json:"modes"`
+	// Daemon names the vendor's managed server when its sessions can run as
+	// its clients. The hooks of such a session run under that server, so a
+	// hook's host tells the two modes apart and names the server's release
+	// (#236).
+	Daemon *daemonSpec `json:"daemon"`
+}
+
+// daemonSpec locates a vendor's managed server: its releases directory
+// under the vendor's home (HomeEnv, else HomeDefault under $HOME), and the
+// arguments it runs with.
+type daemonSpec struct {
+	HomeEnv     string   `json:"home_env"`
+	HomeDefault string   `json:"home_default"`
+	Releases    string   `json:"releases"`
+	Args        []string `json:"args"`
 }
 
 type eventSpec struct {
@@ -223,6 +238,9 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		}
 	}
 	e.VendorVersion, e.Mode = launchBuild(m, lookup)
+	if m.Daemon != nil {
+		e.VendorVersion, e.Mode = daemonBuild(*m.Daemon, lookup)
+	}
 	if m.ModeField != "" {
 		if pm := fields[m.ModeField]; pm != "" {
 			if len(pm) > 256 || strings.IndexFunc(pm, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {

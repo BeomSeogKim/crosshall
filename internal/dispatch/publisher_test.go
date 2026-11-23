@@ -766,9 +766,12 @@ func (fixtureAdapter) Resolve(r publish.Route) (string, string) {
 	}
 	return r.ThreadID, ""
 }
-func (fixtureAdapter) ModeEligible(string) bool        { return true }
-func (fixtureAdapter) AcceptsSocket(string) bool       { return false }
-func (fixtureAdapter) SessionThread(ref string) string { return ref }
+func (fixtureAdapter) ModeEligible(string) bool  { return true }
+func (fixtureAdapter) AcceptsSocket(string) bool { return false }
+func (fixtureAdapter) SessionRoute(ref, mode string) publish.Route {
+	return publish.Route{ThreadID: ref, Mode: mode}
+}
+func (fixtureAdapter) Reach(publish.Route) string { return "" }
 func (fixtureAdapter) Notice(ids []int64) (string, bool) {
 	return "fixture " + notice.IDList(ids), true
 }

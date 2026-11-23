@@ -72,3 +72,54 @@ func TestReachReceiptStoresOnlyTheLineOfferedLast(t *testing.T) {
 	check(first, brings)
 	check(second, lost)
 }
+
+func TestRecoveryHintReceiptIsScopedToTheOfferedSuspension(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	leaf := adapterLeafFixture(t, s, root, true)
+	s.fixtureSQL(t, `INSERT INTO channel (id, name, state, created_at_ms) VALUES (1, 'dev', 'active', 1);
+		INSERT INTO binding (id, principal_id, channel_id, alias, joined_at_ms, reach_told) VALUES (2, 1, 1, 'fixture', 1, 0);
+		INSERT INTO publish_suspension (id, binding_id, launch_ref, reason, notice, at_ms) VALUES
+			(3, 2, 'old', 'absorbed', 3, 3), (4, 2, 'current', 'absorbed', 4, 4);`)
+	principal, binding := int64(1), int64(2)
+	member := core.Caller{Role: core.RoleMember, PrincipalID: &principal, BindingID: &binding}
+	previous := wire.HookReachAck{Generation: "test-gen", BindingID: 2, RouteEpoch: 1, Told: 0, SuspensionID: 3}
+	if err := publishReachOffer(leaf, &previous); err != nil {
+		t.Fatal(err)
+	}
+	current := previous
+	current.SuspensionID = 4
+	if err := publishReachOffer(leaf, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Offer == previous.Offer {
+		t.Fatal("the new suspension reused the older offer")
+	}
+	for _, receipt := range []struct {
+		seen wire.HookReachAck
+		want int
+	}{{previous, store.RecoveryHintPending}, {current, store.RecoveryHintAcknowledged}} {
+		data, err := json.Marshal(receipt.seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := leaf.WriteFile("seen-reach", data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+			if err := acknowledgeHookReach(t.Context(), tx, Arrival{Dir: leaf}, wire.Request{Generation: "test-gen"}, member); err != nil {
+				return err
+			}
+			var oldHint, currentHint int
+			if err := tx.QueryRowContext(t.Context(), `SELECT old.recovery_hint, current.recovery_hint
+				FROM publish_suspension old, publish_suspension current WHERE old.id = 3 AND current.id = 4`).Scan(&oldHint, &currentHint); err != nil {
+				return err
+			}
+			if oldHint != store.RecoveryHintPending || currentHint != receipt.want {
+				t.Fatalf("receipt for suspension %d stored states %d, %d; want 0, %d", receipt.seen.SuspensionID, oldHint, currentHint, receipt.want)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

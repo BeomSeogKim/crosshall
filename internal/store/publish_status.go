@@ -19,6 +19,26 @@ const PublishNotActivated = "route not yet activated"
 // PublishHourlyCap bounds the notices one member can be offered in an hour.
 const PublishHourlyCap = 30
 
+const PublishSuspensionDuration = 30 * time.Minute
+
+// Older dispatchers could make an unknown receipt's suspension last for the
+// launch. Give those rows a deadline without changing the recorded history.
+var publishSuspensionExpiry = fmt.Sprintf(`CASE WHEN s.reason = 'unknown' AND s.until_ms IS NULL
+	THEN s.at_ms + %d ELSE s.until_ms END`, PublishSuspensionDuration.Milliseconds())
+
+// Marking raises the notice stamp once. A marked hint is still offered until
+// the hook acknowledges printing it.
+const (
+	RecoveryHintPending = iota
+	RecoveryHintMarked
+	RecoveryHintAcknowledged
+)
+
+type PublishRecoveryHint struct {
+	SuspensionID int64
+	State        int
+}
+
 // PublishSwitchesOn: the adapter is enabled, the narrowest owner switch
 // set (member, then adapter, then hall) is on or none is set, and the
 // member has not turned publish off for itself.
@@ -47,7 +67,7 @@ func PublishAdapterSends() string {
 func PublishNotSuspended(nowMS int64) string {
 	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s WHERE s.binding_id = r.binding_id
 		AND s.launch_ref = r.launch_ref AND s.id > b.publish_resume_suspension
-		AND (s.until_ms IS NULL OR s.until_ms > %d))`, nowMS)
+		AND COALESCE((%s) > %d, 1))`, publishSuspensionExpiry, nowMS)
 }
 
 // PublishState is one member's publish state as who and doctor show it.
@@ -56,13 +76,14 @@ func PublishNotSuspended(nowMS int64) string {
 // held or suspended, UntilMS when a cap or a timed suspension ends. Lift
 // says how a suspension ends. Agents see State only.
 type PublishState struct {
-	State      string `json:"state"`
-	Reason     string `json:"reason,omitempty"`
-	Notice     int64  `json:"notice,omitempty"`
-	AtMS       int64  `json:"at_ms,omitempty"`
-	UntilMS    int64  `json:"until_ms,omitempty"`
-	Lift       string `json:"lift,omitempty"`
-	Generation int64  `json:"generation,omitempty"`
+	State        string              `json:"state"`
+	Reason       string              `json:"reason,omitempty"`
+	Notice       int64               `json:"notice,omitempty"`
+	AtMS         int64               `json:"at_ms,omitempty"`
+	UntilMS      int64               `json:"until_ms,omitempty"`
+	Lift         string              `json:"lift,omitempty"`
+	Generation   int64               `json:"generation,omitempty"`
+	RecoveryHint PublishRecoveryHint `json:"-"`
 }
 
 // ReadPublishState reports the publish state of a binding's route. A
@@ -129,20 +150,30 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		if err != nil {
 			return PublishState{}, false, err
 		}
-		if build.Stopped {
-			state.State, state.Notice, state.AtMS = "suspended", build.Notice, build.StoppedAtMS
-			state.Reason = fmt.Sprintf("version %s stopped after notice %d (%s)", build.Version, build.Notice, build.StopReason)
-			state.Lift = fmt.Sprintf("lifts with crosshall owner publish resume %d or tested evidence for this version", bindingID)
-			return state, true, nil
-		}
 	}
 	var reason string
-	var notice, at int64
+	var notice, at, suspensionID int64
 	var until sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT reason, notice, at_ms, until_ms FROM publish_suspension
-		WHERE binding_id = ? AND launch_ref = ? AND id > ? AND (until_ms IS NULL OR until_ms > ?)
-		ORDER BY until_ms IS NULL DESC, until_ms DESC LIMIT 1`, bindingID, launchRef, resumedAfter, now.UnixMilli()).
-		Scan(&reason, &notice, &at, &until)
+	var recoveryHint int
+	err = tx.QueryRowContext(ctx, `WITH suspensions AS (
+		SELECT s.id, s.reason, s.notice, s.at_ms, s.recovery_hint, `+publishSuspensionExpiry+` AS until_ms FROM publish_suspension s
+		WHERE s.binding_id = ? AND s.launch_ref = ? AND s.id > ?
+	)
+		SELECT id, reason, notice, at_ms, until_ms, recovery_hint FROM suspensions WHERE until_ms IS NULL OR until_ms > ?
+		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, bindingID, launchRef, resumedAfter, now.UnixMilli()).
+		Scan(&suspensionID, &reason, &notice, &at, &until, &recoveryHint)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return PublishState{}, false, err
+	}
+	if err == nil && !until.Valid {
+		state.RecoveryHint = PublishRecoveryHint{SuspensionID: suspensionID, State: recoveryHint}
+	}
+	if build.Stopped {
+		state.State, state.Notice, state.AtMS = "suspended", build.Notice, build.StoppedAtMS
+		state.Reason = fmt.Sprintf("version %s stopped after notice %d (%s)", build.Version, build.Notice, build.StopReason)
+		state.Lift = fmt.Sprintf("lifts with crosshall owner publish resume %d or tested evidence for this version", bindingID)
+		return state, true, nil
+	}
 	if err == nil {
 		state.State, state.Notice, state.AtMS, state.UntilMS = "suspended", notice, at, until.Int64
 		state.Reason = fmt.Sprintf("notice %d %s", notice, reason)
@@ -155,9 +186,6 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			state.Lift = "the third suspension of this launch: lasts until the launch ends, or " + resume
 		}
 		return state, true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return PublishState{}, false, err
 	}
 	var reserved int
 	var oldest sql.NullInt64
@@ -187,8 +215,16 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	}
 	state.State = "candidate"
 	adapters := publish.Adapters()
-	_, why := adapters.Address(adapter, publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID})
+	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}
+	_, why := adapters.Address(adapter, route)
+	var reach string
+	if a, ok := adapters.Lookup(adapter); ok {
+		reach = a.Reach(route)
+	}
 	switch {
+	// A session the adapter cannot reach stays so with any sender.
+	case reach != "":
+		state.Reason = reach
 	case !adapters.Sends(adapter):
 		state.Reason = "no sender for " + adapter
 	case !verified:

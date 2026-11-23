@@ -1,6 +1,6 @@
 # Member conformance results
 
-Each row exercised the six member rules in a new hall. The Reader and Writer used the Crosshall CLI without hooks. Bash ran a scripted reference case through a persistent `crosshall run` shell. The named agents ran the same exercise from their own shell tools. The driver checked their session identity with `whoami`, and each agent supplied three choices about the assigned work. The commands for both participants were scripted, and participants could see the driver. These results establish that the displayed versions completed an assisted exercise. An unobserved turn ending, independent adoption of the rules, and future sessions are unjudged. [Member protocol](PROTOCOL.md)
+Each row records an exercise of the member rules in a new hall. The Reader and Writer used the Crosshall CLI without hooks. Bash ran a scripted reference case through a persistent `crosshall run` shell. The named agents ran the same exercise from their own shell tools. The driver checked their session identity with `whoami`, and each agent supplied three choices about the assigned work. The commands for both participants were scripted, and participants could see the driver. These results establish that the displayed versions completed an assisted exercise. An unobserved turn ending, independent adoption of the rules, and future sessions are unjudged. [Member protocol](PROTOCOL.md)
 
 <!-- generated member runs -->
 | Reader | Reader version | Run | Crosshall build | Host | R1 | R2 | R3 | R4 | R5 | R6 |
@@ -9,9 +9,14 @@ Each row exercised the six member rules in a new hall. The Reader and Writer use
 | Codex | 0.170.0 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | previous rule |
 | Claude Code | 2.1.328 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | previous rule |
 | Antigravity | 1.5.11 | assisted session | git-730db4f | macOS | pass | pass | pass | pass | pass | previous rule |
+| Bash | 3.2.57(1)-release | scripted shell | git-dcce9f1 | macOS | pass | pass | pass | pass | pass | pass |
+| Codex | 0.171.0 | assisted session | git-dcce9f1 | macOS | pass | pass | pass | pass | pass | pass |
+| Claude Code | 2.1.330 | assisted session | git-dcce9f1 | macOS | pass | incomplete | incomplete | incomplete | incomplete | incomplete |
+| Claude Code | 2.1.330 | assisted session | git-dcce9f1 | macOS | pass | pass | pass | pass | pass | pass |
+| Antigravity | 1.5.14 | assisted session | git-dcce9f1 | macOS | pass | pass | pass | pass | pass | pass |
 <!-- end member runs -->
 
-The rows marked `previous rule` preserve the earlier R6 result on `730db4f`. The current R6 checks how the reader responds to a loop guard stop.
+The rows marked `previous rule` preserve the earlier R6 result on `730db4f`. The current R6 checks how the reader responds to a loop guard stop. The first Claude Code run on `dcce9f1` stopped at R2. A second run supplied the member rule and made clear that the review was still pending at its deadline.
 
 R1 through R6 follow the order of the member rules. Each pass requires the listed observations in one run. An incomplete column means the run stopped before that check passed. The receipts contain the date, observed identity type and completed checks. They omit session identifiers and machine paths. [Run receipts](test/conformance/member-runs.jsonl)
 

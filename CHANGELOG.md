@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Usage statistics question:** an answer it does not accept is followed by `Answer y or n.` and the prompt line, not the whole paragraph again. `ㅛ` and `ㅜ`, the y and n keys under a Korean input method, count as y and n.
+
 ## v0.2.0-rc.3 (2026-11-23)
 
 - **Loop guard:** independent requests open their own threads, with eight rounds ahead by default and per-sender limits of 30 requests and 60 answers in ten minutes. Replies and notes stay available. The owner can see a round stop in the ledger and reset the affected thread or member. Schema 22 fences requests created before the switch and keeps their ledger history (#227).

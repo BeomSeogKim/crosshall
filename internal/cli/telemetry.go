@@ -16,7 +16,9 @@ import (
 
 const telemetryQuestion = `Usage statistics help Adrian Studio decide what to fix and build in crosshall. A daily report can include rounded counts of messages, notices and hook timings, plus the crosshall release, platform, agent release families and a random token for that day. Reports exclude message text, channel names, aliases, paths, host names and user names.
 The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
-Send usage statistics? [Y/n]`
+` + telemetryPrompt
+
+const telemetryPrompt = "Send usage statistics? [Y/n]"
 
 func applyTelemetryEnvironment(env Env, out io.Writer) error {
 	if env.TelemetryStateRoot == "" || !telemetryconfig.EnvironmentOff() {
@@ -55,11 +57,15 @@ func managedTelemetryOff(env Env) bool {
 	return telemetryconfig.ManagedOffAt(path)
 }
 
+// askTelemetry asks once and, after an answer it does not accept, asks again
+// with the prompt line only.
 func askTelemetry(input *bufio.Reader, out io.Writer) (string, error) {
+	question := telemetryQuestion
 	for range 2 {
-		if _, err := fmt.Fprintln(out, telemetryQuestion); err != nil {
+		if _, err := fmt.Fprintln(out, question); err != nil {
 			return telemetryconfig.Unset, err
 		}
+		question = "Answer y or n.\n" + telemetryPrompt
 		line, err := input.ReadString('\n')
 		if errors.Is(err, io.EOF) {
 			return telemetryconfig.Unset, nil
@@ -68,9 +74,9 @@ func askTelemetry(input *bufio.Reader, out io.Writer) (string, error) {
 			return telemetryconfig.Unset, err
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "", "y", "yes":
+		case "", "y", "yes", "ㅛ": // ㅛ and ㅜ: the y and n keys under a Korean input method
 			return telemetryconfig.On, nil
-		case "n", "no":
+		case "n", "no", "ㅜ":
 			return telemetryconfig.Off, nil
 		}
 	}

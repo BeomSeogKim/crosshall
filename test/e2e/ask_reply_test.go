@@ -13,12 +13,6 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 )
 
-// grantRoots gives a member root tokens through the owner command.
-func grantRoots(t *testing.T, w *world, alias string, n int) {
-	t.Helper()
-	w.owner().must("owner", "budget", "grant", "checkout/@"+alias, "--roots", strconv.Itoa(n))
-}
-
 func num(t *testing.T, o outcome, field string) int64 {
 	t.Helper()
 	v, ok := o.obj[field].(float64)
@@ -33,14 +27,9 @@ func TestAskAndReplyEndToEnd(t *testing.T) {
 	form, tax, lint := members[0], members[1], members[2]
 	db := w.db()
 
-	if o := form.run("ask", "@tax", "review?"); o.exit != 3 || o.obj["code"] != "no_root_credit" {
-		t.Fatalf("ask without a root token: exit %d %v", o.exit, o.obj)
-	}
-	grantRoots(t, w, "form", 1)
-
 	q := form.must("ask", "@tax", "@lint", "review refund rounding", "--due", "10m")
 	id := num(t, q, "id")
-	if q.obj["debit"] != float64(1) || q.obj["remaining"] != float64(7) || q.obj["new_exchange"] != true {
+	if q.obj["round"] != float64(1) || q.obj["new_exchange"] != true {
 		t.Fatalf("ask result %v", q.obj)
 	}
 
@@ -56,7 +45,7 @@ func TestAskAndReplyEndToEnd(t *testing.T) {
 	if mt.obj["obligation"] != "open" {
 		t.Fatalf("more time %v", mt.obj)
 	}
-	f := form.must("ask", "@tax", "thanks, one more question")
+	f := form.must("ask", "@tax", "thanks, one more question", "--re", strconv.FormatInt(id, 10))
 	if num(t, f, "exchange") != num(t, q, "exchange") || f.obj["new_exchange"] != false {
 		t.Fatalf("follow-up left the exchange: %v", f.obj)
 	}
@@ -73,10 +62,9 @@ func TestAskAndReplyEndToEnd(t *testing.T) {
 // The dispatcher commits an ask but its reply file disappears; running the
 // same command after a pickup preserves the original send and shows the
 // current delivery state for its frozen recipients.
-func TestLostAskResponseDebitsOnce(t *testing.T) {
+func TestLostAskResponseCommitsOneThread(t *testing.T) {
 	w, _, members := setup(t)
 	form := members[0]
-	grantRoots(t, w, "form", 1)
 	gen, err := os.ReadFile(filepath.Join(form.leaf(), "gen"))
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +87,7 @@ func TestLostAskResponseDebitsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if replay.ID != first.ID || replay.Exchange != first.Exchange || replay.DueAtMS != first.DueAtMS ||
-		replay.Debit != first.Debit || replay.Remaining != first.Remaining {
+		replay.Round != first.Round {
 		t.Fatalf("replay changed the committed send: first=%+v replay=%+v", first, replay)
 	}
 	states := make(map[string]string)
@@ -109,12 +97,12 @@ func TestLostAskResponseDebitsOnce(t *testing.T) {
 	if len(replay.Recipients) != 2 || !reflect.DeepEqual(states, map[string]string{"tax": "picked_up", "lint": "stored"}) {
 		t.Fatalf("delivery after tax read: %+v", replay.Recipients)
 	}
-	var asks, spent int
+	var asks, exchanges int
 	db := w.db()
 	if err := db.QueryRow(`SELECT COUNT(*) FROM message WHERE kind = 'ask'`).Scan(&asks); err != nil || asks != 1 {
 		t.Fatalf("%d asks (%v)", asks, err)
 	}
-	if err := db.QueryRow(`SELECT spent FROM exchange`).Scan(&spent); err != nil || spent != 1 {
-		t.Fatalf("spent %d (%v), want 1", spent, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM exchange`).Scan(&exchanges); err != nil || exchanges != 1 {
+		t.Fatalf("exchanges %d (%v), want 1", exchanges, err)
 	}
 }

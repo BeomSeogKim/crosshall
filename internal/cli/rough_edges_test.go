@@ -126,25 +126,3 @@ func TestDoctorNamesTheStartCommand(t *testing.T) {
 		t.Fatalf("a passing doctor names no next command:\n%s", out)
 	}
 }
-
-func TestMemberStatusShowsItsOwnBudget(t *testing.T) {
-	x1 := domain.ExchangeBalance{ID: 1, Granted: 8, Spent: 2, Remaining: 6}
-	x2 := domain.ExchangeBalance{ID: 2, Granted: 8, Spent: 8, Remaining: 0}
-	for _, tc := range []struct {
-		self *domain.StatusSelf
-		want string
-	}{
-		{&domain.StatusSelf{Alias: "form", RootTokens: 1, Exchanges: []domain.ExchangeBalance{x1, x2}},
-			"You (@form): 1 root token(s) to open a new exchange; taking part in x1 (6 remaining), x2 (0 remaining).\n"},
-		{&domain.StatusSelf{Alias: "tax", Exchanges: []domain.ExchangeBalance{}},
-			"You (@tax): 0 root token(s) to open a new exchange; taking part in no exchange.\n"},
-	} {
-		ft := &fakeTransport{result: okResult(t, domain.StatusResult{Self: tc.self, Channels: []domain.ChannelStatus{
-			{Name: "checkout", Exchanges: []domain.ExchangeBalance{x1, x2, {ID: 3, Granted: 8, Remaining: 8}}},
-		}})}
-		out, _, code := run(t, Env{Transport: ft}, "status")
-		if code != core.ExitOK || !strings.Contains(out, tc.want) {
-			t.Errorf("exit %d, want %q in\n%s", code, tc.want, out)
-		}
-	}
-}

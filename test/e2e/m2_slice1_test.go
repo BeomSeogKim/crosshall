@@ -286,7 +286,6 @@ func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude1") {
 		t.Fatalf("auto-join context %q", got)
 	}
-	grantRoots(t, w, "writer", 1)
 	id := num(t, writer.must("ask", "@claude1", "a request stays unread"), "id")
 	pending := pendingContext([]string{strconv.FormatInt(id, 10)})
 	notice := pending + ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
@@ -536,7 +535,6 @@ func TestM2ContextResetGetsACueNotARepeat(t *testing.T) {
 		}
 		return latestStart() > before
 	})
-	grantRoots(t, w, "writer", 1)
 	id := num(t, writer.must("ask", "@claude1", "a request offered before the reset"), "id")
 	pending := pendingContext([]string{strconv.FormatInt(id, 10)})
 	// An offer can commit even if the hook has no time left to print it.

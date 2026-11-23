@@ -14,7 +14,7 @@ import (
 func pickupWorld(t *testing.T) (*fixture, session, session, int64) {
 	t.Helper()
 	f, writer := adapterChannel(t)
-	wantOK(t, f.owner(BudgetGrant{Channel: "checkout", Alias: "writer", Roots: 5}, "writer-roots"))
+
 	s := f.newSession("claude")
 	t0 := f.now.UnixMilli()
 	f.hook(s, start("pid-1", "startup", t0))
@@ -71,7 +71,7 @@ func TestASettledRecipientShowsNoObservedFact(t *testing.T) {
 // picked the request up has no pickup age.
 func TestNoAdapterAndNoPickupLeaveTheirFieldsOut(t *testing.T) {
 	f, writer := adapterChannel(t)
-	wantOK(t, f.owner(BudgetGrant{Channel: "checkout", Alias: "writer", Roots: 5}, "writer-roots"))
+
 	plain := f.newSession("codex")
 	wantOK(t, f.join(plain, Join{Channel: "checkout", Alias: "plain"}, ""))
 	id := decode[AskResult](t, f.run(writer, Ask{To: []string{"plain"}, Body: "q"}, "")).ID

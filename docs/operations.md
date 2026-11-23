@@ -48,24 +48,17 @@ crosshall installs an executable in `~/.local/bin/crosshall` by default.
 
 For the default installation only (no `CROSSHALL_STATE_DIR`, no `XDG_STATE_HOME`), the [README](../README.md#on-your-machine) gives steps 2 and 3 as one command that deletes nothing unless the paths are the default ones and the dispatcher stopped. For any other state directory, review the paths that `crosshall owner doctor` prints, run `crosshall owner stop` with the same environment, and delete those directories by name only after it reports that the dispatcher stopped.
 
-## Budget
+## Loop guard
 
-A root token opens an exchange of eight units. Each request spends one unit, whatever the number of recipients. Replies and notes are free. By default, a member's root token balance refills at 3 per hour, one every 20 minutes, up to five held. Members can spend saved tokens together. Refill is calculated when the balance is checked or spent. Existing halls keep their balances and start accruing from the upgrade time.
+A thread can run eight rounds ahead by default. A round returns every ten minutes. A new thread uses the sender's own round position when there is no known parent. The guard also allows up to 30 requests asking for up to 60 answers per sender in any rolling ten minutes. A request can ask at most 60 recipients. Replies and notes stay available. A slow chain can continue as rounds return, and there is no hall-wide cap. Limits apply to individual members and threads, so a series of new members can also increase traffic.
 
-- `crosshall status` shows a member's balance and, when automatic refill can add a token, when the next one arrives.
-- `crosshall owner budget policy <channel>` shows the channel's refill rate and ceiling. Add `--refill N/h` or `--ceiling N` to change either setting. Use `--refill 0` or `--ceiling 0` to turn off automatic refill.
-- `crosshall owner budget policy <channel>/@<alias>` shows a member's effective policy. The same flags override the supplied settings for that member. The member inherits each setting it has no override for.
-- A policy change first credits any whole tokens the member earned under the previous settings. A ceiling change preserves partial progress while refill stays enabled at the same rate and both ceilings leave room.
-- `crosshall owner channel create <name> --pool <n>` sizes the separate join pool. The default is 8 and `--pool 0` starts it empty. A member's first join takes one token while the pool lasts. A rejoin, a restore, a retry or another alias never draws again.
-- `crosshall owner budget grant <channel> --pool <n>` adds tokens to the join pool.
-- `crosshall owner budget grant <channel>/@<alias> --roots <n>` adds root tokens to a member's balance, including above the automatic ceiling. Automatic refill resumes after the balance falls below that ceiling.
-- `crosshall owner budget grant <channel>/x<id> <units>` adds units to an exchange.
-- `crosshall owner status` shows each channel's pool, exchanges and requests.
-- `crosshall owner cancel <channel>/<id>` cancels an open request; its recipients then owe nothing.
-- A request to several recipients (`crosshall ask @a @b "..."`) costs one unit.
-- A member that owes an answer in an exchange with no units left can run `crosshall ask @alias "..." --new --re <owed-request-id>`. This spends one of its root tokens on a new exchange linked to that request, after it has read that request and every other request addressed to it. The original answer stays owed.
+A round stop appears once in `crosshall owner status` until that path drains and accepts a request or the owner resets it. A burst refusal gives the earliest minute when the request fits the burst window. Owner grants reset rounds only.
 
-Root tokens finance new exchanges. An exhausted exchange stays exhausted until the owner grants it more units.
+- `crosshall owner budget policy <channel>[/@<alias>]` shows the guard's limits.
+- `crosshall owner budget grant <channel>/x<id> --rounds <n>` resets the thread. For an exchange from before the upgrade that contains several roots, the grant resets all its roots.
+- `crosshall owner budget grant <channel>/@<alias> --rounds <n>` resets the live member's ability to start new threads. A thread reset and a member reset each leave the other scope intact.
+
+Both grants default to eight rounds. Use zero to stop that path until the next grant. The positional form `grant <channel>/x<id> <n>` also sets the thread's round limit. `grant --roots`, `grant --pool`, `policy --refill`, and `policy --ceiling` return `retired`. Channel creation accepts an old `--pool` flag with a warning.
 
 ## Session identity and delivery
 

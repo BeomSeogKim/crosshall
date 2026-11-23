@@ -149,7 +149,7 @@ func (b *builder) flows() {
 	}, `SELECT `+detail("by")+`, COUNT(*) FROM event WHERE kind = 'joined' AND at_ms >= ?1 AND at_ms < ?2 GROUP BY 1`, day...)
 	b.count(fixed("join.rejoined"), `SELECT '', COUNT(*) FROM event WHERE kind = 'rejoined' AND at_ms >= ?1 AND at_ms < ?2`, day...)
 	b.count(fixed("budget.exhausted"),
-		`SELECT '', COUNT(*) FROM event WHERE kind = 'budget_exhausted' AND at_ms >= ?1 AND at_ms < ?2`, day...)
+		`SELECT '', COUNT(*) FROM event WHERE kind IN ('budget_exhausted', 'loop_guard_stopped') AND at_ms >= ?1 AND at_ms < ?2`, day...)
 }
 
 // pickups buckets the lag from an ask to each recipient's pickup, on the day

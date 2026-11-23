@@ -107,14 +107,14 @@ func TestAskAndReplyPlainOutput(t *testing.T) {
 	due := base.Add(30 * time.Minute).UnixMilli()
 
 	ft := &fakeTransport{result: okResult(t, domain.AskResult{
-		ID: 42, Exchange: 7, NewExchange: true, DueAtMS: due, Debit: 2, Remaining: 6,
+		ID: 42, Exchange: 7, NewExchange: true, DueAtMS: due, Round: 1,
 		Recipients: []domain.Delivery{
 			{Alias: "a11y", State: "stored", Next: "waits for its next crosshall command"},
 			{Alias: "tax", State: "picked_up", PickedUpAtMS: base.UnixMilli()},
 		},
 	})}
 	out, _, _ := run(t, Env{Transport: ft}, "ask", "@tax", "@a11y", "review")
-	for _, want := range []string{"#42 stored. due 13:30. exchange x7 (new): 6 left.", "@a11y  stored -> waits", "@tax   picked up 13:00"} {
+	for _, want := range []string{"#42 stored. due 13:30.", "@a11y  stored -> waits", "@tax   picked up 13:00"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
 		}
@@ -137,11 +137,11 @@ func TestAskAndReplyPlainOutput(t *testing.T) {
 }
 
 func TestAskJSONIsOneObject(t *testing.T) {
-	ft := &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Exchange: 7})}
+	ft := &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Exchange: 7, Round: 3})}
 	out, _, code := run(t, Env{Transport: ft}, "--json", "ask", "@tax", "x")
 	dec := json.NewDecoder(strings.NewReader(out))
 	var got map[string]any
-	if code != core.ExitOK || dec.Decode(&got) != nil || dec.More() || got["kind"] != "ask" || got["id"] != float64(42) {
+	if code != core.ExitOK || dec.Decode(&got) != nil || dec.More() || got["kind"] != "ask" || got["id"] != float64(42) || got["round"] != float64(3) || got["exchange"] != float64(7) || got["debit"] != nil || got["remaining"] != nil {
 		t.Fatalf("exit %d output %q", code, out)
 	}
 }
@@ -228,27 +228,5 @@ func TestReplyPlainShowsDelivery(t *testing.T) {
 	out, _, _ := run(t, Env{Transport: ft}, "reply", "42", "x")
 	if !strings.Contains(out, "@form  stored -> waits for its next crosshall command") {
 		t.Fatalf("output %q", out)
-	}
-}
-
-// An ask that spends an exchange's last unit says so. It describes its own
-// debit only: an owner grant can add units later, and a replay is frozen.
-func TestAskSaysWhenItSpentTheLastUnit(t *testing.T) {
-	defer func(f func() time.Time) { now = f }(now)
-	base := time.Date(2026, 11, 18, 13, 0, 0, 0, time.Local)
-	now = func() time.Time { return base }
-	due := base.Add(30 * time.Minute).UnixMilli()
-	for _, tc := range []struct {
-		remaining int64
-		want      string
-	}{
-		{1, "#42 stored. due 13:30. exchange x7: 1 left.\n"},
-		{0, "#42 stored. due 13:30. exchange x7: 0 left; this request spent its last unit.\n"},
-	} {
-		ft := &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Exchange: 7, DueAtMS: due, Debit: 1, Remaining: tc.remaining})}
-		out, _, _ := run(t, Env{Transport: ft}, "ask", "@tax", "review")
-		if !strings.HasPrefix(out, tc.want) {
-			t.Errorf("remaining %d: got %q, want prefix %q", tc.remaining, out, tc.want)
-		}
 	}
 }

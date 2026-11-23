@@ -14,7 +14,7 @@ func TestRestoreRotatesTheNamedBinding(t *testing.T) {
 	f.svc.RestoreKey = ident.RestoreKey
 	aid := *f.caller(a).PrincipalID
 	binding := int64(f.count("SELECT id FROM binding WHERE principal_id=?", aid))
-	f.roots(a, 3)
+	executeGuardFixture(t, f, `UPDATE principal SET round_limit = 3 WHERE id = ?`, aid)
 	if _, err := f.db.Exec("UPDATE binding SET state='departed' WHERE id=?", binding); err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +50,8 @@ func TestRestoreRotatesTheNamedBinding(t *testing.T) {
 	if got := f.count("SELECT COUNT(*) FROM principal WHERE id=? AND vendor=? AND vendor_version IS NULL", aid, replacement.vendor); got != 1 {
 		t.Fatal("restored principal still describes the previous session's vendor or version")
 	}
-	if f.count("SELECT root_tokens FROM principal WHERE id=?", aid) != 3 || f.count("SELECT COUNT(*) FROM leaf WHERE state='fenced' AND digest=?", a.digest()) != 1 || f.count("SELECT principal_id FROM leaf WHERE digest=?", replacement.digest()) != int(aid) {
-		t.Fatal("restore did not preserve credits, fence the old leaf and attach the provisional replacement")
+	if f.count("SELECT round_limit FROM principal WHERE id=?", aid) != 3 || f.count("SELECT COUNT(*) FROM leaf WHERE state='fenced' AND digest=?", a.digest()) != 1 || f.count("SELECT principal_id FROM leaf WHERE digest=?", replacement.digest()) != int(aid) {
+		t.Fatal("restore did not preserve the round limit, fence the old leaf and attach the provisional replacement")
 	}
 	if f.count("SELECT COUNT(*) FROM event WHERE kind='binding_restored'") != 1 || f.count("SELECT COUNT(*) FROM op WHERE verb='owner restore'") != 1 || strings.Contains(string(r.Data), cmd.Key) || f.count("SELECT COUNT(*) FROM event WHERE instr(detail,?)>0 OR instr(subject,?)>0", cmd.Key, cmd.Key) != 0 {
 		t.Fatal("restore event, key privacy or replay mismatch")

@@ -134,10 +134,10 @@ func TestOwnerGateRefusesWithoutPublishing(t *testing.T) {
 }
 
 func TestOwnerChannelCreateIsOwnerCall(t *testing.T) {
-	ft := &fakeTransport{result: okResult(t, domain.ChannelResult{Channel: "checkout", JoinPool: 8})}
+	ft := &fakeTransport{result: okResult(t, domain.ChannelResult{Channel: "checkout"})}
 	stdout, _, code := run(t, Env{Transport: ft, OwnerGate: func() string { return "" }},
 		"owner", "channel", "create", "checkout", "--topic", "payment screen")
-	if code != core.ExitOK || stdout != "#checkout created. Its join pool holds 8 root token(s): each member's first join takes one.\n" {
+	if code != core.ExitOK || stdout != "#checkout created.\n" {
 		t.Fatalf("exit %d, stdout %q", code, stdout)
 	}
 	c := ft.calls[0]
@@ -146,15 +146,20 @@ func TestOwnerChannelCreateIsOwnerCall(t *testing.T) {
 	}
 }
 
-func TestOwnerChannelCreateTakesAPool(t *testing.T) {
-	ft := &fakeTransport{result: okResult(t, domain.ChannelResult{Channel: "practice"})}
-	stdout, _, code := run(t, Env{Transport: ft, OwnerGate: func() string { return "" }},
+func TestOwnerChannelCreateIgnoresPool(t *testing.T) {
+	ft := &fakeTransport{result: okResult(t, domain.ChannelResult{Channel: "practice", PoolIgnored: true})}
+	stdout, stderr, code := run(t, Env{Transport: ft, OwnerGate: func() string { return "" }},
 		"owner", "channel", "create", "practice", "--pool", "0")
-	if code != core.ExitOK || stdout != "#practice created, with no join pool.\n" {
+	if code != core.ExitOK || stdout != "#practice created.\n" || stderr != "crosshall: --pool was ignored.\n" {
 		t.Fatalf("exit %d, stdout %q", code, stdout)
 	}
 	if cmd, ok := ft.calls[0].Command.(domain.CreateChannel); !ok || cmd.Pool == nil || *cmd.Pool != 0 {
 		t.Fatalf("wrong call: %+v", ft.calls[0])
+	}
+	stdout, stderr, code = run(t, Env{Transport: ft, OwnerGate: func() string { return "" }},
+		"--json", "owner", "channel", "create", "practice", "--pool", "0")
+	if code != core.ExitOK || !strings.Contains(stdout, `"pool_ignored":true`) || stderr != "crosshall: --pool was ignored.\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	for _, bad := range []string{"-1", "x", ""} {
 		if _, _, code := run(t, Env{Transport: &fakeTransport{}, OwnerGate: func() string { return "" }},

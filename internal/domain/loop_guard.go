@@ -2,19 +2,26 @@ package domain
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 const (
-	roundDurationMS   = int64(10 * time.Minute / time.Millisecond)
-	burstRequestLimit = 30
-	burstAnswerLimit  = 60
-	guardWouldRefuse  = "loop_guard_would_refuse"
+	roundDurationMS    = int64(10 * time.Minute / time.Millisecond)
+	burstRequestLimit  = 30
+	burstAnswerLimit   = 60
+	guardDefaultRounds = 8
+	guardStopped       = "loop_guard_stopped"
 )
 
 type guardDecision struct {
+	BaseMS      int64
 	LevelMS     int64  `json:"level_ms"`
 	Round       int64  `json:"round"`
 	RoundLimit  int64  `json:"round_limit"`
@@ -27,7 +34,7 @@ type guardDecision struct {
 func evaluateGuard(now, position, limit, requests, owedAnswers int64, recipients int) guardDecision {
 	level := max(now, position) + roundDurationMS
 	decision := guardDecision{
-		LevelMS: level, Round: roundAt(level, now),
+		BaseMS: position, LevelMS: level, Round: roundAt(level, now),
 		RoundLimit: limit, Requests: requests, OwedAnswers: owedAnswers,
 	}
 	switch {
@@ -39,6 +46,156 @@ func evaluateGuard(now, position, limit, requests, owedAnswers int64, recipients
 		decision.Reason = "round_limit"
 	}
 	return decision
+}
+
+type guardStop struct {
+	Channel      string   `json:"channel"`
+	Sender       string   `json:"sender"`
+	Recipients   []string `json:"recipients"`
+	Round        int64    `json:"round"`
+	RoundLimit   int64    `json:"round_limit"`
+	ThreadRootID int64    `json:"thread_root_id"`
+}
+
+func refuseGuard(ctx context.Context, tx store.Tx, m member, cmd Ask, targets []target, d guardDecision, now time.Time) (core.Result, error) {
+	switch d.Reason {
+	case "audience_too_large":
+		return Refuse(core.CodeAudienceTooLarge,
+			fmt.Sprintf("not sent: %d members would owe an answer; one request may ask at most %d", len(targets), burstAnswerLimit),
+			"name fewer members, or send a note."), nil
+	case "too_many_requests":
+		at, err := burstRetryAt(ctx, tx, m.principal, len(targets), now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		description := fmt.Sprintf("your requests in the last 10 minutes already ask for %d answers; this one adds %d and the limit is %d",
+			d.OwedAnswers-int64(len(targets)), len(targets), burstAnswerLimit)
+		if d.Requests > burstRequestLimit {
+			description = fmt.Sprintf("%d requests from you in 10 minutes", d.Requests-1)
+		}
+		return Refuse(core.CodeTooManyRequests, "not sent: "+description,
+			fmt.Sprintf("it fits the burst limit again at %s. Nothing else lifts this.", at.Format("15:04"))), nil
+	}
+
+	const guidance = "do not retry or reroute it. crosshall reply and crosshall note still work. The stop is recorded for the owner."
+	detail := guardStop{Channel: m.channelName, Sender: m.alias, Recipients: sortedUnique(cmd.To),
+		Round: d.Round, RoundLimit: d.RoundLimit, ThreadRootID: d.Path}
+	if cmd.All {
+		for _, t := range targets {
+			detail.Recipients = append(detail.Recipients, t.alias)
+		}
+	}
+	if d.Path != 0 {
+		exchange, err := exchangeForRoot(ctx, tx, d.Path)
+		if err != nil {
+			return core.Result{}, err
+		}
+		updated, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 1, episode_count = episode_count + 1
+			WHERE id = ? AND episode_open = 0`, exchange)
+		if err := recordGuardStop(ctx, tx, updated, err, fmt.Sprintf("exchange:%d", exchange), m.principal, detail, now); err != nil {
+			return core.Result{}, err
+		}
+		return Refuse(core.CodeRoundLimit,
+			fmt.Sprintf("not sent: this request would be round %d on x%d; this thread may run %d rounds ahead", d.Round, exchange, d.RoundLimit),
+			guidance), nil
+	}
+	hint, err := guardParentHint(ctx, tx, m, ms(now))
+	if err != nil {
+		return core.Result{}, err
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE principal SET guard_told = 1 WHERE id = ? AND guard_told = 0`, m.principal)
+	if err := recordGuardStop(ctx, tx, updated, err, fmt.Sprintf("principal:%d", m.principal), m.principal, detail, now); err != nil {
+		return core.Result{}, err
+	}
+	return Refuse(core.CodeRoundLimit,
+		fmt.Sprintf("not sent: this request would be round %d across what you have picked up; new threads from you may run %d rounds ahead",
+			d.Round, d.RoundLimit), guidance+hint), nil
+}
+
+func burstRetryAt(ctx context.Context, tx store.Tx, principal int64, recipients int, now time.Time) (time.Time, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT m.created_at_ms, (SELECT COUNT(*) FROM obligation o WHERE o.message_id = m.id)
+		FROM message m WHERE m.kind = 'ask' AND m.sender_id = ?
+		AND m.created_at_ms > ? AND m.created_at_ms <= ? ORDER BY m.created_at_ms DESC`, principal, ms(now)-roundDurationMS, ms(now))
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer rows.Close()
+	requests, answers := 1, recipients
+	for rows.Next() {
+		var at int64
+		var owed int
+		if err := rows.Scan(&at, &owed); err != nil {
+			return time.Time{}, err
+		}
+		requests++
+		answers += owed
+		if requests > burstRequestLimit || answers > burstAnswerLimit {
+			retry := time.UnixMilli(at + roundDurationMS)
+			ceiling := retry.Truncate(time.Minute)
+			if ceiling.Before(retry) {
+				ceiling = ceiling.Add(time.Minute)
+			}
+			return ceiling, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return time.Time{}, fmt.Errorf("domain: burst refusal has no expiring request")
+}
+
+func guardParentHint(ctx context.Context, tx store.Tx, m member, now int64) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT ask.id, COALESCE(ask.thread_root_id, ask.id)
+		FROM obligation o JOIN message ask ON ask.id = o.message_id
+		WHERE o.principal_id = ? AND o.state = 'open' AND ask.channel_id = ? ORDER BY ask.id`, m.principal, m.channel)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var ids []string
+	for len(ids) < 5 && rows.Next() {
+		var id, root int64
+		if err := rows.Scan(&id, &root); err != nil {
+			return "", err
+		}
+		level, limit, err := guardPosition(ctx, tx, m.principal, root, id)
+		if err != nil {
+			return "", err
+		}
+		if roundAt(max(now, level)+roundDurationMS, now) <= limit {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+	}
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return "", err
+	}
+	return " If it follows a request you owe, add --re <id>: " + strings.Join(ids, " ") + ".", nil
+}
+
+func recordGuardStop(ctx context.Context, tx store.Tx, updated sql.Result, err error, subject string, principal int64, detail guardStop, now time.Time) error {
+	if err != nil {
+		return err
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil || changed == 0 {
+		return err
+	}
+	return audit(ctx, tx, guardStopped, subject, principal, detail, now)
+}
+
+func endDrainedStop(ctx context.Context, tx store.Tx, principal int64, d guardDecision, now int64) error {
+	if d.BaseMS > now {
+		return nil
+	}
+	if d.Path != 0 {
+		_, err := tx.ExecContext(ctx, `UPDATE exchange SET episode_open = 0 WHERE episode_open = 1
+			AND id = (SELECT exchange_id FROM message WHERE id = ?1)
+			AND ?1 = (SELECT json_extract(detail, '$.thread_root_id') FROM event
+				WHERE kind = ?2 AND subject = 'exchange:' || exchange.id ORDER BY seq DESC LIMIT 1)`, d.Path, guardStopped)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE principal SET guard_told = 0 WHERE id = ? AND guard_told = 1`, principal)
+	return err
 }
 
 func roundAt(level, now int64) int64 {

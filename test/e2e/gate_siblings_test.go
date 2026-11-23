@@ -18,7 +18,6 @@ func TestGateSameVendorSiblings(t *testing.T) {
 	sender.must("join", "review", "--as", "author")
 	target.must("join", "review", "--as", "editor")
 	sibling.must("join", "review", "--as", "observer")
-	owner.must("owner", "budget", "grant", "review/@author", "--roots", "1")
 
 	const question = "Which edition goes to print?"
 	const answer = "Use the evening edition."

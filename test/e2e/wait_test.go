@@ -119,7 +119,6 @@ func TestWaitReportsNewAddressedAskWithoutPickup(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax := members[0], members[1]
 	db := w.db()
-	grantRoots(t, w, "tax", 1)
 	tax.must("note", "@form", "older unread note")
 	before := waitMemberState(t, db, form, "form")
 

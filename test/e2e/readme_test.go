@@ -205,7 +205,7 @@ func readmeNormalize(lines []string) string {
 
 func TestReadmeNormalizeDueDate(t *testing.T) {
 	for _, tc := range []struct{ output, want string }{
-		{"#1 stored. due Nov 21 00:15. exchange x1 (new): 7 left.", "#1 stored. due HH:MM. exchange x1 (new): 7 left."},
+		{"#1 stored. due Nov 21 00:15.", "#1 stored. due HH:MM."},
 		{"#1 ask from @writer in #demo, due Dec 1 00:15\n#2 stored. due Dec 1 00:15.",
 			"#1 ask from @writer in #demo, due HH:MM\n#2 stored. due Dec 1 HH:MM."},
 	} {

@@ -32,25 +32,19 @@ func TestAskMissingRecipientPrefix(t *testing.T) {
 	if withRecipient.exit != 2 || !strings.Contains(withRecipient.stdout, "give the text once") {
 		t.Fatalf("recipient after the text was overlooked: %s", withRecipient.stdout)
 	}
-	owner.must("owner", "budget", "grant", "demo/@writer", "--roots", "1")
 	member.must("ask", "@reviewer", "text")
 }
 
-func TestPlainAskNamesWhoseExchangeItUses(t *testing.T) {
+func TestAskJSONKeepsOriginalOpenerAcrossAliasReuse(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax, lint := members[0], members[1], members[2]
-	grantRoots(t, w, "form", 1)
 	form.must("ask", "@tax", "Check the totals.", "--new")
 
-	// Tax has no roots. An unqualified follow-up spends a unit of Form's exchange.
-	if out := tax.mustPlain("ask", "@lint", "Please check the count."); !strings.Contains(out, "exchange x1 (opened by @form): 6 left.") || !strings.Contains(out, "Run crosshall status") {
-		t.Fatalf("missing exchange opener: %s", out)
+	if out := tax.mustPlain("ask", "@lint", "Please check the count."); !strings.Contains(out, "#2 stored. due ") || strings.Contains(out, "exchange ") {
+		t.Fatalf("unexpected plain ask receipt: %s", out)
 	}
-	if status := tax.mustPlain("status"); !strings.Contains(status, "x1") {
-		t.Fatalf("suggested command did not show the exchange: %s", status)
-	}
-	if out := form.mustPlain("ask", "@lint", "Send the figures."); !strings.Contains(out, "exchange x1: 5 left.") {
-		t.Fatalf("unexpected receipt for own exchange: %s", out)
+	if status := tax.mustPlain("status"); !strings.Contains(status, "Round 1 of 8 on x1.") {
+		t.Fatalf("member status omitted the current thread's round: %s", status)
 	}
 	key := randomHex(16)
 	command := []string{"--key", key, "ask", "@lint", "Check the final count."}
@@ -62,10 +56,10 @@ func TestPlainAskNamesWhoseExchangeItUses(t *testing.T) {
 	replacement := w.member()
 	replacement.must("join", "checkout", "--as", "form")
 	o := tax.must(command...)
-	if o.obj["id"] != sent.obj["id"] || o.obj["remaining"] != sent.obj["remaining"] || o.obj["exchange_opener"] != "form" || o.obj["exchange_opener_departed"] != true {
+	if o.obj["id"] != sent.obj["id"] || o.obj["round"] != sent.obj["round"] || o.obj["exchange_opener"] != "form" || o.obj["exchange_opener_departed"] != true {
 		t.Fatalf("the new holder of the opener's alias must not get credit: %s", o.stdout)
 	}
-	if out := lint.mustPlain("ask", "@tax", "Which figures?"); !strings.Contains(out, "opened by @form, now departed") {
-		t.Fatalf("ambiguous alias after departure: %s", out)
+	if o := lint.must("ask", "@tax", "Which figures?"); o.obj["exchange_opener"] != "form" || o.obj["exchange_opener_departed"] != true {
+		t.Fatalf("ambiguous alias after departure: %s", o.stdout)
 	}
 }

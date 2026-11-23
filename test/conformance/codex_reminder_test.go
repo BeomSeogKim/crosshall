@@ -58,7 +58,6 @@ func TestCodexReminderTransport(t *testing.T) {
 	codexMust(t, codexCLI(exe, env, "owner", "adapter", "set", "codex", "--enabled", "on"))
 	peer := append(slices.Clone(env), "CODEX_THREAD_ID=fixture-peer")
 	codexMust(t, codexCLI(exe, peer, "join", "fixture", "--as", "gate-peer"))
-	codexMust(t, codexCLI(exe, env, "owner", "budget", "grant", "fixture/@gate-peer", "--roots", "1"))
 	peerEvent := func(name, field, value string) error {
 		input, err := json.Marshal(map[string]string{"hook_event_name": name, "session_id": "fixture-peer", "cwd": repo, field: value})
 		if err != nil {

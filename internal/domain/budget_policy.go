@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"math"
 	"math/bits"
 	"time"
@@ -27,10 +26,15 @@ func (BudgetPolicy) command()     {}
 func (BudgetPolicy) Verb() string { return VerbBudgetPolicy }
 
 type BudgetPolicyResult struct {
-	Channel string `json:"channel"`
-	Alias   string `json:"alias,omitempty"`
-	Refill  int64  `json:"refill_per_hour"`
-	Ceiling int64  `json:"ceiling"`
+	Channel       string `json:"channel"`
+	Alias         string `json:"alias,omitempty"`
+	RoundLimit    *int64 `json:"round_limit,omitempty"`
+	RoundMinutes  int64  `json:"round_minutes,omitempty"`
+	WindowMinutes int64  `json:"window_minutes,omitempty"`
+	RequestLimit  int    `json:"request_limit,omitempty"`
+	AnswerLimit   int    `json:"answer_limit,omitempty"`
+	Refill        int64  `json:"refill_per_hour,omitempty"`
+	Ceiling       int64  `json:"ceiling,omitempty"`
 }
 
 type rootBudget struct {
@@ -94,73 +98,41 @@ func rootRefillTime(at int64) string {
 	return time.UnixMilli(at).UTC().Format(time.RFC3339Nano)
 }
 
-func (s *Service) budgetPolicy(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd BudgetPolicy, now time.Time) (core.Result, error) {
+func (s *Service) budgetPolicy(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd BudgetPolicy) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
-		return Refuse(core.CodeOwnerOnly, "only the owner can set root token policy", "crosshall status shows your root tokens"), nil
+		return Refuse(core.CodeOwnerOnly, "only the owner can view guard policy", "crosshall status shows your rounds"), nil
 	}
-	if !ValidName(cmd.Channel) || (cmd.Alias != "" && !ValidName(cmd.Alias)) ||
-		(cmd.Refill != nil && (*cmd.Refill < 0 || *cmd.Refill > rootRefillUnits)) || (cmd.Ceiling != nil && *cmd.Ceiling < 0) {
-		return Fail(core.ExitUsage, "", "invalid root token policy",
-			"crosshall owner budget policy <channel>[/@<alias>] [--refill N/h] [--ceiling N]"), nil
+	if !ValidName(cmd.Channel) || (cmd.Alias != "" && !ValidName(cmd.Alias)) {
+		return Fail(core.ExitUsage, "", "invalid guard policy target", "crosshall owner budget policy <channel>[/@<alias>]"), nil
+	}
+	if cmd.Refill != nil || cmd.Ceiling != nil {
+		if r, found, err := replayOwnerBudget(ctx, tx, req, "channel:"+cmd.Channel, cmd); found || err != nil {
+			return r, err
+		}
+		return Refuse(core.CodeRetired, "these policy flags are retired",
+			"crosshall owner budget grant <channel>/x<id> or <channel>/@<alias> with --rounds <n>"), nil
 	}
 	ch, found, err := channelByName(ctx, tx, cmd.Channel)
 	if err != nil {
 		return core.Result{}, err
 	}
 	if !found {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel named %s", cmd.Channel), "crosshall owner status --all lists the channels"), nil
+		return Refuse(core.CodeNotFound, "no channel named "+cmd.Channel, "crosshall owner status --all lists the channels"), nil
 	}
-	change := cmd.Refill != nil || cmd.Ceiling != nil
-	scope := "channel:" + ch.name
-	var owner int64
-	if change {
-		owner, err = ownerPrincipal(ctx, tx, now)
+	rounds := int64(guardDefaultRounds)
+	if cmd.Alias != "" {
+		err := tx.QueryRowContext(ctx, `SELECT p.round_limit FROM binding b JOIN principal p ON p.id = b.principal_id
+            WHERE b.channel_id = ? AND b.alias = ? AND b.state = 'live'`, ch.id, cmd.Alias).Scan(&rounds)
+		if errors.Is(err, sql.ErrNoRows) {
+			return noLiveBudgetMember(ch, cmd.Alias), nil
+		}
 		if err != nil {
 			return core.Result{}, err
 		}
-		if r, found, err := replay(ctx, tx, owner, req.OpKey, scope, cmd); found || err != nil {
-			return r, err
-		}
 	}
-	before := BudgetPolicyResult{Channel: ch.name, Alias: cmd.Alias}
-	var binding int64
-	if cmd.Alias == "" {
-		err = tx.QueryRowContext(ctx, `SELECT root_refill_per_hour, root_refill_ceiling FROM channel WHERE id = ?`, ch.id).
-			Scan(&before.Refill, &before.Ceiling)
-	} else {
-		err = tx.QueryRowContext(ctx, `SELECT b.id, COALESCE(b.root_refill_per_hour, c.root_refill_per_hour),
-			COALESCE(b.root_refill_ceiling, c.root_refill_ceiling)
-			FROM binding b JOIN channel c ON c.id = b.channel_id JOIN principal p ON p.id = b.principal_id
-			WHERE b.channel_id = ? AND b.alias = ? AND b.state = 'live' AND p.kind = 'session'`,
-			ch.id, cmd.Alias).Scan(&binding, &before.Refill, &before.Ceiling)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no live member @%s in #%s", cmd.Alias, ch.name), "crosshall owner who --all"), nil
-	}
-	if err != nil {
-		return core.Result{}, err
-	}
-	if !change {
-		return OK(before)
-	}
-	after := before
-	if cmd.Refill != nil {
-		after.Refill = *cmd.Refill
-	}
-	if cmd.Ceiling != nil {
-		after.Ceiling = *cmd.Ceiling
-	}
-	if err := applyRootPolicy(ctx, tx, ch.id, binding, cmd, before, after, now); err != nil {
-		return core.Result{}, err
-	}
-	if err := audit(ctx, tx, "root_budget_policy", scope, owner, after, now); err != nil {
-		return core.Result{}, err
-	}
-	r, err := OK(after)
-	if err != nil {
-		return core.Result{}, err
-	}
-	return r, record(ctx, tx, owner, req.OpKey, scope, cmd, r, now)
+	minutes := roundDurationMS / int64(time.Minute/time.Millisecond)
+	return OK(BudgetPolicyResult{Channel: ch.name, Alias: cmd.Alias, RoundLimit: &rounds,
+		RoundMinutes: minutes, WindowMinutes: minutes, RequestLimit: burstRequestLimit, AnswerLimit: burstAnswerLimit})
 }
 
 func applyRootPolicy(ctx context.Context, tx store.Tx, channel, binding int64, cmd BudgetPolicy, before, after BudgetPolicyResult, now time.Time) error {

@@ -34,7 +34,7 @@ Member commands:
   whoami [--full]                                   Show a short identity digest (--full prints the raw key)
   ask @a [@b ...] "..." [--due 30m] [--re <id>] [--new]
                                                     Ask members for an answer (or --all --each)
-                                                    Use --new --re <id> for a funded handoff
+                                                    Use --new --re <id> to link a new thread
   reply <id> "..." [--decline|--more-time]          Answer a request addressed to you
   note @a [@b ...] "..."                            Tell members something; no answer expected (or --all)
   log [--since <id>] [--limit <n>]                  Show the channel's history
@@ -60,9 +60,7 @@ Owner commands (from a separate owner terminal):
   uninstall [--dry-run|--apply] [names]             Preview or remove hooks installed by Crosshall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
-  owner channel create <name> [--topic "..."] [--pool <n>]
-                                                    Create a channel; each first join takes
-                                                    one root token from its pool (default 8)
+  owner channel create <name> [--topic "..."]         Create a channel
   owner who --all                                   List all channel bindings
   owner depart <binding-id> --seen <token>           Mark a binding departed
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
@@ -72,11 +70,10 @@ Owner commands (from a separate owner terminal):
   owner doctor                                      Check local dispatcher state
   owner status [--all | --channel <channel>]         Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
-  owner budget policy <channel>[/@<alias>] [--refill <N/h|0>] [--ceiling <N>]
-                                                    Show or set automatic root token refill
-  owner budget grant <channel>/x<id> <units>         Add exchange credit
-  owner budget grant <channel>/@<alias> --roots <n>   Add root tokens
-  owner budget grant <channel> --pool <n>            Add root tokens to a channel's join pool
+  owner budget policy <channel>[/@<alias>]           Show the loop guard limits
+  owner budget grant <channel>/x<id> [--rounds <n>]   Reset a thread (default 8)
+  owner budget grant <channel>/@<alias> [--rounds <n>]
+                                                    Reset a member's new threads (default 8)
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
@@ -504,7 +501,7 @@ func parseCreateChannel(args []string) (domain.CreateChannel, error) {
 		cmd.Name = strings.TrimPrefix(args[i], "#")
 	}
 	if !domain.ValidName(cmd.Name) {
-		return cmd, fmt.Errorf("usage: crosshall owner channel create <name> [--topic \"...\"] [--pool <n>]; a name is 1-32 of a-z, 0-9 and -")
+		return cmd, fmt.Errorf("usage: crosshall owner channel create <name> [--topic \"...\"]; a name is 1-32 of a-z, 0-9 and -")
 	}
 	return cmd, nil
 }

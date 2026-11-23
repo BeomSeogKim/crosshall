@@ -4,12 +4,19 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-From v0.2.0-rc.1, the next release migrates the database from schema 18 to schema 21. Migration 19 records the reachability advice a member received. Migration 20 adds `member_host` to record the process hosting a member. Migration 21 adds the records of budget rounds; this release only records them and changes no behavior. The first dispatcher start of the new program copies the schema 18 database to `store-v18-*.sqlite3` beside `store.sqlite3`; v0.2.0-rc.1 does not start on schema 21, so keep that copy if you may go back.
+From v0.2.0-rc.1, the next release migrates the database from schema 18 to schema 22. Migrations 19 and 20 store reachability advice and member process tracking. Migration 21 adds round records. Migration 22 clears recorded positions and fences existing requests, so pre-upgrade requests and replies do not advance the new round guard. Existing messages, deadlines, obligations and operation keys remain available.
 
 1. Stop your agents' crosshall commands, including a `crosshall wait` running in the background.
 2. Run `crosshall owner stop`. A dispatcher that keeps running is still the old program: the database is not migrated and nothing below changes until it is stopped and started again.
-3. Install the new release as the [README](README.md#quick-start) shows, with the new release's tag in place of `v0.2.0-rc.1` in the clone command. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
-4. Run `crosshall owner start`.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. The new dispatcher also keeps a versioned backup beside the database on first start.
+4. Install the new release as the [README](README.md#quick-start) shows, with the new release's tag in place of `v0.2.0-rc.1` in the clone command. On a machine without Go the installer needs `--force`, as step 3 for v0.2.0-rc.1 below describes.
+5. Run `crosshall owner start`.
+
+To roll back, stop the new dispatcher, restore the state database from your pre-upgrade copy and restart the old binary. The old binary rejects schema 22. Restoring the copy discards messages and other changes made since the upgrade.
+
+The loop guard replaces exchange units, root tokens and the join pool. Each independent request opens its own exchange. Rule 6 tells members to reply or note what they have when a request stops. Owner status shows active stops, and `owner budget grant <channel>/x<id> --rounds <n>` and `owner budget grant <channel>/@<alias> --rounds <n>` reset the corresponding scope. A positional number on the thread form sets rounds. `grant --roots`, `grant --pool`, `policy --refill` and `policy --ceiling` exit 3 with `retired`. `owner channel create --pool` still creates the channel, prints a warning and returns `pool_ignored: true` in JSON.
+
+In `ask --json`, `round` replaces `debit` and `remaining`. Exchange fields stay. In member and owner status JSON, `round`, `round_limit` and `guard_stops` replace `granted`, `spent`, `remaining`, `root_tokens`, `next_root_token_at_ms`, `join_pool` and `budget_exhaustions`. Replaying a previously stored mutation key still returns its committed result.
 
 Your agents' sessions need no new start and the hooks need not be installed again: the installed hook entries are the same as those of v0.2.0-rc.1.
 

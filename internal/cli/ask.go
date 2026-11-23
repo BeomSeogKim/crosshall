@@ -270,27 +270,7 @@ func renderAsk(data []byte, w io.Writer) error {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	ex := fmt.Sprintf("x%d", r.Exchange)
-	if r.ParentRequestID != 0 {
-		ex += fmt.Sprintf(" (new handoff for #%d)", r.ParentRequestID)
-	} else if r.NewExchange {
-		ex += " (new)"
-	} else if r.ExchangeOpener != "" {
-		opener := "@" + r.ExchangeOpener
-		if r.ExchangeOpenerDeparted {
-			opener += ", now departed"
-		}
-		ex += " (opened by " + opener + ")"
-	}
-	if r.Remaining == 0 {
-		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: 0 left; this request spent its last unit.\n",
-			r.ID, clock(r.DueAtMS), ex)
-	} else {
-		fmt.Fprintf(w, "#%d stored. due %s. exchange %s: %d left.\n", r.ID, clock(r.DueAtMS), ex, r.Remaining)
-	}
-	if r.ExchangeOpener != "" {
-		fmt.Fprintln(w, "Run crosshall status to see the exchange balance.")
-	}
+	fmt.Fprintf(w, "#%d stored. due %s.\n", r.ID, clock(r.DueAtMS))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, d := range r.Recipients {
 		fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d))

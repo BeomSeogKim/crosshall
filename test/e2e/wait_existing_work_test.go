@@ -106,7 +106,6 @@ func assertWorkUnread(t *testing.T, db *sql.DB, id int64) {
 func TestWaitExistingWorkClosesInboxReplyHandoff(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 2)
 	ask := num(t, form.must("ask", "@tax", "check the totals"), "id")
 	inbox := form.must("inbox")
 	if len(ids(inbox.obj["unread"])) != 0 {
@@ -149,7 +148,6 @@ func TestWaitExistingWorkClosesInboxReplyHandoff(t *testing.T) {
 func TestWaitExistingWorkClosesRearmGap(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 1)
 	child := startWaitAfterInitialQuery(t, tax, "--timeout", "5s")
 	note := num(t, form.must("note", "@tax", "first wake"), "id")
 	assertWorkItem(t, awaitWorkWait(t, child, "").Unread, note, "note")
@@ -165,7 +163,6 @@ func TestWaitExistingWorkClosesRearmGap(t *testing.T) {
 func TestWaitExistingOwedRequestDoesNotWakeWait(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 2)
 	ask := num(t, form.must("ask", "@tax", "review the calculation"), "id")
 	tax.must("read", strconv.FormatInt(ask, 10))
 	db := w.db()
@@ -201,7 +198,6 @@ func TestWaitExistingOwedRequestDoesNotWakeWait(t *testing.T) {
 func TestWaitExistingWorkIgnoresNotesUntilARequestArrives(t *testing.T) {
 	w, _, members := setup(t)
 	form, tax := members[0], members[1]
-	grantRoots(t, w, "form", 1)
 	old := num(t, form.must("note", "@tax", "earlier note"), "id")
 	db := w.db()
 	before := waitMemberState(t, db, tax, "tax")

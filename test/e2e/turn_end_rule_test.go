@@ -33,7 +33,6 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	form, tax := w.member(), w.member()
 	form.must("join", "checkout", "--as", "form")
 	tax.must("join", "checkout", "--as", "tax")
-	grantRoots(t, w, "form", 1)
 
 	require := func(output, text string) {
 		t.Helper()
@@ -112,7 +111,6 @@ func TestTurnEndRuleShellOnlyMember(t *testing.T) {
 	if !strings.Contains(joined, rule) {
 		t.Fatalf("join does not state the turn-end rule:\n%s", joined)
 	}
-	grantRoots(t, w, "tax", 1)
 
 	// tax's turn: it asks form something of its own.
 	own := num(t, tax.must("ask", "@form", "Which rounding mode?"), "id")

@@ -28,7 +28,6 @@ func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 	c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
 	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 	c.writer("join", "checkout", "--as", "writer")
-	c.owner("owner", "budget", "grant", "checkout/@writer", "--roots", "1")
 	c.install()
 	version := c.version()
 	if tested {

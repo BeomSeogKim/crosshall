@@ -55,7 +55,7 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 	if err != nil {
 		return false, err
 	}
-	process, err := cfg.spawn(state, executable)
+	process, err := cfg.spawn(state, executable, time.Time{})
 	if err != nil {
 		return false, err
 	}
@@ -129,7 +129,7 @@ func startupError(err error) error {
 	return fmt.Errorf("dispatcher did not become ready; see dispatcher.log: %w", err)
 }
 
-func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, error) {
+func (cfg LaunchConfig) spawn(state *os.Root, executable string, deadline time.Time) (*os.Process, error) {
 	logFile, err := spool.OpenServerFile(state, "dispatcher.log", os.O_WRONLY|os.O_APPEND|os.O_CREATE)
 	if err != nil {
 		return nil, err
@@ -138,6 +138,14 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string) (*os.Process, e
 	cmd := exec.Command(executable, dispatcherSubcommand())
 	cmd.Dir = cfg.StateRoot
 	cmd.Env = cfg.dispatcherEnv()
+	if !deadline.IsZero() {
+		now, err := monotonicNanos()
+		if err != nil {
+			return nil, err
+		}
+		cutoff := now + time.Until(deadline).Nanoseconds()
+		cmd.Env = append(cmd.Env, lockCutoffEnv+"="+strconv.FormatInt(cutoff, 10))
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

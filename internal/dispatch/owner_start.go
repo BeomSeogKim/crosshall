@@ -25,6 +25,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 	}
 	wait, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
+	deadline, _ := wait.Deadline()
 	state, err := cfg.openStartState(wait)
 	if err != nil {
 		return err
@@ -65,7 +66,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 			if launchFailed {
 				stage = "waiting after the startup child exited unsuccessfully"
 			} else if exited == nil {
-				exited, err = cfg.startCandidate(state)
+				exited, err = cfg.startCandidate(state, deadline)
 				if err != nil {
 					return err
 				}
@@ -96,12 +97,12 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 		"At the final check, %s and %s. See dispatcher.log.", wait.Err(), stage, lock, marker)
 }
 
-func (cfg LaunchConfig) startCandidate(state *os.Root) (<-chan bool, error) {
+func (cfg LaunchConfig) startCandidate(state *os.Root, deadline time.Time) (<-chan bool, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	process, err := cfg.spawn(state, executable)
+	process, err := cfg.spawn(state, executable, deadline)
 	if err != nil {
 		return nil, err
 	}

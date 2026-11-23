@@ -102,7 +102,7 @@ Send usage statistics? [Y/n]
 $ crosshall owner who --all
 #shop-api
   @claude1 [binding 1] live, claude, focus unset; the hall starts its turn; publish: available, last evidence: unknown (joined 1s ago); ends by its hooks; depart token: 9b91d2a1d6ca3f9e0b1aed0a
-  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; publish: candidate (no sender for codex), last evidence: unknown (joined 0s ago); last observed: prompt submitted 0s ago (unverified); ends by its hooks; depart token: c72075004a3e86a72de918dd
+  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; publish: candidate (no sender for codex), last evidence: unknown (joined 0s ago); last observed: prompt submitted 0s ago (unverified); exit not tracked; depart token: c72075004a3e86a72de918dd
 To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.
 ```
 

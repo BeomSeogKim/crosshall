@@ -11,19 +11,21 @@ func TestExitTrackingModes(t *testing.T) {
 		host, enabled         bool
 		want                  ExitTracking
 	}{
-		{name: "enabled end hook", adapter: "codex", launch: "session", host: true, enabled: true, want: ExitByHooks},
-		{name: "verified process launch", adapter: "claude", launch: "pid-100-stable", want: ExitByProcess},
+		{name: "Claude process launch with its end hook enabled", adapter: "claude", launch: "pid-100-stable", enabled: true, want: ExitByHooks},
+		{name: "Claude process launch, adapter off", adapter: "claude", launch: "pid-100-stable", want: ExitByProcess},
+		{name: "Codex session launch with its end hook enabled", adapter: "codex", launch: "session", host: true, enabled: true, want: ExitByProcess},
+		{name: "Codex session launch without a host", adapter: "codex", launch: "session", enabled: true, want: ExitUntracked},
+		{name: "Codex session launch, adapter off", adapter: "codex", launch: "session", host: true, want: ExitByProcess},
 		{name: "host without a launch", host: true, want: ExitByProcess},
 		{name: "Antigravity startup hook", adapter: "agy", launch: "session", host: true, enabled: true, want: ExitByProcess},
 		{name: "Antigravity startup hook without a host", adapter: "agy", launch: "session", enabled: true, want: ExitUntracked},
-		{name: "end hook switched off", adapter: "codex", launch: "session", host: true, want: ExitByProcess},
 		{name: "no launch or host", want: ExitUntracked},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHostFixture(t)
 			f.svc.LaunchPIDNamespace = func() string { return "" }
 			f.svc.HasSessionEnd = func(adapter, revision string) bool {
-				return adapter == "codex" && revision == "codex-1"
+				return (adapter == "claude" || adapter == "codex") && revision == adapter+"-1"
 			}
 			member := f.principal(f.worker)
 			if !tc.host {
@@ -33,8 +35,8 @@ func TestExitTrackingModes(t *testing.T) {
 			}
 			if tc.launch != "" {
 				if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-					VALUES (?, ?, json_object('adapter', ?, 'manifest_rev', ?), 1, ?)`,
-					member, tc.launch, tc.adapter, tc.adapter+"-1", ms(f.now)); err != nil {
+					VALUES (?, ?, json_object('adapter', ?, 'manifest_rev', ?), ?, ?)`,
+					member, tc.launch, tc.adapter, tc.adapter+"-1", tc.launch != SessionLaunch, ms(f.now)); err != nil {
 					t.Fatal(err)
 				}
 			}

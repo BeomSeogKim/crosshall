@@ -414,12 +414,18 @@ func invalidatePublishRouteForLeave(ctx context.Context, tx store.Tx, bindingID 
 	return retirePublishRoute(ctx, tx, bindingID, "left channel", now)
 }
 
-// withPublishStatus gives an agent the state word only; reasons and times
-// are for the owner's views.
+// withPublishStatus gives an agent the state word and what will tell the
+// member about new work; reasons and times are for the owner's views.
 func withPublishStatus(ctx context.Context, tx store.Tx, bindingID int64, m *Member, now time.Time) error {
-	status, err := publishStatusOf(ctx, tx, bindingID, now)
-	m.Publish = publishWord(status)
-	return err
+	status, found, err := store.ReadPublishState(ctx, tx, bindingID, now)
+	if err != nil {
+		return err
+	}
+	if found {
+		m.Publish = &PublishStatus{State: status.State}
+	}
+	m.Wake = reachWake(status, found)
+	return nil
 }
 
 func publishWord(status *PublishStatus) *PublishStatus {

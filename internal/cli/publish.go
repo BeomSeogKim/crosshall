@@ -88,3 +88,83 @@ func noticeText(label string, n domain.LedgerNotice) string {
 	}
 	return text
 }
+
+// wakeText says what will tell a member about new work: a notice, its
+// running wait, or nothing and why. note marks a message that is a note.
+func wakeText(w domain.Wake, note bool) string {
+	switch w.Wake {
+	case domain.WakeNotice:
+		return "notice queued"
+	case domain.WakeWait:
+		return "its wait is running"
+	}
+	text := "not woken: " + whyText(w, note)
+	switch w.SeenAt {
+	case domain.SeenAtPrompt:
+		text += "; it sees this at its next prompt"
+	case domain.SeenAtCommand:
+		text += "; it sees this at its next crosshall command"
+	}
+	return text
+}
+
+// whyText is the fixed sentence of a why word.
+func whyText(w domain.Wake, note bool) string {
+	until := ""
+	if w.UntilMS != 0 {
+		until = " until " + clock(w.UntilMS)
+	}
+	switch w.Why {
+	case domain.WhyNoRoute:
+		if w.Adapter != "" {
+			return "no notice route for " + w.Adapter
+		}
+		return "no notice route"
+	case domain.WhyUnproven:
+		return "notices not proven for its build"
+	case domain.WhySuspended:
+		return "notices suspended" + until
+	case domain.WhyOff:
+		return "notices off"
+	case domain.WhyCapped:
+		return "notice limit" + until
+	case domain.WhyHeld:
+		return "an earlier notice is unobserved"
+	case domain.WhyKind:
+		if note {
+			return "a note starts no turn"
+		}
+		return "this message starts no turn"
+	}
+	return w.Why
+}
+
+// memberWakeText is a member's reach as who shows it.
+func memberWakeText(w domain.Wake) string {
+	switch w.Wake {
+	case domain.WakeNotice:
+		return "woken by a notice"
+	case domain.WakeWait:
+		return "woken by its wait"
+	}
+	return "not woken: " + whyText(w, false)
+}
+
+// notWokenLine is the one next: line after a request or a final reply that
+// nothing will tell some recipient about, or "" when every one is told.
+func notWokenLine(ds []domain.Delivery) string {
+	var aliases []string
+	for _, d := range ds {
+		if d.State == "stored" && d.Wake.Wake == domain.WakeNone {
+			aliases = append(aliases, "@"+d.Alias)
+		}
+	}
+	if len(aliases) == 0 {
+		return ""
+	}
+	who := aliases[len(aliases)-1]
+	if len(aliases) > 1 {
+		who = strings.Join(aliases[:len(aliases)-1], ", ") + " or " + who
+	}
+	return "next: nothing will tell " + who + ". Ask a member the hall can wake (crosshall who), or tell your user."
+}

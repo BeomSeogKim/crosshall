@@ -141,6 +141,8 @@ func (b *builder) flows() {
 	b.unobserved()
 	b.count(prefixed("receipt.rejected."), `SELECT `+detail("reason")+`, COUNT(*) FROM event
 		WHERE kind = 'publish_receipt_rejected' AND at_ms >= ?1 AND at_ms < ?2 GROUP BY 1`, day...)
+	b.count(prefixed("send.wake."), `SELECT `+detail("wake")+`, COUNT(*) FROM event
+		WHERE kind = 'send_wake' AND at_ms >= ?1 AND at_ms < ?2 GROUP BY 1`, day...)
 	b.count(prefixed("suspend."), `SELECT reason || CASE WHEN until_ms IS NULL THEN '.lasting' ELSE '.timed' END, COUNT(*)
 		FROM publish_suspension WHERE at_ms >= ?1 AND at_ms < ?2 GROUP BY 1`, day...)
 	b.count(prefixed("turn_end.claim."),

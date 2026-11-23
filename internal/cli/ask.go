@@ -293,14 +293,23 @@ func renderAsk(data []byte, w io.Writer) error {
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, d := range r.Recipients {
-		fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d))
+		fmt.Fprintf(tw, "  @%s\t%s\n", d.Alias, deliveryText(d, false))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if line := notWokenLine(r.Recipients); line != "" {
+		fmt.Fprintln(w, line)
+	}
+	return nil
 }
 
-func deliveryText(d domain.Delivery) string {
+func deliveryText(d domain.Delivery, note bool) string {
 	switch d.State {
 	case "stored":
+		if d.Wake.Wake != "" {
+			return "stored -> " + wakeText(d.Wake, note)
+		}
 		return "stored -> " + d.Next
 	case "picked_up":
 		return "picked up " + clock(d.PickedUpAtMS)
@@ -319,7 +328,12 @@ func renderReply(data []byte, w io.Writer) error {
 	}
 	defer func() {
 		if r.Delivery.State != "" {
-			fmt.Fprintf(w, "  @%s  %s\n", r.Delivery.Alias, deliveryText(r.Delivery))
+			fmt.Fprintf(w, "  @%s  %s\n", r.Delivery.Alias, deliveryText(r.Delivery, false))
+			if r.Outcome != domain.OutcomeMoreTime {
+				if line := notWokenLine([]domain.Delivery{r.Delivery}); line != "" {
+					fmt.Fprintln(w, line)
+				}
+			}
 		}
 		if r.OriginalUnread {
 			fmt.Fprintf(w, "To read the original request, run crosshall read %d.\n", r.Ask)

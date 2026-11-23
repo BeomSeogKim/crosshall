@@ -137,6 +137,10 @@ func TestFanoutAtomicityAndWaitingUntilRepliesAreRead(t *testing.T) {
 			t.Fatalf("JSON waiting: got %v, want %v", states, want)
 		}
 		for alias, state := range want {
+			if state == "stored" {
+				// Nothing starts a turn in a member shell.
+				state += " -> not woken: no notice route; it sees this at its next crosshall command"
+			}
 			if !strings.Contains(plain, "\n  @"+alias+" "+state+"\n") {
 				t.Fatalf("plain waiting lacks @%s %s: %q", alias, state, plain)
 			}

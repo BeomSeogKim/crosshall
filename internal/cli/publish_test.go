@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +195,100 @@ func TestOwnerAdapterSetTurnEndSwitch(t *testing.T) {
 	}
 	if cmd := ft.calls[0].Command.(domain.AdapterSet); cmd.TurnEnd == nil || *cmd.TurnEnd != "off" || cmd.Publish != nil {
 		t.Fatalf("call %+v", cmd)
+	}
+}
+
+// Every fixed reason word has one sentence, the same in a send result, in
+// who and in waiting, and only a recipient nothing will tell gets the next:
+// line.
+func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
+	until := time.Now().Add(20 * time.Minute).UnixMilli()
+	none := func(why, seen string) domain.Wake { return domain.Wake{Wake: domain.WakeNone, Why: why, SeenAt: seen} }
+	codex := none(domain.WhyNoRoute, domain.SeenAtPrompt)
+	codex.Adapter = "codex"
+	suspended := none(domain.WhySuspended, domain.SeenAtPrompt)
+	suspended.UntilMS = until
+	capped := none(domain.WhyCapped, domain.SeenAtPrompt)
+	capped.UntilMS = until
+	cases := []struct {
+		alias string
+		wake  domain.Wake
+		text  string
+	}{
+		{"opus", domain.Wake{Wake: domain.WakeNotice}, "notice queued"},
+		{"vega", domain.Wake{Wake: domain.WakeWait}, "its wait is running"},
+		{"sol", codex, "not woken: no notice route for codex; it sees this at its next prompt"},
+		{"agy", none(domain.WhyNoRoute, domain.SeenAtCommand), "not woken: no notice route; it sees this at its next crosshall command"},
+		{"astra", none(domain.WhyUnproven, domain.SeenAtPrompt), "not woken: notices not proven for its build; it sees this at its next prompt"},
+		{"lead", suspended, "not woken: notices suspended until " + clock(until) + "; it sees this at its next prompt"},
+		{"lyra", none(domain.WhyOff, domain.SeenAtCommand), "not woken: notices off; it sees this at its next crosshall command"},
+		{"recv", capped, "not woken: notice limit until " + clock(until) + "; it sees this at its next prompt"},
+		{"fable", none(domain.WhyHeld, domain.SeenAtPrompt), "not woken: an earlier notice is unobserved; it sees this at its next prompt"},
+		{"orion", none(domain.WhyKind, domain.SeenAtPrompt), "not woken: this message starts no turn; it sees this at its next prompt"},
+	}
+	var recipients []domain.Delivery
+	var ledger []domain.LedgerRecipient
+	var members []domain.Member
+	for _, c := range cases {
+		recipients = append(recipients, domain.Delivery{Alias: c.alias, State: "stored", Next: "old words", Wake: c.wake})
+		ledger = append(ledger, domain.LedgerRecipient{Alias: c.alias, State: "open", Wake: c.wake})
+		members = append(members, domain.Member{Alias: c.alias, Vendor: "claude", State: "unknown", Route: "pull", Wake: c.wake})
+	}
+	ask, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Channel: "dev", Recipients: recipients})}},
+		"--key", "k", "ask", "@opus", "work")
+	waiting, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.WaitingResult{Channel: "dev",
+		Requests: []domain.LedgerRequest{{ID: 42, Sender: "lead", Recipients: ledger}}})}}, "waiting")
+	who, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.WhoResult{Channel: "dev", Members: members})}}, "who")
+	for _, c := range cases {
+		if !regexp.MustCompile(`@` + c.alias + ` +stored -> ` + regexp.QuoteMeta(c.text) + "\n").MatchString(ask) {
+			t.Errorf("send result lacks @%s %q:\n%s", c.alias, c.text, ask)
+		}
+		if !strings.Contains(waiting, "@"+c.alias+" stored -> "+c.text+"\n") {
+			t.Errorf("waiting lacks @%s %q:\n%s", c.alias, c.text, waiting)
+		}
+		member, _, _ := strings.Cut(c.text, ";")
+		switch c.wake.Wake {
+		case domain.WakeNotice:
+			member = "woken by a notice"
+		case domain.WakeWait:
+			member = "woken by its wait"
+		}
+		if !regexp.MustCompile(`@` + c.alias + ` .*  ` + regexp.QuoteMeta(member) + "\n").MatchString(who) {
+			t.Errorf("who lacks @%s %q:\n%s", c.alias, member, who)
+		}
+	}
+	const next = "next: nothing will tell @sol, @agy, @astra, @lead, @lyra, @recv, @fable or @orion. " +
+		"Ask a member the hall can wake (crosshall who), or tell your user.\n"
+	if strings.Count(ask, "next:") != 1 || !strings.Contains(ask, next) {
+		t.Errorf("send result lacks the one next: line %q:\n%s", next, ask)
+	}
+	if strings.Contains(waiting, "next:") {
+		t.Errorf("waiting printed a next: line:\n%s", waiting)
+	}
+}
+
+func TestNoNextLineWhenEveryRecipientIsTold(t *testing.T) {
+	notice := domain.Wake{Wake: domain.WakeNotice}
+	ask, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.AskResult{ID: 42, Channel: "dev",
+		Recipients: []domain.Delivery{{Alias: "opus", State: "stored", Wake: notice}, {Alias: "sol", State: "picked_up"}}})}},
+		"--key", "k", "ask", "@opus", "work")
+	none := domain.Wake{Wake: domain.WakeNone, Why: domain.WhyKind, SeenAt: domain.SeenAtPrompt}
+	note, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.NoteResult{ID: 43, Channel: "dev",
+		Recipients: []domain.Delivery{{Alias: "opus", State: "stored", Wake: none}}})}}, "--key", "k", "note", "@opus", "fyi")
+	more, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.ReplyResult{ID: 44, Ask: 42, To: "lead",
+		Outcome: domain.OutcomeMoreTime, Delivery: domain.Delivery{Alias: "lead", State: "stored", Wake: none}})}},
+		"--key", "k", "reply", "42", "--more-time", "soon")
+	answer, _, _ := run(t, Env{Transport: &fakeTransport{result: okResult(t, domain.ReplyResult{ID: 45, Ask: 42, To: "lead",
+		Delivery: domain.Delivery{Alias: "lead", State: "stored", Wake: none}})}}, "--key", "k", "reply", "42", "done")
+	for name, out := range map[string]string{"ask to a notice": ask, "note": note, "more-time reply": more} {
+		if strings.Contains(out, "next:") {
+			t.Errorf("%s printed a next: line:\n%s", name, out)
+		}
+	}
+	if !strings.Contains(note, "@opus  stored -> not woken: a note starts no turn; it sees this at its next prompt\n") {
+		t.Errorf("note result:\n%s", note)
+	}
+	if !strings.Contains(answer, "next: nothing will tell @lead. Ask a member the hall can wake (crosshall who), or tell your user.\n") {
+		t.Errorf("final reply lacks its next: line:\n%s", answer)
 	}
 }

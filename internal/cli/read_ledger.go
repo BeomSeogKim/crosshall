@@ -387,6 +387,9 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 			}
 		} else if state == "open" {
 			state = "stored"
+			if recipient.Wake.Wake != "" {
+				state += " -> " + wakeText(recipient.Wake, false)
+			}
 		}
 		if recipient.ReplyUnread {
 			state += ", unread reply"

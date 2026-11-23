@@ -262,19 +262,6 @@ func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]Publi
 	return bindings, rows.Err()
 }
 
-// publishQueued reports whether a notice will offer this message to the
-// binding: its route is available now and the message is eligible on it.
-func publishQueued(ctx context.Context, tx store.Tx, binding, message int64, now time.Time) (bool, error) {
-	// A held or capped route cannot reserve now, so its message is pull.
-	if status, _, err := store.ReadPublishState(ctx, tx, binding, now); err != nil || status.State != "available" {
-		return false, err
-	}
-	var queued bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
-		` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, message).Scan(&queued)
-	return queued, err
-}
-
 func HasPublishWork(ctx context.Context, tx store.Tx, binding PublishBinding, now time.Time) (bool, error) {
 	if ok, err := bindingRouteResolves(ctx, tx, binding.ID); !ok || err != nil {
 		return false, err

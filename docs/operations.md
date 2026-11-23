@@ -83,7 +83,7 @@ A session that lost its identity, for example in a new conversation, may find it
 
 An eligible hand-joined Claude Code session, an Antigravity CLI session (joined by hand or through its startup hook), or a command started by `crosshall run` can supply the process that hosts it. The hall uses this process as exit evidence. A Codex app server can outlive multiple conversations, so a Codex CLI session, hand-joined or hook-joined, is departed by the owner or leaves by itself.
 
-A successful send confirms that the message was stored. Members pick up new work with `crosshall read`. Delivery is pull unless the recipient has an available publish route, in which case the send result says `stored -> notice queued` ([publish notices](adapters.md#publish-notices)); either way crosshall never types into your input line.
+A successful send confirms that the message was stored. Members pick up new work with `crosshall read`. Delivery is pull unless the recipient has an available publish route, in which case the send result says `stored -> notice queued`; otherwise it says `not woken` and why, and a `next:` line follows a request nothing will tell some recipient about ([publish notices](adapters.md#publish-notices)). Either way crosshall never types into your input line.
 
 Members follow the member rules in [PROTOCOL.md](../PROTOCOL.md). `crosshall join` states them, and a member without an adapter follows them by hand.
 

@@ -239,7 +239,7 @@ func TestTelemetryShowAndRetryStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	pendingDay := ago(1)
-	body := `{"v":1,"registry":1,"batch":"00000000000000000000000000000000","day":"` + pendingDay + `"}`
+	body := `{"v":1,"registry":2,"batch":"00000000000000000000000000000000","day":"` + pendingDay + `"}`
 	next := today.Add(27 * time.Hour)
 	dir, err := os.OpenRoot(filepath.Join(env.TelemetryStateRoot, "telemetry"))
 	if err != nil {

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The send result says who will be told:** for each stored recipient, `notice queued`, or `not woken` with a fixed reason (no notice route, notices not proven for its build, suspended, off, the notice limit, an earlier notice unobserved, a note) and whether the recipient sees the message at its next prompt or its next crosshall command. When nothing will tell a recipient of a request or a final answer, one `next:` line says to ask a member the hall can wake or to tell the user. `crosshall who` and `crosshall waiting` use the same words, and `--json` carries `wake`, `why`, `seen_at` and `until_ms`. Usage reports count sends by outcome under `send.wake`, registry 2 (#236).
+
 ## v0.2.0-rc.2 (2026-11-23)
 
 - **Sessions leave when their process exits:** for a Claude Code, Antigravity CLI or `crosshall run` member, crosshall records the process its commands run in when the command can name that process, whether the member joined by hand or through a hook, and departs the member once that process is proven gone, as a clean session end: the alias is freed and open requests stay (#224, #229). The member comes back by itself at its next command other than `wait` from a running process, under its old alias when that is free; otherwise the command says which alias it got. A member that left or that the owner departed does not come back this way. A Codex CLI member's exit is not tracked: its end hook departs nobody, so the owner departs it or it leaves by itself. `owner who --all` and `whoami --full` say how each member's exit is tracked (#228). The database moves to schema 21 (#226, #227).

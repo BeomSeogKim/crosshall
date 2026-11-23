@@ -29,6 +29,8 @@ type Member struct {
 	Observed *Observed `json:"observed,omitempty"`
 	// Publish is the member's publish route status (candidate only in slice 1).
 	Publish *PublishStatus `json:"publish,omitempty"`
+	// Wake is what will tell the member about new work; set in who.
+	Wake
 
 	principal int64
 }

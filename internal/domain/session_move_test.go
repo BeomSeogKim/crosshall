@@ -62,6 +62,20 @@ func TestSessionMoveCanLeaveAnArchivedSource(t *testing.T) {
 	}
 }
 
+func TestSessionMoveReceiptSeparatesUnreadAndOwedRequests(t *testing.T) {
+	f, mover, peer, _ := channel3(t)
+	read := decode[AskResult](t, f.ask(peer, Ask{To: []string{"form"}, Body: "read before moving"}, "read-request"))
+	wantOK(t, f.run(mover, Read{IDs: []int64{read.ID}}, "pick-up"))
+	wantOK(t, f.ask(peer, Ask{To: []string{"form"}, Body: "unread at the move"}, "unread-request"))
+	wantOK(t, f.ask(mover, Ask{To: []string{"tax"}, Body: "answer after I move"}, "waiting-request"))
+
+	got := decode[JoinResult](t, f.join(mover, Join{Channel: "inventory", Move: true}, "move"))
+	want := JoinMoveReceipt{Channel: "checkout", Unread: 1, Owed: 1, Waiting: 1}
+	if got.Move == nil || *got.Move != want {
+		t.Fatalf("move receipt = %+v, want %+v", got.Move, want)
+	}
+}
+
 func TestSessionMoveLeavesThePrincipalGuardStopInItsOriginChannel(t *testing.T) {
 	f, mover, _, _ := channel3(t)
 	principal := f.principalOf(mover)

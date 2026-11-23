@@ -296,6 +296,12 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 	if err != nil || latest != cmd.LaunchRef {
 		return OK(out)
 	}
+	if b.ownerHookFence.Valid {
+		fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
+		if err != nil || !fresh {
+			return okOrErr(out, err)
+		}
+	}
 	sessionRef := resolveSessionKey(ctx, tx, req.SessionKey, principal, cmd.Adapter)
 	if sessionRef == "" {
 		return Refuse(core.CodeLeafMismatch, "missing authenticated session key", "re-enroll from the active session"), nil

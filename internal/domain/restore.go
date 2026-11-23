@@ -55,7 +55,8 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 		return core.Result{}, err
 	}
 	if selected != cmd.BindingID {
-		return Refuse(core.CodeBindingChanged, fmt.Sprintf("binding %d is historical", cmd.BindingID), "find the selected binding with crosshall owner who --all"), nil
+		return Refuse(core.CodeBindingChanged, fmt.Sprintf("binding %d is historical", cmd.BindingID),
+			fmt.Sprintf("retry with crosshall owner restore %d and the replacement identity", selected)), nil
 	}
 	if s.RestoreKey == nil {
 		return core.Result{}, errors.New("domain: missing identity restore handler")

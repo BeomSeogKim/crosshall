@@ -73,7 +73,7 @@ func registerMovedPublishRoute(ctx context.Context, tx store.Tx, source, destina
 		FROM binding b JOIN `+currentBindingLaunch+`
 		JOIN adapter_policy policy ON policy.adapter = json_extract(l.profile, '$.adapter')
 		LEFT JOIN publish_route r ON r.binding_id = ? AND r.launch_ref = l.launch_ref AND r.adapter = policy.adapter
-		WHERE b.id = ? AND l.fenced = 0`, source, destination).
+		WHERE b.id = ? AND l.fenced = 0 AND `+store.PublishLaunchAfterOwnerFence, source, destination).
 		Scan(&principal, &bindingEpoch, &adapter, &launchRef, &verified, &policyEpoch, &launchRoute.Mode, &launchRoute.Host.PID, &launchRoute.Host.StartMS, &launchRoute.Home)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

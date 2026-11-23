@@ -127,9 +127,8 @@ type LedgerRecipient struct {
 	LateByMS          *int64    `json:"late_by_ms"`
 	ReplyUnread       bool      `json:"reply_unread,omitempty"`
 	Receipts          []Receipt `json:"receipts"`
-	// Observed is the recipient's last adapter fact, for an open obligation
-	// only: what it was last seen doing, with no judgement attached. It is
-	// in absolute time, so the ledger does not change with the clock.
+	// Observed is the live recipient's last adapter fact for an open
+	// obligation, in absolute time so the ledger does not change with the clock.
 	Observed *ObservedFact `json:"observed,omitempty"`
 	// Notice is the publish notice that offered this request, if any, and
 	// ReplyNotice the one that offered the asker this recipient's reply.
@@ -547,8 +546,10 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 					}
 				}
 			}
-			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
-				return nil, err
+			if bindingState == "live" {
+				if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if len(out) == 0 || out[len(out)-1].ID != m.ID {

@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,17 +116,24 @@ func TestPublishMoveWaitsForPostFenceAttemptOnSharedQueue(t *testing.T) {
 	source := p.binding.ID
 	wantOK(t, p.owner(CreateChannel{Name: "delivery"}, "create-delivery"))
 	peer := p.newSession("claude")
-	wantOK(t, p.join(peer, Join{Channel: "checkout", Alias: "peer"}, "join-peer"))
+	wantOK(t, p.join(peer, Join{Channel: "delivery", Alias: "peer"}, "join-peer"))
+	sender := p.newSession("claude")
+	wantOK(t, p.join(sender, Join{Channel: "delivery", Alias: "sender"}, "join-sender"))
 	enrollAndRoute(t, p.fixture, peer, "pid-42-peer", "startup", publishTestSocket, "default", p.now.UnixMilli(), 1)
 	p.binding.ID = bindingIDOf(t, p.fixture, p.principalOf(peer))
 	p.proveRoute()
-	p.turnEndAsk(p.writer, "peer", "shared-queue-work")
+	p.turnEndAsk(sender, "peer", "shared-queue-work")
 	id := p.reserve()
 	if id == 0 || len(p.begin(id)) == 0 {
 		t.Fatal("the shared queue was not occupied")
 	}
 	p.resolve(id, PublishSubmitted)
-	wantCode(t, p.join(p.reader, Join{Channel: "delivery", Alias: "reader", Move: true}, "move"), core.ExitRefused, core.CodeMoveNoticePending)
+	refusal := p.join(p.reader, Join{Channel: "delivery", Alias: "reader", Move: true}, "move")
+	wantCode(t, refusal, core.ExitRefused, core.CodeMoveNoticePending)
+	if message := decode[Refusal](t, refusal).Message; !strings.Contains(message, fmt.Sprintf("notice %d ", id)) ||
+		strings.Contains(message, "#checkout") {
+		t.Fatalf("the peer's attempt is not in the mover's channel: %q", message)
+	}
 	if n := p.count(`SELECT COUNT(*) FROM member_selection WHERE binding_id = ?`, source); n != 1 {
 		t.Fatal("another principal's occupied queue did not leave the source selected")
 	}

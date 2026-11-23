@@ -62,16 +62,17 @@ func prepareChannelMove(ctx context.Context, tx store.Tx, source membershipSelec
 		return nil, nil, err
 	}
 	if attempt != 0 {
-		r := Refuse(core.CodeMoveNoticePending, fmt.Sprintf("notice %d in #%s still awaits a receipt", attempt, source.channelName),
+		r := Refuse(core.CodeMoveNoticePending, fmt.Sprintf("notice %d still awaits a receipt", attempt),
 			"retry the move after the notice is resolved; the owner can check it with crosshall owner doctor")
 		return nil, &r, nil
 	}
-	ids, err := pendingIDs(ctx, tx, source.principal, source.channel)
+	summary, err := memberInboxSummary(ctx, tx, source.principal, source.channel)
 	if err != nil {
 		return nil, nil, err
 	}
-	out := &JoinMoveReceipt{Channel: source.channelName, Unread: len(ids)}
-	if out.Owed, out.Waiting, err = openMembershipCounts(ctx, tx, source.member); err != nil {
+	out := &JoinMoveReceipt{Channel: source.channelName, Unread: len(summary.Pending), Owed: summary.OwedCount}
+	if err := tx.QueryRowContext(ctx, openWaitingCount, source.principal, source.channel).
+		Scan(&out.Waiting); err != nil {
 		return nil, nil, err
 	}
 	if source.state == "live" {
@@ -88,11 +89,13 @@ func prepareChannelMove(ctx context.Context, tx store.Tx, source membershipSelec
 	return out, nil, nil
 }
 
+const openWaitingCount = `SELECT COUNT(*) FROM obligation o JOIN message m ON m.id = o.message_id
+	WHERE m.sender_id = ?1 AND m.channel_id = ?2 AND o.state = 'open'`
+
 func openMembershipCounts(ctx context.Context, tx store.Tx, m member) (owed, waiting int, err error) {
 	err = tx.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM obligation o JOIN message msg ON msg.id = o.message_id
 		 WHERE o.principal_id = ?1 AND o.state = 'open' AND msg.channel_id = ?2),
-		(SELECT COUNT(*) FROM obligation o JOIN message msg ON msg.id = o.message_id
-		 WHERE msg.sender_id = ?1 AND o.state = 'open' AND msg.channel_id = ?2)`, m.principal, m.channel).Scan(&owed, &waiting)
+		(`+openWaitingCount+`)`, m.principal, m.channel).Scan(&owed, &waiting)
 	return owed, waiting, err
 }

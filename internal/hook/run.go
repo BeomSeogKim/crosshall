@@ -23,7 +23,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// Budget is the absolute callback deadline from command entry.
+// Budget bounds callback work. An enrolling hook can wait for dispatcher startup first.
 const Budget = 150 * time.Millisecond
 
 type hookTransport interface {
@@ -33,17 +33,16 @@ type hookTransport interface {
 
 // Run serves one callback. Path resolution and counter preparation share the
 // callback budget with dispatch. Only the supervisor records an outcome.
-func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
+func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
 	if len(args) != 2 {
 		return
 	}
-	began := entry
 	lifecycle := prepareRepoLifecycle(args, stdin, locate)
 	if lifecycle != nil {
 		defer lifecycle.cancel()
 	}
-	entry, startedState := wake(entry, args, locate)
-	end := entry.Add(Budget)
+	budgetStart, startedState := wake(captured, args, locate)
+	end := budgetStart.Add(Budget)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -55,21 +54,21 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		if err != nil || !time.Now().Before(end) {
 			return rv, nil
 		}
-		return rv, openHookCounter(rv, args[0], args[1], entry)
+		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
 	var outcome atomic.Value
-	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(budgetStart, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
+		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if lifecycle != nil && !lifecycle.waitUntil(began.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
 		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
-			logLine(startedState, args[0]+" "+args[1], began, "started the dispatcher, but the session start was not answered in time")
+			logLine(startedState, args[0]+" "+args[1], captured, "started the dispatcher, but the session start was not answered in time")
 		}
 	}
 	if !wrote && args[0] == "agy" && time.Now().Before(end) {

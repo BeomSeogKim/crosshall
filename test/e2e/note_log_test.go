@@ -146,6 +146,8 @@ func TestMoveKeepsRequestsAndLateRepliesInTheirOriginalChannel(t *testing.T) {
 	stock := w.member()
 	stock.mustFixtureWrite("join", "inventory", "--as", "writer")
 	incoming := num(t, tax.must("ask", "@form", "review this in checkout"), "id")
+	pickedUp := num(t, tax.must("ask", "@form", "pick this up before moving"), "id")
+	form.must("read", strconv.FormatInt(pickedUp, 10))
 	outgoing := num(t, form.must("ask", "@tax", "reply here after I move"), "id")
 
 	if collision := form.run("join", "inventory", "--move", "--as", "writer"); collision.exit != 3 ||
@@ -180,5 +182,6 @@ func TestMoveKeepsRequestsAndLateRepliesInTheirOriginalChannel(t *testing.T) {
 	if unread := ids(form.must("inbox").obj["unread"]); !slices.Equal(unread, []int64{incoming, late}) {
 		t.Fatalf("restored checkout inbox: %v, want [%d %d]", unread, incoming, late)
 	}
+	form.must("reply", strconv.FormatInt(pickedUp, 10), "picked-up request done")
 	form.must("reply", strconv.FormatInt(incoming, 10), "checkout done")
 }

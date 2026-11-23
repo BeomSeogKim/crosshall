@@ -33,6 +33,9 @@ const (
 // adapter must also resolve each route's address (routeAddress).
 func activePublishRoutes(now time.Time) string { return publishRoutes(now, true) }
 
+const livePublishBinding = `JOIN binding b ON b.id = r.binding_id AND b.principal_id = r.principal_id
+	AND b.route_epoch = r.binding_epoch AND b.state = 'live'`
+
 // publishRoutes selects them with or without the transport's proof of the
 // process that owns the address.
 func publishRoutes(now time.Time, proven bool) string {
@@ -41,15 +44,11 @@ func publishRoutes(now time.Time, proven bool) string {
 	if !proven {
 		proof = ""
 	}
-	return `FROM publish_route r
-	JOIN binding b ON b.id = r.binding_id AND b.principal_id = r.principal_id AND b.route_epoch = r.binding_epoch
-	` + proof + `
+	return `FROM publish_route r ` + livePublishBinding + ` ` + proof + `
 	JOIN adapter_policy policy ON policy.adapter = r.adapter AND policy.epoch = r.policy_epoch AND policy.enabled = 1
-	JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
-		WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
-		ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
+	JOIN ` + currentBindingLaunch + `
 	WHERE ` + store.PublishAdapterSends() + ` AND r.state = 'active' AND ` + store.PublishLaunchBinds() + `
-		AND b.state = 'live' AND b.dnd = 0
+		AND b.dnd = 0
 		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileCovered
 }
 
@@ -87,8 +86,8 @@ func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.T
 // activation and ordinary backlog.
 func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBinding, queue PublishQueue) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO publish_route_proof (binding_id, generation, process_pid, process_start_ms)
-		SELECT r.binding_id, r.generation, ?1, ?2 FROM publish_route r
-		WHERE r.binding_id = ?3 AND r.generation = ?4 AND r.state = 'active' AND (r.launch_verified = 1 OR `+store.PublishThreadRouted()+`)
+		SELECT r.binding_id, r.generation, ?1, ?2 FROM publish_route r `+livePublishBinding+` JOIN `+currentBindingLaunch+`
+		WHERE r.binding_id = ?3 AND r.generation = ?4 AND r.state = 'active' AND `+store.PublishLaunchBinds()+`
 		ON CONFLICT(binding_id) DO UPDATE SET generation = excluded.generation,
 			process_pid = excluded.process_pid, process_start_ms = excluded.process_start_ms,
 			activated_at_ms = CASE WHEN publish_route_proof.process_pid = excluded.process_pid
@@ -102,9 +101,11 @@ func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBindin
 	_, err = tx.ExecContext(ctx, `UPDATE adapter_launch AS l SET process_pid = ?1, process_start_identity = ?2
 		WHERE l.process_pid IS NULL AND l.verified = 1 AND l.fenced = 0 AND l.ended_hook_at_ms IS NULL
 		AND (l.launch_ref = 'pid-' || ?1 OR l.launch_ref GLOB 'pid-' || ?1 || '-*')
-		AND EXISTS (SELECT 1 FROM publish_route r JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation
+		AND EXISTS (SELECT 1 FROM publish_route r `+livePublishBinding+`
+			JOIN publish_route_proof p ON p.binding_id = r.binding_id AND p.generation = r.generation
 			WHERE r.binding_id = ?3 AND r.generation = ?4 AND r.state = 'active' AND r.launch_verified = 1
-			AND r.principal_id = l.principal_id AND r.launch_ref = l.launch_ref AND p.process_pid = ?1 AND p.process_start_ms = ?2)`,
+			AND r.principal_id = l.principal_id AND r.launch_ref = l.launch_ref AND p.process_pid = ?1 AND p.process_start_ms = ?2
+			AND `+store.PublishLaunchAfterOwnerFence+`)`,
 		queue.PID, queue.StartMS, binding.ID, binding.Generation)
 	return err
 }
@@ -230,10 +231,8 @@ func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, p
 		return false, nil
 	}
 	var route publish.Probe
-	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms FROM publish_route r
-		JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
-			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
-			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
+	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms
+		FROM publish_route r `+livePublishBinding+` JOIN `+currentBindingLaunch+`
 		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND `+store.PublishLaunchBinds()+`
 			AND (l.process_pid IS NULL OR (l.process_pid = ? AND l.process_start_identity = ?))
 			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`,

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,14 +172,19 @@ func TestOwnerRestoreRequiresTheSelectedBindingAfterAMove(t *testing.T) {
 	wantOK(t, f.owner(CreateChannel{Name: "review"}, "create-review"))
 	wantOK(t, f.join(member, Join{Channel: "review", Alias: "moved", Move: true}, "move-review"))
 	destination := int64(f.count(`SELECT binding_id FROM member_selection WHERE principal_id = ?`, principal))
+	wantOK(t, f.join(member, Join{Channel: "checkout", Move: true}, "move-back"))
+	wantOK(t, f.run(member, Leave{}, "leave-checkout"))
 	replacement := f.newSession("codex")
-	cmd := Restore{BindingID: source, Vendor: replacement.vendor, Key: replacement.key}
-	wantCode(t, f.owner(cmd, "restore-history"), core.ExitRefused, core.CodeBindingChanged)
+	cmd := Restore{BindingID: destination, Vendor: replacement.vendor, Key: replacement.key}
+	refusal := f.owner(cmd, "restore-history")
+	wantCode(t, refusal, core.ExitRefused, core.CodeBindingChanged)
+	if hint := decode[Refusal](t, refusal).Hint; !strings.Contains(hint, fmt.Sprintf("crosshall owner restore %d", source)) {
+		t.Fatalf("historical restore hint %q does not name selected binding %d", hint, source)
+	}
 	if f.keyState(member) != "live" {
 		t.Fatal("the historical restore retired the live identity")
 	}
-	wantOK(t, f.run(member, Leave{}, "leave-review"))
-	cmd.BindingID = destination
+	cmd.BindingID = source
 	wantOK(t, f.owner(cmd, "restore-selected-departed"))
 	if f.keyState(replacement) != "live" || f.keyState(member) != "retired" {
 		t.Fatal("restore no longer works for the selected departed binding")

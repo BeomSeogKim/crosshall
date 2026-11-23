@@ -836,6 +836,9 @@ func effectiveAck(stored, incoming, current uint64) uint64 {
 	return max(stored, min(incoming, current))
 }
 
+const bindingCommandObservation = `o.principal_id = b.principal_id AND o.kind = 'command'
+	AND (b.state = 'live' OR (o.observed_at_ms >= b.joined_at_ms AND o.observed_at_ms < b.departed_at_ms))`
+
 // rosterChanges lists members other than self whose rows changed after the
 // cursor, one row each with its latest change, oldest change first.
 func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64, self int64, now time.Time) ([]Member, error) {
@@ -845,7 +848,7 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 		     WHERE channel_id = ? AND seq > ? AND principal_id <> ?
 		     GROUP BY principal_id)
 		 SELECT b.principal_id, b.alias, p.vendor, b.focus, b.state, b.joined_at_ms,
-		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id AND o.kind = 'command'),
+		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE `+bindingCommandObservation+`),
 		        rc.field
 		 FROM latest l
 		 JOIN roster_change rc ON rc.channel_id = ? AND rc.seq = l.seq
@@ -890,6 +893,9 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 	}
 	rows.Close()
 	for i := range out {
+		if out[i].Change == "departed" {
+			continue
+		}
 		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
 			return nil, err
 		}

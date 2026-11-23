@@ -81,7 +81,7 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		b.joined_at_ms, cmd.observed_at_ms, cmd.source, ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
-			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
+			WHERE `+bindingCommandObservation+` ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
 		`+promptAdapter+`
 		ORDER BY c.id, b.id`)
 	if err != nil {
@@ -150,23 +150,23 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			if m.BindingState == "live" && publish != nil && PublishReaches(*publish) {
 				m.Reach = "notice"
 			}
-			fact, err := latestFact(ctx, tx, m.principal)
-			if err != nil {
-				return core.Result{}, err
-			}
-			if fact != nil {
-				observed := fact.At(nowMS)
-				m.Observed = &observed
-				if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
-					m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
-					m.EvidenceStale = !observed.Current
-				}
-			}
 			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)
 			if err != nil {
 				return core.Result{}, err
 			}
 			if m.BindingState == "live" {
+				fact, err := latestFact(ctx, tx, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
+				if fact != nil {
+					observed := fact.At(nowMS)
+					m.Observed = &observed
+					if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
+						m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
+						m.EvidenceStale = !observed.Current
+					}
+				}
 				tracking, host, err := s.exitTracking(ctx, tx, m.principal)
 				if err != nil {
 					return core.Result{}, err

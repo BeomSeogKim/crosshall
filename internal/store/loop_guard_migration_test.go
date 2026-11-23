@@ -105,8 +105,8 @@ func TestOwnerAlertMigrationLeavesEarlierStopsUnannounced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	if after := adapterLedgerSnapshot(t, upgraded.db, 23); after != before {
-		t.Fatal("migration 023 changed prior ledger rows")
+	if after := adapterLedgerSnapshot(t, upgraded.db, len(migrations)); after != before {
+		t.Fatal("migration 024 changed prior ledger rows")
 	}
 	var alerts, open int
 	if err := upgraded.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM owner_alert),

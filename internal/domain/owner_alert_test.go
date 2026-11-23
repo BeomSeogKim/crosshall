@@ -419,7 +419,7 @@ func TestRecipientListNamesThreeAtMost(t *testing.T) {
 	}
 }
 
-// A stop recorded before migration 023 has no owner_alert row.
+// A stop recorded before migration 024 has no owner_alert row.
 func TestStopFromBeforeTheUpgradeIsListedButNotAnnounced(t *testing.T) {
 	f, a, _, _ := channel3(t)
 	f.threadStop(a, "tax")

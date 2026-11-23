@@ -81,7 +81,7 @@ var loopGuardSchema string
 //go:embed migrations/022_loop_guard_cutover.sql
 var loopGuardCutoverSchema string
 
-//go:embed migrations/023_owner_alert.sql
+//go:embed migrations/024_owner_alert.sql
 var ownerAlertSchema string
 
 var migrations = []string{

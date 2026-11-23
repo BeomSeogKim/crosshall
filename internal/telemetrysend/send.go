@@ -36,9 +36,7 @@ import (
 )
 
 const (
-	// maxAgeDays is the oldest day a batch is frozen or kept for, counted
-	// back from today.
-	maxAgeDays = 7
+	maxAgeDays = telemetryconfig.MaxAgeDays
 	// keepSentDays is how long the bytes of an accepted report stay,
 	// counted from the acceptance.
 	keepSentDays = 30
@@ -75,13 +73,17 @@ type Config struct {
 	timeout    time.Duration
 	watchEvery time.Duration
 	// clock replaces the dispatcher's clock; checkpoint and stepDone run
-	// around every step, where the opt-outs are read; post replaces curl.
-	clock        func() time.Time
-	checkpoint   func()
-	stepDone     func()
-	post         func(ctx context.Context, body []byte) result
-	beforeSend   func()
-	afterPrepare func()
+	// around every step, where the opt-outs are read; post replaces curl;
+	// failStateWrite makes replacing state.json fail; requestStarts runs
+	// when the last check before a request passed.
+	failStateWrite func() bool
+	requestStarts  func()
+	clock          func() time.Time
+	checkpoint     func()
+	stepDone       func()
+	post           func(ctx context.Context, body []byte) result
+	beforeSend     func()
+	afterPrepare   func()
 }
 
 // Sender is driven by the dispatcher loop: Tick at start and once a minute.
@@ -92,6 +94,28 @@ type Sender struct {
 	wg   sync.WaitGroup
 	// base and started give the running round's clock.
 	base, started time.Time
+	// vetoDay is the latest opt-out day this sender observed or read. It
+	// survives a failed state write; until state.json holds it, nothing is
+	// built or sent.
+	vetoMu  sync.Mutex
+	vetoDay string
+}
+
+// remember raises the opt-out day held in memory and returns it.
+func (s *Sender) remember(day string) string {
+	s.vetoMu.Lock()
+	defer s.vetoMu.Unlock()
+	if day > s.vetoDay {
+		s.vetoDay = day
+	}
+	return s.vetoDay
+}
+
+func (s *Sender) writeState(dir *os.Root, st *state) error {
+	if s.cfg.failStateWrite != nil && s.cfg.failStateWrite() {
+		return errors.New("telemetry/state.json: replacement failed (test)")
+	}
+	return telemetryconfig.WriteState(dir, st)
 }
 
 // New returns a sender for one dispatcher.
@@ -136,24 +160,24 @@ func (s *Sender) Tick(ctx context.Context, now time.Time) {
 }
 
 // observe is the one place that reads the opt-outs. When one is in effect
-// it records the UTC day of this instant, rounded up to the whole day, and
-// drops the batches not yet accepted, all persisted before it returns true.
+// it raises the opt-out day in memory to the UTC day of this instant,
+// rounded up to the whole day, and drops the batches not yet accepted. The
+// step that called it persists the day before anything else happens.
 func (s *Sender) observe(dir *os.Root, set setting, st *state) (bool, error) {
 	at := s.at()
 	vetoed := s.cfg.Vetoed || telemetryconfig.ManagedOffAt(s.cfg.PolicyPath)
 	if !vetoed && set.Mode != telemetryconfig.Off {
 		return false, nil
 	}
-	var err error
-	if st.Veto(at) {
-		err = telemetryconfig.WriteState(dir, st)
-	}
-	return true, errors.Join(err, telemetryconfig.DropPending(dir, st))
+	s.remember(dayName(at))
+	return true, telemetryconfig.DropPending(dir, st)
 }
 
 // step runs fn under the setting's lock with the state read, only when
-// observe found no opt-out and the setting is on, and writes the state back
-// when it changed. Every decision of a round is taken in a step.
+// observe found no opt-out, the opt-out day in memory is in state.json and
+// the setting is on, and writes the state back when it changed. Every
+// decision of a round is taken in a step. A failed write of the opt-out day
+// stops the step (fail closed); the next step tries again.
 func (s *Sender) step(fn func(dir *os.Root, set setting, st *state) error) error {
 	if s.cfg.checkpoint != nil {
 		s.cfg.checkpoint()
@@ -173,7 +197,16 @@ func (s *Sender) step(fn func(dir *os.Root, set setting, st *state) error) error
 		if err := housekeeping(dir, st, s.at()); err != nil {
 			log.Printf("dispatcher: usage report: %v", err)
 		}
+		durable := st.VetoDay
+		s.remember(durable)
 		off, err := s.observe(dir, set, st)
+		if day := s.remember(""); day > durable {
+			st.VetoDay = day
+			if werr := s.writeState(dir, st); werr != nil {
+				return errors.Join(err, werr)
+			}
+			before, _ = json.Marshal(st)
+		}
 		switch {
 		case off || err != nil || set.Mode != telemetryconfig.On:
 		case st.StoppedVersion == s.cfg.Version:
@@ -182,7 +215,7 @@ func (s *Sender) step(fn func(dir *os.Root, set setting, st *state) error) error
 			err = fn(dir, set, st)
 		}
 		if after, _ := json.Marshal(st); !bytes.Equal(before, after) {
-			err = errors.Join(err, telemetryconfig.WriteState(dir, st))
+			err = errors.Join(err, s.writeState(dir, st))
 		}
 		return err
 	})
@@ -376,7 +409,7 @@ func due(dir *os.Root, st *state, cutoff string, now time.Time) (*job, error) {
 		return nil, err
 	}
 	for _, name := range days {
-		if !st.Sendable(name, cutoff) {
+		if !st.Sendable(name, cutoff, now) {
 			continue
 		}
 		if now.Before(st.NextAttempt(name)) {
@@ -410,7 +443,7 @@ type result struct {
 func (s *Sender) sendable(j job) bool {
 	ok := false
 	err := s.step(func(dir *os.Root, set setting, st *state) error {
-		if !st.Sendable(j.day, telemetryconfig.Cutoff(set, st)) {
+		if !st.Sendable(j.day, telemetryconfig.Cutoff(set, st), s.at()) {
 			return nil
 		}
 		_, err := dir.Lstat(filepath.Join("pending", j.day+".json"))
@@ -425,6 +458,9 @@ func (s *Sender) sendable(j job) bool {
 func (s *Sender) deliver(ctx context.Context, j job) result {
 	if !s.sendable(j) {
 		return result{cancelled: true}
+	}
+	if s.cfg.requestStarts != nil {
+		s.cfg.requestStarts()
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	stopped := make(chan struct{})
@@ -505,9 +541,10 @@ func (s *Sender) finish(j job, res result) error {
 				st.Days[j.day] = info
 			}
 			st.LastStatus, info.Accepted, info.AcceptedAt = "204", true, s.at()
+			st.VetoDay = s.remember(st.VetoDay)
 			// The acceptance is in the state before the move; a failed
 			// move is finished later without a second request.
-			if err := telemetryconfig.WriteState(dir, st); err != nil {
+			if err := s.writeState(dir, st); err != nil {
 				return err
 			}
 			return archive(dir, j.day, info.AcceptedAt)
@@ -549,8 +586,14 @@ func apply(dir *os.Root, st *state, info *dayState, j job, res result, version s
 
 // archive moves an accepted batch from pending/ to sent/. The copy's file
 // time is its acceptance, from which it is kept keepSentDays.
+//
+// An opt-out that came while the request ran may have deleted the batch
+// already; the acceptance is recorded and nothing is kept.
 func archive(dir *os.Root, name string, accepted time.Time) error {
 	body, err := telemetryconfig.ReadDayFile(dir, "pending", name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

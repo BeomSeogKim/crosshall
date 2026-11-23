@@ -6,7 +6,7 @@ crosshall can send one usage report a day to Adrian Studio, its maintainer, to d
 
 - **Only after a yes.** The setting has three states: unset, `on` and `off`. Only `on` leads to a report, and only about whole UTC days that began after the answer: an answer at 23:59 UTC sends nothing about that day. Turning it off and on again never brings back an earlier day. [How the question is asked](operations.md#usage-statistics).
 - **One report per active day.** After a UTC day closes, the dispatcher builds that day's report once, writes it to `telemetry/pending/` in your state directory and never rebuilds it. A day with no activity has no report.
-- **One request a day.** The dispatcher sends the first request for a new report at most once per 24 hours, at a random time up to six hours after the report was built, as one HTTPS POST made by `/usr/bin/curl`. A backlog goes out one report a day, oldest first; a report more than seven days old is deleted unsent. A failed request is retried with the same bytes after one hour, doubling up to a day; a retry may come sooner than 24 hours after the last request.
+- **One request a day.** The dispatcher sends the first request for a new report at most once per 24 hours, at a random time up to six hours after the report was built, as one HTTPS POST made by `/usr/bin/curl`. A backlog goes out one report a day, oldest first; a report more than seven days old is deleted and is never sent, even when its file cannot be deleted. A failed request is retried with the same bytes after one hour, doubling up to a day; a retry may come sooner than 24 hours after the last request.
 - **Only the dispatcher sends.** Hooks, member commands and the `crosshall` commands you type make no network call and gain no output. On a machine without `/usr/bin/curl` nothing is sent, and `crosshall owner telemetry` says why.
 - **Visible before it is sent.** `crosshall owner telemetry show` shows the report waiting to be sent, exactly as it will be sent, and `crosshall owner telemetry` names the receiver's last answer and the next attempt.
 - **Kept locally.** A report the receiver accepted is moved to `telemetry/sent/` and kept 30 days from its acceptance. `crosshall owner telemetry sent` lists those days and `crosshall owner telemetry sent --day YYYY-MM-DD` prints one, byte for byte as it was sent.
@@ -70,7 +70,7 @@ The same notice is published at [addylog.dev/crosshall/telemetry](https://addylo
 
 A report carries no identifier, but it is not unconnectable: the network path sees the address it came from, and with few users a rare platform or version can point to one machine. The counts describe how much one person or team worked with their agents that day.
 
-Because no report carries an identifier, the receiver cannot find the reports of one person, so it cannot show or delete them on request; every report is deleted after 180 days. A report the receiver has accepted cannot be recalled. `crosshall owner telemetry off` stops every later one and deletes reports not yet sent.
+Because no report carries an identifier, the receiver cannot find the reports of one person, so it cannot show or delete them on request; every report is deleted after 180 days. A report the receiver has accepted cannot be recalled. `crosshall owner telemetry off` stops every later one and deletes reports not yet sent. Off while a request is under way deletes that report's local copy too, even if the receiver accepts it, and that day is never sent again.
 
 ## A day without a report
 
@@ -85,7 +85,7 @@ It can mean any of: the setting was off or unset, an opt-out was in effect, no d
 | `CROSSHALL_TELEMETRY=off` (or `0`, `false`, `no`, `disabled`), or `DO_NOT_TRACK` set to anything but empty, `0` or `false` | a dispatcher launched with it, for its whole life; setup and owner commands | for the dispatcher: no request, and no report about a day it ran on. For setup and owner commands: no question, and a setting of `on` becomes `off` |
 | the same variables | hooks, member commands, a dispatcher already running | nothing: a variable set in one terminal is not a machine-wide switch |
 
-A variable or file can only turn sending off.
+A variable or file can only turn sending off. The dispatcher records the day it saw an opt-out in `telemetry/state.json`; while it cannot write that file, it builds and sends nothing.
 
 ## The request
 

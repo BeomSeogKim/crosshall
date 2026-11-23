@@ -1,12 +1,16 @@
 package telemetrysend
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,10 +18,14 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 )
 
-func (h *hall) sentDays(now time.Time) []string {
+func (h *hall) sentDays(time.Time) []string {
 	var days []string
 	for _, body := range h.rc.received() {
-		days = append(days, reportOf(h.t, body, now).Day)
+		var r struct{ Day string }
+		if err := json.Unmarshal(body, &r); err != nil {
+			h.t.Fatal(err)
+		}
+		days = append(days, r.Day)
 	}
 	return days
 }
@@ -259,5 +267,101 @@ func TestOptOutIsRecordedWithAnUnreadableMode(t *testing.T) {
 	h.tick(New(h.cfg, h.db), d0.Add(time.Hour))
 	if st := h.readState(t); st.VetoDay != "2026-11-10" {
 		t.Fatalf("veto day %q", st.VetoDay)
+	}
+}
+
+// A veto observed while state.json cannot be replaced is kept by the
+// running sender: nothing is sent while that day is not durable, and once
+// writes work again the same sender records it first and never sends it.
+func TestVetoSurvivesAFailedStateWrite(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -3))
+	for _, back := range []int{-2, 0, 1} {
+		h.hookActivity(d0.AddDate(0, 0, back).Add(time.Hour))
+	}
+	var deny atomic.Bool
+	cfg := h.cfg
+	cfg.failStateWrite = deny.Load
+	s := New(cfg, h.db)
+	h.tick(s, d0.AddDate(0, 0, -1).Add(time.Minute))
+	if len(h.files("pending")) != 1 {
+		t.Fatalf("pending %v", h.files("pending"))
+	}
+	deny.Store(true)
+	if err := os.WriteFile(h.cfg.PolicyPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(s, d0.Add(10*time.Hour))
+	if st := h.readState(t); st.VetoDay != "" || len(h.files("pending")) != 0 {
+		t.Fatalf("veto day %q on disk, pending %v", st.VetoDay, h.files("pending"))
+	}
+	if err := os.Remove(h.cfg.PolicyPath); err != nil {
+		t.Fatal(err)
+	}
+	for now := d0.Add(11 * time.Hour); now.Before(d0.AddDate(0, 0, 2)); now = now.Add(time.Hour) {
+		h.tick(s, now)
+	}
+	if n := len(h.rc.received()); n != 0 {
+		t.Fatalf("%d requests while the opt-out day was not durable", n)
+	}
+	deny.Store(false)
+	for now := d0.AddDate(0, 0, 2); now.Before(d0.AddDate(0, 0, 4)); now = now.Add(time.Hour) {
+		h.tick(s, now)
+	}
+	if st, days := h.readState(t), h.sentDays(d0.AddDate(0, 0, 4)); st.VetoDay != "2026-11-10" || !slices.Equal(days, []string{"2026-11-11"}) {
+		t.Fatalf("veto day %q, sent %v", st.VetoDay, days)
+	}
+}
+
+// A batch older than seven days is never sent, even when its file cannot
+// be deleted.
+func TestExpiredBatchIsNotSentWhenItCannotBeDeleted(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("uses the immutable file flag of darwin")
+	}
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -9))
+	h.hookActivity(d0.AddDate(0, 0, -7).Add(time.Hour))
+	h.rc.respond = func(_ int, w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }
+	h.run(d0.AddDate(0, 0, -6).Add(time.Minute), d0.AddDate(0, 0, -6).Add(7*time.Hour))
+	path := filepath.Join(h.state, "telemetry", "pending", "2026-11-03.json")
+	if err := syscall.Chflags(path, 0x2); err != nil { // UF_IMMUTABLE
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Chflags(path, 0) })
+	h.run(d0.AddDate(0, 0, -6).Add(8*time.Hour), d0.Add(23*time.Hour))
+	before := len(h.rc.received())
+	h.rc.respond = nil
+	h.run(d0.AddDate(0, 0, 1), d0.AddDate(0, 0, 3))
+	if after := h.sentDays(d0.AddDate(0, 0, 3))[before:]; len(after) != 0 || len(h.files("pending")) != 1 {
+		t.Fatalf("sent after expiry: %v, pending %v", after, h.files("pending"))
+	}
+}
+
+// Off between the receiver taking the body and the 204 being recorded
+// deletes the local copy, as off deletes every unsent report, and that day
+// is never sent again.
+func TestOffAroundAnAcceptanceNeverResends(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -3))
+	h.hookActivity(d0.AddDate(0, 0, -2).Add(time.Hour))
+	h.rc.respond = func(n int, w http.ResponseWriter, _ *http.Request) {
+		if n == 0 {
+			if _, _, err := telemetryconfig.SetMode(h.state, telemetryconfig.Off, "owner-command", ""); err != nil {
+				t.Error(err)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	h.run(d0.AddDate(0, 0, -1).Add(time.Minute), d0.AddDate(0, 0, -1).Add(7*time.Hour))
+	if len(h.rc.received()) != 1 || len(h.files("pending")) != 0 || len(h.files("sent")) != 0 {
+		t.Fatalf("%d requests, pending %v, sent %v", len(h.rc.received()), h.files("pending"), h.files("sent"))
+	}
+	h.setMode("on", d0.AddDate(0, 0, -1).Add(8*time.Hour))
+	h.hookActivity(d0.Add(time.Hour))
+	h.hookActivity(d0.AddDate(0, 0, 1).Add(time.Hour))
+	h.run(d0.AddDate(0, 0, -1).Add(9*time.Hour), d0.AddDate(0, 0, 4))
+	if days := h.sentDays(d0.AddDate(0, 0, 4)); days[0] != "2026-11-08" || slices.Contains(days[1:], "2026-11-08") {
+		t.Fatalf("sent %v", days)
 	}
 }

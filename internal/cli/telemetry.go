@@ -123,7 +123,7 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
-	st, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot)
+	st, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot, time.Now())
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
@@ -199,7 +199,7 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 // byte as it will be sent.
 func runTelemetryShow(env Env, opts options, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
-	_, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot)
+	_, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot, time.Now())
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}

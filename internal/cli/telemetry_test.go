@@ -229,25 +229,28 @@ func TestTelemetryShowAndRetryStatus(t *testing.T) {
 		!strings.Contains(stderr, "no usage report is waiting to be sent") {
 		t.Fatalf("show with nothing pending: code=%d, stderr=%s", code, stderr)
 	}
-	// On since November; a batch the receiver accepted (its move to sent/
-	// still owed) and a batch from before the cutoff are skipped, as the
-	// dispatcher skips them.
+	// On ten days ago; a batch from before the cutoff, one older than seven
+	// days and one the receiver accepted (its move to sent/ still owed) are
+	// skipped, as the dispatcher skips them.
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	ago := func(days int) string { return today.AddDate(0, 0, -days).Format(time.DateOnly) }
 	mode := filepath.Join(env.TelemetryStateRoot, "telemetry", "mode")
-	if err := os.WriteFile(mode, []byte("on 2026-11-01T00:00:00Z owner-command\n"), 0600); err != nil {
+	if err := os.WriteFile(mode, []byte("on "+today.AddDate(0, 0, -10).Format(time.RFC3339)+" owner-command\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"v":1,"registry":1,"batch":"00000000000000000000000000000000","day":"2026-11-09"}`
-	next := time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
+	pendingDay := ago(1)
+	body := `{"v":1,"registry":1,"batch":"00000000000000000000000000000000","day":"` + pendingDay + `"}`
+	next := today.Add(27 * time.Hour)
 	dir, err := os.OpenRoot(filepath.Join(env.TelemetryStateRoot, "telemetry"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dir.Close()
 	st := &telemetryconfig.State{LastStatus: "429", Days: map[string]*telemetryconfig.DayState{
-		"2026-10-30": {Batch: true}, "2026-11-08": {Batch: true, Accepted: true},
-		"2026-11-09": {Batch: true, NotBefore: next, Attempts: 1}}}
-	for _, day := range []string{"2026-10-30", "2026-11-08", "2026-11-09"} {
-		if err := telemetryconfig.WriteDayFile(dir, "pending", day, []byte(strings.ReplaceAll(body, "2026-11-09", day))); err != nil {
+		ago(12): {Batch: true}, ago(8): {Batch: true}, ago(2): {Batch: true, Accepted: true},
+		pendingDay: {Batch: true, NotBefore: next, Attempts: 1}}}
+	for day := range st.Days {
+		if err := telemetryconfig.WriteDayFile(dir, "pending", day, []byte(strings.ReplaceAll(body, pendingDay, day))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -259,7 +262,7 @@ func TestTelemetryShowAndRetryStatus(t *testing.T) {
 	}
 	stdout, _, code := run(t, env, "owner", "telemetry")
 	if code != core.ExitOK || !strings.Contains(stdout, "Last answer from the receiver: 429") ||
-		!strings.Contains(stdout, "Waiting to be sent: the report for 2026-11-09, not before 2026-11-10T03:00:00Z (crosshall owner telemetry show shows it)") {
+		!strings.Contains(stdout, "Waiting to be sent: the report for "+pendingDay+", not before "+next.Format(time.RFC3339)+" (crosshall owner telemetry show shows it)") {
 		t.Fatalf("status: code=%d, stdout=%s", code, stdout)
 	}
 	stdout, _, code = run(t, env, "--json", "owner", "telemetry")
@@ -269,10 +272,10 @@ func TestTelemetryShowAndRetryStatus(t *testing.T) {
 		NextAttempt time.Time `json:"next_attempt"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &status); code != core.ExitOK || err != nil ||
-		status.LastAnswer != "429" || status.PendingDay != "2026-11-09" || !status.NextAttempt.Equal(next) {
+		status.LastAnswer != "429" || status.PendingDay != pendingDay || !status.NextAttempt.Equal(next) {
 		t.Fatalf("status json: code=%d, %s, %v", code, stdout, err)
 	}
-	st.Days["2026-11-09"].Accepted = true
+	st.Days[pendingDay].Accepted = true
 	if err := telemetryconfig.WriteState(dir, st); err != nil {
 		t.Fatal(err)
 	}

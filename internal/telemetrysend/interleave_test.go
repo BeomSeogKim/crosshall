@@ -17,16 +17,24 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 )
 
 // TestRandomInterleavings runs seeded random sequences of rounds, restarts,
-// clock jumps across midnight, activity, answers, and opt-outs that appear
-// and disappear at every check point (before every step, which is where the
-// sender reads the opt-outs) and during requests. Its oracle is computed
-// here, not by the sender: an opt-out in effect at a check point was
-// observed on the day of that instant, and an on starts consent on its
-// day. No request may carry a day up to the latest observed opt-out day or
-// up to the day of the last on, or start while the setting is off.
+// clock jumps across midnight, activity, answers, failed replacements of
+// state.json, and opt-outs that appear and disappear at every check point
+// (before every step, which is where the sender reads the opt-outs) and
+// during requests. Its oracle is computed here, not by the sender: an
+// opt-out in effect at a check point was observed on the day of that
+// instant, and an on starts consent on its day. No request may carry a day
+// up to the latest observed opt-out day, up to the day of the last on, or
+// older than seven days, or start while the setting is off, judged when the
+// last check before it passed.
+//
+// A restart forgets what the old sender held in memory. When state.json
+// could not be written during the old sender's life, the oracle falls back
+// to the opt-out day on disk; otherwise the day on disk must already be the
+// oracle's.
 //
 // It runs 1000 cases by default; CROSSHALL_TELEMETRY_CASES sets another
 // number, as for a longer run under the race detector.
@@ -44,9 +52,9 @@ func TestRandomInterleavings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	var posts, vetoed atomic.Int64
+	var posts, vetoed, lost atomic.Int64
 	t.Cleanup(func() {
-		t.Logf("%d cases made %d requests; %d cases observed an opt-out", cases, posts.Load(), vetoed.Load())
+		t.Logf("%d cases made %d requests; %d cases observed an opt-out; %d restarts lost an undurable opt-out day", cases, posts.Load(), vetoed.Load(), lost.Load())
 		if posts.Load() < int64(cases) {
 			t.Errorf("only %d requests in %d cases", posts.Load(), cases)
 		}
@@ -57,6 +65,7 @@ func TestRandomInterleavings(t *testing.T) {
 			in := newInterleaving(t, db, seed)
 			in.run()
 			posts.Add(int64(in.posts))
+			lost.Add(int64(in.lost))
 			if in.vetoDay != "" {
 				vetoed.Add(1)
 			}
@@ -83,6 +92,17 @@ type interleaving struct {
 	vetoed  bool
 	vetoDay string // latest day an opt-out was in effect at a check point
 	posts   int
+	// denied makes replacing state.json fail; deniedInLife is set while
+	// the current sender has seen a denial.
+	denied, deniedInLife bool
+	lost                 int
+	// atStart is the world when the last check before the running
+	// request passed; an opt-out after it is the request's own race,
+	// which the watcher ends.
+	atStart struct {
+		mode, onDay, vetoDay string
+		clock                time.Time
+	}
 }
 
 func newInterleaving(t *testing.T, db *store.Store, seed uint64) *interleaving {
@@ -100,6 +120,7 @@ func newInterleaving(t *testing.T, db *store.Store, seed uint64) *interleaving {
 		StateRoot: in.state, Rendezvous: in.rv, Version: "v0.2.0-rc.2", Endpoint: "https://receiver.invalid/v1/report",
 		PolicyPath: filepath.Join(dir, "telemetry-off"), watchEvery: time.Millisecond,
 		clock: in.now, checkpoint: in.checkpoint, stepDone: in.step.Unlock, post: in.post,
+		failStateWrite: in.writeDenied, requestStarts: in.requestStarts,
 	}
 	return in
 }
@@ -112,12 +133,29 @@ func (in *interleaving) now() time.Time {
 
 func (in *interleaving) chance(p float64) bool { return in.rng.Float64() < p }
 
+func (in *interleaving) requestStarts() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.atStart.mode, in.atStart.onDay, in.atStart.vetoDay, in.atStart.clock = in.mode, in.onDay, in.vetoDay, in.clock
+}
+
+func (in *interleaving) writeDenied() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.denied {
+		in.deniedInLife = true
+	}
+	return in.denied
+}
+
 // mutate changes the world at random; the caller holds mu.
 func (in *interleaving) mutate() {
-	switch n := in.rng.IntN(10); {
-	case n < 3:
-		in.setAdmin(!in.admin)
+	switch n := in.rng.IntN(12); {
+	case n < 2:
+		in.denied = !in.denied
 	case n < 5:
+		in.setAdmin(!in.admin)
+	case n < 7:
 		if in.mode == "on" {
 			in.setMode("off")
 		} else {
@@ -154,8 +192,8 @@ func (in *interleaving) post(ctx context.Context, body []byte) result {
 	defer in.step.Unlock()
 	in.mu.Lock()
 	in.posts++
-	if in.mode != "on" || report.Day <= in.vetoDay || report.Day <= in.onDay {
-		in.t.Errorf("sent %s with mode %q, on since %s, latest opt-out day %s", report.Day, in.mode, in.onDay, in.vetoDay)
+	if w := in.atStart; w.mode != "on" || report.Day <= w.vetoDay || report.Day <= w.onDay || report.Day < telemetryconfig.OldestDay(w.clock) {
+		in.t.Errorf("sent %s at %s with mode %q, on since %s, latest opt-out day %s", report.Day, w.clock.Format(time.RFC3339Nano), w.mode, w.onDay, w.vetoDay)
 	}
 	during := in.chance(0.1)
 	if during {
@@ -224,6 +262,28 @@ func (in *interleaving) activity() {
 	in.must(err)
 }
 
+// restarted adjusts the oracle for a sender that forgets its memory; the
+// caller holds mu.
+func (in *interleaving) restarted() {
+	var st struct {
+		VetoDay string `json:"veto_day"`
+	}
+	raw, err := os.ReadFile(filepath.Join(in.state, "telemetry", "state.json"))
+	if err == nil {
+		err = json.Unmarshal(raw, &st)
+	}
+	in.must(err)
+	switch {
+	case st.VetoDay >= in.vetoDay:
+	case in.deniedInLife:
+		in.vetoDay = st.VetoDay
+		in.lost++
+	default:
+		in.t.Errorf("opt-out day %s on disk at a restart, observed %s, and no write failed", st.VetoDay, in.vetoDay)
+	}
+	in.deniedInLife = in.denied
+}
+
 func (in *interleaving) must(err error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		in.t.Fatal(err)
@@ -240,7 +300,10 @@ func (in *interleaving) run() {
 	for range 80 {
 		in.step.Lock()
 		in.mu.Lock()
-		// Opt-outs come and go.
+		// Opt-outs and faults come and go.
+		if in.denied && in.chance(0.4) {
+			in.denied = false
+		}
 		if in.admin && in.chance(0.4) {
 			in.setAdmin(false)
 		}
@@ -261,6 +324,7 @@ func (in *interleaving) run() {
 			in.mutate()
 		case action == 7:
 			// A restart, perhaps with an environment veto or a new release.
+			in.restarted()
 			in.vetoed = in.chance(0.1)
 			cfg := in.cfg
 			cfg.Vetoed = in.vetoed

@@ -21,6 +21,15 @@ const PostGap = 24 * time.Hour
 // MaxReport is the largest report the dispatcher sends or reads back.
 const MaxReport = 16 << 10
 
+// MaxAgeDays is how many days back from today a batch is frozen, kept or
+// sent.
+const MaxAgeDays = 7
+
+// OldestDay is the earliest UTC day that may still be sent at now.
+func OldestDay(now time.Time) string {
+	return now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -MaxAgeDays).Format(time.DateOnly)
+}
+
 // State is telemetry/state.json, which the dispatcher writes. Days holds
 // every recently frozen day, with or without a batch; a day in it is never
 // built again.
@@ -62,11 +71,12 @@ func Cutoff(setting Setting, st *State) string {
 	return cutoff
 }
 
-// Sendable reports whether the pending batch of day may be sent: it is
-// after the cutoff and the receiver has not accepted it.
-func (st *State) Sendable(day, cutoff string) bool {
+// Sendable reports whether the pending batch of day may be sent at now: it
+// is after the cutoff, not older than MaxAgeDays, and the receiver has not
+// accepted it. Whether its file could be deleted does not matter.
+func (st *State) Sendable(day, cutoff string, now time.Time) bool {
 	d := st.Days[day]
-	return d != nil && !d.Accepted && day > cutoff
+	return d != nil && !d.Accepted && day > cutoff && day >= OldestDay(now)
 }
 
 // DropPending deletes every pending batch the receiver has not accepted.
@@ -85,16 +95,6 @@ func DropPending(dir *os.Root, st *State) error {
 		}
 	}
 	return nil
-}
-
-// Veto records an opt-out observed at t, rounded up to its whole UTC day,
-// and reports whether the record moved.
-func (st *State) Veto(t time.Time) bool {
-	if day := t.UTC().Format(time.DateOnly); day > st.VetoDay {
-		st.VetoDay = day
-		return true
-	}
-	return false
 }
 
 // NextAttempt is when the pending batch of day may be sent.
@@ -192,9 +192,9 @@ type Pending struct {
 	NextAttempt time.Time
 }
 
-// ReadPending returns the dispatcher's state and the batch it sends next,
-// chosen as the dispatcher chooses it, without changing anything.
-func ReadPending(stateRoot string) (*State, *Pending, error) {
+// ReadPending returns the dispatcher's state and the batch it sends next at
+// now, chosen as the dispatcher chooses it, without changing anything.
+func ReadPending(stateRoot string, now time.Time) (*State, *Pending, error) {
 	dir, err := openTelemetryDir(stateRoot, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return &State{Days: map[string]*DayState{}}, nil, nil
@@ -217,7 +217,7 @@ func ReadPending(stateRoot string) (*State, *Pending, error) {
 	}
 	cutoff := Cutoff(setting, st)
 	for _, day := range days {
-		if !st.Sendable(day, cutoff) {
+		if !st.Sendable(day, cutoff, now) {
 			continue
 		}
 		body, err := ReadDayFile(dir, "pending", day)

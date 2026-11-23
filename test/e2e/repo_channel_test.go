@@ -195,6 +195,9 @@ func testRepositoryChannel(t *testing.T, stall bool) {
 			if got := hostContext(t, offer.output); got != welcome || offer.bindings != 1 {
 				t.Fatalf("linked worktree welcome %q, live bindings %d, channel %q", got, offer.bindings, offer.channel)
 			}
+			if !offer.expired && !offer.receipted {
+				t.Fatal("callback finished within budget after printing the welcome without recording delivery")
+			}
 			printed = true
 		}
 		if printed && offer.receipted {

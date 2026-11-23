@@ -81,6 +81,10 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS can reject killpg for an exited, unreaped child.
+            if process.poll() is None:
+                raise
         process.wait()
         raise
     finally:

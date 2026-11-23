@@ -10,6 +10,15 @@ import terminal
 
 
 class TerminalTest(unittest.TestCase):
+    def test_timeout_survives_killpg_denial_for_an_exited_child(self):
+        with patch.object(terminal.subprocess, "Popen") as popen, \
+             patch.object(terminal.os, "killpg", side_effect=PermissionError):
+            child = popen.return_value
+            child.poll.return_value = 0
+            with self.assertRaises(subprocess.TimeoutExpired):
+                terminal.run(["child"], timeout=0)
+            child.wait.assert_called_once_with()
+
     def test_child_exits_before_parent_handles_io(self):
         popen = subprocess.Popen
 

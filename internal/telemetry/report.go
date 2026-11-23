@@ -57,6 +57,19 @@ func (r Report) Active() bool {
 	return false
 }
 
+// SetWeek sets the week figures, rounded, once the caller knows the day is
+// active: the active days and the unobserved notices of the seven days
+// ending with this one.
+func (r *Report) SetWeek(activeDays, unobserved10m int64) {
+	for key, n := range map[string]int64{"week.active_days": activeDays, "week.unobserved_10m": unobserved10m} {
+		if v := Round(n); v > 0 {
+			r.Counts[key] = v
+		} else {
+			delete(r.Counts, key)
+		}
+	}
+}
+
 // Marshal returns the canonical bytes: no whitespace, members in the order
 // of the wire contract, count keys in ascending byte order.
 func (r Report) Marshal() ([]byte, error) {

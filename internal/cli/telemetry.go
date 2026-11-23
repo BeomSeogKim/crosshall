@@ -108,7 +108,7 @@ func runOwnerTelemetry(env Env, opts options, args []string, stdout, stderr io.W
 		}
 		setting, _, err = telemetryconfig.SetMode(env.TelemetryStateRoot, action, "owner-command", "")
 	case "show":
-		return o.fail(core.ExitUnavailable, core.CodeUnsent, "usage report previews are unavailable in this build", "")
+		return runTelemetryShow(env, opts, stdout, stderr)
 	default:
 		return o.usage("usage: crosshall owner telemetry [on|off|show|sent]")
 	}
@@ -120,6 +120,10 @@ func runOwnerTelemetry(env Env, opts options, args []string, stdout, stderr io.W
 
 func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryconfig.Setting, environmentOff, managedOff, turnedOff bool) core.ExitCode {
 	days, _, err := telemetryconfig.ReadSent(env.TelemetryStateRoot, "")
+	if err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	st, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot)
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
@@ -154,6 +158,19 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 			fmt.Fprintf(out, "Last sent UTC day: %s\n", day)
 		}
 	}
+	if st.LastStatus != "" {
+		fields["last_answer"] = st.LastStatus
+		if !o.json {
+			fmt.Fprintf(out, "Last answer from the receiver: %s\n", st.LastStatus)
+		}
+	}
+	if pending != nil {
+		fields["pending_day"], fields["next_attempt"] = pending.Day, pending.NextAttempt
+		if !o.json {
+			fmt.Fprintf(out, "Waiting to be sent: the report for %s, not before %s (crosshall owner telemetry show prints it)\n",
+				pending.Day, pending.NextAttempt.Format(time.RFC3339))
+		}
+	}
 	if o.json {
 		writeJSON(out, fields)
 		return core.ExitOK
@@ -174,6 +191,29 @@ func renderTelemetryStatus(o outputs, out io.Writer, env Env, setting telemetryc
 	}
 	if turnedOff {
 		fmt.Fprintln(out, "Reports already accepted keep their normal retention.")
+	}
+	return core.ExitOK
+}
+
+// runTelemetryShow prints the batch the dispatcher sends next, byte for
+// byte as it will be sent.
+func runTelemetryShow(env Env, opts options, stdout, stderr io.Writer) core.ExitCode {
+	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	_, pending, err := telemetryconfig.ReadPending(env.TelemetryStateRoot)
+	if err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	if pending == nil {
+		return o.fail(core.ExitUnavailable, core.CodeUnsent, "no usage report is waiting to be sent",
+			"crosshall owner telemetry sent lists the reports already sent")
+	}
+	if opts.json {
+		writeJSON(stdout, map[string]any{"v": 1, "ok": true, "kind": "owner telemetry show", "day": pending.Day,
+			"next_attempt": pending.NextAttempt, "report": json.RawMessage(pending.Body)})
+		return core.ExitOK
+	}
+	if _, err := stdout.Write(pending.Body); err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
 	return core.ExitOK
 }

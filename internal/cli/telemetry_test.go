@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +212,52 @@ func TestTelemetryStatusSaysWhenCurlIsMissing(t *testing.T) {
 		if code != core.ExitOK || said != missing {
 			t.Fatalf("curl %s: code=%d, stdout=%s, stderr=%s", curl, code, stdout, stderr)
 		}
+	}
+}
+
+// show prints the batch the dispatcher sends next byte for byte, and the
+// status names the last answer and the next attempt.
+func TestTelemetryShowAndRetryStatus(t *testing.T) {
+	t.Setenv(telemetryconfig.TelemetryEnv, "")
+	t.Setenv(telemetryconfig.DoNotTrackEnv, "")
+	env := Env{TelemetryStateRoot: filepath.Join(t.TempDir(), "state"),
+		ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off"))}
+	if _, _, code := run(t, env, "owner", "telemetry", "on"); code != core.ExitOK {
+		t.Fatal(code)
+	}
+	if _, stderr, code := run(t, env, "owner", "telemetry", "show"); code != core.ExitUnavailable ||
+		!strings.Contains(stderr, "no usage report is waiting to be sent") {
+		t.Fatalf("show with nothing pending: code=%d, stderr=%s", code, stderr)
+	}
+	body := `{"v":1,"registry":1,"batch":"00000000000000000000000000000000","day":"2026-11-09"}`
+	next := time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
+	dir, err := os.OpenRoot(filepath.Join(env.TelemetryStateRoot, "telemetry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	st := &telemetryconfig.State{LastStatus: "429", Days: map[string]*telemetryconfig.DayState{
+		"2026-11-09": {Batch: true, NotBefore: next, Attempts: 1}}}
+	if err := errors.Join(telemetryconfig.WriteDayFile(dir, "pending", "2026-11-09", []byte(body)),
+		telemetryconfig.WriteState(dir, st)); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, _, code := run(t, env, "owner", "telemetry", "show"); code != core.ExitOK || stdout != body {
+		t.Fatalf("show: code=%d, stdout=%q", code, stdout)
+	}
+	stdout, _, code := run(t, env, "owner", "telemetry")
+	if code != core.ExitOK || !strings.Contains(stdout, "Last answer from the receiver: 429") ||
+		!strings.Contains(stdout, "Waiting to be sent: the report for 2026-11-09, not before 2026-11-10T03:00:00Z") {
+		t.Fatalf("status: code=%d, stdout=%s", code, stdout)
+	}
+	stdout, _, code = run(t, env, "--json", "owner", "telemetry")
+	var status struct {
+		LastAnswer  string    `json:"last_answer"`
+		PendingDay  string    `json:"pending_day"`
+		NextAttempt time.Time `json:"next_attempt"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); code != core.ExitOK || err != nil ||
+		status.LastAnswer != "429" || status.PendingDay != "2026-11-09" || !status.NextAttempt.Equal(next) {
+		t.Fatalf("status json: code=%d, %s, %v", code, stdout, err)
 	}
 }

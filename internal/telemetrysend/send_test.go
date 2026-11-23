@@ -1,6 +1,7 @@
 package telemetrysend
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -454,4 +455,244 @@ func TestRetryAfter(t *testing.T) {
 			t.Errorf("%q: retry after %v, want %v", raw, got.retryAfter, want)
 		}
 	}
+}
+
+// A batch selected for sending is not sent once off and on started a new
+// consent interval, even though the request was already under way.
+func TestOffAndOnAfterSelectionSendsNothingOld(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -2))
+	h.hookActivity(d0.Add(-time.Hour))
+	h.cfg.beforeSend = func() {
+		for _, mode := range []string{telemetryconfig.Off, telemetryconfig.On} {
+			if _, _, err := telemetryconfig.SetMode(h.state, mode, "owner-command", ""); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	h.run(d0.Add(time.Minute), d0.AddDate(0, 0, 3))
+	if n := len(h.rc.received()); n != 0 {
+		t.Fatalf("%d requests after off and on", n)
+	}
+}
+
+// The administrator's file seen during a request cancels it and is
+// remembered: after the file is gone and the dispatcher restarted, neither
+// the cancelled batch nor the day the file was seen on is sent.
+func TestOptOutSeenDuringRequestOutlivesIt(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -2))
+	for i := -1; i <= 1; i++ {
+		h.hookActivity(d0.AddDate(0, 0, i).Add(time.Hour))
+	}
+	h.rc.respond = func(n int, w http.ResponseWriter, r *http.Request) {
+		if n == 0 {
+			if err := os.WriteFile(h.cfg.PolicyPath, nil, 0644); err != nil {
+				t.Error(err)
+			}
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	h.cfg.timeout = 30 * time.Second
+	s := New(h.cfg, h.db)
+	now := d0.Add(time.Minute)
+	for ; len(h.rc.received()) == 0; now = now.Add(time.Hour) {
+		h.tick(s, now)
+	}
+	if pending := h.files("pending"); len(pending) != 0 {
+		t.Fatalf("pending after the opt-out = %v", pending)
+	}
+	if err := os.Remove(h.cfg.PolicyPath); err != nil {
+		t.Fatal(err)
+	}
+	h.run(now, d0.AddDate(0, 0, 3))
+	var days []string
+	for _, body := range h.rc.received()[1:] {
+		days = append(days, reportOf(t, body, d0.AddDate(0, 0, 3)).Day)
+	}
+	if !slices.Equal(days, []string{"2026-11-11"}) {
+		t.Fatalf("sent after the opt-out: %v, want only the day after it", days)
+	}
+}
+
+// A missing curl does not skip the opt-out bookkeeping.
+func TestOptOutIsRecordedWithoutCurl(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -2))
+	h.cfg.Curl = "/nonexistent/curl"
+	h.cfg.Vetoed = true
+	h.tick(New(h.cfg, h.db), d0.Add(time.Hour))
+	st := h.readState(t)
+	if !st.SuppressedThrough.Equal(d0.Add(time.Hour)) {
+		t.Fatalf("suppressed through %v", st.SuppressedThrough)
+	}
+}
+
+// After off and on, the week figures count only days of the new interval.
+func TestWeekFiguresStayInTheInterval(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -4))
+	for _, i := range []int{-3, -2, 0} {
+		h.hookActivity(d0.AddDate(0, 0, i).Add(time.Hour))
+	}
+	h.run(d0.AddDate(0, 0, -2).Add(time.Minute), d0.AddDate(0, 0, -1))
+	h.setMode("on", d0.AddDate(0, 0, -1).Add(2*time.Hour))
+	h.run(d0.AddDate(0, 0, 1).Add(time.Minute), d0.AddDate(0, 0, 2).Add(7*time.Hour))
+	got := h.rc.received()
+	last := reportOf(t, got[len(got)-1], d0.AddDate(0, 0, 2))
+	if last.Day != "2026-11-10" || last.Counts["week.active_days"] != 1 {
+		t.Fatalf("last report %+v", last)
+	}
+}
+
+// A seven-day backlog of busy hook files is built beside the dispatcher:
+// Tick returns at once and the store is never held longer than one day's
+// queries, well inside a hook's 150 ms deadline.
+func TestBacklogDoesNotHoldTheDispatcher(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -9))
+	line := []byte("claude UserPromptSubmit clean 3\n")
+	for i := -7; i <= -1; i++ {
+		h.hookActivity(d0.AddDate(0, 0, i))
+		path := filepath.Join(h.rv, "hooks", d0.AddDate(0, 0, i).Format("20060102"))
+		if err := os.WriteFile(path, bytes.Repeat(line, 50_000), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := New(h.cfg, h.db)
+	begin := time.Now()
+	s.Tick(t.Context(), d0.Add(time.Minute))
+	if took := time.Since(begin); took > 20*time.Millisecond {
+		t.Fatalf("Tick blocked for %v", took)
+	}
+	var worst time.Duration
+	done := make(chan struct{})
+	go func() { s.Wait(); close(done) }()
+	for running := true; running; {
+		select {
+		case <-done:
+			running = false
+		default:
+			start := time.Now()
+			if err := h.db.Update(t.Context(), func(store.Tx) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			worst = max(worst, time.Since(start))
+			time.Sleep(time.Millisecond)
+		}
+	}
+	t.Logf("the store was held at most %v", worst)
+	if worst > 100*time.Millisecond {
+		t.Fatalf("the store was held for %v", worst)
+	}
+	if pending := h.files("pending"); len(pending) != 7 {
+		t.Fatalf("pending = %v", pending)
+	}
+}
+
+// A restart between writing a batch and the state adopts the batch's bytes
+// instead of building the day again.
+func TestRestartAdoptsFrozenBytes(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -2))
+	h.hookActivity(d0.Add(-time.Hour))
+	h.tick(New(h.cfg, h.db), d0.Add(time.Minute))
+	frozen, err := os.ReadFile(filepath.Join(h.state, "telemetry", "pending", "2026-11-09.json"))
+	if err != nil || reportOf(t, frozen, d0).Sources.Snapshot != "taken" {
+		t.Fatalf("frozen %s: %v", frozen, err)
+	}
+	if err := os.Remove(filepath.Join(h.state, "telemetry", "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	h.run(d0.Add(time.Hour), d0.Add(8*time.Hour))
+	if got := h.rc.received(); len(got) != 1 || !bytes.Equal(got[0], frozen) {
+		t.Fatalf("sent %q, want the frozen %q", got, frozen)
+	}
+}
+
+// A 204 is recorded before the batch is moved; a failed move is finished
+// later without a second request.
+func TestAcceptedBatchIsNotSentTwice(t *testing.T) {
+	h := newHall(t)
+	h.setMode("on", d0.AddDate(0, 0, -2))
+	h.hookActivity(d0.Add(-time.Hour))
+	blocker := filepath.Join(h.state, "telemetry", "sent")
+	if err := os.WriteFile(blocker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.run(d0.Add(time.Minute), d0.Add(10*time.Hour))
+	if n := len(h.rc.received()); n != 1 {
+		t.Fatalf("%d requests while the move failed", n)
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	h.run(d0.Add(11*time.Hour), d0.Add(12*time.Hour))
+	if n := len(h.rc.received()); n != 1 || len(h.files("pending")) != 0 || len(h.files("sent")) != 1 {
+		t.Fatalf("%d requests, pending %v, sent %v", n, h.files("pending"), h.files("sent"))
+	}
+}
+
+// Sent copies are deleted after 30 days in every state.
+func TestSentCopiesExpireWhileOff(t *testing.T) {
+	for name, prepare := range map[string]func(h *hall){
+		"off":           func(h *hall) { h.setMode("off", d0.AddDate(0, 0, -40)) },
+		"administrator": func(h *hall) { h.setMode("on", d0.AddDate(0, 0, -40)); os.WriteFile(h.cfg.PolicyPath, nil, 0644) },
+		"stopped": func(h *hall) {
+			h.setMode("on", d0.AddDate(0, 0, -40))
+			dir, err := os.OpenRoot(filepath.Join(h.state, "telemetry"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dir.Close()
+			if err := telemetryconfig.WriteState(dir, &state{StoppedVersion: h.cfg.Version}); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHall(t)
+			prepare(h)
+			sent := filepath.Join(h.state, "telemetry", "sent")
+			if err := os.Mkdir(sent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range []string{"2026-09-26", "2026-10-20"} {
+				if err := os.WriteFile(filepath.Join(sent, d+".json"), []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.tick(New(h.cfg, h.db), d0)
+			if got := h.files("sent"); !slices.Equal(got, []string{"2026-10-20.json"}) {
+				t.Fatalf("sent = %v", got)
+			}
+		})
+	}
+}
+
+// The header buffer keeps its cap when exec copies the child's output.
+func TestHeaderBufferIsCapped(t *testing.T) {
+	w := &limitedWriter{limit: 16 << 10}
+	if _, err := io.Copy(w, bytes.NewReader(make([]byte, 1<<20))); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Bytes()) != 16<<10 {
+		t.Fatalf("kept %d bytes", len(w.Bytes()))
+	}
+}
+
+func (h *hall) readState(t *testing.T) *state {
+	t.Helper()
+	dir, err := os.OpenRoot(filepath.Join(h.state, "telemetry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	st, err := telemetryconfig.ReadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
 }

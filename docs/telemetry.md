@@ -6,8 +6,9 @@ crosshall can send one usage report a day to Adrian Studio, its maintainer, to d
 
 - **Only after a yes.** The setting has three states: unset, `on` and `off`. Only `on` leads to a report, and only about whole UTC days that began after the answer: an answer at 23:59 UTC sends nothing about that day. Turning it off and on again never brings back an earlier day. [How the question is asked](operations.md#usage-statistics).
 - **One report per active day.** After a UTC day closes, the dispatcher builds that day's report once, writes it to `telemetry/pending/` in your state directory and never rebuilds it. A day with no activity has no report.
-- **One request a day.** The dispatcher sends at most one new report per 24 hours, at a random time up to six hours after the report was built, as one HTTPS POST made by `/usr/bin/curl`. A backlog goes out one report a day, oldest first; a report more than seven days old is deleted unsent. A failed request is retried with the same bytes after one hour, doubling up to a day.
+- **One request a day.** The dispatcher sends the first request for a new report at most once per 24 hours, at a random time up to six hours after the report was built, as one HTTPS POST made by `/usr/bin/curl`. A backlog goes out one report a day, oldest first; a report more than seven days old is deleted unsent. A failed request is retried with the same bytes after one hour, doubling up to a day; a retry may come sooner than 24 hours after the last request.
 - **Only the dispatcher sends.** Hooks, member commands and the `crosshall` commands you type make no network call and gain no output. On a machine without `/usr/bin/curl` nothing is sent, and `crosshall owner telemetry` says why.
+- **Visible before it is sent.** `crosshall owner telemetry show` prints the report waiting to be sent, byte for byte, and `crosshall owner telemetry` names the receiver's last answer and the next attempt.
 - **Kept locally.** A sent report is moved to `telemetry/sent/` and kept 30 days. `crosshall owner telemetry sent` lists those days and `crosshall owner telemetry sent --day YYYY-MM-DD` prints one, byte for byte as it was sent.
 
 ## What a report holds
@@ -44,11 +45,11 @@ Each figure is counted on the day of its own event. `<A>` in a sentence below is
 | `notice.resolved.{submitted,not_submitted,uncertain}` | notices whose delivery attempt ended, by outcome |
 | `notice.observed.{own_turn,absorbed,unknown}` | notices the agent's hook confirmed, by how the turn received them |
 | `notice.retired_unobserved` | notice attempts closed without a confirmation |
-| `notice.unobserved_10m` | delivered notices still unconfirmed 10 minutes later while their work was still waiting |
+| `notice.unobserved_10m` | notices submitted to the agent, or whose submission is uncertain, still unconfirmed 10 minutes later while their work was still waiting |
 | `notice.late_observed` | notices of the previous figure that were confirmed later |
 | `receipt.rejected.{malformed,stale}` | notice confirmations the hall rejected, by reason |
 | `suspend.{absorbed,unknown,not_submitted}.{timed,lasting}` | notices paused for a session, by cause, and whether the pause had an end time |
-| `turn_end.claim.{claude,codex,agy}` | turn-end checks of `<A>` that continued a turn with a pending line |
+| `turn_end.claim.{claude,codex,agy}` | turn-end checks of `<A>` committed to continue a turn with a pending line, counted even when no output followed |
 | `join.{hook,cli,rejoined}` | channel joins made by a hook, by a command, and returns to a channel |
 | `budget.exhausted` | requests refused because a member had no root tokens |
 | `week.{active_days,unobserved_10m}` | over the seven days ending with this one, on this machine: days with a report, and the sum of `notice.unobserved_10m` |

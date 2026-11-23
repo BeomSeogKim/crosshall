@@ -199,14 +199,17 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	var reason string
 	var notice, at, suspensionID int64
 	var until sql.NullInt64
+	var unknownCause sql.NullString
 	var recoveryHint int
 	err = tx.QueryRowContext(ctx, `WITH suspensions AS (
 		SELECT s.id, s.reason, s.notice, s.at_ms, s.recovery_hint, `+publishSuspensionExpiry+` AS until_ms FROM publish_suspension s
 		WHERE s.binding_id = ? AND s.launch_ref = ? AND s.id > ?
 	)
-		SELECT id, reason, notice, at_ms, until_ms, recovery_hint FROM suspensions WHERE until_ms IS NULL OR until_ms > ?
+		SELECT id, reason, notice, at_ms, until_ms, recovery_hint,
+			(SELECT a.unknown_cause FROM publish_attempt a WHERE a.id = notice)
+		FROM suspensions WHERE until_ms IS NULL OR until_ms > ?
 		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, bindingID, launchRef, resumedAfter, now.UnixMilli()).
-		Scan(&suspensionID, &reason, &notice, &at, &until, &recoveryHint)
+		Scan(&suspensionID, &reason, &notice, &at, &until, &recoveryHint, &unknownCause)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, err
 	}
@@ -222,6 +225,10 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	if err == nil {
 		state.State, state.Notice, state.AtMS, state.UntilMS = "suspended", notice, at, until.Int64
 		state.Reason = fmt.Sprintf("notice %d %s", notice, reason)
+		if reason == "unknown" && unknownCause.Valid {
+			// The cause doctor counts the day's unknown receipts by.
+			state.Reason += " (" + strings.ReplaceAll(unknownCause.String, "_", " ") + ")"
+		}
 		if reason == "not_submitted" {
 			state.Reason = fmt.Sprintf("notice %d not submitted, the third in a row", notice)
 		}

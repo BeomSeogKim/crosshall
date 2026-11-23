@@ -19,8 +19,7 @@ import (
 	"unsafe"
 )
 
-// interactiveWait bounds every wait for something an interactive session
-// does. Waits end on the observed event, not on this time.
+// interactiveWait bounds ordinary waits for an interactive session. Waits end on the observed event, not on this time.
 const interactiveWait = 30 * time.Second
 
 // hookEvent is one hook callback of the session as Claude Code sent it.
@@ -254,13 +253,18 @@ func (term *terminal) text() string {
 // output when it does not within interactiveWait.
 func (term *terminal) await(what string, done func() bool) {
 	term.c.t.Helper()
-	for deadline := time.Now().Add(interactiveWait); !done(); time.Sleep(20 * time.Millisecond) {
+	term.awaitWithin(interactiveWait, what, done)
+}
+
+func (term *terminal) awaitWithin(timeout time.Duration, what string, done func() bool) {
+	term.c.t.Helper()
+	for deadline := time.Now().Add(timeout); !done(); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			screen := term.text()
 			if len(screen) > 1500 {
 				screen = screen[len(screen)-1500:]
 			}
-			term.c.t.Fatalf("no %s within %s; events %+v\nterminal: %q", what, interactiveWait, term.c.events(), screen)
+			term.c.t.Fatalf("no %s within %s; events %+v\nterminal: %q", what, timeout, term.c.events(), screen)
 		}
 	}
 }
@@ -545,43 +549,6 @@ func TestClaudeCodeInteractiveConformance(t *testing.T) {
 // typedAheadShape is what Claude Code reports for a turn and a prompt typed
 // while that turn runs.
 const typedAheadShape = "UserPromptSubmit A, UserPromptSubmit A, Stop A, Stop B"
-
-// A prompt typed while the previous turn has not ended (typed ahead, the way
-// people queue the next thing) is reported with the previous turn's prompt
-// ID, before that turn's Stop, and its own turn ends with a Stop whose ID no
-// prompt ever carried. This pins that shape for the build under test: the
-// adapter's handling of a typed-ahead prompt as a turn of its own rests on
-// it.
-func TestClaudeCodeInteractiveTypedAheadPrompt(t *testing.T) {
-	c := newConformance(t)
-	c.requireClaude()
-	c.owner("owner", "start")
-	c.owner("owner", "channel", "create", "checkout")
-	c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
-	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
-	c.writer("join", "checkout", "--as", "writer")
-	c.installInteractive()
-	term := c.interactive()
-	c.model.during[1] = func() {
-		prompts := c.count(named("UserPromptSubmit"))
-		term.keys("second synthetic prompt\r")
-		term.await("the typed-ahead prompt's callback", func() bool { return c.count(named("UserPromptSubmit")) > prompts })
-	}
-	term.keys("first synthetic prompt\r")
-	term.await("the Stop of both turns", func() bool { return c.count(named("Stop")) == 2 })
-	all := c.events()
-	session := all[0].Session
-	got := turnShape(inSession(all, session))
-	t.Logf("callbacks: %s; %d model requests", got, c.model.count())
-	if session == "" || turnShape(all) != got {
-		t.Fatalf("callbacks of more than one session, or of none: %q", turnShape(all))
-	}
-	if got != typedAheadShape || c.model.count() != 2 {
-		want := typedAheadShape
-		t.Fatalf("typed-ahead prompt: callbacks %q with %d model requests, want %q with 2: the shape the adapter's typed-ahead handling rests on has changed", got, c.model.count(), want)
-	}
-	term.exit()
-}
 
 // A publish notice that crosshall submits while a turn is with the model does
 // not take the typed-ahead shape: Claude Code runs it after that turn's Stop

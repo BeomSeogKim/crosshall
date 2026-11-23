@@ -587,7 +587,8 @@ func TestPublishSendResultIsPullUnlessThisMessageIsQueued(t *testing.T) {
 	id := p.reserve()
 	p.begin(id)
 	p.resolve(id, PublishSubmitted)
-	if d := send("queued"); d.Next != pull {
+	// The notice that offered it still counts for its replay.
+	if d := send("queued"); d.Next != "notice queued" {
 		t.Fatalf("replay after the notice was submitted: %+v", d)
 	}
 	wantOK(t, p.run(p.reader, Publish{}, "off"))

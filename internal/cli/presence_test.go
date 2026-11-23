@@ -59,7 +59,7 @@ func TestTrailerShowsPresenceChangesAndTheBootstrapHint(t *testing.T) {
 
 func TestRosterSaysWhenAMemberIsWokenByItsWait(t *testing.T) {
 	ft := &fakeTransport{result: okResult(t, domain.WhoResult{Channel: "checkout", Members: []domain.Member{
-		{Alias: "lint", Vendor: "route", State: "unknown", LastCommandAgoS: 30, Route: "pull", WaitRunning: true},
+		{Alias: "lint", Vendor: "route", State: "unknown", LastCommandAgoS: 30, Route: "pull", Wake: domain.Wake{Wake: domain.WakeWait}},
 		{Alias: "tax", Vendor: "route", State: "unknown", LastCommandAgoS: 30, Route: "pull"},
 	}})}
 	out, _, code := run(t, Env{Transport: ft}, "who")
@@ -67,7 +67,7 @@ func TestRosterSaysWhenAMemberIsWokenByItsWait(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "@lint") != strings.HasSuffix(line, "pull; woken by its wait") {
+		if strings.Contains(line, "@lint") != strings.HasSuffix(line, "  woken by its wait") {
 			t.Errorf("only @lint's line ends with its running wait: %q", line)
 		}
 	}

@@ -135,6 +135,13 @@ type LedgerRecipient struct {
 	// ReplyNotice the one that offered the asker this recipient's reply.
 	Notice      *LedgerNotice `json:"notice,omitempty"`
 	ReplyNotice *LedgerNotice `json:"reply_notice,omitempty"`
+	// Wake is what will tell a live recipient about a request it has not
+	// picked up, as of the view.
+	Wake
+	// ShownAtMS is when a prompt line or a turn end first showed the request
+	// to a recipient that is not woken and has not read it; SeenAt is then
+	// empty, since each request is shown once.
+	ShownAtMS *int64 `json:"shown_at_ms,omitempty"`
 }
 
 type Receipt struct {
@@ -242,7 +249,7 @@ func (s *Service) waiting(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if !ok || caller.Role != core.RoleMember {
 		return notEnrolled(), nil
 	}
-	requests, err := ledgerRequests(ctx, tx, member.channel, member.principal, false, now)
+	requests, err := s.ledgerRequests(ctx, tx, member.channel, member.principal, false, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -260,7 +267,7 @@ func (s *Service) status(ctx context.Context, tx store.Tx, caller core.Caller, n
 	if !ok || caller.Role != core.RoleMember {
 		return notEnrolled(), nil
 	}
-	ch, err := channelLedger(ctx, tx, channelRow{id: member.channel, name: member.name}, false, now)
+	ch, err := s.channelLedger(ctx, tx, channelRow{id: member.channel, name: member.name}, false, now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -340,7 +347,7 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 	}
 	out := StatusResult{GeneratedAtMS: ms(now), Channels: make([]ChannelStatus, 0, len(channels))}
 	for _, ch := range channels {
-		status, err := channelLedger(ctx, tx, ch, true, now)
+		status, err := s.channelLedger(ctx, tx, ch, true, now)
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -349,10 +356,10 @@ func (s *Service) ownerStatus(ctx context.Context, tx store.Tx, caller core.Call
 	return OK(out)
 }
 
-func channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, now time.Time) (ChannelStatus, error) {
+func (s *Service) channelLedger(ctx context.Context, tx store.Tx, ch channelRow, owner bool, now time.Time) (ChannelStatus, error) {
 	out := ChannelStatus{ID: ch.id, Name: ch.name, Bindings: []StatusBinding{}, Exchanges: []ExchangeRound{}, GuardStops: []GuardStop{}}
 	var err error
-	out.Requests, err = ledgerRequests(ctx, tx, ch.id, 0, owner, now)
+	out.Requests, err = s.ledgerRequests(ctx, tx, ch.id, 0, owner, now)
 	if err != nil || !owner {
 		return out, err
 	}
@@ -471,7 +478,7 @@ func stopRequests(ctx context.Context, tx store.Tx, channel, exchange int64) ([]
 }
 
 // A nonzero waitingFor scopes the view to an asker's unsettled or unread work.
-func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64, owner bool, now time.Time) ([]LedgerRequest, error) {
+func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64, owner bool, now time.Time) ([]LedgerRequest, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.sender_id, COALESCE(sb.alias, ''), m.exchange_id, m.due_at_ms, m.created_at_ms,
 		r.principal_id, b.id, r.alias_at_commit, o.state, COALESCE(b.state, 'departed'), r.picked_up_at_ms, o.settled_at_ms, o.more_time_at_ms,
 		EXISTS(SELECT 1 FROM message p JOIN recipient pr ON pr.message_id = p.id AND pr.principal_id = m.sender_id
@@ -507,6 +514,7 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		if err := json.Unmarshal([]byte(receipts), &r.Receipts); err != nil {
 			return nil, err
 		}
+		binding := r.BindingID
 		if !owner {
 			r.BindingID = nil
 		}
@@ -523,6 +531,20 @@ func ledgerRequests(ctx context.Context, tx store.Tx, channel, waitingFor int64,
 		if r.State == "open" {
 			if bindingState == "departed" {
 				r.BindingState = bindingState
+			}
+			// A request with a notice of its own shows that notice instead.
+			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && r.Notice == nil {
+				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
+					return nil, err
+				}
+				if r.Wake.Wake == WakeNone {
+					if r.ShownAtMS, err = shownAt(ctx, tx, r.PrincipalID, m.ID); err != nil {
+						return nil, err
+					}
+					if r.ShownAtMS != nil {
+						r.SeenAt = ""
+					}
+				}
 			}
 			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
 				return nil, err
@@ -713,4 +735,19 @@ func memberInboxSummary(ctx context.Context, tx store.Tx, principal, channel int
 		WHERE o.principal_id = ? AND m.channel_id = ? AND o.state = 'open'
 			AND r.picked_up_at_ms IS NOT NULL`, principal, channel).Scan(&summary.OwedCount)
 	return summary, err
+}
+
+// shownAt is when a prompt line or a turn end first showed message to
+// principal, or nil. A notice's announcement never reaches here: a request
+// with a notice of its own shows that notice instead.
+func shownAt(ctx context.Context, tx store.Tx, principal, message int64) (*int64, error) {
+	var at sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT MIN(at_ms) FROM (
+		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2
+		UNION ALL SELECT o.at_ms FROM offer_item i JOIN offer o ON o.id = i.offer_id
+			WHERE i.principal_id = ?1 AND i.message_id = ?2)`, principal, message).Scan(&at)
+	if err != nil || !at.Valid {
+		return nil, err
+	}
+	return &at.Int64, nil
 }

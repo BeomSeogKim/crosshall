@@ -38,7 +38,7 @@ func whoWaitRunning(t *testing.T, f *fixture, viewer session, alias string) bool
 	t.Helper()
 	for _, m := range decode[WhoResult](t, f.who(viewer)).Members {
 		if m.Alias == alias {
-			return m.WaitRunning
+			return m.Wake.Wake == WakeWait
 		}
 	}
 	t.Fatalf("who lists no @%s", alias)

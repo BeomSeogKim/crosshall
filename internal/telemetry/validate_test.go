@@ -136,7 +136,7 @@ func TestValidateRefusesEveryOtherShape(t *testing.T) {
 }
 
 // TestRegistryMatchesTheBuilder checks that the keys the builder can compose
-// from its dimensions are exactly the registry's 284, that every one passes
+// from its dimensions are exactly the registry's 287, that every one passes
 // validation with every ladder value, and that the ladder is what Round
 // produces.
 func TestRegistryMatchesTheBuilder(t *testing.T) {
@@ -165,11 +165,12 @@ func TestRegistryMatchesTheBuilder(t *testing.T) {
 	for _, s := range suspensions {
 		add("suspend."+s+".", "timed", "lasting")
 	}
+	add("send.wake.", "notice", "wait", "none")
 	add("join.", "hook", "cli", "rejoined")
 	add("", "budget.exhausted", "week.active_days", "week.unobserved_10m", "snap.unread_ask_pairs")
 	add("snap.reach.", reachStates...)
 	slices.Sort(composed)
-	if !slices.Equal(composed, Keys()) || len(composed) != 284 {
+	if !slices.Equal(composed, Keys()) || len(composed) != 287 {
 		t.Fatalf("builder dimensions make %d keys, registry has %d:\n%v\n%v", len(composed), len(Keys()), composed, Keys())
 	}
 	if !slices.IsSorted(registry.Keys) {

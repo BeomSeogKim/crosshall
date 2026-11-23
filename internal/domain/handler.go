@@ -673,7 +673,10 @@ func (s *Service) who(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		return core.Result{}, err
 	}
 	for i := range members {
-		members[i].WaitRunning = s.waits.running(members[i].binding, "", now)
+		// A notice still wins over a running wait.
+		if members[i].Wake.Wake != WakeNotice && s.waits.running(members[i].binding, "", now) {
+			members[i].Wake = Wake{Wake: WakeWait}
+		}
 	}
 	seq, err := rosterSeq(ctx, tx, ch.id)
 	if err != nil {

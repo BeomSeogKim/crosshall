@@ -74,6 +74,11 @@ var fixtureSQL = []string{
 		('publish_receipt_rejected', 'binding:1', 2, '{"reason":"stale"}', %[1]d),
 		('publish_receipt_rejected', 'binding:1', 2, '{"reason":"zqxmarker"}', %[1]d),
 		('publish_switch', 'binding:1', 2, '{"by":"member","switch":"off"}', %[1]d),
+		('send_wake', 'message:1', 2, '{"wake":"notice"}', %[1]d),
+		('send_wake', 'message:1', 2, '{"wake":"none","why":"suspended"}', %[1]d),
+		('send_wake', 'message:4', 2, '{"wake":"none","why":"no_route"}', %[1]d),
+		('send_wake', 'message:4', 2, '{"wake":"zqxmarker"}', %[1]d),
+		('send_wake', 'message:5', 2, '{"wake":"none","why":"off"}', %[2]d),
 		('joined', 'channel:zqxmarker', 2, '{"alias":"zqxmarker","by":"hook"}', %[2]d)`,
 		at(0, 9, 0), at(1, 9, 0)),
 	fmt.Sprintf(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms, pid_namespace) VALUES
@@ -253,6 +258,7 @@ func TestFlowsCountOnTheirOwnDay(t *testing.T) {
 		{on, "notice.late_observed", 0}, {after, "notice.late_observed", 1},
 		{before, "msg.note", 1}, {on, "msg.note", 0},
 		{on, "join.hook", 1}, {after, "join.hook", 1},
+		{on, "send.wake.none", 2}, {after, "send.wake.none", 1}, {on, "send.wake.notice", 1}, {after, "send.wake.notice", 0},
 	} {
 		if got := c.r.Counts[c.key]; got != c.want {
 			t.Errorf("%s on %s = %d, want %d", c.key, c.r.Day, got, c.want)
@@ -484,7 +490,7 @@ func texts(tx store.Tx, query string, args ...any) ([]string, error) {
 }
 
 func TestEncodingIsCanonical(t *testing.T) {
-	r := Report{V: 1, Registry: 1, Batch: "9f1c2e4a7b3d5f60812a4c6e8b0d2f41", Day: "2026-11-25",
+	r := Report{V: 1, Registry: 2, Batch: "9f1c2e4a7b3d5f60812a4c6e8b0d2f41", Day: "2026-11-25",
 		App:     App{Version: "v0.2.0-rc.2", Platform: "linux-amd64"},
 		Sources: Sources{Hooks: "ok", Snapshot: "none"},
 		Counts:  map[string]int64{"msg.note": 1, "hook.claude.stop.clean": 2, "budget.exhausted": 5}}
@@ -492,7 +498,7 @@ func TestEncodingIsCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"v":1,"registry":1,"batch":"9f1c2e4a7b3d5f60812a4c6e8b0d2f41","day":"2026-11-25",` +
+	want := `{"v":1,"registry":2,"batch":"9f1c2e4a7b3d5f60812a4c6e8b0d2f41","day":"2026-11-25",` +
 		`"app":{"version":"v0.2.0-rc.2","platform":"linux-amd64"},"sources":{"hooks":"ok","snapshot":"none"},` +
 		`"counts":{"budget.exhausted":5,"hook.claude.stop.clean":2,"msg.note":1}}`
 	if string(raw) != want {

@@ -1,5 +1,5 @@
 {
-  "registry": 1,
+  "registry": 2,
   "values": [
     1,
     2,
@@ -292,6 +292,9 @@
     "pickup_lag.lt1m",
     "receipt.rejected.malformed",
     "receipt.rejected.stale",
+    "send.wake.none",
+    "send.wake.notice",
+    "send.wake.wait",
     "snap.build_stopped.agy",
     "snap.build_stopped.claude",
     "snap.build_stopped.codex",

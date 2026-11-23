@@ -51,7 +51,7 @@ func TestDispatcherGuardianReapsStoppedChildBeforeReleasingWorkers(t *testing.T)
 		t.Fatal(err)
 	}
 	cfg := LaunchConfig{StateRoot: stateDir, Rendezvous: filepath.Join(root, "rendezvous")}
-	guardian, err := cfg.spawn(state, executable)
+	guardian, err := cfg.spawn(state, executable, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}

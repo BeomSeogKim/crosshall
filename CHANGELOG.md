@@ -5,6 +5,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **Codex routes follow the app server:** a Codex CLI session's hook reads whether the managed app server of its `CODEX_HOME` runs it, and records that server's release as the session's version. The route a Codex sender would use is open only then, from the session's start to its end; otherwise `owner who --all` says `publish: candidate (codex runs without its daemon)`. A notice's receipt from a Codex session is matched on its thread. Codex still has no sender, so nothing starts a Codex turn yet (#236).
+- **Usage statistics question:** an answer it does not accept is followed by `Answer y or n.` and the prompt line, not the whole paragraph again. `ㅛ` and `ㅜ`, the y and n keys under a Korean input method, count as y and n.
 
 ## v0.2.0-rc.3 (2026-11-23)
 

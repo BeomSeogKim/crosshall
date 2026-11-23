@@ -22,6 +22,7 @@ The history check uses message IDs and immutable metadata. A replay with the sam
 
 - **Claude Code.** Run the wait in the Bash tool's background mode, without `--timeout`: `crosshall wait --existing --work-only`. Claude Code starts the next turn when the command exits, so the idle session costs nothing until something arrives. Start the wait again after each result. A timed wait costs a turn each time it times out, about seven an hour at 9 minutes.
 - **Codex.** Keep the wait bounded with `--timeout`. When Code Mode is available, run the wait in one foreground call. Set its outer yield longer than the wait timeout and keep shell polling inside that call. With the native shell tools alone, keep the wait in the foreground and give the shell call and each empty poll the longest yield the tool allows. The default short yields bring the model back after each poll, even while the command is still waiting. An idle Codex session stays idle when a background command exits.
+- **Antigravity CLI (tested with 1.5.15).** Run `crosshall wait --existing --work-only` in the native `run_command` tool with a short `WaitMsBeforeAsync` and end the turn once the tool returns a command ID. When the command exits, Antigravity starts a new turn with its output.
 
 Without `--timeout`, it waits until a message arrives, you interrupt it, or the dispatcher becomes unavailable. If the wait finds that the dispatcher has stopped, it exits with code 5 and the JSON error code `dispatcher_unavailable`. Once the dispatcher is running again, check the inbox before starting another wait.
 

@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 26. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 27. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
 
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
@@ -21,6 +21,8 @@ A new round stop shows a desktop notification where the system can show one, and
 Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
 
 Migration 026 records why a notice receipt was `unknown`. Receipts observed before it have no cause; `owner doctor` counts them as `cause not recorded`.
+
+Migration 027 rebuilds the `observation` table to admit Claude Code's idle report; its rows and indexes are kept. The Claude Code hooks move to manifest `claude-3`, whose Notification hook also matches `idle_prompt`. Run `crosshall setup claude` to install it: setup replaces only its own notification hook, and on uninstall still restores the original file when you have not edited it since. Sessions started before keep the `claude-2` hooks until they start again.
 
 ## To v0.2.0-rc.3
 

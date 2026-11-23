@@ -60,7 +60,7 @@ To publish a run, append its receipt to `test/conformance/member-runs.jsonl`. Re
 
 ## Claude Code hook manifest
 
-The hook reads the session's build and mode from the environment Claude Code gives its hooks, and only labels in an observed form count; anything else is `unverified`, and evidence cannot mark an unverified profile tested. Manifest `claude-2` accepts these observations:
+The hook reads the session's build and mode from the environment Claude Code gives its hooks, and only labels in an observed form count; anything else is `unverified`, and evidence cannot mark an unverified profile tested. Manifests `claude-2` and `claude-3` accept these observations:
 
 | Session | `AI_AGENT` | `CLAUDE_CODE_ENTRYPOINT` | Profile |
 | --- | --- | --- | --- |
@@ -83,9 +83,9 @@ The last part of `AI_AGENT` is not the mode: both forms were seen in interactive
 
 ## Tested capability evidence
 
-Tested evidence covers sessions with the same vendor, platform, mode, capability and hook manifest revision. Evidence for the exact running version takes precedence. An unverified version or mode stays ineligible. For Claude Code, `claude-2` identifies the vendor's hook callback format and profile labels. A manifest revision change needs evidence for the new revision.
+Tested evidence covers sessions with the same vendor, platform, mode, capability and hook manifest revision. Evidence for the exact running version takes precedence. An unverified version or mode stays ineligible. For Claude Code, the manifest revision (`claude-3` since the idle notification hook) identifies the vendor's hook callback format, profile labels and installed hooks. A manifest revision change needs evidence for the new revision.
 
-The binary ships `turn_end` evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The corresponding native conformance tests use a local stand-in for the model. They verify that an unread request continues an eligible turn once with the pending line.
+The binary ships `turn_end` evidence for Claude Code on macOS arm64 in print and interactive mode: 2.1.330 with manifest `claude-2`, and 2.1.331 with manifest `claude-3`. The corresponding native conformance tests use a local stand-in for the model. They verify that an unread request continues an eligible turn once with the pending line.
 
 ## Publish profiles
 

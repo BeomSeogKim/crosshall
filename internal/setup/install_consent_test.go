@@ -238,7 +238,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 // not "unknown", for the build that evidence names.
 func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 	s, f, _ := realSetup(t)
-	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.330 (Claude Code)'\n"
+	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.331 (Claude Code)'\n"
 	if err := os.WriteFile(filepath.Join(f.Bin, "claude"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		t.Fatalf("the preview created a store: %v", err)
 	}
 	// The Claude Code entry runs from its own line to the next unindented one.
-	_, block, _ := strings.Cut(out, "\nclaude 2.1.330 ")
+	_, block, _ := strings.Cut(out, "\nclaude 2.1.331 ")
 	if i := strings.Index(block, "\n"); i >= 0 {
 		block = block[i+1:]
 	}

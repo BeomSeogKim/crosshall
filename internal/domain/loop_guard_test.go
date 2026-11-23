@@ -59,6 +59,7 @@ func TestGuardRecordsRoundNineAfterLegacyAcceptanceAndOnlyOnce(t *testing.T) {
 	f, a, b, _ := channel3(t)
 	f.roots(a, 1)
 	sent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "first"}, "first")
+	root := sent.ID
 	executeGuardFixture(t, f, `UPDATE exchange SET granted = 32 WHERE id = ?`, sent.Exchange)
 	var lastAsk Ask
 	var lastSender session
@@ -84,7 +85,7 @@ func TestGuardRecordsRoundNineAfterLegacyAcceptanceAndOnlyOnce(t *testing.T) {
 		t.Fatalf("replay changed the ledger: %+v", replayed)
 	}
 	got := f.guardEvent(sent.ID)
-	if got.Round != 9 || got.Reason != "round_limit" || got.Path != sent.Exchange ||
+	if got.Round != 9 || got.Reason != "round_limit" || got.Path != root ||
 		f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 1 {
 		t.Fatalf("round audit: %+v", got)
 	}
@@ -162,12 +163,48 @@ func TestGuardCountsUnreadAndExplicitParents(t *testing.T) {
 			}
 			sent := f.guardAsk(sender, Ask{To: []string{target}, Re: reference, Body: "delegate"}, "delegate")
 			got := f.guardEvent(sent.ID)
-			if got.Round != 9 || got.Reason != "round_limit" || got.Path != parent.Exchange {
+			if got.Round != 9 || got.Reason != "round_limit" || got.Path != parent.ID {
 				t.Fatalf("parent was ignored: %+v", got)
 			}
 			if f.anyGuardLevel(sender) != 0 ||
 				f.count(`SELECT COUNT(*) FROM receipt WHERE message_id = ? AND stage = 'picked_up'`, parent.ID) != 0 {
 				t.Fatal("sending changed the position or receipt of an unread request")
+			}
+		})
+	}
+}
+
+func TestGuardSeparatesIndependentRootsInOneExchange(t *testing.T) {
+	for _, explicit := range []bool{true, false} {
+		t.Run(fmt.Sprint("explicit=", explicit), func(t *testing.T) {
+			f, a, b, _ := channel3(t)
+			f.roots(a, 1)
+			first := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "first task"}, "first")
+			second := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "independent task"}, "second")
+			if first.Exchange != second.Exchange {
+				t.Fatalf("independent roots must share a legacy exchange: %d, %d", first.Exchange, second.Exchange)
+			}
+			deepLevel := ms(f.now) + 8*roundDurationMS
+			executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, deepLevel, first.ID)
+			result := f.reply(b, Reply{To: first.ID, Body: "answer the deep task"}, "reply")
+			wantOK(t, result)
+			reply := decode[ReplyResult](t, result)
+			wantOK(t, f.exec(f.caller(a), Request{Command: Read{IDs: []int64{reply.ID}}}))
+			sender := b
+			cmd := Ask{To: []string{"form"}, Body: "follow the independent task"}
+			if explicit {
+				sender = a
+				cmd.Re, cmd.To = second.ID, []string{"tax"}
+			}
+			if f.anyGuardLevel(sender) != deepLevel {
+				t.Fatal("the deep task did not reach the sender's any-path position")
+			}
+			sent := f.guardAsk(sender, cmd, "followup")
+			if got := roundAt(f.messageLevel(sent.ID), ms(f.now)); got != 2 {
+				t.Fatalf("independent task reached round %d, want 2", got)
+			}
+			if f.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, guardWouldRefuse) != 0 {
+				t.Fatal("independent task produced a refusal audit")
 			}
 		})
 	}
@@ -185,8 +222,11 @@ func TestGuardLinkedHandoffUsesTheHigherParentEvaluation(t *testing.T) {
 	executeGuardFixture(t, f, `UPDATE exchange SET granted = spent WHERE id = ?`, parent.Exchange)
 	sent := f.guardAsk(b, Ask{To: []string{"form"}, New: true, Re: parent.ID, Body: "handoff"}, "handoff")
 	got := f.guardEvent(sent.ID)
-	if !sent.NewExchange || sent.ParentRequestID != parent.ID || got.Path != parent.Exchange || got.Round != 9 {
+	if !sent.NewExchange || sent.ParentRequestID != parent.ID || got.Path != parent.ID || got.Round != 9 {
 		t.Fatalf("handoff shed its parent round: send=%+v audit=%+v", sent, got)
+	}
+	if f.count(`SELECT COUNT(*) FROM message WHERE id = ? AND thread_root_id IS NULL`, sent.ID) != 1 {
+		t.Fatal("linked handoff must start its own thread")
 	}
 }
 
@@ -196,7 +236,7 @@ func TestGuardFencesDelayedReplyAtItsOriginalRequest(t *testing.T) {
 	parent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "before reset"}, "parent")
 	level := ms(f.now) + 8*roundDurationMS
 	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, level, parent.ID)
-	executeGuardFixture(t, f, `UPDATE exchange SET reset_after_message_id = ? WHERE id = ?`, parent.ID, parent.Exchange)
+	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, parent.ID, parent.ID)
 	executeGuardFixture(t, f, `UPDATE principal SET reset_after_message_id = ? WHERE id = ?`, parent.ID, *f.caller(a).PrincipalID)
 	r := f.reply(b, Reply{To: parent.ID, Body: "after reset"}, "answer")
 	wantOK(t, r)
@@ -211,6 +251,36 @@ func TestGuardFencesDelayedReplyAtItsOriginalRequest(t *testing.T) {
 	followup := f.guardAsk(a, Ask{To: []string{"tax"}, Re: reply.ID, Body: "after reset"}, "followup")
 	if got := f.messageLevel(followup.ID); got != ms(f.now)+roundDurationMS {
 		t.Fatalf("an explicit reference to the old reply advanced the new round: %d", got)
+	}
+}
+
+func TestGuardLateReplyHonorsOnlyItsThreadFence(t *testing.T) {
+	f, a, b, _ := channel3(t)
+	f.roots(a, 1)
+	root := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "root"}, "root")
+	parent := f.guardAsk(a, Ask{To: []string{"tax"}, Re: root.ID, Body: "continuation"}, "parent")
+	level := ms(f.now) + 8*roundDurationMS
+	executeGuardFixture(t, f, `UPDATE message SET level_ms = ? WHERE id = ?`, level, parent.ID)
+	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, parent.ID, root.ID)
+	result := f.reply(b, Reply{To: parent.ID, Body: "late reply"}, "answer")
+	wantOK(t, result)
+	reply := decode[ReplyResult](t, result)
+	wantOK(t, f.exec(f.caller(a), Request{Command: Read{IDs: []int64{reply.ID}}}))
+	if f.anyGuardLevel(a) != level || f.anyGuardLevel(b) != level || f.count(`SELECT COUNT(*) FROM thread_position`) != 0 {
+		t.Fatal("thread fence must exclude the reply from the thread and keep its level on the any-path position")
+	}
+	linked := f.guardAsk(a, Ask{To: []string{"tax"}, Re: reply.ID, Body: "continue after fence"}, "linked")
+	if got := roundAt(f.messageLevel(linked.ID), ms(f.now)); got != 1 {
+		t.Fatalf("linked follow-up after the thread fence reached round %d, want 1", got)
+	}
+	newTask := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "new task"}, "new")
+	if got := f.guardEvent(newTask.ID); got.Path != 0 || got.Round != 9 || got.Reason != "round_limit" {
+		t.Fatalf("parentless request should still see the late reply's level: %+v", got)
+	}
+	result = f.reply(b, Reply{To: linked.ID, Body: "reply to a post-fence request"}, "after-fence")
+	wantOK(t, result)
+	if f.count(`SELECT COUNT(*) FROM thread_position WHERE thread_root_id = ? AND level_ms = ?`, root.ID, f.messageLevel(linked.ID)) != 1 {
+		t.Fatal("a reply to a post-fence request must fold on the original thread")
 	}
 }
 
@@ -314,7 +384,7 @@ func TestGuardPathWatermarkLeavesAnyPathIndependent(t *testing.T) {
 	f, a, b, _ := channel3(t)
 	f.roots(a, 1)
 	sent := f.guardAsk(a, Ask{To: []string{"tax"}, Body: "before reset"}, "before")
-	executeGuardFixture(t, f, `UPDATE exchange SET reset_after_message_id = ? WHERE id = ?`, sent.ID, sent.Exchange)
+	executeGuardFixture(t, f, `UPDATE message SET thread_reset_after_message_id = ? WHERE id = ?`, sent.ID, sent.ID)
 	wantOK(t, f.exec(f.caller(b), Request{Command: Read{IDs: []int64{sent.ID}}}))
 	if f.anyGuardLevel(b) != f.messageLevel(sent.ID) || f.count(`SELECT COUNT(*) FROM thread_position`) != 0 {
 		t.Fatal("path reset leaked into the any-path position")

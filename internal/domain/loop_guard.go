@@ -20,7 +20,7 @@ type guardDecision struct {
 	RoundLimit  int64  `json:"round_limit"`
 	Requests    int64  `json:"requests"`
 	OwedAnswers int64  `json:"owed_answers"`
-	Path        int64  `json:"path_exchange_id,omitempty"`
+	Path        int64  `json:"thread_root_id,omitempty"`
 	Reason      string `json:"reason"`
 }
 
@@ -58,22 +58,46 @@ func guardPosition(ctx context.Context, tx store.Tx, principal, path, parent int
 	}
 	err = tx.QueryRowContext(ctx, `SELECT MAX(COALESCE(p.level_ms, 0), COALESCE((
 		SELECT MAX(m.level_ms) FROM obligation o JOIN message m ON m.id = o.message_id
-		WHERE o.principal_id = ?1 AND o.state = 'open' AND m.exchange_id = e.id AND m.id > e.reset_after_message_id), 0),
-		COALESCE((SELECT m.level_ms FROM message m WHERE m.id = ?3 AND m.exchange_id = e.id
-			AND COALESCE(m.in_reply_to, m.id) > e.reset_after_message_id), 0)), e.round_limit
-		FROM exchange e LEFT JOIN thread_position p ON p.exchange_id = e.id AND p.principal_id = ?1
-		WHERE e.id = ?2`, principal, path, parent).Scan(&level, &limit)
+		WHERE o.principal_id = ?1 AND o.state = 'open' AND COALESCE(m.thread_root_id, m.id) = root.id
+			AND m.id > root.thread_reset_after_message_id), 0),
+		COALESCE((SELECT m.level_ms FROM message m WHERE m.id = ?3
+			AND COALESCE(m.in_reply_to, m.id) > root.thread_reset_after_message_id), 0)), root.thread_round_limit
+		FROM message root LEFT JOIN thread_position p ON p.thread_root_id = root.id AND p.principal_id = ?1
+		WHERE root.id = ?2`, principal, path, parent).Scan(&level, &limit)
 	return
 }
 
-func guardForAsk(ctx context.Context, tx store.Tx, principal int64, attributed attribution, parent int64, recipients int, now time.Time) (guardDecision, error) {
-	path := attributed.roundPath
-	level, limit, err := guardPosition(ctx, tx, principal, path, parent)
+func guardAskPath(ctx context.Context, tx store.Tx, m member, cmd Ask) (int64, error) {
+	if cmd.Re != 0 {
+		var root int64
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(thread_root_id, in_reply_to, id) FROM message WHERE id = ?`, cmd.Re).Scan(&root)
+		return root, err
+	}
+	if cmd.New {
+		return 0, nil
+	}
+	var first, last int64
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(COALESCE(m.thread_root_id, m.id)), 0),
+		COALESCE(MAX(COALESCE(m.thread_root_id, m.id)), 0)
+		FROM obligation o JOIN message m ON m.id = o.message_id
+		WHERE o.principal_id = ? AND o.state = 'open' AND m.channel_id = ?`, m.principal, m.channel).Scan(&first, &last)
+	if first == last {
+		return first, err
+	}
+	return 0, err
+}
+
+func guardForAsk(ctx context.Context, tx store.Tx, m member, cmd Ask, recipients int, now time.Time) (guardDecision, error) {
+	path, err := guardAskPath(ctx, tx, m, cmd)
 	if err != nil {
 		return guardDecision{}, err
 	}
-	if attributed.isNew && path != 0 {
-		anyLevel, anyLimit, err := guardPosition(ctx, tx, principal, 0, 0)
+	level, limit, err := guardPosition(ctx, tx, m.principal, path, cmd.Re)
+	if err != nil {
+		return guardDecision{}, err
+	}
+	if cmd.New && path != 0 {
+		anyLevel, anyLimit, err := guardPosition(ctx, tx, m.principal, 0, 0)
 		if err != nil {
 			return guardDecision{}, err
 		}
@@ -87,7 +111,7 @@ func guardForAsk(ctx context.Context, tx store.Tx, principal int64, attributed a
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(
 		(SELECT COUNT(*) FROM obligation o WHERE o.message_id = m.id)), 0)
 		FROM message m WHERE m.kind = 'ask' AND m.sender_id = ?
-		AND m.created_at_ms > ? AND m.created_at_ms <= ?`, principal, at-roundDurationMS, at).
+		AND m.created_at_ms > ? AND m.created_at_ms <= ?`, m.principal, at-roundDurationMS, at).
 		Scan(&requests, &answers); err != nil {
 		return guardDecision{}, err
 	}
@@ -107,9 +131,9 @@ func foldRound(ctx context.Context, tx store.Tx, principal, origin, path, level 
 	if path == 0 {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO thread_position (principal_id, exchange_id, level_ms)
-		SELECT ?1, id, ?2 FROM exchange WHERE id = ?3 AND reset_after_message_id < ?4
-		ON CONFLICT (principal_id, exchange_id) DO UPDATE SET level_ms = excluded.level_ms
+	_, err := tx.ExecContext(ctx, `INSERT INTO thread_position (principal_id, thread_root_id, level_ms)
+		SELECT ?1, id, ?2 FROM message WHERE id = ?3 AND thread_reset_after_message_id < ?4
+		ON CONFLICT (principal_id, thread_root_id) DO UPDATE SET level_ms = excluded.level_ms
 		WHERE thread_position.level_ms < excluded.level_ms`, principal, level, path, origin)
 	return err
 }

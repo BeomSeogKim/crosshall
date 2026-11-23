@@ -96,14 +96,16 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 	}
 
 	var (
-		asker    int64
-		exchange sql.NullInt64
-		due      int64
-		level    int64
+		asker      int64
+		exchange   sql.NullInt64
+		due        int64
+		level      int64
+		threadRoot int64
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT sender_id, exchange_id, due_at_ms, level_ms FROM message WHERE id = ? AND channel_id = ? AND kind = 'ask'`,
-		cmd.To, m.channel).Scan(&asker, &exchange, &due, &level)
+		`SELECT sender_id, exchange_id, due_at_ms, level_ms, COALESCE(thread_root_id, id)
+		 FROM message WHERE id = ? AND channel_id = ? AND kind = 'ask'`,
+		cmd.To, m.channel).Scan(&asker, &exchange, &due, &level, &threadRoot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no request #%d in #%s", cmd.To, m.channelName), "crosshall inbox"), nil
 	}
@@ -136,9 +138,9 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 		return core.Result{}, err
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, outcome, in_reply_to, exchange_id, audience_mode, body, created_at_ms, level_ms)
-		 VALUES (?, ?, 'reply', ?, ?, ?, 'explicit', ?, ?, ?)`,
-		m.channel, m.principal, cmd.Outcome, cmd.To, exchange, cmd.Body, ms(now), level)
+		`INSERT INTO message (channel_id, sender_id, kind, outcome, in_reply_to, exchange_id, audience_mode, body, created_at_ms, level_ms, thread_root_id)
+		 VALUES (?, ?, 'reply', ?, ?, ?, 'explicit', ?, ?, ?, ?)`,
+		m.channel, m.principal, cmd.Outcome, cmd.To, exchange, cmd.Body, ms(now), level, threadRoot)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -151,7 +153,7 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 	}
 
 	if unread {
-		if err := foldRound(ctx, tx, m.principal, cmd.To, exchange.Int64, level); err != nil {
+		if err := foldRound(ctx, tx, m.principal, cmd.To, threadRoot, level); err != nil {
 			return core.Result{}, err
 		}
 	}

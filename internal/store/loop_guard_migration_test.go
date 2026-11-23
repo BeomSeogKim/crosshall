@@ -24,9 +24,9 @@ func TestLoopGuardMigrationPreservesLedgerAndInitializesNoPositions(t *testing.T
 	}
 	var n int
 	if err := upgraded.db.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM message WHERE level_ms <> 0) +
+		(SELECT COUNT(*) FROM message WHERE level_ms <> 0 OR thread_root_id IS NOT NULL
+			OR thread_reset_after_message_id <> 0 OR thread_round_limit <> 8) +
 		(SELECT COUNT(*) FROM principal WHERE any_level_ms <> 0 OR reset_after_message_id <> 0 OR round_limit <> 8 OR guard_told <> 0) +
-		(SELECT COUNT(*) FROM exchange WHERE reset_after_message_id <> 0 OR round_limit <> 8) +
 		(SELECT COUNT(*) FROM thread_position)`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("migration invented guard positions: rows=%d err=%v", n, err)
 	}

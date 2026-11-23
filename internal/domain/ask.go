@@ -277,7 +277,7 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		return deref(refusal), err
 	}
 
-	decision, err := guardForAsk(ctx, tx, m.principal, a, cmd.Re, len(to), now)
+	decision, err := guardForAsk(ctx, tx, m, cmd, len(to), now)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -292,10 +292,14 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if cmd.All {
 		audienceMode = "all"
 	}
+	threadRoot := decision.Path
+	if cmd.New {
+		threadRoot = 0
+	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms)
-		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?)`,
-		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS)
+		`INSERT INTO message (channel_id, sender_id, kind, exchange_id, audience_mode, due_at_ms, body, created_at_ms, level_ms, thread_root_id)
+		 VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, NULLIF(?, 0))`,
+		m.channel, m.principal, exchange, audienceMode, ms(now.Add(due)), cmd.Body, ms(now), decision.LevelMS, threadRoot)
 	if err != nil {
 		return core.Result{}, err
 	}

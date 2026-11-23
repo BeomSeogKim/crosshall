@@ -50,8 +50,9 @@ var PublishProfileCovered = CapabilityCovered("r.adapter", "l.profile", "'publis
 // PublishAdapterSends holds when the route's adapter can publish: it has a
 // notice format and a transport that sends. Whether the route itself names
 // an address is the adapter's to resolve (publish.Registry.Address).
-func PublishAdapterSends() string {
-	names := publish.Adapters().Senders()
+func PublishAdapterSends() string { return routeAdapterIn(publish.Adapters().Senders()) }
+
+func routeAdapterIn(names []string) string {
 	if len(names) == 0 {
 		return "0"
 	}
@@ -60,6 +61,36 @@ func PublishAdapterSends() string {
 		quoted[i] = "'" + strings.ReplaceAll(name, "'", "''") + "'"
 	}
 	return "r.adapter IN (" + strings.Join(quoted, ", ") + ")"
+}
+
+// PublishThreadRouted holds when the route's adapter addresses a session's
+// thread on the server that hosts it (publish.Adapter.ThreadRouted) and the
+// route names both.
+func PublishThreadRouted() string {
+	var names []string
+	registry := publish.Adapters()
+	for _, name := range registry.Names() {
+		if registry[name].ThreadRouted() {
+			names = append(names, name)
+		}
+	}
+	return "(" + routeAdapterIn(names) + ` AND r.thread_id IS NOT NULL AND r.host_pid IS NOT NULL AND r.host_start IS NOT NULL)`
+}
+
+// PublishLaunchBinds holds when the current launch l may publish on route
+// r: it is the route's launch, and either both are verified or the route
+// is thread-routed, so its transport proves the hosting server instead.
+func PublishLaunchBinds() string {
+	return "(l.launch_ref = r.launch_ref AND (r.launch_verified = 1 AND l.verified = 1 OR " + PublishThreadRouted() + "))"
+}
+
+// PublishLane is the queue route r's notices hold once proven by p, which
+// one open notice at a time may use (publish_attempt.lane): the thread of
+// a thread-routed route, whose server hosts other threads too, else the
+// proven process.
+func PublishLane() string {
+	return "CASE WHEN " + PublishThreadRouted() + ` THEN 'thread:' || r.adapter || ':' || r.thread_id
+		ELSE 'process:' || p.process_pid || ':' || p.process_start_ms END`
 }
 
 // PublishNotSuspended holds when no suspension of the route's launch,
@@ -96,12 +127,14 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		verified, dnd, quiet, enabled, epochOK, current                    bool
 		proven, activated                                                  bool
 		owner, vendor, hall                                                sql.NullBool
+		host                                                               publish.Queue
 	)
 	err = tx.QueryRowContext(ctx, `SELECT r.state, r.reason, r.generation, r.adapter, r.launch_ref, r.principal_id,
-			r.launch_verified, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''), b.state, b.dnd, b.publish_quiet, b.publish_owner,
+			r.launch_verified = 1 OR `+PublishThreadRouted()+`, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''),
+			COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0), b.state, b.dnd, b.publish_quiet, b.publish_owner,
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
-			COALESCE(l.launch_ref = r.launch_ref AND l.verified = 1, 0),
+			COALESCE(`+PublishLaunchBinds()+`, 0),
 			COALESCE(l.profile, '{}'),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation
@@ -112,7 +145,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
-		&principal, &verified, &mode, &socketPath, &threadID, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
+		&principal, &verified, &mode, &socketPath, &threadID, &host.PID, &host.StartMS, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
 		&hall, &current, &profile, &proven, &activated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
@@ -199,12 +232,12 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		return state, true, nil
 	}
 	// The same open lane the reservation indexes enforce: one per binding
-	// and one per physical queue, which another binding can hold.
+	// and one per queue (PublishLane), which another binding can hold.
 	err = tx.QueryRowContext(ctx, `SELECT a.id, COALESCE(a.submitting_at_ms, a.reserved_at_ms) FROM publish_attempt a
 		WHERE a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state <> 'not_submitted'
 			AND (a.binding_id = ?1 OR EXISTS (SELECT 1 FROM publish_route r JOIN publish_route_proof p
 				ON p.binding_id = r.binding_id AND p.generation = r.generation
-				WHERE r.binding_id = ?1 AND p.process_pid = a.process_pid AND p.process_start_ms = a.process_start_ms))
+				WHERE r.binding_id = ?1 AND a.lane = `+PublishLane()+`))
 		ORDER BY a.id DESC LIMIT 1`, bindingID).Scan(&notice, &at)
 	if err == nil {
 		state.State, state.Notice, state.AtMS = "held", notice, at
@@ -215,7 +248,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	}
 	state.State = "candidate"
 	adapters := publish.Adapters()
-	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}
+	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID, Host: host}
 	_, why := adapters.Address(adapter, route)
 	var reach string
 	if a, ok := adapters.Lookup(adapter); ok {

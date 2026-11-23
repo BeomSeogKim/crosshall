@@ -28,7 +28,7 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 	var thread string
 	if !cmd.LaunchVerified {
 		if a, ok := publish.Lookup(cmd.Profile.Adapter); ok {
-			thread = a.SessionRoute(sessionKey, "").ThreadID
+			thread = a.SessionRoute(sessionKey, "", publish.Queue{}).ThreadID
 		}
 		if thread == "" {
 			return false, nil

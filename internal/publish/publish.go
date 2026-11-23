@@ -78,11 +78,14 @@ const (
 	ModeInProcess = "in_process" // the session runs its server itself
 )
 
-// Route is what a vendor's hooks registered for one member session.
+// Route is what a vendor's hooks registered for one member session. Host
+// is the server process that held the session's thread at its start, as
+// that start named it; only a thread-routed adapter registers one.
 type Route struct {
 	Mode       string
 	SocketPath string
 	ThreadID   string
+	Host       Queue
 }
 
 // Adapter is one vendor's part of publish.
@@ -97,9 +100,14 @@ type Adapter interface {
 	// AcceptsSocket reports whether a reported socket path may be stored.
 	AcceptsSocket(path string) bool
 	// SessionRoute is the route an enrolled session registers: the thread
-	// its reference names and the launch's mode, or nothing when the adapter
-	// registers its route another way.
-	SessionRoute(sessionRef, launchMode string) Route
+	// its reference names, the launch's mode and the server that hosts it,
+	// or nothing when the adapter registers its route another way.
+	SessionRoute(sessionRef, launchMode string, host Queue) Route
+	// ThreadRouted reports whether the adapter's routes address a session's
+	// thread on the server that hosts it (Route.Host) rather than the
+	// launch's own process. Such a route needs no verified launch: its
+	// transport proves that server, and its notices queue per thread.
+	ThreadRouted() bool
 	// Reach says why the adapter's sender cannot reach the session that
 	// registered a route at all, whatever its address: the owner's reason,
 	// empty when it can.

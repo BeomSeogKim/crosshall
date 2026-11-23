@@ -470,8 +470,8 @@ func TestAProofMustBeTheExpectedLaunch(t *testing.T) {
 // binding or by another on the same physical queue) is never offered.
 func TestARouteActivatesAtItsFirstAvailability(t *testing.T) {
 	const attempt = `INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
-		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms)
-		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?)`
+		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms, lane)
+		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?, 'process:' || ?3 || ':' || ?4)`
 	for _, c := range []struct {
 		name         string
 		block, clear func(p *publishFixture)
@@ -597,8 +597,8 @@ func TestInboxReportsWhetherTheHallDelivers(t *testing.T) {
 	// Another binding's notice on the same physical queue holds it too.
 	other := bindingIDOf(t, p.fixture, p.principalOf(p.writer))
 	const attempt = `INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter, session_ref,
-		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms)
-		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?)`
+		launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms, observed_at_ms, lane)
+		VALUES (?, ?, 1, 1, 'claude', 'fixture', 'fixture', 0, ?, ?, 'submitted', ?, ?, ?, 'process:' || ?3 || ':' || ?4)`
 	at := p.now.UnixMilli()
 	p.mutate(attempt, other, p.principalOf(p.writer), p.queue.PID, p.queue.StartMS, at, at, nil)
 	if delivers() {

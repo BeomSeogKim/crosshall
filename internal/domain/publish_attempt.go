@@ -48,8 +48,7 @@ func publishRoutes(now time.Time, proven bool) string {
 	JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
 		WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 		ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
-	WHERE ` + store.PublishAdapterSends() + ` AND r.state = 'active'
-		AND r.launch_verified = 1 AND l.launch_ref = r.launch_ref AND l.verified = 1
+	WHERE ` + store.PublishAdapterSends() + ` AND r.state = 'active' AND ` + store.PublishLaunchBinds() + `
 		AND b.state = 'live' AND b.dnd = 0
 		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileCovered
 }
@@ -88,8 +87,8 @@ func publishDelivers(ctx context.Context, tx store.Tx, binding int64, now time.T
 // activation and ordinary backlog.
 func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBinding, queue PublishQueue) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO publish_route_proof (binding_id, generation, process_pid, process_start_ms)
-		SELECT binding_id, generation, ?1, ?2 FROM publish_route
-		WHERE binding_id = ?3 AND generation = ?4 AND state = 'active' AND launch_verified = 1
+		SELECT r.binding_id, r.generation, ?1, ?2 FROM publish_route r
+		WHERE r.binding_id = ?3 AND r.generation = ?4 AND r.state = 'active' AND (r.launch_verified = 1 OR `+store.PublishThreadRouted()+`)
 		ON CONFLICT(binding_id) DO UPDATE SET generation = excluded.generation,
 			process_pid = excluded.process_pid, process_start_ms = excluded.process_start_ms,
 			activated_at_ms = CASE WHEN publish_route_proof.process_pid = excluded.process_pid
@@ -143,24 +142,31 @@ func ActivatePublishRoutes(ctx context.Context, tx store.Tx, now time.Time) erro
 	return nil
 }
 
-const publishRouteColumns = `r.adapter, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, '')`
+const publishRouteColumns = `r.adapter, COALESCE(r.mode, ''), COALESCE(r.socket_path, ''), COALESCE(r.thread_id, ''),
+	COALESCE(r.host_pid, 0), COALESCE(r.host_start, 0)`
+
+// routeScan is where a row's publishRouteColumns are scanned to.
+func routeScan(adapter *string, route *publish.Route) []any {
+	return []any{adapter, &route.Mode, &route.SocketPath, &route.ThreadID, &route.Host.PID, &route.Host.StartMS}
+}
 
 // routeAddress resolves a selected route's address through its adapter.
-func routeAddress(adapter, mode, socketPath, threadID string) (string, bool) {
-	address, reason := publish.Adapters().Address(adapter, publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID})
+func routeAddress(adapter string, route publish.Route) (string, bool) {
+	address, reason := publish.Adapters().Address(adapter, route)
 	return address, reason == ""
 }
 
 // bindingRouteResolves reports whether the binding's route resolves to an
 // address now.
 func bindingRouteResolves(ctx context.Context, tx store.Tx, binding int64) (bool, error) {
-	var adapter, mode, socketPath, threadID string
+	var adapter string
+	var route publish.Route
 	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+` FROM publish_route r WHERE r.binding_id = ?`, binding).
-		Scan(&adapter, &mode, &socketPath, &threadID)
+		Scan(routeScan(&adapter, &route)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	_, ok := routeAddress(adapter, mode, socketPath, threadID)
+	_, ok := routeAddress(adapter, route)
 	return ok && err == nil, err
 }
 
@@ -188,12 +194,12 @@ func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]P
 	for rows.Next() {
 		var proof PublishProof
 		probe := &proof.Probe
-		if err := rows.Scan(&proof.Binding.ID, &proof.Binding.Generation, &probe.Adapter, &probe.Route.Mode,
-			&probe.Route.SocketPath, &probe.Route.ThreadID, &probe.LaunchRef, &probe.StartedHookAtMS); err != nil {
+		dest := append([]any{&proof.Binding.ID, &proof.Binding.Generation}, routeScan(&probe.Adapter, &probe.Route)...)
+		if err := rows.Scan(append(dest, &probe.LaunchRef, &probe.StartedHookAtMS)...); err != nil {
 			return nil, err
 		}
 		var ok bool
-		if probe.Address, ok = routeAddress(probe.Adapter, probe.Route.Mode, probe.Route.SocketPath, probe.Route.ThreadID); ok {
+		if probe.Address, ok = routeAddress(probe.Adapter, probe.Route); ok {
 			proofs = append(proofs, proof)
 		}
 	}
@@ -201,11 +207,17 @@ func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]P
 }
 
 // launchOwns reports whether the proven listener is the probe's launch: the process its
-// launch reference names, started no later than the launch's first hook.
+// launch reference names, or for a thread-routed adapter the server its
+// start named, started no later than the launch's first hook.
 func launchOwns(probe publish.Probe, proven publish.Proven) bool {
+	if proven.Queue.PID <= 0 || proven.Queue.StartMS <= 0 || proven.StartedAtMS <= 0 || proven.StartedAtMS > probe.StartedHookAtMS {
+		return false
+	}
+	if a, ok := publish.Lookup(probe.Adapter); ok && a.ThreadRouted() {
+		return proven.Queue == probe.Route.Host
+	}
 	process, ok := ident.LaunchProcess(probe.LaunchRef)
-	return ok && proven.Queue.PID > 0 && process == fmt.Sprintf("pid-%d", proven.Queue.PID) && proven.Queue.StartMS > 0 &&
-		proven.StartedAtMS > 0 && proven.StartedAtMS <= probe.StartedHookAtMS
+	return ok && process == fmt.Sprintf("pid-%d", proven.Queue.PID)
 }
 
 // ConfirmPublishProof records a transport's proof for a route only if the
@@ -222,19 +234,18 @@ func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, p
 		JOIN adapter_launch l ON l.rowid = (SELECT current.rowid FROM adapter_launch current
 			WHERE current.principal_id = r.principal_id AND current.ended_hook_at_ms IS NULL
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
-		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND r.launch_verified = 1
-			AND l.launch_ref = r.launch_ref AND l.verified = 1
+		WHERE r.binding_id = ? AND r.generation = ? AND r.state = 'active' AND `+store.PublishLaunchBinds()+`
 			AND (l.process_pid IS NULL OR (l.process_pid = ? AND l.process_start_identity = ?))
 			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation)`,
 		proof.Binding.ID, proof.Binding.Generation, proven.Queue.PID, proven.Queue.StartMS).
-		Scan(&route.Adapter, &route.Route.Mode, &route.Route.SocketPath, &route.Route.ThreadID, &route.LaunchRef, &route.StartedHookAtMS)
+		Scan(append(routeScan(&route.Adapter, &route.Route), &route.LaunchRef, &route.StartedHookAtMS)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	route.Address, _ = routeAddress(route.Adapter, route.Route.Mode, route.Route.SocketPath, route.Route.ThreadID)
+	route.Address, _ = routeAddress(route.Adapter, route.Route)
 	if route != proof.Probe {
 		return false, nil
 	}
@@ -251,11 +262,12 @@ func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]Publi
 	var bindings []PublishBinding
 	for rows.Next() {
 		var binding PublishBinding
-		var adapter, mode, socketPath, threadID string
-		if err := rows.Scan(&binding.ID, &binding.Generation, &adapter, &mode, &socketPath, &threadID); err != nil {
+		var adapter string
+		var route publish.Route
+		if err := rows.Scan(append([]any{&binding.ID, &binding.Generation}, routeScan(&adapter, &route)...)...); err != nil {
 			return nil, err
 		}
-		if _, ok := routeAddress(adapter, mode, socketPath, threadID); ok {
+		if _, ok := routeAddress(adapter, route); ok {
 			bindings = append(bindings, binding)
 		}
 	}
@@ -293,9 +305,9 @@ func ReservePublish(ctx context.Context, tx store.Tx, binding PublishBinding, no
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO publish_attempt (
 		binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref,
-		policy_epoch, process_pid, process_start_ms, state, reserved_at_ms)
+		policy_epoch, process_pid, process_start_ms, lane, state, reserved_at_ms)
 		SELECT r.binding_id, r.principal_id, r.binding_epoch, r.generation, r.adapter, r.session_ref, r.launch_ref,
-			r.policy_epoch, p.process_pid, p.process_start_ms, 'reserved', ?1 `+activePublishRoutes(now)+`
+			r.policy_epoch, p.process_pid, p.process_start_ms, `+store.PublishLane()+`, 'reserved', ?1 `+activePublishRoutes(now)+`
 		AND r.binding_id = ?2 AND r.generation = ?3
 		AND EXISTS (`+publishMessages+`)
 		AND (SELECT COUNT(*) FROM publish_attempt a WHERE a.principal_id = r.principal_id AND
@@ -335,16 +347,16 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
 	var target PublishTarget
-	var mode, socketPath, threadID string
+	var route publish.Route
 	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, p.process_pid, p.process_start_ms `+
 		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ? AND a.state = 'reserved'
 			AND a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
 			AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
 			AND a.policy_epoch = r.policy_epoch AND a.process_pid = p.process_pid AND a.process_start_ms = p.process_start_ms)`, id).
-		Scan(&target.Adapter, &mode, &socketPath, &threadID, &target.Queue.PID, &target.Queue.StartMS)
+		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS)...)
 	resolved := false
 	if err == nil {
-		target.Address, resolved = routeAddress(target.Adapter, mode, socketPath, threadID)
+		target.Address, resolved = routeAddress(target.Adapter, route)
 	}
 	if errors.Is(err, sql.ErrNoRows) || err == nil && !resolved {
 		return PublishTarget{}, nil, finishPublish(ctx, tx, id, "reserved", PublishNotSubmitted, now)

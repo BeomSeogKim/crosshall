@@ -2,20 +2,36 @@ package hook
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// standInHost makes the hook's host the given command for one test.
+// The stand-in host's PID and start identity.
+const (
+	standInPID   = 4242
+	standInStart = 99
+)
+
+// standInHost makes the hook's host the given command for one test, a
+// process whose start identity reads.
 func standInHost(t *testing.T, exe string, args []string, ok bool) {
 	t.Helper()
-	previous := hostCommand
-	hostCommand = func() (string, []string, bool) { return exe, args, ok }
-	t.Cleanup(func() { hostCommand = previous })
+	previous, previousStart := hostCommand, processStart
+	hostCommand = func() (int, string, []string, bool) { return standInPID, exe, args, ok }
+	processStart = func(pid int) (proc.Start, error) {
+		if pid != standInPID {
+			return proc.Start{}, errors.New("no such process")
+		}
+		return proc.Start{Identity: standInStart, AtMS: 1}, nil
+	}
+	t.Cleanup(func() { hostCommand, processStart = previous, previousStart })
 }
 
 func environment(values map[string]string) func(string) (string, bool) {
@@ -26,8 +42,9 @@ func environment(values map[string]string) func(string) (string, bool) {
 }
 
 // A Codex hook run by the managed app server of its CODEX_HOME reports the
-// daemon mode and the server's release; any other host reports in_process,
-// and an unreadable one leaves the mode unverified (#236).
+// daemon mode, the server's release and the server process; any other host
+// reports in_process, and an unreadable one leaves the mode unverified
+// (#236).
 func TestCodexModeComesFromTheHooksHost(t *testing.T) {
 	m, ok := loadManifest("codex")
 	if !ok || m.Daemon == nil {
@@ -77,11 +94,25 @@ func TestCodexModeComesFromTheHooksHost(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			standInHost(t, tc.exe, tc.args, tc.readable)
-			version, mode := daemonBuild(*m.Daemon, environment(tc.env))
+			version, mode, host := daemonBuild(*m.Daemon, environment(tc.env))
 			if version != tc.version || mode != tc.mode {
 				t.Fatalf("build = %s %s, want %s %s", version, mode, tc.version, tc.mode)
 			}
+			want := (*wire.Host)(nil)
+			if mode == publish.ModeDaemon {
+				want = &wire.Host{PID: standInPID, Start: standInStart, NS: proc.PIDNamespace()}
+			}
+			if (host == nil) != (want == nil) || host != nil && *host != *want {
+				t.Fatalf("host = %+v, want %+v", host, want)
+			}
 		})
+	}
+	// A server whose start does not read is not named: a PID alone could
+	// later be another process.
+	standInHost(t, server, serving, true)
+	processStart = func(int) (proc.Start, error) { return proc.Start{}, errors.New("unreadable") }
+	if _, mode, host := daemonBuild(*m.Daemon, environment(map[string]string{"CODEX_HOME": home})); mode != publish.ModeDaemon || host != nil {
+		t.Fatalf("unreadable start: mode %s host %+v", mode, host)
 	}
 }
 

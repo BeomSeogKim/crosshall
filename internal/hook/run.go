@@ -506,8 +506,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
 			Profile: profile, LaunchRef: e.LaunchRef, LaunchVerified: e.LaunchVerified, LaunchHosted: e.LaunchHosted, EventRef: ref,
-			PIDNamespace: e.PIDNamespace,
-			Source:       e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
+			PIDNamespace: e.PIDNamespace, Host: e.Host,
+			Source: e.Source, RepoRoot: repo.worktree, Repository: repo.repository, CreateChannel: repo.create,
 			HookAtMS: entry.UnixMilli(), Epoch: epoch,
 		})
 	} else {

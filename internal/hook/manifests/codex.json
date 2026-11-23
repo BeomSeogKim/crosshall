@@ -5,6 +5,12 @@
   "session_field": "session_id",
   "session_env": "CODEX_THREAD_ID",
   "turn_field": "turn_id",
+  "daemon": {
+    "home_env": "CODEX_HOME",
+    "home_default": ".codex",
+    "releases": "packages/app-server-daemon/releases",
+    "args": ["app-server", "--managed-daemon"]
+  },
   "caps_ms": {"prompt_submitted": 1800000, "turn_finishing": 7200000, "approval_requested": 1800000},
   "install": {
     "home_env": "CODEX_HOME",

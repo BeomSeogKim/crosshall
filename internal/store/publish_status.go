@@ -215,8 +215,16 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	}
 	state.State = "candidate"
 	adapters := publish.Adapters()
-	_, why := adapters.Address(adapter, publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID})
+	route := publish.Route{Mode: mode, SocketPath: socketPath, ThreadID: threadID}
+	_, why := adapters.Address(adapter, route)
+	var reach string
+	if a, ok := adapters.Lookup(adapter); ok {
+		reach = a.Reach(route)
+	}
 	switch {
+	// A session the adapter cannot reach stays so with any sender.
+	case reach != "":
+		state.Reason = reach
 	case !adapters.Sends(adapter):
 		state.Reason = "no sender for " + adapter
 	case !verified:

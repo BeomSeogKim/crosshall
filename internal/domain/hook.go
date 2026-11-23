@@ -233,6 +233,11 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, cmd.HookAtMS); err != nil {
 		return core.Result{}, err
 	}
+	// A start says the session runs in a process nobody has named yet: the
+	// recorded host may be the one it replaced. Its next command names it.
+	if err := forgetHost(ctx, tx, principal); err != nil {
+		return core.Result{}, err
+	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 		return core.Result{}, err
 	}
@@ -400,6 +405,9 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		started = 0 // No SessionStart committed for the recovered session.
 	}
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, started); err != nil {
+		return core.Result{}, err
+	}
+	if err := forgetHost(ctx, tx, principal); err != nil {
 		return core.Result{}, err
 	}
 	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {

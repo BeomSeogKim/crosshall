@@ -148,9 +148,17 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "deadline"
 	}
 	pid := e.LaunchRef
-	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
+	launch, err := bindLaunch(leaf, gen, e, spec, entry)
+	e.LaunchRef, e.LaunchVerified = launch.ref, launch.verified
 	if err != nil {
 		return "refused"
+	}
+	if spec.Fact == wire.HookPromptSubmitted && e.LaunchVerified {
+		// The proof the dispatcher needs for a launch it has no row for.
+		e.LaunchAtMS, e.PIDNamespace = launch.atMS, proc.PIDNamespace()
+		if launch.late {
+			markLaunch(rv, pid)
+		}
 	}
 	if spec.Enroll && e.LaunchVerified {
 		e.PIDNamespace = proc.PIDNamespace()
@@ -523,6 +531,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 			EnrollCreate:       repo.create,
 			Receipt:            e.receipt,
 			ContinuationActive: e.stopActive == "true",
+			LaunchAtMS:         e.LaunchAtMS,
+			PIDNamespace:       e.PIDNamespace,
 		})
 	}
 	return req

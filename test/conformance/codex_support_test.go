@@ -302,7 +302,7 @@ func startCodexFixture(t *testing.T, markers map[string]string) *codexFixture {
 		number := len(f.requests)
 		f.mu.Unlock()
 		if number == 1 {
-			logRequestTokenSamples(t, "codex", body, "hint", "roster", "pending")
+			logRequestTokenSamples(t, "codex", body, "hint", "pending")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, codexResponseStream, number)

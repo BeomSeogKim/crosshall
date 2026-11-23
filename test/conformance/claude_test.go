@@ -506,7 +506,7 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 	if session == nil || c.model.count() != 3 || noteID == "" {
 		t.Fatalf("session %v, %d model requests, note %q", session, c.model.count(), noteID)
 	}
-	logRequestTokenSamples(t, "claude", []byte(c.model.request(1)), "hint", "roster")
+	logRequestTokenSamples(t, "claude", []byte(c.model.request(1)), "hint")
 	logRequestTokenSamples(t, "claude", []byte(c.model.request(2)), "pending")
 	hint := "Joined #checkout as @claude1"
 	pending := "[crosshall] pending: " + noteID

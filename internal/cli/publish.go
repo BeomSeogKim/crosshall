@@ -100,6 +100,8 @@ func wakeText(w domain.Wake, note bool) string {
 	}
 	text := "not woken: " + whyText(w, note)
 	switch w.SeenAt {
+	case domain.SeenAtTurnEnd:
+		text += "; it sees this when its turn ends"
 	case domain.SeenAtPrompt:
 		text += "; it sees this at its next prompt"
 	case domain.SeenAtCommand:
@@ -155,7 +157,8 @@ func memberWakeText(w domain.Wake) string {
 func notWokenLine(ds []domain.Delivery) string {
 	var aliases []string
 	for _, d := range ds {
-		if d.State == "stored" && d.Wake.Wake == domain.WakeNone {
+		// The turn-end check of its running turn tells it.
+		if d.State == "stored" && d.Wake.Wake == domain.WakeNone && d.SeenAt != domain.SeenAtTurnEnd {
 			aliases = append(aliases, "@"+d.Alias)
 		}
 	}

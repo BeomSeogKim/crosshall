@@ -34,8 +34,9 @@ const (
 
 // Where a member that is not woken sees the work.
 const (
-	SeenAtPrompt  = "prompt"  // its adapter offers pending work at a prompt
-	SeenAtCommand = "command" // its next crosshall command
+	SeenAtTurnEnd = "turn_end" // the turn-end check of its running turn
+	SeenAtPrompt  = "prompt"   // its adapter offers pending work at a prompt
+	SeenAtCommand = "command"  // its next crosshall command
 )
 
 // Wake is what will tell a member about new work, as a sender sees it.
@@ -130,8 +131,39 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	if endsWait && s.waits.running(binding, kind, now) {
 		return Wake{Wake: WakeWait}, nil
 	}
+	if kind == "ask" {
+		turnEnd, err := seesAtTurnEnd(ctx, tx, principal, now)
+		if err != nil || turnEnd {
+			w.SeenAt = SeenAtTurnEnd
+			return w, err
+		}
+	}
 	w.SeenAt, err = s.seenAt(ctx, tx, binding)
 	return w, err
+}
+
+// seesAtTurnEnd reports whether the member is in a turn whose end the
+// turn-end check will offer an unread request at: its latest fact is a
+// current prompt or permission request (a turn that reached its Stop shows
+// that stage instead) and
+// its launch's turn-end check is covered and switched on. An open turn row
+// alone is not enough: a typed-ahead placeholder can stay open for good.
+func seesAtTurnEnd(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
+	fact, err := latestFact(ctx, tx, principal)
+	// A session reports nothing after an answered permission dialog, so a
+	// turn that asked for one shows that stage until its Stop.
+	if fact == nil || err != nil || fact.Fact != FactPromptSubmitted && fact.Fact != FactApprovalRequested ||
+		!fact.At(ms(now)).Current {
+		return false, err
+	}
+	var covered bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM adapter_launch l
+		WHERE l.rowid = (SELECT latest.rowid FROM adapter_launch latest
+				WHERE latest.principal_id = ?1 AND latest.ended_hook_at_ms IS NULL
+				ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)
+			AND `+store.CapabilityCovered("json_extract(l.profile,'$.adapter')", "l.profile", "'turn_end'")+`
+			AND `+store.TurnEndSwitchOn("json_extract(l.profile,'$.adapter')")+`)`, principal).Scan(&covered)
+	return covered, err
 }
 
 // promptAdapter joins, as ap, the adapter whose hooks offer a binding's

@@ -138,6 +138,10 @@ type LedgerRecipient struct {
 	// Wake is what will tell a live recipient about a request it has not
 	// picked up, as of the view.
 	Wake
+	// ShownAtMS is when a prompt line or a turn end first showed the request
+	// to a recipient that is not woken and has not read it; SeenAt is then
+	// empty, since each request is shown once.
+	ShownAtMS *int64 `json:"shown_at_ms,omitempty"`
 }
 
 type Receipt struct {
@@ -467,6 +471,14 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
 					return nil, err
 				}
+				if r.Wake.Wake == WakeNone {
+					if r.ShownAtMS, err = shownAt(ctx, tx, r.PrincipalID, m.ID); err != nil {
+						return nil, err
+					}
+					if r.ShownAtMS != nil {
+						r.SeenAt = ""
+					}
+				}
 			}
 			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
 				return nil, err
@@ -657,4 +669,19 @@ func memberInboxSummary(ctx context.Context, tx store.Tx, principal, channel int
 		WHERE o.principal_id = ? AND m.channel_id = ? AND o.state = 'open'
 			AND r.picked_up_at_ms IS NOT NULL`, principal, channel).Scan(&summary.OwedCount)
 	return summary, err
+}
+
+// shownAt is when a prompt line or a turn end first showed message to
+// principal, or nil. A notice's announcement never reaches here: a request
+// with a notice of its own shows that notice instead.
+func shownAt(ctx context.Context, tx store.Tx, principal, message int64) (*int64, error) {
+	var at sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT MIN(at_ms) FROM (
+		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2
+		UNION ALL SELECT o.at_ms FROM offer_item i JOIN offer o ON o.id = i.offer_id
+			WHERE i.principal_id = ?1 AND i.message_id = ?2)`, principal, message).Scan(&at)
+	if err != nil || !at.Valid {
+		return nil, err
+	}
+	return &at.Int64, nil
 }

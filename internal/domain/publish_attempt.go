@@ -398,22 +398,24 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 
 const (
 	publishFailuresToSuspend = 3
-	publishSuspension        = 30 * time.Minute
-	// publishLastingSuspension is the suspension of a launch that does not
-	// lift by itself.
 	publishLastingSuspension = 3
 )
 
-// suspendPublish stops publish to the attempt's launch for publishSuspension,
-// or until the launch ends once it is the launch's third suspension since
-// the owner's last resume.
+// The publish lane orders the launch's receipts by attempt ID, even when
+// an own-turn receipt and a suspension are recorded in the same millisecond.
 func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason string, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
 		SELECT a.binding_id, a.launch_ref, ?2, a.id, ?3,
-			CASE WHEN (SELECT COUNT(*) FROM publish_suspension s WHERE s.binding_id = a.binding_id
-				AND s.launch_ref = a.launch_ref AND s.id > b.publish_resume_suspension) + 1 >= ?5 THEN NULL ELSE ?4 END
+			CASE WHEN ?2 IN ('absorbed', 'not_submitted') AND (
+				SELECT COUNT(*) FROM publish_suspension s WHERE s.binding_id = a.binding_id
+					AND s.launch_ref = a.launch_ref AND s.id > b.publish_resume_suspension
+					AND s.reason IN ('absorbed', 'not_submitted') AND (s.until_ms IS NULL OR s.until_ms > ?3)
+					AND s.notice > COALESCE((SELECT MAX(receipt.id) FROM publish_attempt receipt
+						WHERE receipt.binding_id = a.binding_id AND receipt.launch_ref = a.launch_ref
+							AND receipt.observation = 'own_turn'), 0)
+			) + 1 >= ?5 THEN NULL ELSE ?4 END
 		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id WHERE a.id = ?1`,
-		attempt, reason, ms(now), ms(now.Add(publishSuspension)), publishLastingSuspension)
+		attempt, reason, ms(now), ms(now.Add(store.PublishSuspensionDuration)), publishLastingSuspension)
 	if err != nil {
 		return err
 	}

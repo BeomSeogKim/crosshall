@@ -156,16 +156,17 @@ func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
 // HookReachAck identifies a reach line offered to a binding: Told is the
 // value stored once the line was printed (1 brings, 0 cannot reach).
 type HookReachAck struct {
-	BindingID  int64  `json:"binding_id"`
-	RouteEpoch int64  `json:"route_epoch"`
-	Told       int    `json:"told"`
-	Generation string `json:"gen"`
-	Offer      string `json:"offer,omitempty"`
+	BindingID    int64  `json:"binding_id"`
+	RouteEpoch   int64  `json:"route_epoch"`
+	Told         int    `json:"told"`
+	SuspensionID int64  `json:"suspension_id,omitempty"`
+	Generation   string `json:"gen"`
+	Offer        string `json:"offer,omitempty"`
 }
 
 func (a HookReachAck) ValidFor(generation string) bool {
 	return generation != "" && a.Generation == generation && a.BindingID > 0 && a.RouteEpoch > 0 &&
-		(a.Told == 0 || a.Told == 1) && a.Offer != ""
+		(a.Told == 0 || a.Told == 1) && a.SuspensionID >= 0 && (a.SuspensionID == 0 || a.Told == 0) && a.Offer != ""
 }
 
 func (a HookReachAck) SameOffer(b HookReachAck) bool {

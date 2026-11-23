@@ -58,7 +58,7 @@ func TestLoopGuardCutoverFencesBothUpgradePaths(t *testing.T) {
 			if err := old.Close(); err != nil {
 				t.Fatal(err)
 			}
-			upgraded, err := Open(ctx, root)
+			upgraded, err := openWithMigrations(ctx, root, migrations[:22])
 			if err != nil {
 				t.Fatal(err)
 			}

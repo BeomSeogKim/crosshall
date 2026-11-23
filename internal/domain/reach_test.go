@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,10 @@ func (p *publishFixture) wantReach(step string, got wire.HookResult, line string
 		p.t.Fatalf("%s: ack %+v, want told %d for binding %d", step, got.ReachAck, want, p.binding.ID)
 	}
 	p.mutate(`UPDATE binding SET reach_told = ? WHERE id = ?`, got.ReachAck.Told, got.ReachAck.BindingID)
+	if got.ReachAck.SuspensionID != 0 {
+		p.mutate(`UPDATE publish_suspension SET recovery_hint = ? WHERE id = ?`,
+			store.RecoveryHintAcknowledged, got.ReachAck.SuspensionID)
+	}
 }
 
 // sweep runs the dispatcher tick's reach check.
@@ -202,6 +207,100 @@ func TestReachLineFlipsWithEachWayTheHallStopsReaching(t *testing.T) {
 			p.wantReach("back", p.turn(), ReachBringsLine)
 		})
 	}
+}
+
+func TestReachLossNamesOwnerResumeForLastingLaunchSuspension(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.wantReach("available route", p.turn(), ReachBringsLine)
+	id := p.observed("absorbed")
+	p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+	want := fmt.Sprintf("%s Your user can turn notices back on with crosshall owner publish resume %d.", ReachLostLine, p.binding.ID)
+	p.wantReach("lasting launch suspension", p.turn(), want)
+	p.wantReach("the hint was already printed", p.turn(), "")
+}
+
+func TestReachOffersRecoveryAfterGenericLossWasAcknowledged(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.wantReach("available route", p.turn(), ReachBringsLine)
+	id := p.observed("absorbed")
+	p.wantReach("loss acknowledged by the previous dispatcher", p.turn(), ReachLostLine)
+	p.clearStamps()
+	p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+	p.wantStampMove("the old lasting suspension has an unsent hint", true)
+	command := fmt.Sprintf("crosshall owner publish resume %d", p.binding.ID)
+	result := p.ask(p.writer, Ask{To: []string{"reader"}, Body: "while suspended"}, "sender-status")
+	wantOK(t, result)
+	if strings.Contains(string(result.Data), command) {
+		t.Fatalf("sender saw the affected session's recovery command: %s", result.Data)
+	}
+	want := ReachLostLine + " Your user can turn notices back on with " + command + "."
+	if got := p.turn(); got.ReachLine != want {
+		t.Fatalf("first offer: %q, want %q", got.ReachLine, want)
+	}
+	p.wantReach("offer again until printed", p.turn(), want)
+	p.wantReach("stop after acknowledgment", p.turn(), "")
+}
+
+func TestReachRearmsUnprintedRecoveryWhenPublishingReturns(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		printed bool
+	}{{"unprinted", false}, {"already printed", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			p.wantReach("available route", p.turn(), ReachBringsLine)
+			id := p.observed("absorbed")
+			p.wantReach("generic loss acknowledged", p.turn(), ReachLostLine)
+			p.clearStamps()
+			p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+			p.sweep()
+			if !p.marked() {
+				t.Fatal("the pending hint did not raise the notice stamp")
+			}
+			hint := fmt.Sprintf("%s Your user can turn notices back on with crosshall owner publish resume %d.", ReachLostLine, p.binding.ID)
+			if test.printed {
+				p.wantReach("hint printed before switch off", p.turn(), hint)
+			}
+			wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "off"}, "recovery-off"))
+			got := p.turn()
+			p.wantReach("the off switch hides the hint", got, "")
+			if got.Ack == nil || got.Ack.Kind != "notice" {
+				t.Fatalf("a prompt while off could not consume the notice stamp: %+v", got)
+			}
+			p.clearStamps()
+			wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "default"}, "recovery-default"))
+			p.wantStampMove("publishing restored", !test.printed)
+			if test.printed {
+				hint = ""
+			}
+			p.wantReach("next prompt after restoring publishing", p.turn(), hint)
+			p.wantReach("after print acknowledgment", p.turn(), "")
+		})
+	}
+}
+
+func TestReachRecoveryWithAStoppedBuildNamesAWorkingCommand(t *testing.T) {
+	p := newProbationFixture(t)
+	p.wantReach("available route", p.turn(), ReachBringsLine)
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "already-open", at+1))
+	id, ids := probationNotice(p, p.binding, "reader", "stopped-build")
+	p.hook(p.reader, p.promptReceipt("already-open", publishTestLaunch, at+2, ids))
+	p.observation(id, "absorbed")
+	probationBuild(p, 0, id, "absorbed", false)
+	p.mutate(`UPDATE publish_suspension SET until_ms = NULL WHERE notice = ?`, id)
+	want := fmt.Sprintf("%s Your user can turn notices back on with crosshall owner publish resume %d.", ReachLostLine, p.binding.ID)
+	p.wantReach("both the build and the launch are stopped", p.turn(), want)
+	p.now = p.now.Add(time.Second)
+	enrollAndRoute(t, p.fixture, p.reader, "pid-43-restart", "resume", publishTestSocket, "default", p.now.UnixMilli(), 1)
+	p.proveRoute()
+	p.requirePublish("a fresh launch still has the build stop", "suspended", "version")
+	wantOK(t, p.owner(OwnerPublish{BindingID: p.binding.ID, Switch: "resume"}, "resume-both"))
+	p.turnEndAsk(p.writer, "reader", "after-resume")
+	p.requirePublish("owner resume lifts the build stop", "available", "")
 }
 
 func TestReachLineRespectsDoNotDisturb(t *testing.T) {

@@ -250,7 +250,7 @@ func publishJoinHintOffer(leaf *os.Root, ack *wire.HookJoinHintAck) error {
 // once is stored even if a later output offered it again.
 func publishReachOffer(leaf *os.Root, ack *wire.HookReachAck) error {
 	if prior, ok := hook.ReadReachOffer(leaf, ack.Generation); ok && prior.BindingID == ack.BindingID &&
-		prior.RouteEpoch == ack.RouteEpoch && prior.Told == ack.Told {
+		prior.RouteEpoch == ack.RouteEpoch && prior.Told == ack.Told && prior.SuspensionID == ack.SuspensionID {
 		ack.Offer = prior.Offer
 		return nil
 	}
@@ -272,9 +272,18 @@ func acknowledgeHookReach(ctx context.Context, tx store.Tx, arrival Arrival, req
 	if !ok || ack.BindingID != *caller.BindingID || !hook.CurrentReachOffer(arrival.Dir, ack) {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE binding SET reach_told = ?
+	updated, err := tx.ExecContext(ctx, `UPDATE binding SET reach_told = ?
 		WHERE id = ? AND principal_id = ? AND route_epoch = ? AND state = 'live'`,
 		ack.Told, ack.BindingID, *caller.PrincipalID, ack.RouteEpoch)
+	if err != nil || ack.SuspensionID == 0 {
+		return err
+	}
+	if rows, err := updated.RowsAffected(); err != nil || rows == 0 {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE publish_suspension SET recovery_hint = ?
+		WHERE id = ? AND binding_id = ? AND recovery_hint <> ?`,
+		store.RecoveryHintAcknowledged, ack.SuspensionID, ack.BindingID, store.RecoveryHintAcknowledged)
 	return err
 }
 

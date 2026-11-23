@@ -74,3 +74,34 @@ func TestPublishSwitchMigrationKeepsSuspensionsAndOpenLanes(t *testing.T) {
 		t.Fatalf("the notice awaiting its receipt lost its lane: %d (%v)", open, err)
 	}
 }
+
+func TestPublishRecoveryHintMigrationKeepsLegacyLossAndMakesHintPending(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	prior, err := openWithMigrations(ctx, root, migrations[:22])
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAdapterLedger(t, prior)
+	if _, err := prior.db.ExecContext(ctx, `UPDATE binding SET reach_told = 0, reach_seen = 0 WHERE id = 2;
+		INSERT INTO publish_suspension (id, binding_id, launch_ref, reason, notice, at_ms) VALUES (5, 2, 'launch', 'absorbed', 8, 100);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := prior.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var told, seen, hint int
+	var lasting bool
+	if err := upgraded.db.QueryRowContext(ctx, `SELECT b.reach_told, b.reach_seen, s.recovery_hint, s.until_ms IS NULL
+		FROM binding b JOIN publish_suspension s ON s.binding_id = b.id WHERE s.id = 5`).Scan(&told, &seen, &hint, &lasting); err != nil {
+		t.Fatal(err)
+	}
+	if told != 0 || seen != 0 || hint != RecoveryHintPending || !lasting {
+		t.Fatalf("after upgrade: reach told=%d, seen=%d, hint=%d, lasting=%t", told, seen, hint, lasting)
+	}
+}

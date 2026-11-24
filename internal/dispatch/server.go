@@ -617,6 +617,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var enrolledSession ident.Identity
 	var channelCreated bool
 	var afterCommit func() (string, error)
+	// lowered says this request's transaction wrote a "0" turn-end record:
+	// if the transaction does not commit, the record goes, and the Stop waits.
+	var lowered bool
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
@@ -735,7 +738,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			}
 		}
 		if isHook && !arrival.Owner && resolved.Caller.Role == core.RoleMember && resolved.Caller.PrincipalID != nil {
-			if err := s.publishTurnEndAsk(ctx, tx, arrival.Dir, req.Generation, *resolved.Caller.PrincipalID); err != nil {
+			if lowered, err = s.publishTurnEndAsk(ctx, tx, arrival.Dir, req.Generation, *resolved.Caller.PrincipalID, true); err != nil {
 				return err
 			}
 		}
@@ -744,6 +747,11 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		}
 		return nil
 	})
+	if err != nil && lowered {
+		if removeErr := arrival.Dir.Remove(hook.TurnEndAskFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			s.logFailure(removeErr)
+		}
+	}
 	if errors.Is(err, errRefusalRollback) {
 		return result, nil
 	}

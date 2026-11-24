@@ -170,7 +170,33 @@ func TestTurnEndAskRecordFollowsTheStampAndFailsTowardWaiting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A stamp only raises the record: a "0" written by a transaction that
+	// is later rolled back would hide an ask (#261 review).
 	apply()
+	if _, err := leaf.Lstat(hook.TurnEndAskFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a stamp wrote a record without an ask: %v", err)
+	}
+	if err := leaf.WriteFile(hook.TurnEndAskFile, []byte("test-dispatcher test-gen 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	apply()
+	if got, err := readAdapterText(leaf, hook.TurnEndAskFile); err != nil || got != "test-dispatcher test-gen 1\n" {
+		t.Fatalf("a stamp lowered the record: %q (%v)", got, err)
+	}
+	lower := func() bool {
+		t.Helper()
+		var lowered bool
+		if err := s.db.Update(t.Context(), func(tx store.Tx) (err error) {
+			lowered, err = s.publishTurnEndAsk(t.Context(), tx, leaf, "test-gen", 1, true)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return lowered
+	}
+	if !lower() {
+		t.Fatal("the member's hook did not report the lowered record")
+	}
 	if got, err := readAdapterText(leaf, hook.TurnEndAskFile); err != nil || got != "test-dispatcher test-gen 0\n" {
 		t.Fatalf("record %q (%v)", got, err)
 	}
@@ -186,7 +212,9 @@ func TestTurnEndAskRecordFollowsTheStampAndFailsTowardWaiting(t *testing.T) {
 	if err := leaf.WriteFile(hook.TurnEndAskFile+".part/blocked", nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	apply()
+	if lower() {
+		t.Fatal("a record that could not be written was reported as lowered")
+	}
 	if _, err := leaf.Lstat(hook.TurnEndAskFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a record that could not be replaced remained: %v", err)
 	}
@@ -535,5 +563,56 @@ func TestAdapterSwitchOnlyChangesKeepThePolicyFile(t *testing.T) {
 		if err != nil || (string(raw) == sentinel) == c.republish {
 			t.Fatalf("%+v: policy file after the change %q (%v), republished %v", c.set, raw, err, c.republish)
 		}
+	}
+}
+
+// #261 review: a hook request may lower the turn-end record before its
+// commit; when the transaction does not commit, the record goes, so the
+// Stop waits instead of trusting a "0" the rollback took back.
+func TestATurnEndRecordLoweredByARolledBackHookIsRemoved(t *testing.T) {
+	for _, commit := range []bool{true, false} {
+		t.Run(fmt.Sprint("commit=", commit), func(t *testing.T) {
+			s, root := adapterFilesFixture(t)
+			leaf := adapterLeafFixture(t, s, root, true)
+			s.fixtureSQL(t, `INSERT INTO adapter_policy(adapter,enabled,reminder,epoch,changed_at_ms) VALUES ('codex',1,0,3,1)`)
+			if err := leaf.WriteFile(hook.TurnEndAskFile, []byte("test-dispatcher test-gen 1\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			principal := int64(1)
+			s.cfg.Resolve = func(context.Context, store.Tx, Arrival, wire.Request) (Resolution, error) {
+				return Resolution{Caller: core.Caller{Role: core.RoleMember, PrincipalID: &principal}, Vendor: "codex"}, nil
+			}
+			s.cfg.Decode = func(req wire.Request, _ Resolution) (domain.Request, error) {
+				return domain.Request{OpKey: req.OpKey, Command: domain.Who{}}, nil
+			}
+			s.cfg.Handle = handlerFunc(func(context.Context, store.Tx, core.Caller, domain.Request) (core.Result, error) {
+				if commit {
+					return domain.OK(wire.HookResult{})
+				}
+				// A result the acknowledgement cannot read fails the
+				// transaction after the record was written.
+				return core.Result{Status: core.ExitOK, Data: json.RawMessage(`"unreadable"`)}, nil
+			})
+			args, err := json.Marshal(wire.HookEventArgs{Profile: wire.HookProfile{Adapter: "codex"}, LaunchRef: "session",
+				EventRef: "prompt-1", Fact: wire.HookPromptSubmitted, Epoch: 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := wire.Request{Verb: wire.VerbHookEvent, OpKey: "hook:codex:session:prompt-1", Generation: "test-gen", Args: args}
+			req.Version, req.Attempt, req.ExpiresAtMS = wire.Version, "attempt", time.Now().Add(time.Second).UnixMilli()
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, cmdErr := s.command(t.Context(), Arrival{Dir: leaf}, req.Attempt, raw)
+			got, err := readAdapterText(leaf, hook.TurnEndAskFile)
+			if commit {
+				if cmdErr != nil || err != nil || got != "test-dispatcher test-gen 0\n" {
+					t.Fatalf("committed hook: record %q (%v), command error %v", got, err, cmdErr)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rolled-back hook left the record %q (%v), command error %v", got, err, cmdErr)
+			}
+		})
 	}
 }

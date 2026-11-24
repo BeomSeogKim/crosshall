@@ -174,21 +174,25 @@ func (s *server) invalidateAdapterLeaf(ctx context.Context, tx store.Tx, members
 			return errors.Join(err, removeErr)
 		}
 	}
-	return s.publishTurnEndAsk(ctx, tx, dir, change.generation, change.principal)
+	_, err = s.publishTurnEndAsk(ctx, tx, dir, change.generation, change.principal, false)
+	return err
 }
 
 // publishTurnEndAsk records, before the caller commits, whether a Stop of
-// the member may have an ask to announce. A new ask marks the member dirty,
-// so a "0" is never older than the asks it covers; a read or a claim
-// lowers a "1" at the member's next hook. A record that cannot be written
-// is removed: the Stop then waits.
-func (s *server) publishTurnEndAsk(ctx context.Context, tx store.Tx, dir *os.Root, generation string, principal int64) error {
+// the member may have an ask to announce. Anything that can give a member
+// an ask marks it dirty (a new message, a notice that was not submitted),
+// and every dirty member's record is raised, so a "0" is never older than
+// the asks it covers. Only the member's own hook request may lower the
+// record (lower): it reports a lowered record, which the caller removes if
+// its transaction does not commit. A record that cannot be written is
+// removed: the Stop then waits.
+func (s *server) publishTurnEndAsk(ctx context.Context, tx store.Tx, dir *os.Root, generation string, principal int64, lower bool) (bool, error) {
 	if dir == nil || generation == "" || s.ready.Instance == "" {
-		return nil
+		return false, nil
 	}
 	waiting, err := domain.TurnEndAskWaiting(ctx, tx, principal)
-	if err != nil {
-		return err
+	if err != nil || !waiting && !lower {
+		return false, err
 	}
 	flag := "0"
 	if waiting {
@@ -196,14 +200,15 @@ func (s *server) publishTurnEndAsk(ctx context.Context, tx store.Tx, dir *os.Roo
 	}
 	record := s.ready.Instance + " " + generation + " " + flag + "\n"
 	if current, err := readAdapterText(dir, hook.TurnEndAskFile); err == nil && current == record {
-		return nil
+		return false, nil
 	}
 	if err := publishAdapterText(dir, hook.TurnEndAskFile, record); err != nil {
 		if removeErr := dir.Remove(hook.TurnEndAskFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return errors.Join(err, removeErr)
+			return false, errors.Join(err, removeErr)
 		}
+		return false, nil
 	}
-	return nil
+	return !waiting, nil
 }
 
 func readAdapterText(dir *os.Root, name string) (string, error) {

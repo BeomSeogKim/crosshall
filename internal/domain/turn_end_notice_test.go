@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -358,4 +359,48 @@ func TestTurnEndAskWaitingFollowsWhatANoticeCouldAnnounce(t *testing.T) {
 		t.Fatal(err)
 	}
 	waiting(false, "the member left")
+}
+
+// #261 review: a notice that was not submitted gives its ask back to the
+// turn-end line. The member is marked dirty, so the record a Stop reads is
+// raised again, also after a hook lowered it while the attempt was open.
+func TestANoticeNotSubmittedMarksItsMemberForTheTurnEndRecord(t *testing.T) {
+	for _, how := range []string{"transport", "retired queue"} {
+		t.Run(how, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before-route"))
+			pid := p.principalOf(p.reader)
+			p.turnEndAsk(p.writer, "reader", "during the turn")
+			id := p.reserve()
+			if id == 0 {
+				t.Fatal("no notice reserved")
+			}
+			waiting := func() bool {
+				t.Helper()
+				got, err := TurnEndAskWaiting(t.Context(), p.db, pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			if waiting() {
+				t.Fatal("the reserved notice did not take the ask")
+			}
+			p.mutate(`DELETE FROM adapter_dirty`) // a hook of the member applied the stamps
+			if how == "transport" {
+				p.begin(id)
+				p.resolve(id, PublishNotSubmitted)
+			} else {
+				p.update(func(ctx context.Context, tx store.Tx) error { return RetirePublishQueue(ctx, tx, p.queue, p.now) })
+			}
+			p.state(id, string(PublishNotSubmitted))
+			if !waiting() {
+				t.Fatal("the ask did not come back to the turn-end line")
+			}
+			if n := p.count(`SELECT COUNT(*) FROM adapter_dirty WHERE principal_id = ? AND notice = 1`, pid); n != 1 {
+				t.Fatalf("the member is not marked dirty: %d rows", n)
+			}
+		})
+	}
 }

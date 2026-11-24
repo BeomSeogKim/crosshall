@@ -32,14 +32,9 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 		return "", err
 	}
 
-	// Match the unread open asks in inbox. The claim records an output
-	// attempt, leaving pickup and obligation state alone.
-	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND m.kind = 'ask'
-			AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM announcement i
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)
-		ORDER BY r.message_id LIMIT ?`, principal, channel, OfferCap)
+	// The claim records an output attempt, leaving pickup and obligation
+	// state alone.
+	ids, err := turnEndOffer(ctx, tx, principal, channel)
 	if err != nil || len(ids) == 0 {
 		return "", err
 	}
@@ -61,4 +56,15 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 		parts[i] = strconv.FormatInt(message, 10)
 	}
 	return "[crosshall] pending: " + strings.Join(parts, " "), nil
+}
+
+// turnEndOffer is what a turn end offers now: the unread open asks in
+// inbox not yet announced, the first OfferCap by ID.
+func turnEndOffer(ctx context.Context, tx store.Tx, principal, channel int64) ([]int64, error) {
+	return selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
+		WHERE r.principal_id = ? AND m.channel_id = ? AND m.kind = 'ask'
+			AND r.picked_up_at_ms IS NULL AND r.message_id > 0 AND `+noClosedObligation+`
+			AND NOT EXISTS (SELECT 1 FROM announcement i
+				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id)
+		ORDER BY r.message_id LIMIT ?`, principal, channel, OfferCap)
 }

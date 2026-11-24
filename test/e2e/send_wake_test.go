@@ -80,7 +80,7 @@ func TestSendSaysWhatWillTellEachRecipient(t *testing.T) {
 	for _, line := range []string{
 		"  @agy   stored -> not woken: no notice route; it sees this at its next crosshall command\n",
 		"  @peer  stored -> not woken: no notice route; it sees this at its next crosshall command\n",
-		"next: nothing will tell @agy or @peer. Ask a member the hall can wake (crosshall who), or tell your user.\n",
+		"next: nothing will wake @agy or @peer. Ask a member the hall can wake (crosshall who), or tell your user.\n",
 	} {
 		if !strings.Contains(text, line) {
 			t.Errorf("send text lacks %q:\n%s", line, text)

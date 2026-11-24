@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+A script that reads a send result's `next:` line should match `next: nothing will wake`; it said `next: nothing will tell`. The line is text only and names the same recipients; JSON has no such field and is unchanged.
+
 ## To v0.2.0-rc.4
 
 Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:

@@ -141,6 +141,7 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 			adapter.Evidence = state.Evidence
 			adapter.SetReminderEvidence(state.Evidence)
 			adapter.UnverifiedLaunches = &state.UnverifiedLaunches
+			adapter.UnseenStarts = &state.UnseenStarts
 			adapter.TurnEndNotice = &state.TurnEndNotice
 			status := state.Publish
 			if _, supported := publish.Lookup(adapter.Adapter); !supported {

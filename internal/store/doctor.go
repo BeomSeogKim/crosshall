@@ -18,8 +18,11 @@ type DoctorAdapterState struct {
 	Policy             AdapterPolicy
 	Evidence           []DoctorEvidence
 	UnverifiedLaunches int
-	TurnEndNotice      DoctorTurnEndNotice
-	Publish            DoctorPublishState
+	// UnseenStarts counts live members whose current launch has no seen
+	// start: joined by a prompt, without a notice route (#252).
+	UnseenStarts  int
+	TurnEndNotice DoctorTurnEndNotice
+	Publish       DoctorPublishState
 }
 
 // DoctorPublishState reports registered publish routes for one adapter.
@@ -255,7 +258,7 @@ func readDoctorAdapter(ctx context.Context, tx Tx, adapter string, day, now time
 }
 
 func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAdapterState) error {
-	rows, err := tx.QueryContext(ctx, `SELECT l.profile, COUNT(*) FROM adapter_launch l
+	rows, err := tx.QueryContext(ctx, `SELECT l.profile, COUNT(*), SUM(l.started_hook_at_ms = 0) FROM adapter_launch l
 		WHERE l.ended_hook_at_ms IS NULL AND json_extract(l.profile, '$.adapter') = ?
 			AND l.rowid = (SELECT current.rowid FROM adapter_launch current
 				WHERE current.principal_id = l.principal_id
@@ -268,13 +271,13 @@ func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAda
 	}
 	defer rows.Close()
 	type profileCount struct {
-		profile string
-		count   int
+		profile       string
+		count, unseen int
 	}
 	var profiles []profileCount
 	for rows.Next() {
 		var profile profileCount
-		if err := rows.Scan(&profile.profile, &profile.count); err != nil {
+		if err := rows.Scan(&profile.profile, &profile.count, &profile.unseen); err != nil {
 			return err
 		}
 		profiles = append(profiles, profile)
@@ -284,6 +287,7 @@ func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAda
 	}
 	var exactTurnEnd bool
 	for _, profile := range profiles {
+		out.UnseenStarts += profile.unseen
 		turnEnd, err := readCapabilityBuild(ctx, tx, adapter, profile.profile, "turn_end")
 		if err != nil {
 			return err

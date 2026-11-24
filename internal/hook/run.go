@@ -240,9 +240,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		defer cancel()
 	}
 	want := turnEnd || (notice && !clean)
+	gone, offers := readDispatcher(rv)
+	if !spec.Enroll && !slices.Contains(offers, wire.HelloLaunchProof) {
+		e.LaunchAtMS, e.PIDNamespace = 0, "" // an older dispatcher refuses the proof
+	}
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	req.Membership = membership
-	if dispatcherGone(rv) {
+	if gone {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
 	}
 	if hookExpired(ctx) {
@@ -798,8 +802,8 @@ func dispatcherGone(rv *os.Root) bool {
 }
 
 // readDispatcher reads the ready marker: whether the dispatcher is gone,
-// and the first-contact intents beyond lookup and join it accepts. An older
-// dispatcher lists none.
+// and what it accepts beyond an older dispatcher (wire.HelloStart,
+// wire.HelloLaunchProof). An older dispatcher lists none.
 func readDispatcher(rv *os.Root) (bool, []string) {
 	raw, err := ident.ReadPrivateFile(rv, "ready", 4096)
 	if err != nil {

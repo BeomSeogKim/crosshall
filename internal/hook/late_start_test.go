@@ -20,15 +20,23 @@ import (
 
 // A prompt of a verified process launch carries the launch's record time
 // and the hook's PID namespace, which the dispatcher needs to bind a launch
-// whose start it never saw; no other callback sends them.
+// whose start it never saw; no other callback sends them, and no prompt
+// sends them to a dispatcher that does not offer to accept them.
 func TestOnlyAPromptOfAProcessLaunchCarriesTheLateStartProof(t *testing.T) {
-	for _, under := range []bool{true, false} {
-		t.Run(fmt.Sprintf("hosted-%t", under), func(t *testing.T) {
+	for _, c := range []struct{ under, offered bool }{{true, true}, {false, true}, {true, false}} {
+		t.Run(fmt.Sprintf("hosted-%t-offered-%t", c.under, c.offered), func(t *testing.T) {
+			under := c.under
 			hosted(t, under)
 			rv, dir, oldLeaf := runFixture(t)
 			id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
 			if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
 				t.Fatal(err)
+			}
+			if c.offered {
+				marker := fmt.Sprintf(`{"instance":"fixture-host","v":1,"pid":%d,"hello":[%q]}`, os.Getpid(), wire.HelloLaunchProof)
+				if err := os.WriteFile(filepath.Join(dir, "ready"), []byte(marker), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("claude 1 0 7\n"), 0600); err != nil {
 				t.Fatal(err)
@@ -78,7 +86,9 @@ func TestOnlyAPromptOfAProcessLaunchCarriesTheLateStartProof(t *testing.T) {
 					}
 				case !a.LaunchVerified || a.LaunchRef != sent[0].LaunchRef:
 					t.Fatalf("event %d reports launch %q (verified %t), want %q", i, a.LaunchRef, a.LaunchVerified, sent[0].LaunchRef)
-				case prompt && (a.LaunchAtMS != 200 || a.PIDNamespace != proc.PIDNamespace()):
+				case !c.offered && (a.LaunchAtMS != 0 || a.PIDNamespace != ""):
+					t.Fatalf("event %d carries the proof to a dispatcher that does not offer it: %+v", i, a)
+				case c.offered && prompt && (a.LaunchAtMS != 200 || a.PIDNamespace != proc.PIDNamespace()):
 					t.Fatalf("prompt %d: launch_at_ms %d, pid_namespace %q", i, a.LaunchAtMS, a.PIDNamespace)
 				case !prompt && (a.LaunchAtMS != 0 || a.PIDNamespace != ""):
 					t.Fatalf("a %s carries the late-start proof: %+v", a.Fact, a)

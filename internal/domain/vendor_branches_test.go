@@ -18,8 +18,7 @@ import (
 // still hold, keyed by file and function. An entry goes when its capability
 // is read from the manifest instead.
 var vendorBranchesLeft = map[string]int{
-	"views.go withMemberOutput":               1, // join hint for an unknown Antigravity CLI version
-	"../wire/adapter.go CanRecoverEnrollment": 2, // enrollment recovery (#324)
+	"views.go withMemberOutput": 1, // join hint for an unknown Antigravity CLI version
 }
 
 // The core asks an adapter's manifest what it can do. A comparison or switch

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,9 @@ func inspectInstall(status *InstallStatus, spec hook.InstallSpec, executable, st
 
 func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable, stateRoot, path string, record ownedFile, current fileSnapshot, doc *configNode) error {
 	recognized := 0
-	if spec.Adapter == "codex" {
+	// A shared managed server's hooks inherit its environment, so their
+	// state routing is read back and reported.
+	if caps, _ := manifests.CapabilitiesOf(spec.Adapter); caps.SharedDaemon {
 		routes, err := codexHookRoutes(doc, executable, record.Entries)
 		if err != nil {
 			return err

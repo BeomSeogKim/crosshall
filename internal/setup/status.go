@@ -170,7 +170,7 @@ func inspectStatusState(ctx context.Context, path string) (journal, bool, map[st
 	if absent {
 		return j, journalErr == nil, nil, true
 	}
-	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, adapterNames(), "")
+	snapshot, err := store.InspectDoctorStore(ctx, spool.ServerFiles{Root: state}, adapterNames(), nil)
 	if err != nil {
 		return j, journalErr == nil, nil, false
 	}

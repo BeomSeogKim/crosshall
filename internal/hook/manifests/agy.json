@@ -8,6 +8,12 @@
   "event_field": "hookEventName",
   "session_field": "conversationId",
   "session_env": "ANTIGRAVITY_CONVERSATION_ID",
+  "identity": {
+    "evidence": "observed",
+    "verified_on": ["1.5.11"],
+    "agent_markers": ["ANTIGRAVITY_AGENT"],
+    "version": {"env": "ANTIGRAVITY_LS_VERSION", "prefix": "cli-", "indirect": "ls", "indirect_name": "language server"}
+  },
   "host_names": ["agy"],
   "install": {
     "file": "hooks.json",

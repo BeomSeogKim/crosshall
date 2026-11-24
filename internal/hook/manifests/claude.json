@@ -11,6 +11,12 @@
   "event_field": "hook_event_name",
   "session_field": "session_id",
   "session_env": "CLAUDE_CODE_SESSION_ID",
+  "identity": {
+    "evidence": "documented",
+    "verified_on": ["2.1.327"],
+    "agent_markers": ["CLAUDECODE"],
+    "version": {"env": "AI_AGENT", "prefix": "claude-code_", "until": "_", "dashes_to_dots": true}
+  },
   "launch_env": "CLAUDE_PID",
   "socket_env": "CLAUDE_CODE_MESSAGING_SOCKET",
   "turn_field": "prompt_id",

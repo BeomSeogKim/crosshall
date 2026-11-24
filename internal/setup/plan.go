@@ -146,7 +146,7 @@ func (s Service) attachEvidence(ctx context.Context, targets []installTarget) {
 			for _, target := range targets {
 				names = append(names, target.Spec.Adapter)
 			}
-			if snapshot, err = store.InspectDoctorStore(ctx, files, names, ""); err != nil {
+			if snapshot, err = store.InspectDoctorStore(ctx, files, names, nil); err != nil {
 				return
 			}
 		}

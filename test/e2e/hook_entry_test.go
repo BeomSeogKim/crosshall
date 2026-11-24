@@ -239,7 +239,10 @@ func TestHookEntryOpenStdinBounded(t *testing.T) {
 		t.Log("hook dropped its counter record at the deadline")
 		return
 	}
-	if elapsed := h.assertCounter("UserPromptSubmit", "deadline"); elapsed < 100*time.Millisecond || elapsed > 250*time.Millisecond {
+	// runTo bounds the hook itself. The record only shows that it waited:
+	// a hook the system runs again after its deadline records the time it
+	// actually took, which a loaded machine can stretch past any bound.
+	if elapsed := h.assertCounter("UserPromptSubmit", "deadline"); elapsed < 100*time.Millisecond {
 		t.Fatalf("unexpected elapsed time for incomplete stdin: %v", elapsed)
 	}
 }

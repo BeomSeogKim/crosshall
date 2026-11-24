@@ -31,8 +31,8 @@ The repository is trunk-based.
 - Before a tag, `bash scripts/release-gate.sh --version <tag>` runs the
   recurring gate checks on the candidate commit (reproducible build, release
   dating, migrations, install, setup and uninstall, upgrade and rollback of a
-  copy of your store, hook cost against the previous tag and one locked full
-  run) and prints a summary table. Checks for the release's new features
+  copy of your store, hook cost against the previous tag, a Claude Code and
+  Codex round trip and one locked full run) and prints a summary table. Checks for the release's new features
   stay manual.
 
 ## Pull requests

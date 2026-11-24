@@ -434,6 +434,16 @@ row_hook_cost() {
       exit !(h / b <= l) }' > "$out/$current.detail"
 }
 
+row_cross_vendor() {
+  local test=TestCrossVendorRoundTrip
+  needs_builds || return
+  grep -q "^func $test(" "$head_tree"/test/conformance/*_test.go || { detail "the candidate has no $test"; return 2; }
+  (cd -- "$head_tree" && CROSSHALL_CONFORMANCE_CROSSHALL="$cand" go test -tags conformance -count=1 -timeout 3m \
+    -run "^$test\$" -v ./test/conformance/) || { detail "$test failed"; return 1; }
+  grep -q -- "--- PASS: $test " "$out/$current.log" || { detail "$test did not run"; return 1; }
+  detail "Claude Code and Codex each asked and answered the other with the candidate binary"
+}
+
 row_full_run() {
   local lock start status
   $full_run || { detail "skipped by --skip-full-run"; return 3; }
@@ -459,6 +469,7 @@ row 'Setup and uninstall' row_setup
 row 'Store snapshot upgrade and rollback' row_store
 row 'CLI continuity across upgrade' row_continuity
 row 'Hook cost against the base' row_hook_cost
+row 'Cross-vendor round trip' row_cross_vendor
 row 'One locked full run' row_full_run
 
 verdict=PASS

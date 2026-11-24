@@ -81,6 +81,9 @@ type Join struct {
 	// Launch is the agent process a hand join runs in, when the session's
 	// adapter names one; the dispatcher binds it only if that process runs.
 	Launch *JoinLaunch `json:"launch,omitempty"`
+	// Takeover asks the owner for the live member that holds Alias, whose
+	// session ended, instead of joining under a free alias.
+	Takeover bool `json:"takeover,omitempty"`
 }
 
 // The proposed launch is new on every call; a retried join with the same key
@@ -138,6 +141,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[OwnerDepart](args)
 	case VerbOwnerDepartEnded:
 		return decodeLedgerCommand[OwnerDepartEnded](args)
+	case VerbOwnerTakeover:
+		return decodeLedgerCommand[OwnerTakeover](args)
 	case VerbOwnerLog:
 		return decodeLedgerCommand[OwnerLog](args)
 	case VerbChannelDefault:

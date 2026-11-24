@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // FactFutureSlackMS bounds how far ahead of the dispatcher a hook's clock may
@@ -121,16 +125,25 @@ func readDoctorApprovals(ctx context.Context, tx Tx, nowMS int64) ([]DoctorAppro
 	return out, nil
 }
 
-// approvalIsDialog lists the adapters whose approval fact means a permission
-// dialog is shown. Claude Code reports Notification(permission_prompt), sent
-// only when it shows the dialog. Codex's PermissionRequest also runs for
-// escalations it approves on its own, most followed by the member's next
-// fact within two minutes, so its fact says nothing about an open dialog.
-var approvalIsDialog = map[string]bool{"claude": true}
+// approvalIsDialog: the fact's own profile, at its exact manifest
+// revision, declares that its approval fact means a shown permission dialog.
+// Claude Code reports Notification(permission_prompt), sent only when it
+// shows the dialog. Codex's PermissionRequest also runs for escalations it
+// approves on its own, most followed by the member's next fact within two
+// minutes, so its fact says nothing about an open dialog. A revision the
+// build does not know counts as a request.
+func (f LatestFact) approvalIsDialog() bool {
+	var profile wire.HookProfile
+	if json.Unmarshal([]byte(f.Profile), &profile) != nil || profile.Adapter != f.Adapter {
+		return false
+	}
+	caps, _ := manifests.CapabilitiesAt(profile.Adapter, profile.ManifestRev)
+	return caps.ApprovalDialog
+}
 
-// ApprovalOpen: the fact is an approval request from an adapter whose
-// request means a shown dialog, its launch is not known to have ended, and
-// the member has run no crosshall command since.
+// ApprovalOpen: the fact is an approval request from an adapter revision
+// whose request means a shown dialog, its launch is not known to have
+// ended, and the member has run no crosshall command since.
 func (f LatestFact) ApprovalOpen() bool {
-	return f.Fact == "approval_requested" && approvalIsDialog[f.Adapter] && f.LaunchLive && !f.CommandSince
+	return f.Fact == "approval_requested" && f.LaunchLive && !f.CommandSince && f.approvalIsDialog()
 }

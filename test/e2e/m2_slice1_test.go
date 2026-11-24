@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -101,6 +102,25 @@ func (c claudeSession) startWithContext(source string) string {
 		if counter != "SessionStart deadline" || !time.Now().Before(deadline) {
 			c.w.t.Fatalf("%s SessionStart printed no context after %d callbacks, last counter %q", source, attempt, counter)
 		}
+	}
+}
+
+// promptContext fires a prompt and returns the context it adds. A prompt hook
+// past its budget prints nothing on a slow runner; the same prompt fired again
+// shows what it missed.
+func (c claudeSession) promptContext(fields map[string]any) string {
+	c.w.t.Helper()
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for attempt := 1; ; attempt++ {
+		out := c.fire("UserPromptSubmit", fields)
+		if out != "" {
+			return hostContext(c.w.t, out)
+		}
+		counter := c.lastCounter()
+		if counter != "UserPromptSubmit deadline" || !time.Now().Before(deadline) {
+			return ""
+		}
+		c.waitForConsumption(deadline)
 	}
 }
 
@@ -236,21 +256,21 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 		t.Fatalf("auto-join context %q", got)
 	}
 	mail := notes(t, writer, "claude1", 2)
-	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p1", "prompt": "synthetic"})); got != pendingContext(mail) {
+	if got := c.promptContext(map[string]any{"prompt_id": "p1", "prompt": "synthetic"}); got != pendingContext(mail) {
 		t.Fatalf("first prompt %q", got)
 	}
 	// Mail during a turn is offered at the next prompt even though a stop came first.
 	late := notes(t, writer, "claude1", 1)
 	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p1", "stop_hook_active": false})
-	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p2"})); got != pendingContext(late) {
+	if got := c.promptContext(map[string]any{"prompt_id": "p2"}); got != pendingContext(late) {
 		t.Fatalf("prompt after stop %q", got)
 	}
 	// Eleven unread across two prompts, none lost.
 	eleven := notes(t, writer, "claude1", 11)
-	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p3"})); got != pendingContext(eleven[:10]) {
+	if got := c.promptContext(map[string]any{"prompt_id": "p3"}); got != pendingContext(eleven[:10]) {
 		t.Fatalf("ten oldest %q", got)
 	}
-	if got := hostContext(t, c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p4"})); got != pendingContext(eleven[10:]) {
+	if got := c.promptContext(map[string]any{"prompt_id": "p4"}); got != pendingContext(eleven[10:]) {
 		t.Fatalf("the eleventh %q", got)
 	}
 	// The clean stamp and the quiet Stop both publish without a round trip.
@@ -290,6 +310,36 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	c.fire("SessionStart", map[string]any{"source": "resume"})
 	if !rosterHas(t, writer, "claude1") {
 		t.Fatal("the next start did not restore the member")
+	}
+}
+
+// A prompt whose hook misses its budget prints nothing; its pending line is
+// not lost but shown at the next prompt.
+func TestAPromptPastItsBudgetLosesNoPendingLine(t *testing.T) {
+	w, writer, c := m2World(t)
+	if got := c.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude1") {
+		t.Fatalf("auto-join context %q", got)
+	}
+	mail := notes(t, writer, "claude1", 1)
+	pids := w.dispatcherPIDs()
+	for _, pid := range pids {
+		if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := c.fire("UserPromptSubmit", map[string]any{"prompt_id": "p1"})
+	counter := c.lastCounter()
+	for _, pid := range pids {
+		if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out != "" || counter != "UserPromptSubmit deadline" {
+		t.Fatalf("prompt during a paused dispatcher printed %q with counter %q", out, counter)
+	}
+	c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
+	if got := c.promptContext(map[string]any{"prompt_id": "p2"}); got != pendingContext(mail) {
+		t.Fatalf("next prompt %q, want %q", got, pendingContext(mail))
 	}
 }
 

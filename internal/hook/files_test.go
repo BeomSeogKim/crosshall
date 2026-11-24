@@ -136,7 +136,7 @@ func TestHookIncompleteStampAndBusyLeafStayDirty(t *testing.T) {
 	rv, leaf := hookFileRoot(t), hookFileRoot(t)
 	hookFile(t, rv, "ready", `{"v":1,"instance":"dispatcher"}`)
 	hookFile(t, leaf, "gen", "generation\n")
-	hookFile(t, leaf, "seen-notice", "dispatcher generation 9\n")
+	hookFile(t, leaf, seenReceiptNotice, "dispatcher generation 9\n")
 	for _, stamp := range []string{"dispatcher generation 9 3", "dispatcher generation 9\n3\n"} {
 		hookFile(t, leaf, "stamp", stamp)
 		if stampClean(rv, leaf, "generation", "notice", "") {

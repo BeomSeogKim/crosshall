@@ -94,25 +94,37 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 type hookBinding struct {
 	id, channel     int64
 	routeEpoch      int64
+	selectionGen    int64
+	selectedAtMS    int64
 	joinedAtMS      int64
 	alias, state    string
 	channelName     string
 	dnd             bool
 	byHook          bool // departed by a clean session end, so a start restores it
+	byOwner         bool
 	joinHintPending bool
 	ownerHookFence  sql.NullInt64
 }
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms,
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, s.generation, s.selected_at_ms, b.joined_at_ms, b.alias, b.state, c.name, b.dnd,
+			b.departed_by_hook, b.departed_by_owner, b.owner_hook_fence_ms,
 			b.roster_baseline_seq IS NOT NULL AND b.hint_acked = 0 AND b.start_line_seen = 0
-		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence, &b.joinHintPending)
+		FROM member_selection s JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		WHERE s.principal_id = ?`, principal).
+		Scan(&b.id, &b.channel, &b.routeEpoch, &b.selectionGen, &b.selectedAtMS, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd,
+			&b.byHook, &b.byOwner, &b.ownerHookFence, &b.joinHintPending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
 	return b, err == nil, err
+}
+
+// A callback can read the current membership after capturing its timestamp.
+// Millisecond equality does not establish which side of the move captured it.
+func (b hookBinding) acceptsHookAt(hookAtMS int64) bool {
+	return b.selectionGen <= 1 || hookAtMS > b.selectedAtMS
 }
 
 func hookLaunchAfterFence(ctx context.Context, tx store.Tx, principal int64, launch string, fence, at int64) (bool, error) {
@@ -165,6 +177,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {
 		return core.Result{}, err
+	}
+	if !b.acceptsHookAt(cmd.HookAtMS) {
+		return OK(out)
 	}
 	if found && b.ownerHookFence.Valid {
 		if !b.byHook && b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
@@ -263,7 +278,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 			return core.Result{}, err
 		}
 	}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
+	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
 	if cmd.Source == "clear" || cmd.Source == "compact" {
@@ -435,7 +450,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
+	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(out)
@@ -553,7 +568,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	out := wire.HookResult{Epoch: cmd.Epoch}
 	recoverEnrollment := caller.Role == core.RoleUnenrolled && caller.PrincipalID == nil &&
 		cmd.CanRecoverEnrollment() && cmd.HookAtMS <= ms(now)+futureSlackMS
-	if !recoverEnrollment && (caller.Role != core.RoleMember || caller.PrincipalID == nil) {
+	departedReceipt := caller.Role == core.RoleUnenrolled && caller.PrincipalID != nil && cmd.Fact == FactPromptSubmitted && cmd.Receipt != ""
+	if !recoverEnrollment && !departedReceipt && (caller.Role != core.RoleMember || caller.PrincipalID == nil) {
 		return OK(out)
 	}
 	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
@@ -564,7 +580,7 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		// joins nobody until an explicit join, also after a /clear.
 		if cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
 			launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
-			if err != nil || (found && launch.away) {
+			if err != nil || (found && (launch.away || launch.stale)) {
 				return okOrErr(out, err)
 			}
 		}
@@ -598,14 +614,26 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	if err != nil {
 		return core.Result{}, err
 	}
+	if !b.acceptsHookAt(cmd.HookAtMS) {
+		return OK(out)
+	}
+	departedReceipt := found && b.state == "departed" && !b.byHook && !b.byOwner && cmd.Fact == FactPromptSubmitted && cmd.Receipt != ""
 	if found && b.ownerHookFence.Valid {
-		if b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
+		if b.state != "live" && !departedReceipt || cmd.HookAtMS <= b.ownerHookFence.Int64 {
 			return OK(out)
 		}
 		fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
 		if err != nil || !fresh {
 			return okOrErr(out, err)
 		}
+	}
+	if departedReceipt {
+		// The notice can settle its old transport lane, but departure ended its turn privileges.
+		_, err := observePublishReceipt(ctx, tx, b, principal, req.SessionKey, cmd, now)
+		return okOrErr(out, err)
+	}
+	if caller.Role != core.RoleMember {
+		return OK(out)
 	}
 	if cmd.Fact == FactIdlePrompt {
 		if !found || b.state != "live" {
@@ -770,7 +798,7 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 			if err := offerReach(ctx, tx, b, false, &out, now); err != nil {
 				return core.Result{}, err
 			}
-			if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
+			if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "prompt", &out, now); err != nil {
 				return core.Result{}, err
 			}
 		case FactTurnFinishing:
@@ -880,64 +908,4 @@ func endSessionBy(ctx context.Context, tx store.Tx, b hookBinding, principal int
 		detail["by"] = by
 	}
 	return audit(ctx, tx, "session_ended", "binding:"+strconv.FormatInt(b.id, 10), principal, detail, now)
-}
-
-// --- offers -----------------------------------------------------------------
-
-// offerPending commits an offer of the oldest unread items the session was
-// not told about yet, by an earlier offer, a turn-end notice or a publish
-// notice the model saw (observed as its own turn, absorbed or unknown; a
-// notice a gate blocked was never seen), before any output. It asks for a
-// notice acknowledgement only when nothing eligible remains.
-func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch string, epoch uint64,
-	reason string, out *wire.HookResult, now time.Time) error {
-	if b.dnd {
-		return nil // held: no offer, nothing spent, no acknowledgement
-	}
-	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
-			AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM offer_item oi WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id)
-			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
-				AND a.via = 'turn_end')
-			AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt pa ON pa.id = i.attempt_id
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id
-					AND pa.observation IN ('own_turn', 'absorbed', 'unknown'))
-		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
-	if err != nil {
-		return err
-	}
-	remainder := len(ids) > OfferCap
-	if remainder {
-		ids = ids[:OfferCap]
-	}
-	if !remainder {
-		out.Ack = &wire.HookAck{Kind: "notice"}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	var generation string
-	if err := tx.QueryRowContext(ctx, `SELECT generation FROM leaf WHERE principal_id = ? AND state = 'live' ORDER BY created_at_ms DESC LIMIT 1`,
-		principal).Scan(&generation); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO offer (principal_id, binding_id, generation, launch_ref, epoch, reason, evidence, at_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, principal, b.id, generation, launch, epoch, reason, evidence(p), ms(now))
-	if err != nil {
-		return err
-	}
-	if out.OfferID, err = res.LastInsertId(); err != nil {
-		return err
-	}
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (?, ?, ?)`,
-			out.OfferID, id, principal); err != nil {
-			return err
-		}
-		parts[i] = strconv.FormatInt(id, 10)
-	}
-	out.PendingLine = "[crosshall] pending: " + strings.Join(parts, " ")
-	return nil
 }

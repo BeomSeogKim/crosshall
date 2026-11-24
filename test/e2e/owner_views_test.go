@@ -24,8 +24,8 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-1')
-		WHERE json_extract(profile, '$.manifest_rev') = 'claude-2'`)
+	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-2')
+		WHERE json_extract(profile, '$.manifest_rev') = 'claude-3'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +141,11 @@ func TestRepositoryDefaultJoinAndReplay(t *testing.T) {
 	if replay := member.must(join...); replay.stdout != first.stdout {
 		t.Fatalf("retry was redirected: first %s replay %s", first.stdout, replay.stdout)
 	}
-	if out := member.run("join"); out.exit != 3 || out.obj["code"] != "one_channel" {
-		t.Fatalf("changed default bypassed the one-channel rule: exit %d %s", out.exit, out.stdout)
+	if out := member.must("join"); out.obj["channel"] != "checkout" {
+		t.Fatalf("changed default displaced the selected channel: %s", out.stdout)
+	}
+	if out := w.member().must("join"); out.obj["channel"] != "inventory" {
+		t.Fatalf("new member missed the changed default: %s", out.stdout)
 	}
 	if out := w.member().must("join", "checkout", "--as", "tax"); out.obj["channel"] != "checkout" {
 		t.Fatalf("default overrode the explicit channel: %s", out.stdout)

@@ -74,3 +74,31 @@ func TestHookRequestUsesLeafVendorAndCurrentPolicy(t *testing.T) {
 		t.Fatalf("%d requests reached the domain, want one", calls)
 	}
 }
+
+func TestHookReceiptCapabilityReachesEnrollmentAndPrompt(t *testing.T) {
+	s := reviewServer(t)
+	s.fixtureSQL(t, `INSERT INTO adapter_policy(adapter,enabled,reminder,epoch,changed_at_ms)
+		VALUES ('codex',1,0,3,1)`)
+	s.cfg.Resolve = func(context.Context, store.Tx, Arrival, wire.Request) (Resolution, error) {
+		return Resolution{Caller: core.Caller{Role: core.RoleMember}, Vendor: "codex"}, nil
+	}
+	s.cfg.Decode = func(req wire.Request, _ Resolution) (domain.Request, error) {
+		cmd, err := domain.Decode(req.Verb, req.Args)
+		return domain.Request{OpKey: req.OpKey, Command: cmd}, err
+	}
+	for _, capable := range []bool{false, true} {
+		s.cfg.Handle = handlerFunc(func(_ context.Context, _ store.Tx, _ core.Caller, req domain.Request) (core.Result, error) {
+			if req.Adapter.OfferReceipts != capable || req.Adapter.Generation != "verified-generation" {
+				t.Fatalf("%T received adapter context %+v, want receipts=%t and verified-generation", req.Command, req.Adapter, capable)
+			}
+			return domain.OK(wire.HookResult{})
+		})
+		for _, verb := range []string{wire.VerbHookEvent, wire.VerbHookEnroll} {
+			req := wire.Request{Verb: verb, OpKey: "hook:codex:session:hook", OfferReceipts: capable, Generation: "verified-generation",
+				Args: json.RawMessage(`{"profile":{"adapter":"codex"},"launch_ref":"session","event_ref":"hook","epoch":3}`)}
+			if got := s.fixtureRequest(t, Arrival{}, req); got.Status != core.ExitOK {
+				t.Fatalf("%s receipts=%t: %+v", verb, capable, got)
+			}
+		}
+	}
+}

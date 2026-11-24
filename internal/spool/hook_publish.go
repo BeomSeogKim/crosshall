@@ -28,7 +28,7 @@ func publishHookRequest(ctx context.Context, leaf, in *os.Root, req wire.Request
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
+		if req.Verb == wire.VerbHookJoinHintAck || !errors.Is(err, syscall.EWOULDBLOCK) {
 			return err
 		}
 		select {

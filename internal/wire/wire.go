@@ -16,6 +16,7 @@ type Request struct {
 	Attempt       string          `json:"attempt"`
 	OpKey         string          `json:"op_key"`
 	Generation    string          `json:"gen,omitempty"`
+	Membership    *Membership     `json:"membership,omitempty"`
 	KeyDigest     string          `json:"kd,omitempty"`
 	VendorVersion string          `json:"vendor_version,omitempty"`
 	IssuedAtMS    int64           `json:"issued_at_ms"`
@@ -32,7 +33,11 @@ type Request struct {
 	// OwnerAlerts says the client prints the owner line of an owner
 	// request; only such a request marks the stops it carries as shown.
 	OwnerAlerts bool `json:"owner_alerts,omitempty"`
+	// Older dispatchers ignore envelope extensions but reject unknown command arguments.
+	OfferReceipts bool `json:"offer_receipts,omitempty"`
 }
+
+type Membership = core.Membership
 
 // Host names a process by its PID, its start identity and the PID
 // namespace the PID belongs to.

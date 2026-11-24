@@ -24,7 +24,7 @@ import (
 // line is stored once the real hook has printed it, and the next prompt
 // after the owner switches notices off says the hall cannot reach it.
 func TestReachLineFollowsWhetherTheHallReachesTheSession(t *testing.T) {
-	const version, manifest, mode = "2.1.9270", "claude-2", "interactive"
+	const version, manifest, mode = "2.1.9270", "claude-3", "interactive"
 	tmp, err := os.MkdirTemp("/tmp", "ch-reach-")
 	if err != nil {
 		t.Fatal(err)

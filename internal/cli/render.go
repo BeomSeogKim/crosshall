@@ -117,6 +117,10 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
+		if r.Move != nil {
+			fmt.Fprintf(w, "[crosshall] Work stays in #%s (%d unread, %d owed, %d waiting).\n",
+				r.Move.Channel, r.Move.Unread, r.Move.Owed, r.Move.Waiting)
+		}
 		if r.Hint != "" {
 			fmt.Fprintln(w, r.Hint)
 		} else if r.Restored {

@@ -27,13 +27,13 @@ func TestTurnEndEnvelopesContainOnlyPendingIDs(t *testing.T) {
 			m, _ := loadManifest(vendor)
 			stop, _ := m.event("Stop")
 			out, err := present(stop, wire.HookResult{TurnEndLine: line, PendingLine: "ordinary notice", ReminderText: "parked reminder"})
-			if err != nil || string(out) != want+"\n" {
-				t.Fatalf("native Stop output = %q (%v), want %s", out, err, want)
+			if err != nil || string(out.data) != want+"\n" {
+				t.Fatalf("native Stop output = %q (%v), want %s", out.data, err, want)
 			}
 			for _, invalid := range []string{"body", "[crosshall] pending: 0", "[crosshall] pending: 15 12", line + " message text", line + fixtureNoticeSuffix} {
 				out, _ := present(stop, wire.HookResult{TurnEndLine: invalid})
-				if len(out) != 0 {
-					t.Errorf("invalid Stop line reached vendor: %q", out)
+				if len(out.data) != 0 {
+					t.Errorf("invalid Stop line reached vendor: %q", out.data)
 				}
 			}
 		})
@@ -49,6 +49,7 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 		want, active, output       bool
 		err                        error
 		oldEpoch, unlisted         bool
+		asks                       string // the dispatcher's turn-end ask record, if any
 	}{
 		{name: "available", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true},
 		{name: "another version in snapshot", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, listedVersion: "2.0.0"},
@@ -63,6 +64,11 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 		{name: "no dispatcher", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "no_dispatcher", offline: true},
 		{name: "transport timeout", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "deadline", calls: 1, want: true, err: context.DeadlineExceeded},
 		{name: "transport error", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "refused", calls: 1, want: true, err: errors.New("lost response")},
+		{name: "no ask to announce", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1, asks: "fixture-host fixture-gen 0\n"},
+		{name: "an ask to announce", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "fixture-host fixture-gen 1\n"},
+		{name: "another dispatcher's record", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "old-host fixture-gen 0\n"},
+		{name: "another generation's record", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "fixture-host old-gen 0\n"},
+		{name: "torn record", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "fixture-host fixture-gen 0"},
 		{name: "stale epoch", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "stale_epoch", calls: 1, want: true, oldEpoch: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,6 +80,11 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(leaf, "gen"), []byte("fixture-gen\n"), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if tc.asks != "" {
+				if err := os.WriteFile(filepath.Join(leaf, TurnEndAskFile), []byte(tc.asks), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			policy := "claude 1 0 7\n"
 			if tc.off {

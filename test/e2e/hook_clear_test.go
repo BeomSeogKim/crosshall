@@ -96,7 +96,9 @@ func TestClearInTheSameProcessKeepsTheMember(t *testing.T) {
 			// The conversation's own hooks, also from a first contact after its
 			// directory is gone, keep it cleared (Astra #674).
 			leafDir := filepath.Join(w.rendezvous(), "m", (ident.Identity{Vendor: "claude", Key: c.key}).Digest()[:16])
-			if err := os.RemoveAll(leafDir); err != nil {
+			// The dispatcher can repair membership during deletion. Move the leaf
+			// out of its scan path and let fixture cleanup remove it after shutdown.
+			if err := os.Rename(leafDir, filepath.Join(w.rendezvous(), "cleared-leaf")); err != nil {
 				t.Fatal(err)
 			}
 			if out := c.fire("SessionStart", map[string]any{"source": "resume"}); out != "" {

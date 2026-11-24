@@ -91,3 +91,26 @@ func TestOverdueHookCannotPublishBeforeTimerDelivery(t *testing.T) {
 		t.Fatalf("overdue request reached the spool: %v, %v", entries, err)
 	}
 }
+
+func TestHookOutputAckSkipsContendedPublication(t *testing.T) {
+	f := setup(t)
+	f.member = ident.Identity{Vendor: "codex", Key: "contended-output"}
+	leaf := f.leaf(t)
+	lock, err := os.OpenFile(filepath.Join(leaf, "hook-publish.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	req := wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}
+	if _, err := f.client.HookCall(ctx, f.member, "generation-a", req, true); !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("held lock should skip the receipt immediately, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(leaf, "hook-publish-seq")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skipped receipt reserved a sequence: %v", err)
+	}
+}

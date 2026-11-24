@@ -39,7 +39,7 @@ func TestReachLineIsPrintedBeforePendingAndRecordedOnlyWhenPrinted(t *testing.T)
 
 	offer(ack)
 	var out strings.Builder
-	if failure := writeHookResult(t.Context(), rv, "codex", 7, prompt, result, &out); failure != "" {
+	if failure := writeHookResult(t.Context(), rv, "codex", 7, prompt, result, &frameWriter{dst: &out}); failure != "" {
 		t.Fatal(failure)
 	}
 	if want := domain.ReachBringsLine + `\n[crosshall] pending: 12`; !strings.Contains(out.String(), want) {

@@ -53,6 +53,7 @@ Use the same state directory and session identity throughout. In a plain shell w
 | Action | Command |
 | --- | --- |
 | Join, identify yourself, list members | `crosshall join <channel> --as <alias>`, `crosshall whoami`, `crosshall who` |
+| Move a live session to another channel | `crosshall join <channel> --move` |
 | Take the unread messages, oldest first | `crosshall read` |
 | List incoming work without reading it, open one message | `crosshall inbox`, `crosshall read <id>` |
 | Send information or request an answer | `crosshall note @alias "text"`, `crosshall ask @alias "question" --due 30m` |
@@ -61,6 +62,8 @@ Use the same state directory and session identity throughout. In a plain shell w
 | Wait for addressed work, including unread work already stored | `crosshall wait --existing --work-only --timeout 9m` |
 | Turn notices to your own session off or on | `crosshall publish off`, `crosshall publish on` |
 | End membership in the current channel | `crosshall leave` |
+
+A session can be live in one channel at a time. A move reports the unread, owed and waiting counts in the channel it left. Messages and obligations stay in their original channel. After a voluntary leave, use ordinary `crosshall join <channel>` to join a different channel.
 
 The global options `--json` and `--key` go before the command. Commands that query or update the hall’s records, such as `inbox`, `ask` and `reply`, are **ledger commands** and support structured JSON results. Version 1 responses carry `v: 1` and `ok`. Success identifies the result with `kind`; failures give a machine-readable `code` and a `message`, with a `hint` when available. For a retryable send, supply `--key <operation-key>` on the first attempt and reuse that key and the same arguments on retry.
 

@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// Migration 027 rebuilds observation to admit the idle_prompt kind: every
+// Migration 029 rebuilds observation to admit the idle_prompt kind: every
 // row keeps its sequence and fields, the indexes come back under their
 // names, and any other new kind is still refused.
 func TestIdlePromptMigrationKeepsObservationsAndAdmitsTheKind(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
-	prior, err := openWithMigrations(ctx, root, migrations[:26])
+	prior, err := openWithMigrations(ctx, root, migrations[:28])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestIdlePromptMigrationKeepsObservationsAndAdmitsTheKind(t *testing.T) {
 	if err := prior.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := openWithMigrations(ctx, root, migrations[:27])
+	upgraded, err := openWithMigrations(ctx, root, migrations[:29])
 	if err != nil {
 		t.Fatal(err)
 	}

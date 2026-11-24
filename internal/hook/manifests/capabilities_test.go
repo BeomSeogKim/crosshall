@@ -15,10 +15,10 @@ func TestRevisionCapabilitiesKeepTheirShippedMeaning(t *testing.T) {
 		want              Capabilities
 		ok                bool
 	}{
-		{"claude", "claude-1", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, PromptLine: true}, true},
-		{"claude", "claude-2", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, PromptLine: true, SessionEnd: true}, true},
-		{"claude", "claude-3", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, PromptLine: true, SessionEnd: true}, true},
-		{"codex", "codex-1", Capabilities{TurnEnd: true, RecoverEnroll: true, SharedDaemon: true, PromptLine: true, SessionEnd: true}, true},
+		{"claude", "claude-1", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true}, true},
+		{"claude", "claude-2", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true}, true},
+		{"claude", "claude-3", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true}, true},
+		{"codex", "codex-1", Capabilities{TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", SharedDaemon: true, PromptLine: true, SessionEnd: true}, true},
 		{"agy", "agy-1", Capabilities{}, true},
 		{"claude", "claude-0", Capabilities{}, false},
 		{"codex", "claude-3", Capabilities{}, false},

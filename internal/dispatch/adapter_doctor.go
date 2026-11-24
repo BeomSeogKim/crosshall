@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"io"
 	"os"
 	"slices"
@@ -44,17 +45,20 @@ func localDoctorAdapters(stateRoot string) []doctorAdapter {
 	return adapters
 }
 
-func codexHookRoutingWarning(routing string) string {
-	const shared = "Codex hooks can run in a shared managed daemon and inherit its starting environment. "
+// hookRoutingWarning explains the state routing of the hooks of an adapter
+// whose sessions can run in a shared managed server.
+func hookRoutingWarning(adapter, routing string) string {
+	name := manifests.DisplayName(adapter)
+	shared := name + " hooks can run in a shared managed daemon and inherit its starting environment. "
 	switch routing {
 	case "pinned":
-		return shared + "The hook commands on disk pin the Crosshall state root selected at setup. Use that root for member commands in this Codex home."
+		return shared + "The hook commands on disk pin the Crosshall state root selected at setup. Use that root for member commands in this " + name + " home."
 	case "inherited":
-		return shared + "The hook commands on disk use that environment for state routing. Run crosshall setup codex to pin a root."
+		return shared + "The hook commands on disk use that environment for state routing. Run crosshall setup " + adapter + " to pin a root."
 	case "mixed":
-		return shared + "The hook commands on disk mix state roots or routing styles. Review them before running crosshall setup codex."
+		return shared + "The hook commands on disk mix state roots or routing styles. Review them before running crosshall setup " + adapter + "."
 	case "uncertain":
-		return shared + "A recognized hook command on disk has uncertain state routing. Review it before running crosshall setup codex."
+		return shared + "A recognized hook command on disk has uncertain state routing. Review it before running crosshall setup " + adapter + "."
 	default:
 		return ""
 	}

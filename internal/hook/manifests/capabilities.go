@@ -22,6 +22,9 @@ type Capabilities struct {
 	// RecoverEnroll: an installed event may enroll a session that missed
 	// its start ("recover_enroll").
 	RecoverEnroll bool
+	// RecoverEvent names that event; a prior revision that declares
+	// recover_enroll recovers through the shipped revision's event.
+	RecoverEvent string
 	// SharedDaemon: the vendor can run sessions in a shared managed server
 	// ("daemon"), whose hooks inherit that server's environment.
 	SharedDaemon bool
@@ -192,7 +195,12 @@ func decodeAll() map[string]record {
 				r.invalid = append(r.invalid, "installed event "+name+" is not declared")
 			}
 			r.caps.TurnEnd = r.caps.TurnEnd || event.Stop
-			r.caps.RecoverEnroll = r.caps.RecoverEnroll || event.RecoverEnroll
+			if event.RecoverEnroll {
+				if r.caps.RecoverEnroll {
+					r.invalid = append(r.invalid, "more than one installed event recovers enrollment")
+				}
+				r.caps.RecoverEnroll, r.caps.RecoverEvent = true, name
+			}
 			r.caps.PromptLine = r.caps.PromptLine || event.Fact == "prompt_submitted" && event.Notice &&
 				(event.Output == "context" || event.Output == "inject_steps")
 			r.caps.SessionEnd = r.caps.SessionEnd || event.Fact == "session_ended"
@@ -214,6 +222,9 @@ func decodeAll() map[string]record {
 					continue
 				}
 				set(&caps)
+			}
+			if caps.RecoverEnroll {
+				caps.RecoverEvent = r.caps.RecoverEvent
 			}
 			r.prior[revision] = caps
 		}

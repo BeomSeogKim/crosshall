@@ -234,3 +234,53 @@ func TestColdSessionStartKeepsItsCaptureTimeAcrossAMove(t *testing.T) {
 		}
 	})
 }
+
+// A session start that waited for a slow dispatcher start keeps only what
+// is left of the start deadline for its enrolment, not a fresh start
+// budget: it still returns inside the vendor's timeout.
+func TestASlowColdStartKeepsTheStartDeadline(t *testing.T) {
+	rv, dir, oldLeaf := runFixture(t)
+	id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", id.Key)
+	for _, name := range []string{"CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
+		t.Fatal(err)
+	}
+	leaf, _, err := spool.OpenHookLeaf(rv, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	if err := spool.PrepareServerSpool(leaf); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := rv.ReadFile("ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.Remove("ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.WriteFile("policy", []byte("claude 1 0 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		locate := func() (Paths, error) {
+			return Paths{State: dir, Rendezvous: dir, Start: func(context.Context) (bool, error) {
+				time.Sleep(600 * time.Millisecond) // a slow start; nothing answers after it
+				return true, rv.WriteFile("ready", ready, 0600)
+			}}, nil
+		}
+		captured := time.Now()
+		Run(captured, []string{"claude", "SessionStart"}, strings.NewReader(
+			`{"hook_event_name":"SessionStart","session_id":"fixture-thread","source":"startup"}`), &bytes.Buffer{}, locate)
+		if took := time.Since(captured); took >= startDeadline {
+			t.Fatalf("the start returned after %v, past the %v start deadline", took, startDeadline)
+		}
+	})
+}

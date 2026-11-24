@@ -343,7 +343,7 @@ func TestEndedMembersReachTheOwnerAndDepartEndedSaysWhatItDid(t *testing.T) {
 		{BindingID: 41, Channel: "dev", Alias: "vega", EndedAtMS: at},
 	}
 	want := []string{
-		"Sessions ended over 12 hours ago, nothing owed: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.",
+		"Sessions ended over 12 hours ago, no open requests: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.",
 		"@sol in #dev: session ended " + clock(at) + ", over 12 hours ago; open requests: #7 #9.",
 	}
 	if got := endedLines(ended); !slices.Equal(got, want) {
@@ -355,7 +355,7 @@ func TestEndedMembersReachTheOwnerAndDepartEndedSaysWhatItDid(t *testing.T) {
 	stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "owner", "depart", "--ended")
 	wantOut := "@astra in #dev departed (binding 36, session ended " + clock(at) + ").\n" +
 		"@vega in #dev departed (binding 41, session ended " + clock(at) + ").\n" +
-		"@sol in #dev kept (binding 39): it owes replies to #7 #9.\n"
+		"@sol in #dev kept (binding 39): open requests #7 #9.\n"
 	if stdout != wantOut {
 		t.Fatalf("stdout %q, want %q", stdout, wantOut)
 	}

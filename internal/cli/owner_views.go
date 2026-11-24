@@ -553,8 +553,8 @@ func unknownCauseWords(c store.DoctorUnknownCauses) string {
 }
 
 // endedLines reports the live members whose session ended over 12 hours
-// ago: one line for those that owe nothing, with the command that departs
-// them, and one per member that still owes replies.
+// ago: one line for those with no open request, with the command that
+// departs them, and one per member that still has some.
 func endedLines(ended []domain.EndedMember) []string {
 	var free []string
 	var lines []string
@@ -570,7 +570,7 @@ func endedLines(ended []domain.EndedMember) []string {
 		lines = append(lines, line+".")
 	}
 	if len(free) > 0 {
-		lines = append([]string{fmt.Sprintf("Sessions ended over 12 hours ago, nothing owed: %s. crosshall owner depart --ended departs them.",
+		lines = append([]string{fmt.Sprintf("Sessions ended over 12 hours ago, no open requests: %s. crosshall owner depart --ended departs them.",
 			strings.Join(free, ", "))}, lines...)
 	}
 	return lines

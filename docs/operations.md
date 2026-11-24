@@ -114,7 +114,7 @@ crosshall owner who --all
 crosshall owner depart <binding-id> --seen <token>
 ```
 
-A member whose session ended over 12 hours ago, with no fact or command from it since, is listed above the channels of `crosshall owner who`: one line for all such members that owe no reply, `Sessions ended over 12 hours ago, nothing owed: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.`, and one line per member that still owes, with its open requests. A Codex session end does not prove that the window closed, so the hall never departs these members by itself. `crosshall owner depart --ended` departs those that owe nothing, as an owner departure of each, and names any it kept because they owe replies. In `owner who --json` they are under `ended`.
+A member whose session ended over 12 hours ago, with no fact or command from it since, is listed above the channels of `crosshall owner who`: one line for all such members with no open request, `Sessions ended over 12 hours ago, no open requests: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.`, and one line per member that still has one, with those requests. Open requests are those the member owes a reply to and those it asked and still awaits, in any channel. A Codex session end does not prove that the window closed, so the hall never departs these members by itself. `crosshall owner depart --ended` departs those with no open request, as an owner departure of each, and names any it kept. In `owner who --json` they are under `ended`.
 
 If the token is stale, crosshall says `the binding changed since it was listed` and tells you to run `crosshall owner who --all` again. Review the refreshed row before using its new token.
 

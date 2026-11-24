@@ -118,7 +118,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintf(w, "@%s in #%s departed (binding %d, session ended %s).\n", m.Alias, m.Channel, m.BindingID, clock(m.EndedAtMS))
 		}
 		for _, m := range r.Owing {
-			line := fmt.Sprintf("@%s in #%s kept (binding %d): it owes replies to", m.Alias, m.Channel, m.BindingID)
+			line := fmt.Sprintf("@%s in #%s kept (binding %d): open requests", m.Alias, m.Channel, m.BindingID)
 			for _, id := range m.OpenRequests {
 				line += fmt.Sprintf(" #%d", id)
 			}

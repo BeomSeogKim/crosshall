@@ -18,9 +18,9 @@ const endedDepartAfter = 12 * time.Hour
 // routeSessionEnded is the reason of a route its session's end closed.
 const routeSessionEnded = "session ended"
 
-// OwnerDepartEnded departs every live member whose session ended at least
-// endedDepartAfter ago, with nothing seen from it since, that owes no
-// reply.
+// OwnerDepartEnded departs every live member whose session ended more than
+// endedDepartAfter ago, with nothing seen from it since, that has no open
+// request: none it owes a reply to and none it awaits, in any channel.
 type OwnerDepartEnded struct{}
 
 func (OwnerDepartEnded) command()     {}
@@ -39,23 +39,23 @@ type EndedMember struct {
 }
 
 // OwnerDepartEndedResult lists the members departed, and those left live
-// because they still owe replies.
+// because they still have open requests.
 type OwnerDepartEndedResult struct {
 	Departed []EndedMember `json:"departed"`
 	Owing    []EndedMember `json:"owing,omitempty"`
 }
 
 // endedMembers lists the live members whose route their session's end
-// closed at least endedDepartAfter ago, with no fact or command of theirs
-// since. A Codex session end is not proof the window closed (an unloaded
+// closed more than endedDepartAfter ago, with no fact or command of theirs
+// since (one in the same millisecond counts as since). A Codex session end is not proof the window closed (an unloaded
 // thread may be idle), so these are reported, never departed unasked.
 func endedMembers(ctx context.Context, tx store.Tx, now time.Time) ([]EndedMember, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT b.id, b.channel_id, b.principal_id, c.name, b.alias, p.vendor, r.updated_at_ms
 		FROM binding b JOIN channel c ON c.id = b.channel_id JOIN principal p ON p.id = b.principal_id
 		JOIN publish_route r ON r.binding_id = b.id
-		WHERE b.state = 'live' AND r.state = 'ended' AND r.reason = ? AND r.updated_at_ms <= ?
+		WHERE b.state = 'live' AND r.state = 'ended' AND r.reason = ? AND r.updated_at_ms < ?
 			AND NOT EXISTS (SELECT 1 FROM observation o WHERE o.principal_id = b.principal_id
-				AND o.observed_at_ms > r.updated_at_ms AND o.kind <> 'session_ended')
+				AND o.observed_at_ms >= r.updated_at_ms AND o.kind <> 'session_ended')
 		ORDER BY c.name, b.alias`, routeSessionEnded, ms(now.Add(-endedDepartAfter)))
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func endedMembers(ctx context.Context, tx store.Tx, now time.Time) ([]EndedMembe
 		return nil, err
 	}
 	for i := range out {
-		if out[i].OpenRequests, err = ownerOpenRequests(ctx, tx, out[i].BindingID); err != nil {
+		if out[i].OpenRequests, err = memberOpenRequests(ctx, tx, out[i].principal); err != nil {
 			return nil, err
 		}
 	}
@@ -113,4 +113,26 @@ func (s *Service) ownerDepartEnded(ctx context.Context, tx store.Tx, caller core
 		return core.Result{}, err
 	}
 	return result, record(ctx, tx, owner, req.OpKey, scope, cmd, result, now)
+}
+
+// memberOpenRequests lists the open requests principal takes part in, in
+// any channel: those it owes a reply to and those it asked and still
+// awaits. A member with any of them is not departed by depart --ended.
+func memberOpenRequests(ctx context.Context, tx store.Tx, principal int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT o.message_id FROM obligation o WHERE o.state = 'open' AND o.principal_id = ?1
+		UNION SELECT o.message_id FROM obligation o JOIN message m ON m.id = o.message_id
+		WHERE o.state = 'open' AND m.sender_id = ?1 ORDER BY 1`, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

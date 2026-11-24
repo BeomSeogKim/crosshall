@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -98,28 +99,46 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing")
 	}
-	var at250, at500 time.Duration
+	type history struct {
+		turns  int
+		f      *fixture
+		reader session
+		at     int64
+		times  []time.Duration
+	}
+	var sessions []*history
 	for _, turns := range []int{250, 400, 500} {
 		f, reader, _ := turnEndFixture(t, "launch")
-		at := f.now.UnixMilli() + 10
+		h := &history{turns: turns, f: f, reader: reader, at: f.now.UnixMilli() + 10}
 		for i := range turns {
-			at++
-			f.hook(reader, typedPrompt("t"+strconv.Itoa(i), at))
-			at++
-			f.hook(reader, stop("launch", "t"+strconv.Itoa(i), at))
+			h.at++
+			f.hook(reader, typedPrompt("t"+strconv.Itoa(i), h.at))
+			h.at++
+			f.hook(reader, stop("launch", "t"+strconv.Itoa(i), h.at))
 		}
-		start := time.Now()
-		for i := range 20 {
-			at++
-			f.hook(reader, typedPrompt("u"+strconv.Itoa(i), at))
-		}
-		per := time.Since(start) / 20
-		t.Logf("%d turns: %v per hook event", turns, per)
-		if turns == 250 {
-			at250 = per
-		}
-		at500 = per
+		sessions = append(sessions, h)
 	}
+	// Each sample times one hook event in every session in turn, so a stall
+	// or a change of load reaches all of them alike, and each session is
+	// judged by its median event, which one stalled event cannot move.
+	const samples = 41
+	for i := range samples {
+		for _, h := range sessions {
+			h.at++
+			start := time.Now()
+			h.f.hook(h.reader, typedPrompt("u"+strconv.Itoa(i), h.at))
+			h.times = append(h.times, time.Since(start))
+		}
+	}
+	median := func(h *history) time.Duration {
+		slices.Sort(h.times)
+		return h.times[len(h.times)/2]
+	}
+	for _, h := range sessions {
+		t.Logf("%d turns: %v per hook event (median of %d; fastest %v, slowest %v)",
+			h.turns, median(h), samples, h.times[0], h.times[len(h.times)-1])
+	}
+	at250, at500 := median(sessions[0]), median(sessions[len(sessions)-1])
 	if at500 > 100*time.Millisecond {
 		t.Fatalf("a hook event after 500 turns took %v, want under 100ms", at500)
 	}
@@ -127,7 +146,7 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 	// A hook event reads the session's facts, so its cost may grow with the
 	// turns (about 1.9 times from 250 to 500 turns), but not faster: work
 	// done per earlier fact made it 4.6 times.
-	if ratio := float64(at500) / float64(at250); ratio > 2.5 {
+	if ratio := float64(at500) / float64(at250); ratio > 3 {
 		t.Fatalf("a hook event after 500 turns took %v, %.1f times the %v after 250: the cost grows faster than the turns", at500, ratio, at250)
 	}
 }

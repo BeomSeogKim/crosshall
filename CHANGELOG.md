@@ -4,6 +4,8 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **A notice's receipt survives a restart of the same session:** a notice's echo was accepted only on the notice route's generation, which every start of the session renews. A notice typed ahead into a turn that began just after the dispatcher checked, followed by a compaction before that turn ended, had its receipt rejected as `stale`; the notice stayed `held: notice N unobserved` and kept further notices from the member until the session ended (6 hours on one live hall). A receipt is now matched on the lane its notice was queued to: for Claude Code the launch and its session, for Codex the thread in its home, on the same binding and adapter policy. A receipt from that lane that still cannot be judged, for example after the owner changed the adapter policy or after `/clear`, frees the lane without counting as a confirmation of the build, and records a `publish_attempt_settled` event.
+
 - **Cross-vendor conformance:** real Claude Code and Codex CLI sessions each ask and answer across one disposable hall using loopback models. The check exercises Codex's next-prompt line and a running Claude Code wait.
 
 ## v0.2.0 (2026-11-24)

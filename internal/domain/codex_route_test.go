@@ -96,9 +96,9 @@ func TestCodexRouteFollowsTheModeOfEachStart(t *testing.T) {
 func codexAttempt(t *testing.T, f *fixture, bid, principal int64, ids []int64) int64 {
 	t.Helper()
 	res, err := f.db.Exec(`INSERT INTO publish_attempt (binding_id, principal_id, binding_epoch, generation, adapter,
-		session_ref, launch_ref, policy_epoch, process_pid, process_start_ms, state, reserved_at_ms, submitting_at_ms)
+		session_ref, launch_ref, policy_epoch, process_pid, process_start_ms, lane, state, reserved_at_ms, submitting_at_ms)
 		SELECT binding_id, principal_id, binding_epoch, generation, adapter, session_ref, launch_ref, policy_epoch,
-			42, 1, 'submitted', ?1, ?1 FROM publish_route WHERE binding_id = ?2`, f.now.UnixMilli(), bid)
+			42, 1, `+store.PublishThreadLane()+`, 'submitted', ?1, ?1 FROM publish_route r WHERE binding_id = ?2`, f.now.UnixMilli(), bid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +123,11 @@ func codexReceipt(turn string, at int64, ids []int64) HookEvent {
 }
 
 // A Codex launch is session-scoped, so its notice's receipt is matched on
-// the thread it was queued to, with the route's generation and the exact
-// ID list as for any receipt (#236).
+// the lane it was queued to, the thread in its home, with the exact ID list
+// as for any receipt (#236). A new route generation (a compaction or a
+// resume) does not make it stale. A receipt from that lane after the owner
+// changed the policy frees the lane but is not judged; one from another home
+// settles nothing.
 func TestCodexReceiptIsMatchedOnTheThread(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -132,10 +135,13 @@ func TestCodexReceiptIsMatchedOnTheThread(t *testing.T) {
 		malformed   bool
 		observation string
 		rejected    string
+		settled     bool
 	}{
 		{name: "right thread", observation: "own_turn"},
 		{name: "route on another thread", change: `UPDATE publish_route SET thread_id = 'another-thread'`},
-		{name: "older generation", change: `UPDATE publish_route SET generation = generation + 1`, rejected: "stale"},
+		{name: "older generation", change: `UPDATE publish_route SET generation = generation + 1`, observation: "own_turn"},
+		{name: "another home", change: `UPDATE publish_route SET vendor_home = '/home/other/.codex'`, rejected: "stale"},
+		{name: "policy changed", change: `UPDATE publish_route SET policy_epoch = policy_epoch + 1`, rejected: "stale", settled: true},
 		{name: "malformed", malformed: true, rejected: "malformed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,6 +172,21 @@ func TestCodexReceiptIsMatchedOnTheThread(t *testing.T) {
 			_ = f.db.QueryRow(`SELECT json_extract(detail, '$.reason') FROM event WHERE kind = 'publish_receipt_rejected'`).Scan(&rejected)
 			if observation.String != tc.observation || rejected.String != tc.rejected {
 				t.Fatalf("observation %q, rejected %q; want %q, %q", observation.String, rejected.String, tc.observation, tc.rejected)
+			}
+			var retired sql.NullInt64
+			if err := f.db.QueryRow(`SELECT retired_at_ms FROM publish_attempt WHERE id = ?`, attempt).Scan(&retired); err != nil {
+				t.Fatal(err)
+			}
+			var settled int
+			_ = f.db.QueryRow(`SELECT COUNT(*) FROM event WHERE kind = 'publish_attempt_settled'
+				AND json_extract(detail, '$.reason') = 'stale receipt'`).Scan(&settled)
+			if retired.Valid != tc.settled || settled != map[bool]int{true: 1}[tc.settled] {
+				t.Fatalf("retired %v with %d settlements, want settled %v", retired, settled, tc.settled)
+			}
+			var probation int
+			_ = f.db.QueryRow(`SELECT COUNT(*) FROM capability_build WHERE confirmed > 0 OR stop_ref IS NOT NULL`).Scan(&probation)
+			if tc.settled && probation != 0 {
+				t.Fatal("a settled receipt fed build evidence")
 			}
 		})
 	}

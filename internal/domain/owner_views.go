@@ -64,6 +64,15 @@ type OwnerMember struct {
 	HostAlive     bool           `json:"host_alive,omitempty"`
 	OpenRequests  []int64        `json:"open_request_ids"`
 	DepartToken   string         `json:"depart_token,omitempty"`
+	// UnreadNotWoken counts the live member's unread requests that nothing
+	// will tell it about: no notice, no running wait, no turn end.
+	UnreadNotWoken *UnreadNotWoken `json:"unread_not_woken,omitempty"`
+}
+
+type UnreadNotWoken struct {
+	Requests   int   `json:"requests"`
+	OldestAtMS int64 `json:"oldest_at_ms"`
+	OldestAgeS int64 `json:"oldest_age_s"`
 }
 
 type OwnerEvidence struct {
@@ -81,7 +90,7 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		b.joined_at_ms, cmd.observed_at_ms, cmd.source, ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
-			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
+			WHERE `+bindingCommandObservation+` ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
 		`+promptAdapter+`
 		ORDER BY c.id, b.id`)
 	if err != nil {
@@ -150,23 +159,23 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			if m.BindingState == "live" && publish != nil && PublishReaches(*publish) {
 				m.Reach = "notice"
 			}
-			fact, err := latestFact(ctx, tx, m.principal)
-			if err != nil {
-				return core.Result{}, err
-			}
-			if fact != nil {
-				observed := fact.At(nowMS)
-				m.Observed = &observed
-				if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
-					m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
-					m.EvidenceStale = !observed.Current
-				}
-			}
 			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)
 			if err != nil {
 				return core.Result{}, err
 			}
 			if m.BindingState == "live" {
+				fact, err := latestFact(ctx, tx, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
+				if fact != nil {
+					observed := fact.At(nowMS)
+					m.Observed = &observed
+					if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
+						m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
+						m.EvidenceStale = !observed.Current
+					}
+				}
 				tracking, host, err := s.exitTracking(ctx, tx, m.principal)
 				if err != nil {
 					return core.Result{}, err
@@ -177,6 +186,10 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 					m.EvidenceStale = false
 				}
 				m.DepartToken, err = departureToken(ctx, tx, m.BindingID, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
+				m.UnreadNotWoken, err = s.unreadNotWoken(ctx, tx, m.BindingID, m.principal, now)
 				if err != nil {
 					return core.Result{}, err
 				}
@@ -258,4 +271,48 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 	}
 	out.Channel = ch.name
 	return OK(out)
+}
+
+// unreadNotWoken counts a live member's open, unread requests that the
+// hall will not tell it about, as a sender of each would read it now: no
+// notice, no running wait that accepts it, and no turn end that offers it.
+func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, principal int64, now time.Time) (*UnreadNotWoken, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms FROM binding b
+		JOIN obligation o ON o.principal_id = b.principal_id JOIN message m ON m.id = o.message_id
+		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
+		WHERE b.id = ? AND m.channel_id = b.channel_id AND o.state = 'open' AND o.more_time_at_ms IS NULL
+			AND r.picked_up_at_ms IS NULL
+		ORDER BY m.id`, binding)
+	if err != nil {
+		return nil, err
+	}
+	type request struct{ id, at int64 }
+	var unread []request
+	for rows.Next() {
+		var r request
+		if err := rows.Scan(&r.id, &r.at); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		unread = append(unread, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out *UnreadNotWoken
+	for _, r := range unread {
+		w, err := s.messageWake(ctx, tx, binding, principal, r.id, now)
+		if err != nil {
+			return nil, err
+		}
+		if w.Wake != WakeNone || w.SeenAt == SeenAtTurnEnd {
+			continue
+		}
+		if out == nil {
+			out = &UnreadNotWoken{OldestAtMS: r.at, OldestAgeS: max((ms(now)-r.at)/1000, 0)}
+		}
+		out.Requests++
+	}
+	return out, nil
 }

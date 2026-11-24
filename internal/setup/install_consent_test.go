@@ -88,7 +88,18 @@ func TestInstallerDisclosesPossibleCostsWhenTheClaudeVersionProbeFails(t *testin
 // tests exercise vendor discovery through the real setup operations.
 func consentFixturePlans(t *testing.T, s Service) *fakeOps {
 	t.Helper()
-	specs, err := selectedSpecs([]string{"claude", "codex"})
+	ops := newFakeOps()
+	for _, plan := range knownBuildPlans(t, s, "claude", "codex") {
+		ops.plans[plan.Adapter] = plan
+	}
+	return ops
+}
+
+// knownBuildPlans plans an install as PlanInstall does, with the fixture's
+// versions in place of the one-second version probe.
+func knownBuildPlans(t *testing.T, s Service, adapters ...string) []VendorPlan {
+	t.Helper()
+	specs, err := selectedSpecs(adapters)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,16 +115,16 @@ func consentFixturePlans(t *testing.T, s Service) *fakeOps {
 		targets = append(targets, target)
 	}
 	s.attachEvidence(t.Context(), targets)
-	ops := newFakeOps()
-	for i, target := range targets {
+	var plans []VendorPlan
+	for i := range targets {
 		single := targets[i : i+1]
 		op, err := makeInstall(j, single)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ops.plans[target.Spec.Adapter] = newVendorPlan(op, single, j, "", false)
+		plans = append(plans, newVendorPlan(op, single, j, "", false))
 	}
-	return ops
+	return plans
 }
 
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
@@ -293,6 +304,9 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		strings.Contains(block, "  turn_end darwin-arm64/interactive tested\n") &&
 		strings.Contains(block, "  turn_end darwin-arm64/print tested\n")
 	unknown := strings.Contains(block, "Capability evidence for this build: unknown")
+	if strings.Contains(out, "could not read this Claude Code's version") {
+		t.Fatalf("the question treats a build whose version was read as unknown:\n%s", out)
+	}
 	if runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
 		if !listed || unknown || !strings.Contains(out, "When work arrives for an idle session") {
 			t.Fatalf("the listing and the question disagree:\n%s", out)

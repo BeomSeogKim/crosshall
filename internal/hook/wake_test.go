@@ -3,6 +3,7 @@ package hook
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,11 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // With the rendezvous gone, as after a reboot, the state root's policy copy
@@ -126,6 +132,155 @@ func TestAStartedDispatcherThatDoesNotAnswerIsLogged(t *testing.T) {
 		if out.Len() != 0 || !strings.Contains(string(log), "hook claude SessionStart: started the dispatcher (") ||
 			!strings.Contains(string(log), "hook claude SessionStart: started the dispatcher, but the session start was not answered in time (") {
 			t.Fatalf("printed %q, dispatcher.log %q", out.String(), log)
+		}
+	})
+}
+
+func TestColdSessionStartKeepsItsCaptureTimeAcrossAMove(t *testing.T) {
+	rv, dir, oldLeaf := runFixture(t)
+	id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", id.Key)
+	for _, name := range []string{"CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
+		t.Fatal(err)
+	}
+	leaf, _, err := spool.OpenHookLeaf(rv, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	if err := spool.PrepareServerSpool(leaf); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := rv.ReadFile("ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.Remove("ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.WriteFile("policy", []byte("claude 1 0 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := core.Membership{BindingID: 4, Generation: 1}
+	after := core.Membership{BindingID: 9, Generation: 2}
+	if err := ident.RepublishMembership(leaf, before); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		startPaused := Budget + 20*time.Millisecond
+		var cutover int64
+		locate := func() (Paths, error) {
+			return Paths{State: dir, Rendezvous: dir, Start: func(context.Context) (bool, error) {
+				time.Sleep(startPaused)
+				if err := rv.WriteFile("ready", ready, 0600); err != nil {
+					return false, err
+				}
+				if err := ident.RepublishMembership(leaf, after); err != nil {
+					return false, err
+				}
+				cutover = time.Now().UnixMilli()
+				time.Sleep(5 * time.Millisecond)
+				return true, nil
+			}}, nil
+		}
+		captured := time.Now()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			Run(captured, []string{"claude", "SessionStart"}, strings.NewReader(
+				`{"hook_event_name":"SessionStart","session_id":"fixture-thread","source":"startup"}`), &bytes.Buffer{}, locate)
+		}()
+		var requests []wire.Request
+		drain := func() {
+			t.Helper()
+			if err := spool.DrainMemberSpool(leaf, func(_ string, raw []byte, _ bool) (core.Result, error) {
+				var req wire.Request
+				if err := json.Unmarshal(raw, &req); err != nil {
+					return core.Result{}, err
+				}
+				requests = append(requests, req)
+				return core.Result{Data: json.RawMessage(`{"epoch":7}`)}, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(startPaused + 6*time.Millisecond)
+		synctest.Wait()
+		drain()
+		<-done
+		drain()
+		if len(requests) != 2 || requests[0].Verb != wire.VerbHookEnroll || requests[1].Verb != wire.VerbHookRoute {
+			t.Fatalf("enrollment and route did not get a fresh budget: %+v", requests)
+		}
+		for _, req := range requests {
+			var args struct {
+				HookAtMS int64 `json:"hook_at_ms"`
+			}
+			if err := json.Unmarshal(req.Args, &args); err != nil {
+				t.Fatal(err)
+			}
+			if req.Membership == nil || *req.Membership != after {
+				t.Fatalf("%s did not read the membership published at cutover: %+v", req.Verb, req.Membership)
+			}
+			if args.HookAtMS != captured.UnixMilli() || args.HookAtMS >= cutover {
+				t.Errorf("%s captured at %d crossed the move: sent %d, cutover %d", req.Verb, captured.UnixMilli(), args.HookAtMS, cutover)
+			}
+		}
+	})
+}
+
+// A session start that waited for a slow dispatcher start keeps only what
+// is left of the start deadline for its enrolment, not a fresh start
+// budget: it still returns inside the vendor's timeout.
+func TestASlowColdStartKeepsTheStartDeadline(t *testing.T) {
+	rv, dir, oldLeaf := runFixture(t)
+	id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", id.Key)
+	for _, name := range []string{"CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
+		t.Fatal(err)
+	}
+	leaf, _, err := spool.OpenHookLeaf(rv, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	if err := spool.PrepareServerSpool(leaf); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := rv.ReadFile("ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.Remove("ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rv.WriteFile("policy", []byte("claude 1 0 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		locate := func() (Paths, error) {
+			return Paths{State: dir, Rendezvous: dir, Start: func(context.Context) (bool, error) {
+				time.Sleep(600 * time.Millisecond) // a slow start; nothing answers after it
+				return true, rv.WriteFile("ready", ready, 0600)
+			}}, nil
+		}
+		captured := time.Now()
+		Run(captured, []string{"claude", "SessionStart"}, strings.NewReader(
+			`{"hook_event_name":"SessionStart","session_id":"fixture-thread","source":"startup"}`), &bytes.Buffer{}, locate)
+		if took := time.Since(captured); took >= startDeadline {
+			t.Fatalf("the start returned after %v, past the %v start deadline", took, startDeadline)
 		}
 	})
 }

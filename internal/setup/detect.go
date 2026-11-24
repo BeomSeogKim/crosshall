@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"io"
 	"os"
 	"os/exec"
@@ -172,7 +173,7 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 	}
 	pinState := spec.Adapter == "codex" || spec.Adapter == "agy"
 	if pinState && !validHookStateRoot(stateRoot) {
-		return nil, fmt.Errorf("the %s hook state root must be an absolute path", statusAdapterName(spec.Adapter))
+		return nil, fmt.Errorf("the %s hook state root must be an absolute path", manifests.DisplayName(spec.Adapter))
 	}
 	entries := make([]Entry, 0, len(spec.Events))
 	seen := make(map[string]bool)

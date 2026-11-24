@@ -1,10 +1,12 @@
 {
+  "schema": 1,
   "adapter": "claude",
   "display_name": "Claude Code",
+  "setup_order": 1,
   "revision": "claude-3",
   "prior_revisions": {
-    "claude-1": ["process_launch", "turn_end", "recover_enroll"],
-    "claude-2": ["process_launch", "turn_end", "recover_enroll"]
+    "claude-1": ["process_launch", "turn_end", "recover_enroll", "prompt_line"],
+    "claude-2": ["process_launch", "turn_end", "recover_enroll", "prompt_line", "session_end"]
   },
   "event_field": "hook_event_name",
   "session_field": "session_id",

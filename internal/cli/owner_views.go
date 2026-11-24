@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"io"
 	"maps"
 	"slices"
@@ -172,10 +173,7 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 			}
 		}
 		for _, build := range r.StoppedBuilds {
-			name := build.Adapter
-			if name == "claude" {
-				name = "Claude Code"
-			}
+			name := manifests.DisplayName(build.Adapter)
 			fmt.Fprintf(w, "Notices to %s %s are stopped since %s (notice %d", name, build.Version, clock(build.StoppedAtMS), build.Notice)
 			if build.OriginAlias != "" {
 				fmt.Fprintf(w, " to @%s, %s). After checking that session, turn them back on with: ", build.OriginAlias, build.Reason)

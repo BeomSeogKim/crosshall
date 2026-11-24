@@ -41,7 +41,7 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 	}
 	found := make(map[string]int)
 	fset := token.NewFileSet()
-	for _, dir := range []string{".", "../wire"} {
+	for _, dir := range []string{".", "../wire", "../cli"} {
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
 			t.Fatal(err)

@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Adapter names, aliases and order come from the manifests:** each hook manifest declares its schema, display name, accepted aliases and setup order, and the prior revisions `claude-1` and `claude-2` declare their prompt line and session end. Setup status, setup's home-override line, the `antigravity` alias, setup's adapter order and the prompt-line and session-end checks for stored profiles read them instead of testing adapter names, with the same results. One wording changes: the owner line for stopped notices names Codex builds `Codex` instead of `codex`.
 - **Adapter policy reads the manifest:** `crosshall owner adapter set` refuses `--publish on` for an adapter with no publish adapter and `--turn-end on` for one whose manifest installs no turn-end event, instead of testing the name `agy`; the refusal takes the adapter's display name from its manifest. Each manifest now declares a display name and, for Claude Code, the prior revisions `claude-1` and `claude-2` with what the core derives for them. Output and behavior are unchanged.
 - **Cross-vendor conformance:** real Claude Code and Codex CLI sessions each ask and answer across one disposable hall using loopback models. The check exercises Codex's next-prompt line and a running Claude Code wait.
 

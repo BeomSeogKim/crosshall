@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"io"
 	"slices"
 	"strings"
@@ -131,9 +132,7 @@ func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
 		}
 	}
 	for _, arg := range args {
-		if arg == "antigravity" {
-			arg = "agy"
-		}
+		arg = manifests.Resolve(arg)
 		switch {
 		case arg == "--dry-run" && !req.DryRun:
 			req.DryRun = true

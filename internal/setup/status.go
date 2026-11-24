@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
@@ -61,7 +62,7 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 	statuses := make([]AdapterStatus, 0, len(specs))
 	for _, spec := range specs {
 		status := AdapterStatus{
-			Adapter: spec.Adapter, Name: statusAdapterName(spec.Adapter), HookAdapter: true,
+			Adapter: spec.Adapter, Name: manifests.DisplayName(spec.Adapter), HookAdapter: true,
 			CLI: statusCLI(spec), Install: unknown, Policy: unknown, Footprint: unknown,
 		}
 		if reported, ok := policies[spec.Adapter]; ok && reported.Policy.Epoch != 0 {
@@ -174,19 +175,6 @@ func inspectStatusState(ctx context.Context, path string) (journal, bool, map[st
 		return j, journalErr == nil, nil, false
 	}
 	return j, journalErr == nil, snapshot.Adapters, false
-}
-
-func statusAdapterName(adapter string) string {
-	switch adapter {
-	case "claude":
-		return "Claude Code"
-	case "codex":
-		return "Codex"
-	case "agy":
-		return "Antigravity"
-	default:
-		return adapter
-	}
 }
 
 func statusCLI(spec hook.InstallSpec) string {

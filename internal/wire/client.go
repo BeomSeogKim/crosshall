@@ -28,3 +28,9 @@ func NewID() string {
 // refuses a retired key, as lookup does. A dispatcher lists it in its ready
 // marker's hello field when it accepts it.
 const HelloStart = "start"
+
+// HelloLaunchProof is listed in the ready marker's hello field by a
+// dispatcher that accepts a prompt's launch proof (launch_at_ms and
+// pid_namespace in hook.event): an older one refuses arguments it does not
+// know, so a hook sends the proof only when it is listed.
+const HelloLaunchProof = "launch_proof"

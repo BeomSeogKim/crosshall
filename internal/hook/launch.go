@@ -12,27 +12,46 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+// launchBinding is the launch a callback reports: a process launch, verified,
+// with the time its record was written, or "session".
+type launchBinding struct {
+	ref      string
+	verified bool
+	atMS     int64
+	// late reports that this prompt wrote the record a missed start left out.
+	late bool
+}
+
+var sessionLaunch = launchBinding{ref: "session"}
+
+// hostedBy reports whether the hook runs directly under the process.
+var hostedBy = proc.HostedBy
+
 // A launch PID, which an adapter whose manifest names a launch_env reports,
-// is a label within this session. Only a SessionStart can pair it with a
-// launch. Compact and terminal events cannot create that evidence. Without
-// a launch PID the launch stays session-scoped and unverified.
-func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry time.Time) (string, bool, error) {
+// is a label within this session. A SessionStart pairs it with a launch, and
+// so does a prompt that finds no record, under a hand join's proof: the hook
+// runs directly under that process, and no start holds or missed the lock.
+// Compact and terminal events cannot create that evidence. Without a launch
+// PID the launch stays session-scoped and unverified.
+func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry time.Time) (launchBinding, error) {
 	if e.LaunchRef == "" {
-		return "session", false, nil
+		return sessionLaunch, nil
 	}
 	pid, err := strconv.ParseUint(e.LaunchRef, 10, 32)
 	if err != nil || pid == 0 {
-		return "session", false, nil
+		return sessionLaunch, nil
 	}
 	gen, err := ident.ReadPrivateFile(leaf, "gen", 1024)
 	if err != nil {
-		return "session", false, err
+		return sessionLaunch, err
 	}
 	if generation == "" || strings.TrimSpace(string(gen)) != generation {
-		return "session", false, errors.New("member generation changed")
+		return sessionLaunch, errors.New("member generation changed")
 	}
 	start := spec.Enroll && (e.Source == "startup" || e.Source == "resume" || e.Source == "clear")
 	name := fmt.Sprintf("launch-%d-%x", pid, sha256.Sum256([]byte(generation)))
@@ -40,12 +59,16 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 	if start {
 		flags = os.O_CREATE | os.O_RDWR
 	}
+	late := !start && spec.Fact == wire.HookPromptSubmitted
 	guard, err := spool.OpenServerFile(leaf, name+".lock", flags)
 	if errors.Is(err, os.ErrNotExist) {
-		return "session", false, nil
+		if late {
+			return lateLaunch(leaf, name, pid, e, entry)
+		}
+		return sessionLaunch, nil
 	}
 	if err != nil {
-		return "session", false, err
+		return sessionLaunch, err
 	}
 	defer guard.Close()
 	lock := syscall.LOCK_SH
@@ -61,25 +84,25 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 			break
 		}
 		if !start {
-			return "session", false, nil
+			return sessionLaunch, nil
 		}
 		if !time.Now().Before(until) {
 			// Record the uncertainty before falling back. A future event cannot
 			// attribute this start to the preceding PID binding. A strictly
 			// newer start can establish certainty again.
 			_, err = guard.WriteAt([]byte{'?'}, 0)
-			return "session", false, err
+			return sessionLaunch, err
 		}
 		time.Sleep(time.Millisecond)
 	}
 	if err != nil {
-		return "session", false, err
+		return sessionLaunch, err
 	}
 	at := entry.UnixMilli()
 	snapshot, err := ident.ReadPrivateFile(leaf, name, 96)
 	found := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "session", false, err
+		return sessionLaunch, err
 	}
 	var latest int64
 	var digest string
@@ -88,18 +111,25 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 		when, key, ok := strings.Cut(record, " ")
 		latest, err = strconv.ParseInt(when, 10, 64)
 		if !ok || !complete || err != nil || latest < 0 {
-			return "session", false, nil
+			return sessionLaunch, nil
 		}
 		if key != "-" {
 			hash, err := hex.DecodeString(key)
 			if err != nil || len(hash) != sha256.Size {
-				return "session", false, nil
+				return sessionLaunch, nil
 			}
 		}
 		digest = key
 	}
+	if late && !found {
+		// Give up the shared lock; the record is written under an exclusive one.
+		if err := syscall.Flock(int(guard.Fd()), syscall.LOCK_UN); err != nil {
+			return sessionLaunch, err
+		}
+		return lateLaunch(leaf, name, pid, e, entry)
+	}
 	if at < latest || (!start && !found) {
-		return "session", false, nil
+		return sessionLaunch, nil
 	}
 	if start {
 		incoming := fmt.Sprintf("%x", sha256.Sum256([]byte(e.reference(entry))))
@@ -108,7 +138,7 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 		}
 		if !found || at != latest || digest != incoming {
 			if err := writeRecord(leaf, name, fmt.Sprintf("%d %s\n", at, incoming)); err != nil {
-				return "session", false, err
+				return sessionLaunch, err
 			}
 			latest, digest = at, incoming
 		}
@@ -117,10 +147,44 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 	// Its mtime is when the missed callback gave up, after its entry time.
 	stat, err := guard.Stat()
 	if err != nil {
-		return "session", false, err
+		return sessionLaunch, err
 	}
 	if digest == "-" || (stat.Size() != 0 && latest <= stat.ModTime().UnixMilli()) {
-		return "session", false, nil
+		return sessionLaunch, nil
 	}
-	return fmt.Sprintf("pid-%d-%s", pid, digest), true, nil
+	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: latest}, nil
+}
+
+// lateLaunch writes the record of a launch whose start was never recorded,
+// for its first prompt: at that prompt's time, under an exclusive lock taken
+// without waiting, unless a start ever missed the lock.
+func lateLaunch(leaf *os.Root, name string, pid uint64, e event, entry time.Time) (launchBinding, error) {
+	if !hostedBy(int(pid)) {
+		return sessionLaunch, nil
+	}
+	guard, err := spool.OpenServerFile(leaf, name+".lock", os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		return sessionLaunch, err
+	}
+	defer guard.Close()
+	if err := syscall.Flock(int(guard.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return sessionLaunch, nil
+		}
+		return sessionLaunch, err
+	}
+	stat, err := guard.Stat()
+	if err != nil || stat.Size() != 0 {
+		return sessionLaunch, err
+	}
+	// A start may have written the record since the shared read.
+	if _, err := ident.ReadPrivateFile(leaf, name, 96); !errors.Is(err, os.ErrNotExist) {
+		return sessionLaunch, err
+	}
+	at := entry.UnixMilli()
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("late:"+e.reference(entry))))
+	if err := writeRecord(leaf, name, fmt.Sprintf("%d %s\n", at, digest)); err != nil {
+		return sessionLaunch, err
+	}
+	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: at, late: true}, nil
 }

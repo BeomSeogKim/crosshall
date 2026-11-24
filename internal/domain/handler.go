@@ -600,6 +600,12 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		}
 		out.Changes = changes
 	}
+	if _, out.AtNextPrompt, err = s.standby(ctx, tx, membership.BindingID, now); err != nil {
+		return core.Result{}, err
+	}
+	if out.AtNextPrompt {
+		out.Hint += "\n" + AtNextPromptJoin
+	}
 	if err := s.noteHost(ctx, tx, principal, req.Host, now); err != nil {
 		return core.Result{}, err
 	}

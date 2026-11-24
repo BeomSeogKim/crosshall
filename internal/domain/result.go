@@ -61,6 +61,9 @@ type JoinResult struct {
 	// RulesGiven says the hint carries the member rules in full.
 	RulesGiven bool             `json:"rules_given,omitempty"`
 	Move       *JoinMoveReceipt `json:"move,omitempty"`
+	// AtNextPrompt says the hint names this session's rule 4 case: its next
+	// prompt shows new work, so it ends the turn instead of waiting.
+	AtNextPrompt bool `json:"at_next_prompt,omitempty"`
 }
 
 type JoinMoveReceipt struct {

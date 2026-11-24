@@ -269,7 +269,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	}
 	out.Enrollment, out.Alias, out.Channel = "restored", b.alias, b.channelName
 	if b.joinHintPending {
-		if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+		if err := s.offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -463,7 +463,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		(SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = ?) WHERE id = ?`, ch.id, bindingID); err != nil {
 		return core.Result{}, err
 	}
-	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+	if err := s.offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
 	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
@@ -475,7 +475,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 // offerJoinHint offers a hook-enrolled member its start line. A member that
 // is alone is offered nothing and the line stays pending: it is told when it
 // first has someone to talk to.
-func offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBinding, now time.Time, out *wire.HookResult) error {
+func (s *Service) offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBinding, now time.Time, out *wire.HookResult) error {
 	seq, err := rosterSeq(ctx, tx, b.channel)
 	if err != nil {
 		return err
@@ -495,6 +495,11 @@ func offerJoinHint(ctx context.Context, tx store.Tx, principal int64, b hookBind
 		return nil
 	}
 	out.Hint = StartLine(b.alias, b.channelName, peers)
+	if _, atPrompt, err := s.standby(ctx, tx, b.id, now); err != nil {
+		return err
+	} else if atPrompt {
+		out.Hint += "\n" + AtNextPromptJoin
+	}
 	out.JoinHintAck = &wire.HookJoinHintAck{BindingID: b.id, RouteEpoch: b.routeEpoch, RosterSeq: seq}
 	return nil
 }
@@ -816,7 +821,7 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		switch cmd.Fact {
 		case FactPromptSubmitted:
 			if b.joinHintPending {
-				if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
+				if err := s.offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 					return core.Result{}, err
 				}
 			}

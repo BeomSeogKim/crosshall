@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/publish"
@@ -87,5 +88,33 @@ func TestWaitTimeoutNamesTheStandbyForEachSession(t *testing.T) {
 		if got := decode[Refusal](t, result).Hint; got != tc.hint {
 			t.Errorf("%s: hint %q, want %q", tc.name, got, tc.hint)
 		}
+	}
+}
+
+// A hook-joined Codex session learns its rule 4 case where it reads the
+// rules: its start line and `join --rules`. A wait it would run only to
+// learn that cost a first turn about a minute (#2411, Lyra's R3).
+func TestAHookJoinedSessionLearnsItsStandbyWhereItReadsTheRules(t *testing.T) {
+	f, writer := adapterChannel(t)
+	f.policy("codex", true, 1)
+	promptLine := true
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return promptLine }
+	s := f.newSession("codex")
+	start := f.hook(s, codexStart("startup", publish.ModeDaemon, f.now.UnixMilli()))
+	if !strings.Contains(start.Hint, AtNextPromptJoin) {
+		t.Errorf("start line %q does not name the standby", start.Hint)
+	}
+	for _, rules := range []bool{true, false} {
+		join := decode[JoinResult](t, f.run(s, Join{Channel: "checkout", Rules: rules}, ""))
+		if !strings.Contains(join.Hint, AtNextPromptJoin) || !join.AtNextPrompt {
+			t.Errorf("join (rules %v): at_next_prompt %v, hint %q does not name the standby", rules, join.AtNextPrompt, join.Hint)
+		}
+	}
+	if hint := decode[JoinResult](t, f.run(writer, Join{Channel: "checkout", Rules: true}, "")).Hint; strings.Contains(hint, AtNextPromptJoin) {
+		t.Errorf("a session joined by hand was told %q", hint)
+	}
+	promptLine = false
+	if hint := decode[JoinResult](t, f.run(s, Join{Channel: "checkout", Rules: true}, "")).Hint; strings.Contains(hint, AtNextPromptJoin) {
+		t.Errorf("a hook revision without a prompt line was told %q", hint)
 	}
 }

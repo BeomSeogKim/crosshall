@@ -106,6 +106,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if _, err := domain.MarkReachChanges(ctx, tx, now); err != nil {
 			return err
 		}
+		if err := domain.AlertLongHolds(ctx, tx, now); err != nil {
+			return err
+		}
 		if err := p.applyStamps(ctx, tx); err != nil {
 			return err
 		}

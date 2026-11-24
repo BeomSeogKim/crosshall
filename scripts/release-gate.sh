@@ -57,16 +57,15 @@ fi
 if [[ -z $out ]]; then
   out=$(mktemp -d "${TMPDIR:-/tmp}/release-gate.XXXXXXXX") || exit 2
 else
-  mkdir -p -- "$out" || exit 2
+  mkdir -p -m 700 -- "$out" || exit 2
 fi
-chmod 700 "$out"
 out=$(cd -- "$out" && pwd -P)
-# Store snapshots, worktrees and scratch homes live in work and are removed at
-# exit; out keeps the logs, the binaries and the summary.
-work=$out/work
-rm -rf -- "$work"
-mkdir -m 700 -- "$work" "$work/tree"
 mkdir -p -m 700 -- "$out/bin"
+# Store snapshots, worktrees and scratch homes live in a directory of their
+# own, removed at exit; out keeps the logs, the binaries and the summary.
+work=$(mktemp -d "${TMPDIR:-/tmp}/release-gate-work.XXXXXXXX") || exit 2
+work=$(cd -- "$work" && pwd -P)
+mkdir -m 700 -- "$work/tree"
 : > "$work/dispatchers"
 
 cleanup() {
@@ -88,6 +87,7 @@ base_bin=$out/bin/crosshall-$base
 built=false
 base_schema=''
 head_schema=''
+rewrites=''
 
 titles=()
 results=()
@@ -201,7 +201,7 @@ row_source() {
 }
 
 row_schema() {
-  local dir=internal/store/migrations edited opener=unchanged
+  local dir=internal/store/migrations edited opener=unchanged file number verb table
   base_schema=$(git -C "$repo" ls-tree --name-only "$base_commit" "$dir/" | grep -c '\.sql$')
   head_schema=$(git -C "$repo" ls-tree --name-only "$commit" "$dir/" | grep -c '\.sql$')
   git -C "$repo" diff --name-status "$base_commit" "$commit" -- "$dir" internal/store/sqlite.go
@@ -209,7 +209,24 @@ row_schema() {
   [[ -z $edited ]] || { detail "an earlier migration changed: $(echo $edited)"; return 1; }
   ((head_schema >= base_schema)) || { detail "schema went down: $base_schema to $head_schema"; return 1; }
   git -C "$repo" diff --quiet "$base_commit" "$commit" -- internal/store/sqlite.go || opener=changed
-  detail "schema $base_schema to $head_schema, only added migrations; store opener $opener"
+  rewrites=''
+  while IFS= read -r file; do
+    number=${file##*/}
+    number=${number%%_*}
+    while read -r verb table; do
+      case $verb in
+        UPDATE | DELETE)
+          [[ $rewritten == *" $table "* ]] && continue
+          rewritten+="$table "
+          rewrites+=" $table ($number)"
+          ;;
+        INSERT) extended+="$table " ;;
+      esac
+    done < <(git -C "$repo" show "$commit:$file" |
+      grep -Eio '^[[:space:]]*(UPDATE|DELETE[[:space:]]+FROM|INSERT[[:space:]]+(OR[[:space:]]+[a-z]+[[:space:]]+)?INTO)[[:space:]]+"?[a-z_][a-z0-9_]*' |
+      tr -d '"' | awk '{ print toupper($1), $NF }')
+  done < <(git -C "$repo" diff --name-only --diff-filter=A "$base_commit" "$commit" -- "$dir")
+  detail "schema $base_schema to $head_schema, only added migrations; store opener $opener${rewrites:+; rewrites:$rewrites}"
 }
 
 row_install() {
@@ -271,8 +288,13 @@ store_sound() { # store_sound <db> <schema>
 }
 compared_tables=0
 compared_rows=0
-same_rows() { # same_rows <reference-db> <db>: every reference table, column, row and index survives
-  local table cols line n m gone added name bad=0
+# A migration may rewrite data on purpose. With upgrade, same_rows only counts
+# the tables the new migrations update or delete from, and lets the tables they
+# insert into gain rows. row_schema fills both lists.
+rewritten=' '
+extended=' '
+same_rows() { # same_rows <reference-db> <db> [upgrade]: every reference table, column, row and index survives
+  local table cols line n m gone added name bad=0 upgrade=${3:-}
   compared_tables=0
   compared_rows=0
   while IFS= read -r table; do
@@ -282,7 +304,11 @@ same_rows() { # same_rows <reference-db> <db>: every reference table, column, ro
         (SELECT count(*) FROM (SELECT $cols FROM ref.\"$table\" EXCEPT SELECT $cols FROM main.\"$table\")),
         (SELECT count(*) FROM (SELECT $cols FROM main.\"$table\" EXCEPT SELECT $cols FROM ref.\"$table\"));" 2>&1)
     IFS='|' read -r n m gone added <<< "$line"
-    if [[ $n != "$m" || $gone != 0 || $added != 0 ]]; then
+    if [[ -n $upgrade && $rewritten == *" $table "* ]]; then
+      echo "$table is rewritten by a migration: $line"
+    elif [[ -n $upgrade && $extended == *" $table "* && $gone == 0 && $n -le $m ]]; then
+      [[ $n == "$m" ]] || echo "$table gained rows from a migration: $line"
+    elif [[ $n != "$m" || $gone != 0 || $added != 0 ]]; then
       echo "$table differs: $line"
       bad=1
     fi
@@ -297,7 +323,7 @@ same_rows() { # same_rows <reference-db> <db>: every reference table, column, ro
 }
 
 row_store() {
-  local snap=$work/store baseline from backups backup rollback
+  local snap=$work/store baseline from backups backup rollback kept
   needs_builds || return
   [[ -n $head_schema ]] || { detail "needs the schema row"; return 2; }
   [[ -f $live_store ]] || { detail "no store at $live_store; pass --store"; return 2; }
@@ -314,7 +340,8 @@ row_store() {
   cp -- "$baseline" "$snap/up/store.sqlite3" && chmod 600 "$snap/up/store.sqlite3"
   open_store "$head_tree" "$snap/up" || { detail "the candidate could not open the snapshot"; return 1; }
   store_sound "$snap/up/store.sqlite3" "$head_schema" || { detail "the upgraded store is not sound"; return 1; }
-  same_rows "$baseline" "$snap/up/store.sqlite3" || { detail "the upgrade changed or lost rows"; return 1; }
+  same_rows "$baseline" "$snap/up/store.sqlite3" upgrade || { detail "the upgrade changed or lost rows"; return 1; }
+  kept="$compared_tables tables, $compared_rows rows kept${rewrites:+; rewritten on purpose:$rewrites}"
   backups=$(find "$snap/up" -name 'store-v*.sqlite3' | wc -l | tr -d ' ')
   if ((from < head_schema)); then
     [[ $backups == 1 ]] || { detail "$backups migration backups, want 1"; return 1; }
@@ -341,9 +368,9 @@ row_store() {
   store_sound "$rollback" "$((from < head_schema ? from : head_schema))" || { detail "the rollback store is not sound"; return 1; }
   same_rows "$baseline" "$rollback" || { detail "rollback lost rows"; return 1; }
   if ((from < head_schema)); then
-    detail "schema $from to $head_schema: $compared_tables tables, $compared_rows rows kept; backup reopened under $base"
+    detail "schema $from to $head_schema: $kept; backup reopened under $base"
   else
-    detail "schema $from unchanged: $compared_tables tables, $compared_rows rows kept; $base reopened the store"
+    detail "schema $from unchanged: $kept; $base reopened the store"
   fi
 }
 
@@ -437,11 +464,20 @@ row_hook_cost() {
 row_cross_vendor() {
   local test=TestCrossVendorRoundTrip
   needs_builds || return
+  local events=$out/cross-vendor.json status verdict judged
+  needs_builds || return
   grep -q "^func $test(" "$head_tree"/test/conformance/*_test.go || { detail "the candidate has no $test"; return 2; }
+  command -v claude > /dev/null && command -v codex > /dev/null || { detail "$test needs claude and codex on PATH"; return 2; }
   (cd -- "$head_tree" && CROSSHALL_CONFORMANCE_CROSSHALL="$cand" go test -tags conformance -count=1 -timeout 3m \
-    -run "^$test\$" -v ./test/conformance/) || { detail "$test failed"; return 1; }
-  grep -q -- "--- PASS: $test " "$out/$current.log" || { detail "$test did not run"; return 1; }
-  detail "Claude Code and Codex each asked and answered the other with the candidate binary"
+    -run "^$test\$" -json ./test/conformance/) > "$events"
+  status=$?
+  # Each direction must pass on its own; a skipped one is not a pass.
+  verdict=$(python3 -B "$repo/scripts/release_gate_events.py" "$test" claude_to_codex codex_to_claude < "$events")
+  judged=$?
+  printf 'go test exit %s; %s\n' "$status" "$verdict"
+  detail "$verdict"
+  ((judged == 0 && status != 0)) && { detail "go test exit $status; $verdict"; return 1; }
+  return $judged
 }
 
 row_full_run() {
@@ -458,7 +494,7 @@ row_full_run() {
   fi
   status=$?
   detail "exit $status after $((($(date +%s) - start) / 60))m $((($(date +%s) - start) % 60))s; last line: $(tail -n 1 "$out/$current.log")"
-  return $status
+  ((status == 0)) || return 1
 }
 
 row 'Pin and reproducible build' row_build

@@ -2,8 +2,9 @@
 
 Usage: release_gate_events.py <test> <subtest-prefix>... < events
 
-Exit 0 when the test passed and, for every prefix, a subtest named with it
-passed; 2 when nothing failed but a skip kept a required case from passing;
+Exit 0 when the test passed and, for every prefix, every direct subtest named
+with it passed, and at least one did; a nested subtest never stands for its
+parent; 2 when nothing failed but a skip kept a required case from passing;
 1 otherwise: a failure, a build error or a case that never reported. The
 first output line names the reason.
 """
@@ -34,7 +35,8 @@ def main():
         return sorted(n for n, a in outcomes.items() if a == action)
 
     def passed(prefix):
-        return any(n.startswith(test + "/" + prefix) for n in names("pass"))
+        direct = [n for n in outcomes if n.startswith(test + "/" + prefix) and n.count("/") == 1]
+        return bool(direct) and all(outcomes[n] == "pass" for n in direct)
 
     if names("fail"):
         print("failed: " + ", ".join(names("fail")))

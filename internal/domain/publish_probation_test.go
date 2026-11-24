@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
@@ -72,8 +71,8 @@ func TestPublishProbationCountsUniqueReceiptsUpToThree(t *testing.T) {
 		p.hook(p.reader, stop(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	}
 	turn := "already-open"
-	p.hook(p.reader, prompt(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	id, ids := probationNotice(p, p.binding, "reader", turn)
+	p.hook(p.reader, prompt(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	p.hook(p.reader, p.promptReceipt(turn, publishTestLaunch, p.now.UnixMilli()+10, ids))
 	p.observation(id, "absorbed")
 	probationBuild(p, store.PublishBuildConfirmations, 0, "", false)
@@ -100,10 +99,10 @@ func TestPublishProbationSharesTheFirstStopAndResumesThroughAnotherBinding(t *te
 	p.observation(confirm, "own_turn")
 	probationBuild(p, 1, 0, "", false)
 	p.hook(peer, stop(peerLaunch, "confirm", p.now.UnixMilli()+10))
-	p.hook(p.reader, prompt(publishTestLaunch, "reader-open", p.now.UnixMilli()+10))
-	p.hook(peer, prompt(peerLaunch, "peer-open", p.now.UnixMilli()+10))
 	first, firstIDs := probationNotice(p, peerBinding, "peer", "stop-first")
 	later, laterIDs := probationNotice(p, p.binding, "reader", "stop-later")
+	p.hook(p.reader, prompt(publishTestLaunch, "reader-open", p.now.UnixMilli()+10))
+	p.hook(peer, prompt(peerLaunch, "peer-open", p.now.UnixMilli()+10))
 	p.hook(peer, p.promptReceipt("peer-open", peerLaunch, p.now.UnixMilli()+10, firstIDs))
 	firstAt := probationBuild(p, 1, first, "absorbed", false)
 	owner := decode[OwnerWhoResult](t, p.owner(OwnerWho{}, ""))
@@ -147,9 +146,10 @@ func TestPublishProbationSharesTheFirstStopAndResumesThroughAnotherBinding(t *te
 	if resumed := decode[PublishSwitchResult](t, p.owner(cmd, "resume-reader-again")); resumed.BuildStopLifted {
 		t.Fatalf("resume reported a second shared lift: %+v", resumed)
 	}
-	p.now = p.now.Add(time.Millisecond)
+	p.hook(p.reader, stop(publishTestLaunch, "reader-open", p.now.UnixMilli()+10))
 	restopped, restoppedIDs := probationNotice(p, p.binding, "reader", "stop-again")
-	p.hook(p.reader, p.promptReceipt("reader-open", publishTestLaunch, p.now.UnixMilli()+10, restoppedIDs))
+	p.hook(p.reader, prompt(publishTestLaunch, "reader-next", p.now.UnixMilli()+10))
+	p.hook(p.reader, p.promptReceipt("reader-next", publishTestLaunch, p.now.UnixMilli()+10, restoppedIDs))
 	restoppedAt := probationBuild(p, 1, restopped, "absorbed", false)
 	if replay := decode[PublishSwitchResult](t, p.owner(cmd, "resume-reader")); !replay.BuildStopLifted {
 		t.Fatalf("original resume result did not replay: %+v", replay)
@@ -171,8 +171,8 @@ func TestPublishProbationDoesNotTrackExactlyTestedBuilds(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	turn := "open-exact"
-	p.hook(p.reader, prompt(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	id, ids := probationNotice(p, p.binding, "reader", turn)
+	p.hook(p.reader, prompt(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	p.hook(p.reader, p.promptReceipt(turn, publishTestLaunch, p.now.UnixMilli()+10, ids))
 	p.observation(id, "absorbed")
 	if n := p.count(`SELECT COUNT(*) FROM capability_build`); n != 0 {
@@ -186,9 +186,9 @@ func TestPublishProbationDoesNotTrackExactlyTestedBuilds(t *testing.T) {
 func TestPublishProbationRequiresAnAcceptedNewerExactTestToLift(t *testing.T) {
 	p := newProbationFixture(t)
 	turn := "open"
+	id, ids := probationNotice(p, p.binding, "reader", "unknown")
 	p.hook(p.reader, prompt(publishTestLaunch, turn, p.now.UnixMilli()+10))
 	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "approval", "another-turn", p.now.UnixMilli()+10, false))
-	id, ids := probationNotice(p, p.binding, "reader", "unknown")
 	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, p.now.UnixMilli()+10, ids))
 	p.observation(id, "unknown")
 	stopped := probationBuild(p, 0, id, "unknown", false)

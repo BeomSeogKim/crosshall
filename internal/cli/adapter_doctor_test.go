@@ -31,7 +31,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 					{"version":"2.1.331","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"trusted","confirmed":1,"held_unobserved":2},
 					{"version":"2.1.332","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"seen"},
 					{"version":"2.1.333","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"stopped","stopped_at_ms":60000,"notice":41,"reason":"absorbed"}]},
-				"unverified_launches":2,
+				"unverified_launches":2,"unseen_starts":1,
 				"hooks":{"date":"20261119","p95_ms":150,"counts":{"clean":2,"deadline":2,"rpc":1},
 					"recorded_starts":5,"helper_timeouts":2,"missed_deadlines":1,"vendor_timeouts":null}},
 				{"adapter":"codex","intended":5,"policy":{"enabled":true,"reminder":false,"turn_end":"off","epoch":1},"reminder":{"available":false,"release_state":"parked",
@@ -58,6 +58,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		"publish build 2.1.332 (darwin-arm64 interactive claude-2): seen",
 		"publish build 2.1.333 (darwin-arm64 interactive claude-2): stopped at " + clock(60000) + " (notice 41, absorbed)",
 		"darwin-arm64", "print", "enroll tested", "2 live launches with unverified version or mode",
+		"live members without a notice route because their session start was not seen: 1",
 		"p95 150 ms", "clean=2 deadline=2 rpc=1",
 		"recorded starts 5, helper timeouts 2, missed deadlines 1, vendor timeouts unknown", "hook counters unknown"} {
 		if !strings.Contains(out, want) {

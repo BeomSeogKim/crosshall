@@ -53,6 +53,10 @@ type InboxResult struct {
 	// Delivers reports that the hall can publish new work to this member
 	// now, so an empty inbox needs no wait.
 	Delivers bool `json:"delivers,omitempty"`
+	// AtNextPrompt reports that the member's agent does not start a turn
+	// when a background command exits, so it ends its turn instead of
+	// waiting; its prompt hook shows new work at the next prompt.
+	AtNextPrompt bool `json:"at_next_prompt,omitempty"`
 }
 
 type MemberInboxSummary struct {
@@ -192,7 +196,7 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	if err != nil {
 		return core.Result{}, err
 	}
-	if out.Delivers, err = publishDelivers(ctx, tx, member.binding, now); err != nil {
+	if out.Delivers, out.AtNextPrompt, err = s.standby(ctx, tx, member.binding, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {
@@ -532,10 +536,13 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 			if bindingState == "departed" {
 				r.BindingState = bindingState
 			}
-			// A request with a notice of its own shows that notice instead.
-			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && r.Notice == nil {
+			// Before submission the reservation can still yield to another wake.
+			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && (r.Notice == nil || r.Notice.State == "reserved") {
 				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
 					return nil, err
+				}
+				if r.Notice != nil && r.Wake.Wake == WakeNotice {
+					r.Wake = Wake{} // the reservation already describes the queued notice
 				}
 				if r.Wake.Wake == WakeNone {
 					if r.ShownAtMS, err = shownAt(ctx, tx, r.PrincipalID, m.ID); err != nil {
@@ -757,7 +764,7 @@ func memberInboxSummary(ctx context.Context, tx store.Tx, principal, channel int
 func shownAt(ctx context.Context, tx store.Tx, principal, message int64) (*int64, error) {
 	var at sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT MIN(at_ms) FROM (
-		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2
+		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2 AND a.via = 'turn_end'
 		UNION ALL SELECT CASE WHEN o.receipt_mode = 'legacy' THEN o.at_ms ELSE o.written_at_ms END
 			FROM offer_item i JOIN offer o ON o.id = i.offer_id
 			WHERE i.principal_id = ?1 AND i.message_id = ?2)`, principal, message).Scan(&at)

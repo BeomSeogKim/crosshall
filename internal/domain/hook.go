@@ -413,22 +413,39 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := audit(ctx, tx, "joined", "channel:"+ch.name, principal, map[string]string{"alias": alias, "by": "hook"}, now); err != nil {
 		return core.Result{}, err
 	}
-	started := cmd.HookAtMS
+	b := hookBinding{id: bindingID, routeEpoch: 1, joinedAtMS: ms(now), channel: ch.id, alias: alias, state: "live", channelName: ch.name}
+	// A recovering prompt of a process launch is bound late when a hand
+	// join would bind it (#252); otherwise it joins as a session launch
+	// whose start is unknown.
+	late := false
 	if prompt != nil {
-		started = 0 // No SessionStart committed for the recovered session.
-	}
-	if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, started); err != nil {
-		return core.Result{}, err
-	}
-	if err := forgetHost(ctx, tx, principal); err != nil {
-		return core.Result{}, err
-	}
-	if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
-		return core.Result{}, err
-	}
-	if prompt == nil {
-		if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, s.routeHost(cmd), now); err != nil {
+		if late, err = s.bindLateLaunch(ctx, tx, req, principal, b, *prompt, now); err != nil {
 			return core.Result{}, err
+		}
+		if late {
+			cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace = prompt.Profile, prompt.LaunchRef, true, prompt.PIDNamespace
+		} else {
+			prompt.LaunchRef, prompt.LaunchVerified = SessionLaunch, false
+		}
+	}
+	if !late {
+		started := cmd.HookAtMS
+		if prompt != nil {
+			started = 0 // No SessionStart committed for the recovered session.
+		}
+		if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, started); err != nil {
+			return core.Result{}, err
+		}
+		if err := forgetHost(ctx, tx, principal); err != nil {
+			return core.Result{}, err
+		}
+		if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
+			return core.Result{}, err
+		}
+		if prompt == nil {
+			if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, s.routeHost(cmd), now); err != nil {
+				return core.Result{}, err
+			}
 		}
 	}
 	if err := refreshMemberAdapterCapabilities(ctx, tx, principal, cmd.Profile.Adapter); err != nil {
@@ -441,7 +458,6 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		}
 	}
 	out.Enrollment = "joined"
-	b := hookBinding{id: bindingID, routeEpoch: 1, channel: ch.id, alias: alias, state: "live", channelName: ch.name}
 	// The snapshot keeps the start line pending, also past an ordinary roster acknowledgement.
 	if _, err := tx.ExecContext(ctx, `UPDATE binding SET roster_baseline_seq =
 		(SELECT COALESCE(MAX(seq), 0) FROM roster_change WHERE channel_id = ?) WHERE id = ?`, ch.id, bindingID); err != nil {
@@ -560,7 +576,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		return hookUsage("unknown hook fact"), nil
 	}
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || cmd.EventRef == "" ||
-		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 ||
+		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 || cmd.LaunchAtMS < 0 ||
+		(cmd.PIDNamespace != "" && !validRef(cmd.PIDNamespace)) ||
 		(cmd.EnrollRepoRoot != "" && (!cmd.CanRecoverEnrollment() || !validRepoRoot(cmd.EnrollRepoRoot))) ||
 		(cmd.EnrollRepository != "" && (cmd.EnrollRepoRoot == "" || !validRepoRoot(cmd.EnrollRepository))) {
 		return hookUsage("invalid hook.event arguments"), nil
@@ -591,7 +608,9 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, Repository: cmd.EnrollRepository,
 			CreateChannel: cmd.EnrollCreate, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
 		}}
-		cmd.LaunchRef, cmd.LaunchVerified, cmd.WantOutput = SessionLaunch, false, false
+		// The prompt keeps its launch: the join binds it late or records the
+		// prompt under the session launch.
+		cmd.WantOutput = false
 		return s.hookAutoJoin(ctx, tx, req, enroll, 0, &cmd, now)
 	}
 	return s.hookMemberEvent(ctx, tx, caller, req, cmd, now)
@@ -601,6 +620,12 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	out := wire.HookResult{Epoch: cmd.Epoch}
 	principal := *caller.PrincipalID
 	if cmd.LaunchRef != SessionLaunch {
+		// A prompt of a launch whose start never arrived binds it as that
+		// start would have (#252); a member recovered without one keeps its
+		// session launch otherwise.
+		if _, err := s.bindMemberLateLaunch(ctx, tx, req, principal, cmd, now); err != nil {
+			return core.Result{}, err
+		}
 		var recovered bool
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(started_hook_at_ms), -1) = 0
 			FROM adapter_launch WHERE principal_id = ?`, principal).Scan(&recovered); err != nil {

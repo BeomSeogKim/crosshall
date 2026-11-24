@@ -100,3 +100,14 @@ func TestSessionMoveLeavesThePrincipalGuardStopInItsOriginChannel(t *testing.T) 
 		t.Fatalf("move changed principal round level from %d to %d: %v", level, got, err)
 	}
 }
+
+// A join after a leave starts a membership in the new channel; it moves
+// nothing out of the old one, so it prints no move receipt (#290).
+func TestAJoinAfterALeavePrintsNoMoveReceipt(t *testing.T) {
+	f, mover, _, _ := channel3(t)
+	wantOK(t, f.exec(f.caller(mover), Request{Command: Leave{}, OpKey: "leave-checkout"}))
+	joined := decode[JoinResult](t, f.join(mover, Join{Channel: "inventory"}, "join-inventory"))
+	if joined.Channel != "inventory" || joined.Move != nil {
+		t.Fatalf("a join after a leave: %+v", joined)
+	}
+}

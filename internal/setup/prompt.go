@@ -323,8 +323,8 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 			err = p.ops.Install(ctx, c.plan)
 		}
 	}
-	if err != nil && ctx.Err() != nil {
-		err = context.Cause(ctx)
+	if cause := context.Cause(ctx); err != nil && cause != nil && !errors.Is(err, cause) {
+		err = fmt.Errorf("%w. %w", err, cause)
 	}
 	switch {
 	case err != nil:

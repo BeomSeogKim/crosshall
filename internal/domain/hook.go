@@ -262,7 +262,7 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 			return core.Result{}, err
 		}
 	}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
+	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
 	if cmd.Source == "clear" || cmd.Source == "compact" {
@@ -434,7 +434,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	if err := offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
 	}
-	if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "start", &out, now); err != nil {
+	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(out)
@@ -752,7 +752,7 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 			if err := offerReach(ctx, tx, b, false, &out, now); err != nil {
 				return core.Result{}, err
 			}
-			if err := offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, cmd.Epoch, "prompt", &out, now); err != nil {
+			if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "prompt", &out, now); err != nil {
 				return core.Result{}, err
 			}
 		case FactTurnFinishing:
@@ -862,64 +862,4 @@ func endSessionBy(ctx context.Context, tx store.Tx, b hookBinding, principal int
 		detail["by"] = by
 	}
 	return audit(ctx, tx, "session_ended", "binding:"+strconv.FormatInt(b.id, 10), principal, detail, now)
-}
-
-// --- offers -----------------------------------------------------------------
-
-// offerPending commits an offer of the oldest unread items the session was
-// not told about yet, by an earlier offer, a turn-end notice or a publish
-// notice the model saw (observed as its own turn, absorbed or unknown; a
-// notice a gate blocked was never seen), before any output. It asks for a
-// notice acknowledgement only when nothing eligible remains.
-func offerPending(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch string, epoch uint64,
-	reason string, out *wire.HookResult, now time.Time) error {
-	if b.dnd {
-		return nil // held: no offer, nothing spent, no acknowledgement
-	}
-	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
-			AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM offer_item oi WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id)
-			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
-				AND a.via = 'turn_end')
-			AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt pa ON pa.id = i.attempt_id
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id
-					AND pa.observation IN ('own_turn', 'absorbed', 'unknown'))
-		ORDER BY r.message_id LIMIT ?`, principal, b.channel, OfferCap+1)
-	if err != nil {
-		return err
-	}
-	remainder := len(ids) > OfferCap
-	if remainder {
-		ids = ids[:OfferCap]
-	}
-	if !remainder {
-		out.Ack = &wire.HookAck{Kind: "notice"}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	var generation string
-	if err := tx.QueryRowContext(ctx, `SELECT generation FROM leaf WHERE principal_id = ? AND state = 'live' ORDER BY created_at_ms DESC LIMIT 1`,
-		principal).Scan(&generation); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO offer (principal_id, binding_id, generation, launch_ref, epoch, reason, evidence, at_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, principal, b.id, generation, launch, epoch, reason, evidence(p), ms(now))
-	if err != nil {
-		return err
-	}
-	if out.OfferID, err = res.LastInsertId(); err != nil {
-		return err
-	}
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (?, ?, ?)`,
-			out.OfferID, id, principal); err != nil {
-			return err
-		}
-		parts[i] = strconv.FormatInt(id, 10)
-	}
-	out.PendingLine = "[crosshall] pending: " + strings.Join(parts, " ")
-	return nil
 }

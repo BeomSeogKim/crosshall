@@ -123,12 +123,13 @@ type HookResult struct {
 	Cue        string `json:"cue,omitempty"`
 	// CueWithStartLine replaces Cue in an output that also prints the start
 	// line (Hint), which already says who the session is.
-	CueWithStartLine *string         `json:"cue_with_start_line,omitempty"`
-	Roster           json.RawMessage `json:"roster,omitempty"`
-	Omitted          int             `json:"omitted,omitempty"`
-	OfferID          int64           `json:"offer_id,omitempty"`
-	PendingLine      string          `json:"pending_line,omitempty"`
-	TurnEndLine      string          `json:"turn_end_line,omitempty"`
+	CueWithStartLine *string           `json:"cue_with_start_line,omitempty"`
+	Roster           json.RawMessage   `json:"roster,omitempty"`
+	Omitted          int               `json:"omitted,omitempty"`
+	OfferID          int64             `json:"offer_id,omitempty"`
+	OfferReceipt     *HookOfferReceipt `json:"offer_receipt,omitempty"`
+	PendingLine      string            `json:"pending_line,omitempty"`
+	TurnEndLine      string            `json:"turn_end_line,omitempty"`
 	// ReachLine says whether the hall brings new work to the session;
 	// ReachAck stores it as told once the hook has printed it.
 	ReachLine    string           `json:"reach_line,omitempty"`
@@ -140,6 +141,17 @@ type HookResult struct {
 	// repository's channel, so the published repository set is stale.
 	ChannelCreated bool   `json:"channel_created,omitempty"`
 	Epoch          uint64 `json:"epoch"`
+}
+
+// HookOfferReceipt identifies a prepared batch for acknowledgement after output.
+type HookOfferReceipt struct {
+	OfferID int64  `json:"offer_id"`
+	Nonce   string `json:"nonce"`
+}
+
+type HookOutputAckArgs struct {
+	Offer       *HookOfferReceipt `json:"offer,omitempty"`
+	WrittenAtMS int64             `json:"written_at_ms,omitempty"`
 }
 
 type HookJoinHintAck struct {

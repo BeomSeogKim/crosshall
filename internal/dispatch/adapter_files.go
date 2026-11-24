@@ -407,6 +407,10 @@ func (s *server) publishAdapterFiles(ctx context.Context) error {
 
 func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error {
 	return s.db.Update(ctx, func(tx store.Tx) error {
+		// An upgrade may invalidate a clean prompt before this instance publishes readiness.
+		if err := s.applyAdapterStamps(ctx, tx); err != nil {
+			return err
+		}
 		policy, err := adapterPolicyText(ctx, tx)
 		if err != nil {
 			return err

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,11 +102,12 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	var (
 		offered, endsWait bool
 		kind              string
+		channel           int64
 	)
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_attempt_item i
 		JOIN publish_attempt a ON a.id = i.attempt_id
-		WHERE i.message_id = m.id AND i.principal_id = ? AND a.state <> 'not_submitted'), m.kind, `+notMoreTime+`
-		FROM message m WHERE m.id = ?`, principal, msg).Scan(&offered, &kind, &endsWait); err != nil {
+		WHERE i.message_id = m.id AND i.principal_id = ? AND a.state <> 'not_submitted'), m.kind, `+notMoreTime+`, m.channel_id
+		FROM message m WHERE m.id = ?`, principal, msg).Scan(&offered, &kind, &endsWait, &channel); err != nil {
 		return Wake{}, err
 	}
 	if offered {
@@ -133,9 +135,16 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	}
 	if kind == "ask" {
 		turnEnd, err := seesAtTurnEnd(ctx, tx, principal, now)
-		if err != nil || turnEnd {
-			w.SeenAt = SeenAtTurnEnd
-			return w, err
+		if err != nil {
+			return Wake{}, err
+		}
+		// The turn end offers only the first OfferCap requests.
+		if turnEnd {
+			offer, err := turnEndOffer(ctx, tx, principal, channel)
+			if err != nil || slices.Contains(offer, msg) {
+				w.SeenAt = SeenAtTurnEnd
+				return w, err
+			}
 		}
 	}
 	w.SeenAt, err = s.seenAt(ctx, tx, binding)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -19,17 +20,22 @@ const installConsentHeading = "Saying yes turns these on for the listed agents:"
 
 type installDisclosure struct {
 	store.InstallConsent
-	known, claude, prompt, unknownBuild bool
+	known, evidenced, prompt, unknownBuild bool
 }
 
 func (s Service) attachInstallDisclosure(ctx context.Context, targets []installTarget) {
 	var profile wire.HookProfile
 	for i, target := range targets {
-		targets[i].disclosure.claude = target.Spec.Adapter == "claude"
+		// Notices and the turn-end check are disclosed for an adapter with
+		// built-in capability evidence, read for its build.
+		evidenced := slices.ContainsFunc(domain.BuiltinCapabilityEvidence, func(e domain.BuiltinEvidence) bool {
+			return e.Vendor == target.Spec.Adapter
+		})
+		targets[i].disclosure.evidenced = evidenced
 		targets[i].disclosure.prompt = hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)
-		if target.Spec.Adapter == "claude" {
+		if evidenced {
 			b := target.Build
-			profile = wire.HookProfile{Adapter: "claude", VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
+			profile = wire.HookProfile{Adapter: target.Spec.Adapter, VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
 			if b.Version == "" || b.Version == unknown {
 				profile.VendorVersion = "unverified"
 				targets[i].disclosure.unknownBuild = true
@@ -61,7 +67,7 @@ func groupInstallDisclosure(plans []VendorPlan) installDisclosure {
 
 func (d *installDisclosure) include(other installDisclosure) {
 	prompt := d.prompt || other.prompt
-	if other.claude || !d.claude && !d.known {
+	if other.evidenced || !d.evidenced && !d.known {
 		*d = other
 	}
 	d.prompt = prompt
@@ -88,7 +94,7 @@ func (d installDisclosure) write(out io.Writer) error {
 	switch {
 	case !d.known:
 		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
-	case !d.claude || !d.unknownBuild && !d.PublishCovered && !d.PublishStopped && !d.TurnEndInteractive && !d.TurnEndPrint:
+	case !d.evidenced || !d.unknownBuild && !d.PublishCovered && !d.PublishStopped && !d.TurnEndInteractive && !d.TurnEndPrint:
 		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup)
 	default:
 		fmt.Fprintln(&text, d.notices(pickup))

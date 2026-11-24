@@ -165,6 +165,18 @@ func (id Identity) UnknownCLI() bool {
 		(id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, row.version.indirect+":"))
 }
 
+// IndirectBuild splits an indirect version, "<label>:<prefix><number>", into
+// its label and number. indirect reports that the vendor's versions are
+// indirect at all; ok, that this version has that form.
+func (id Identity) IndirectBuild() (label, number string, indirect, ok bool) {
+	row, _ := indexRow(id.Vendor)
+	if !id.IndirectVersion() {
+		return "", "", false, false
+	}
+	number, ok = strings.CutPrefix(id.Version, row.version.indirect+":"+row.version.prefix)
+	return row.version.indirect, number, true, ok
+}
+
 // CLIName names the vendor's CLI in user-facing text.
 func (id Identity) CLIName() string {
 	row, _ := indexRow(id.Vendor)

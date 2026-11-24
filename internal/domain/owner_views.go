@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -67,6 +68,15 @@ type OwnerMember struct {
 	HostAlive    bool    `json:"host_alive,omitempty"`
 	OpenRequests []int64 `json:"open_request_ids"`
 	DepartToken  string  `json:"depart_token,omitempty"`
+	// UnreadNotWoken counts the live member's unread requests that nothing
+	// will tell it about: no notice, no running wait, no turn end.
+	UnreadNotWoken *UnreadNotWoken `json:"unread_not_woken,omitempty"`
+}
+
+type UnreadNotWoken struct {
+	Requests   int   `json:"requests"`
+	OldestAtMS int64 `json:"oldest_at_ms"`
+	OldestAgeS int64 `json:"oldest_age_s"`
 }
 
 type OwnerEvidence struct {
@@ -188,6 +198,10 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 				if err != nil {
 					return core.Result{}, err
 				}
+				m.UnreadNotWoken, err = s.unreadNotWoken(ctx, tx, m.BindingID, m.principal, now)
+				if err != nil {
+					return core.Result{}, err
+				}
 			}
 		}
 	}
@@ -266,4 +280,61 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 	}
 	out.Channel = ch.name
 	return OK(out)
+}
+
+// unreadNotWoken counts a live member's open, unread requests that the
+// hall will not tell it about, as a sender of each would read it now: no
+// notice, no running wait that accepts it, and no turn end that offers it.
+func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, principal int64, now time.Time) (*UnreadNotWoken, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms, m.channel_id FROM binding b
+		JOIN obligation o ON o.principal_id = b.principal_id JOIN message m ON m.id = o.message_id
+		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
+		WHERE b.id = ? AND m.channel_id = b.channel_id AND o.state = 'open' AND o.more_time_at_ms IS NULL
+			AND r.picked_up_at_ms IS NULL
+		ORDER BY m.id`, binding)
+	if err != nil {
+		return nil, err
+	}
+	type request struct{ id, at, channel int64 }
+	var unread []request
+	for rows.Next() {
+		var r request
+		if err := rows.Scan(&r.id, &r.at, &r.channel); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		unread = append(unread, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out *UnreadNotWoken
+	var offer []int64 // what the turn end offers, read once when needed
+	offerRead := false
+	for _, r := range unread {
+		w, err := s.messageWake(ctx, tx, binding, principal, r.id, now)
+		if err != nil {
+			return nil, err
+		}
+		if w.Wake != WakeNone {
+			continue
+		}
+		if w.SeenAt == SeenAtTurnEnd {
+			if !offerRead {
+				if offer, err = turnEndOffer(ctx, tx, principal, r.channel); err != nil {
+					return nil, err
+				}
+				offerRead = true
+			}
+			if slices.Contains(offer, r.id) {
+				continue
+			}
+		}
+		if out == nil {
+			out = &UnreadNotWoken{OldestAtMS: r.at, OldestAgeS: max((ms(now)-r.at)/1000, 0)}
+		}
+		out.Requests++
+	}
+	return out, nil
 }

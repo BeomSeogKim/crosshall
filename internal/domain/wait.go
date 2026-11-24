@@ -52,7 +52,7 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 	case poll.ends:
 		waits.forget(poll.binding)
 	default:
-		waits.saw(poll.binding, cmd.WorkOnly, now)
+		waits.saw(poll.binding, cmd.WorkOnly, poll.cursor, now)
 	}
 	return result, err
 }
@@ -62,6 +62,9 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 type snapshotPoll struct {
 	binding int64
 	ends    bool
+	// cursor is the message ID a running wait continues from: it returns
+	// only messages above it.
+	cursor int64
 }
 
 func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
@@ -170,7 +173,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 // wait.
 func (out WaitSnapshot) polled(binding int64) (core.Result, snapshotPoll, error) {
 	r, err := OK(out)
-	return r, snapshotPoll{binding: binding, ends: len(out.Unread) != 0}, err
+	return r, snapshotPoll{binding: binding, ends: len(out.Unread) != 0, cursor: out.Cursor.MessageID}, err
 }
 
 func noPoll(r core.Result, err error) (core.Result, snapshotPoll, error) {

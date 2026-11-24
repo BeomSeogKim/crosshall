@@ -5,6 +5,9 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **A prompt absorbed into a running Claude Code turn no longer blocks notices:** Claude Code 2.1.330 takes a prompt typed while a tool runs into the running turn, so the hall's turn for it never ended and every later notice was `unknown`. Manifest `claude-3` also installs the Notification hook for `idle_prompt`; the session's idle report closes such turns and ends an unknown suspension recorded before it, timed or lasting, with a `publish_suspension_lifted` event. Rerun `crosshall setup claude` (#236).
+- **The `next:` line after a send says `nothing will wake`:** it said `nothing will tell @lead`, right under `not woken: ...; it sees this at its next prompt`, which reads as if nobody would ever see the message. The line still names the same recipients: those that no notice, running wait or turn end will tell, so only a prompt or crosshall command started by someone else shows them the message.
+- **A first session start makes one round trip less:** a start that will join its session asks the dispatcher in one first contact (`start`) instead of a lookup followed by a join. A conversation that a `/clear` retired is still refused at its start, as before. A dispatcher lists `start` in its ready marker; a hook that finds no such entry, from an older running dispatcher, keeps the lookup and the join, so hooks and dispatcher can be upgraded in either order.
+- **The cause of an unknown suspension:** `owner who --all` and doctor show the cause doctor counts, for example `suspended: notice 11 unknown (open placeholder)`. A receipt recorded before causes were kept shows none.
 - **Upgrade:** the database moves from schema 28 to 29. See [UPGRADING.md](UPGRADING.md#unreleased).
 
 ## v0.2.0-rc.4 (2026-11-24)

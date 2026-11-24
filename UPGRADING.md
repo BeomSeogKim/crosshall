@@ -6,6 +6,8 @@ Notes for moving an existing installation from one release to the next. A new in
 
 Upgrading from v0.2.0-rc.4 moves the database from schema 28 to schema 29. Migration 029 rebuilds the `observation` table to admit Claude Code's idle report; its rows and indexes are kept. The Claude Code hooks move to manifest `claude-3`, whose Notification hook also matches `idle_prompt`. Run `crosshall setup claude` to install it: setup replaces only its own notification hook, and on uninstall still restores the original file when you have not edited it since. Sessions started before keep the `claude-2` hooks until they start again.
 
+A script that reads the `next:` line under a send result's recipients should match `next: nothing will wake`; it said `next: nothing will tell`. That line is text only and names the same recipients. JSON has no such line and is unchanged: each recipient of an ask or a note (`recipients[]`) and the delivery of a reply (`delivery`) still carry `next` with its earlier sentence (such as `waits for its next crosshall command`), and `wake`, `why`, `seen_at` and `until_ms`, which say whether nothing will wake that recipient.
+
 ## To v0.2.0-rc.4
 
 Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:

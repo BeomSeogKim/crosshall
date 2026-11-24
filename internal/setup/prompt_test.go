@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -667,5 +668,37 @@ func TestTheOfferRechecksEligibilityAfterPlanning(t *testing.T) {
 	}
 	if d, _ := s.declinedOffers(); !d["claude"] {
 		t.Fatal("the decline saved meanwhile was lost")
+	}
+}
+
+func TestAnApplyPastItsDeadlineKeepsAConcurrentRealError(t *testing.T) {
+	deadline := errors.New("setup apply timed out")
+	changed := errors.New("configuration changed")
+	for _, tc := range []struct {
+		name     string
+		returned error
+		want     string
+	}{
+		{"real error", changed, "configuration changed. setup apply timed out"},
+		{"bare context error", context.Canceled, "setup apply timed out"},
+		{"wrapped context error", fmt.Errorf("claude adapter policy: %w", context.Canceled), "claude adapter policy: context canceled. setup apply timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			fake := newFakeOps()
+			fake.failing = map[string]error{"claude": tc.returned}
+			ops := expiringInstall{fake, func() { cancel(deadline) }}
+			var out bytes.Buffer
+			_ = (Service{}).prompts(ctx, Request{Action: "setup", Apply: true, JSON: true,
+				Adapters: []string{"claude"}, Input: strings.NewReader(""), Output: &out}, ops)
+			var result promptResult
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.Vendors) != 1 {
+				t.Fatalf("result %q, decode error %v", out.String(), err)
+			}
+			if v := result.Vendors[0]; v.Outcome != "failed" || v.Error != tc.want {
+				t.Fatalf("vendor outcome %+v, want error %q", v, tc.want)
+			}
+		})
 	}
 }

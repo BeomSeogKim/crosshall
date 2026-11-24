@@ -113,8 +113,8 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.TelemetryEndpoint = telemetry.Receiver(version)
 		env.TelemetryCurl = telemetryconfig.CurlPath
 		env.TelemetryStateRoot = paths.state
-		env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
-			return setupApplyDeadline(ctx, 30*time.Second)
+		env.BeginSetupApply = func(ctx context.Context, action string) (context.Context, func()) {
+			return applyDeadline(ctx, action, 30*time.Second)
 		}
 		env.Setup = func(ctx context.Context, req cli.SetupRequest) error {
 			executable, err := os.Executable()
@@ -204,16 +204,22 @@ func setSetupPolicy(ctx context.Context, start func(context.Context) error,
 	return true, nil
 }
 
-const setupApplyTimeoutMessage = "setup apply timed out. Some changes may have been applied. Run crosshall setup status, then retry with the same adapters."
+func applyTimeoutMessage(action string) string {
+	if action == "uninstall" {
+		return "uninstall timed out. Some changes may have been applied. Run crosshall setup status, then retry crosshall uninstall with the same adapters."
+	}
+	return "setup apply timed out. Some changes may have been applied. Run crosshall setup status, then retry with the same adapters."
+}
 
-func setupApplyDeadline(ctx context.Context, limit time.Duration) (context.Context, func()) {
-	ctx, cancel := context.WithTimeoutCause(ctx, limit, errors.New(setupApplyTimeoutMessage))
+func applyDeadline(ctx context.Context, action string, limit time.Duration) (context.Context, func()) {
+	message := applyTimeoutMessage(action)
+	ctx, cancel := context.WithTimeoutCause(ctx, limit, errors.New(message))
 	// Give cooperative cancellation time to report its result. A blocked
 	// syscall cannot observe the context, so the CLI must also exit on its own.
 	watchdog := time.AfterFunc(limit+time.Second, func() {
 		reported := make(chan struct{})
 		go func() {
-			fmt.Fprintln(os.Stderr, setupApplyTimeoutMessage)
+			fmt.Fprintln(os.Stderr, message)
 			close(reported)
 		}()
 		select {

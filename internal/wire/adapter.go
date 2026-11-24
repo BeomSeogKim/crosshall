@@ -128,12 +128,13 @@ type HookResult struct {
 	Cue        string `json:"cue,omitempty"`
 	// CueWithStartLine replaces Cue in an output that also prints the start
 	// line (Hint), which already says who the session is.
-	CueWithStartLine *string         `json:"cue_with_start_line,omitempty"`
-	Roster           json.RawMessage `json:"roster,omitempty"`
-	Omitted          int             `json:"omitted,omitempty"`
-	OfferID          int64           `json:"offer_id,omitempty"`
-	PendingLine      string          `json:"pending_line,omitempty"`
-	TurnEndLine      string          `json:"turn_end_line,omitempty"`
+	CueWithStartLine *string           `json:"cue_with_start_line,omitempty"`
+	Roster           json.RawMessage   `json:"roster,omitempty"`
+	Omitted          int               `json:"omitted,omitempty"`
+	OfferID          int64             `json:"offer_id,omitempty"`
+	OfferReceipt     *HookOfferReceipt `json:"offer_receipt,omitempty"`
+	PendingLine      string            `json:"pending_line,omitempty"`
+	TurnEndLine      string            `json:"turn_end_line,omitempty"`
 	// ReachLine says whether the hall brings new work to the session;
 	// ReachAck stores it as told once the hook has printed it.
 	ReachLine    string           `json:"reach_line,omitempty"`
@@ -147,12 +148,24 @@ type HookResult struct {
 	Epoch          uint64 `json:"epoch"`
 }
 
+// HookOfferReceipt identifies a prepared batch for acknowledgement after output.
+type HookOfferReceipt struct {
+	OfferID int64  `json:"offer_id"`
+	Nonce   string `json:"nonce"`
+}
+
+type HookOutputAckArgs struct {
+	Offer       *HookOfferReceipt `json:"offer,omitempty"`
+	WrittenAtMS int64             `json:"written_at_ms,omitempty"`
+}
+
 type HookJoinHintAck struct {
-	BindingID  int64  `json:"binding_id"`
-	RouteEpoch int64  `json:"route_epoch"`
-	Generation string `json:"gen"`
-	RosterSeq  uint64 `json:"roster_seq"`
-	Offer      string `json:"offer,omitempty"`
+	BindingID            int64  `json:"binding_id"`
+	RouteEpoch           int64  `json:"route_epoch"`
+	Generation           string `json:"gen"`
+	RosterSeq            uint64 `json:"roster_seq"`
+	Offer                string `json:"offer,omitempty"`
+	MembershipGeneration int64  `json:"membership_generation,omitempty"`
 }
 
 func (a HookJoinHintAck) ValidFor(generation string) bool {
@@ -162,18 +175,19 @@ func (a HookJoinHintAck) ValidFor(generation string) bool {
 
 func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
 	return a.Offer != "" && a.Offer == b.Offer && a.BindingID == b.BindingID &&
-		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation
+		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation && a.MembershipGeneration == b.MembershipGeneration
 }
 
 // HookReachAck identifies a reach line offered to a binding: Told is the
 // value stored once the line was printed (1 brings, 0 cannot reach).
 type HookReachAck struct {
-	BindingID    int64  `json:"binding_id"`
-	RouteEpoch   int64  `json:"route_epoch"`
-	Told         int    `json:"told"`
-	SuspensionID int64  `json:"suspension_id,omitempty"`
-	Generation   string `json:"gen"`
-	Offer        string `json:"offer,omitempty"`
+	BindingID            int64  `json:"binding_id"`
+	RouteEpoch           int64  `json:"route_epoch"`
+	Told                 int    `json:"told"`
+	SuspensionID         int64  `json:"suspension_id,omitempty"`
+	Generation           string `json:"gen"`
+	Offer                string `json:"offer,omitempty"`
+	MembershipGeneration int64  `json:"membership_generation,omitempty"`
 }
 
 func (a HookReachAck) ValidFor(generation string) bool {
@@ -186,11 +200,12 @@ func (a HookReachAck) SameOffer(b HookReachAck) bool {
 }
 
 type HookAck struct {
-	Kind       string `json:"kind"`
-	Instance   string `json:"instance"`
-	Generation string `json:"gen"`
-	Seq        uint64 `json:"seq"`
-	TurnRef    string `json:"turn_ref,omitempty"`
+	Kind       string     `json:"kind"`
+	Instance   string     `json:"instance"`
+	Generation string     `json:"gen"`
+	Seq        uint64     `json:"seq"`
+	TurnRef    string     `json:"turn_ref,omitempty"`
+	Membership Membership `json:"membership,omitzero"`
 }
 
 type AdapterPolicyArgs struct {

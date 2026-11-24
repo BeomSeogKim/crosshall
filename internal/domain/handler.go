@@ -38,7 +38,7 @@ type Service struct {
 	// directory holds and has not sent yet (the cursor and the rules one),
 	// if the directory is the registered one (file identity) and carries
 	// the committed generation; otherwise none.
-	LeafReceipts func(vendor, key, fileID, generation string) (cursor, rules uint64)
+	LeafReceipts func(vendor, key, fileID, generation string, membership ...core.Membership) (cursor, rules uint64)
 
 	waits waitPresence
 }
@@ -335,6 +335,9 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if cmd.RepoRoot != "" && (cmd.Channel != "" || !validRepoRoot(cmd.RepoRoot)) {
 		return Fail(core.ExitUsage, "", "join accepts a channel or one absolute repository root", "crosshall join <channel> --as <alias>"), nil
 	}
+	if cmd.Move && cmd.Channel == "" {
+		return Fail(core.ExitUsage, "", "--move needs an explicit channel", "crosshall join <channel> --move"), nil
+	}
 	if msg := ValidText("focus", cmd.Focus); msg != "" {
 		return Fail(core.ExitUsage, "", msg, "crosshall join <channel> --as <alias>"), nil
 	}
@@ -349,18 +352,25 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if caller.PrincipalID != nil {
 		principal = *caller.PrincipalID
 	}
+	if r, found, err := ReplayMembershipChange(ctx, tx, principal, req.OpKey, cmd); found || err != nil {
+		return r, err
+	}
+	source, err := selectedMembership(ctx, tx, principal)
+	if err != nil {
+		return core.Result{}, err
+	}
 	var (
 		ch    channelRow
 		ok    bool
-		err   error
 		scope string
 	)
 	if cmd.RepoRoot != "" {
 		scope = "repo:" + cmd.RepoRoot
-		if r, found, err := replayRepoJoin(ctx, tx, principal, req.OpKey, scope, cmd); found || err != nil {
-			return r, err
+		if source.binding != 0 {
+			ch, ok, err = channelByName(ctx, tx, source.channelName)
+		} else {
+			ch, ok, err = defaultChannel(ctx, tx, cmd.RepoRoot)
 		}
-		ch, ok, err = defaultChannel(ctx, tx, cmd.RepoRoot)
 	} else {
 		ch, ok, err = channelByName(ctx, tx, cmd.Channel)
 		scope = "channel:" + ch.name
@@ -378,16 +388,15 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "crosshall join <channel> with an active channel"), nil
 	}
 
-	if principal != 0 && cmd.RepoRoot == "" {
-		if r, found, err := replay(ctx, tx, principal, req.OpKey, scope, cmd); err != nil || found {
-			return r, err
-		}
+	crossing := source.binding != 0 && source.channel != ch.id
+	if crossing && source.state == "live" && !cmd.Move {
+		return Refuse(core.CodeOneChannel,
+			fmt.Sprintf("this session is joined to #%s", source.channelName),
+			fmt.Sprintf("crosshall join %s --move moves this session to #%s", ch.name, ch.name)), nil
 	}
 
-	// One channel per principal, counting departed bindings too.
 	var existing struct {
 		id                  int64
-		channel             int64
 		alias, state, focus string
 		rosterAck           uint64
 		hintAcked           bool
@@ -396,22 +405,13 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	}
 	if principal != 0 {
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, channel_id, alias, state, focus, roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL, departed_by_owner
-			FROM binding WHERE principal_id = ? ORDER BY id LIMIT 1`, principal).
-			Scan(&existing.id, &existing.channel, &existing.alias, &existing.state, &existing.focus, &existing.rosterAck,
+			`SELECT id, alias, state, focus, roster_ack_seq, hint_acked, roster_baseline_seq IS NOT NULL, departed_by_owner
+			FROM binding WHERE principal_id = ? AND channel_id = ?`, principal, ch.id).
+			Scan(&existing.id, &existing.alias, &existing.state, &existing.focus, &existing.rosterAck,
 				&existing.hintAcked, &existing.hooked, &existing.departedByOwner)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return core.Result{}, err
 		}
-	}
-	if existing.id != 0 && existing.channel != ch.id {
-		var other string
-		if err := tx.QueryRowContext(ctx, `SELECT name FROM channel WHERE id = ?`, existing.channel).Scan(&other); err != nil {
-			return core.Result{}, err
-		}
-		return Refuse(core.CodeOneChannel,
-			fmt.Sprintf("this session is bound to #%s; a session joins one channel", other),
-			fmt.Sprintf("crosshall join %s returns this session there; a new session (for a shell, crosshall run -- sh) can join #%s", other, ch.name)), nil
 	}
 	alias := cmd.Alias
 	if existing.id != 0 && cmd.Alias != "" && cmd.Alias != existing.alias {
@@ -447,10 +447,13 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			}
 		} else if taken {
 			taken := fmt.Sprintf("@%s is taken in #%s", alias, ch.name)
-			if existing.id != 0 {
-				// A departed member is already enrolled: a restore cannot apply.
+			if existing.id != 0 || crossing {
+				command := "crosshall join " + ch.name
+				if crossing && source.state == "live" {
+					command += " --move"
+				}
 				return Refuse(core.CodeAliasTaken, taken,
-					fmt.Sprintf("Choose an unused alias, then rerun crosshall join %s with --as set to that alias.", ch.name)), nil
+					fmt.Sprintf("Choose an unused alias, then rerun %s with --as set to that alias.", command)), nil
 			}
 			// A key that has joined can no longer be restored, so a session
 			// that lost its identity must not take the retry first.
@@ -459,6 +462,13 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 				"The owner runs crosshall owner who --all to find the old binding ID, then runs crosshall owner restore with that ID as its first argument and --new-key set to the token. " +
 				"Joining under another alias makes this session's key ineligible for owner restore."
 			return Refuse(core.CodeAliasTaken, taken, newMember+recover), nil
+		}
+	}
+	var move *JoinMoveReceipt
+	if crossing {
+		var refusal *core.Result
+		if move, refusal, err = prepareChannelMove(ctx, tx, source, now); err != nil || refusal != nil {
+			return deref(refusal), err
 		}
 	}
 
@@ -538,11 +548,30 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			return core.Result{}, err
 		}
 	}
+	var membership core.Membership
+	if err := tx.QueryRowContext(ctx, `SELECT binding_id, generation FROM member_selection WHERE principal_id = ?`, principal).
+		Scan(&membership.BindingID, &membership.Generation); err != nil {
+		return core.Result{}, err
+	}
+	if crossing {
+		if source.ownerDeparted {
+			source.ownerFence = sql.NullInt64{Int64: max(source.ownerFence.Int64, ms(now)), Valid: true}
+		}
+		if source.ownerFence.Valid {
+			if _, err := tx.ExecContext(ctx, `UPDATE binding SET owner_hook_fence_ms = MAX(COALESCE(owner_hook_fence_ms, 0), ?) WHERE id = ?`,
+				source.ownerFence.Int64, membership.BindingID); err != nil {
+				return core.Result{}, err
+			}
+		}
+		if err := movePublishState(ctx, tx, source.binding, membership.BindingID, now); err != nil {
+			return core.Result{}, err
+		}
+	}
 	seq, err := rosterSeq(ctx, tx, ch.id)
 	if err != nil {
 		return core.Result{}, err
 	}
-	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq, Launch: bound}
+	out := JoinResult{Channel: ch.name, Topic: ch.topic, Alias: alias, Restored: restored, RosterSeq: seq, Launch: bound, Move: move}
 	// The hint and the full roster repeat until a later command acknowledges
 	// them; after that a re-join says "Already in", prints the rules only on
 	// request and, of the roster, only what changed since the cursor. A
@@ -578,6 +607,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if err != nil {
 		return core.Result{}, err
 	}
+	r.Membership = &membership
 	return r, record(ctx, tx, principal, req.OpKey, scope, cmd, r, now)
 }
 
@@ -656,8 +686,9 @@ func (s *Service) who(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	var ch channelRow
 	var hintAcked bool
 	err := tx.QueryRowContext(ctx,
-		`SELECT c.id, c.name, c.topic, c.state, b.hint_acked FROM binding b JOIN channel c ON c.id = b.channel_id
-		 WHERE b.principal_id = ? AND b.state = 'live' ORDER BY b.id LIMIT 1`, *caller.PrincipalID).
+		`SELECT c.id, c.name, c.topic, c.state, b.hint_acked
+		 FROM member_selection s JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		 WHERE s.principal_id = ? AND b.state = 'live'`, *caller.PrincipalID).
 		Scan(&ch.id, &ch.name, &ch.topic, &ch.state, &hintAcked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return notEnrolled(), nil
@@ -673,8 +704,14 @@ func (s *Service) who(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		return core.Result{}, err
 	}
 	for i := range members {
-		// A notice still wins over a running wait.
-		if members[i].Wake.Wake != WakeNotice && s.waits.running(members[i].binding, "", now) {
+		if members[i].Wake.Wake == WakeNotice {
+			continue
+		}
+		running, err := s.waits.running(ctx, tx, members[i].binding, "", now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if running {
 			members[i].Wake = Wake{Wake: WakeWait}
 		}
 	}
@@ -799,6 +836,9 @@ func effectiveAck(stored, incoming, current uint64) uint64 {
 	return max(stored, min(incoming, current))
 }
 
+const bindingCommandObservation = `o.principal_id = b.principal_id AND o.kind = 'command'
+	AND (b.state = 'live' OR (o.observed_at_ms >= b.joined_at_ms AND o.observed_at_ms < b.departed_at_ms))`
+
 // rosterChanges lists members other than self whose rows changed after the
 // cursor, one row each with its latest change, oldest change first.
 func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64, self int64, now time.Time) ([]Member, error) {
@@ -808,7 +848,7 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 		     WHERE channel_id = ? AND seq > ? AND principal_id <> ?
 		     GROUP BY principal_id)
 		 SELECT b.principal_id, b.alias, p.vendor, b.focus, b.state, b.joined_at_ms,
-		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id AND o.kind = 'command'),
+		        (SELECT MAX(o.observed_at_ms) FROM observation o WHERE `+bindingCommandObservation+`),
 		        rc.field
 		 FROM latest l
 		 JOIN roster_change rc ON rc.channel_id = ? AND rc.seq = l.seq
@@ -853,6 +893,9 @@ func rosterChanges(ctx context.Context, tx store.Tx, channel int64, after uint64
 	}
 	rows.Close()
 	for i := range out {
+		if out[i].Change == "departed" {
+			continue
+		}
 		if err := withPresence(ctx, tx, out[i].principal, &out[i], now); err != nil {
 			return nil, err
 		}

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -257,12 +258,12 @@ func TestWaitingShowsNoWakeOnceARequestIsPickedUp(t *testing.T) {
 // A notice wins over a running wait in who, as in a send.
 func TestWhoPrefersANoticeOverARunningWait(t *testing.T) {
 	p := wakeFixture(t)
-	p.svc.waits.saw(p.binding.ID, false, 0, p.now)
+	wantOK(t, p.run(p.reader, Wait{}, ""))
 	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeWait}) {
 		t.Fatalf("a running wait on an unproven route: %+v", w)
 	}
 	p.proveRoute()
-	p.svc.waits.saw(p.binding.ID, false, 0, p.now)
+	wantOK(t, p.run(p.reader, Wait{}, ""))
 	if w := p.memberRow(p.writer, "reader").Wake; w != (Wake{Wake: WakeNotice}) {
 		t.Fatalf("a running wait on an available route: %+v", w)
 	}
@@ -370,14 +371,38 @@ func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
 	if r := row(atPrompt); r.SeenAt != "" || r.ShownAtMS == nil {
 		t.Fatalf("after the prompt line showed it: %+v", r)
 	}
-	// A running wait still takes it; shown replaces only where it is seen.
-	f.svc.waits.saw(bindingIDOf(t, f, f.principalOf(reader)), false, 0, f.now)
-	if r := row(atPrompt); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
-		t.Fatalf("a running wait after the prompt line: %+v", r)
+	wantOK(t, f.run(reader, Wait{}, ""))
+	if r := row(atPrompt); r.Wake.Wake != WakeNone || r.ShownAtMS == nil {
+		t.Fatalf("a request behind the running wait's cursor: %+v", r)
+	}
+	duringWait := f.turnEndAsk(writer, "reader", "during-wait")
+	if got := f.hook(reader, prompt("launch", "turn-3", f.now.UnixMilli()+2)); !strings.Contains(got.PendingLine, "pending:") {
+		t.Fatalf("the next prompt showed nothing: %+v", got)
+	}
+	if r := row(duringWait); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
+		t.Fatalf("a shown request above the running wait's cursor: %+v", r)
 	}
 	f.svc.waits.forget(bindingIDOf(t, f, f.principalOf(reader)))
 	wantOK(t, f.run(reader, Read{IDs: []int64{atPrompt}}, "read"))
 	if r := row(atPrompt); r.Wake != (Wake{}) || r.ShownAtMS != nil {
 		t.Fatalf("after reading: %+v", r)
+	}
+}
+
+// A turn end offers at most OfferCap requests: the one past the cap is not
+// seen when the turn ends, and its send line says where it is seen.
+func TestARequestPastTheTurnEndCapIsNotSeenWhenTheTurnEnds(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return adapter == "claude" }
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	var d Delivery
+	for i := range OfferCap + 1 {
+		d = decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, fmt.Sprintf("ask-%d", i))).Recipients[0]
+		if i < OfferCap && d.SeenAt != SeenAtTurnEnd {
+			t.Fatalf("request %d inside the cap: %+v", i+1, d)
+		}
+	}
+	if d.Wake.Wake != WakeNone || d.SeenAt != SeenAtPrompt {
+		t.Fatalf("the request past the cap: %+v", d)
 	}
 }

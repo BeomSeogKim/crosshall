@@ -45,6 +45,7 @@ type Request struct {
 }
 
 type AdapterContext struct {
+	OfferReceipts          bool
 	Instance, Generation   string
 	NoticeSeq, ReminderSeq uint64
 }
@@ -74,6 +75,7 @@ type Join struct {
 	Alias    string `json:"alias,omitempty"`
 	Focus    string `json:"focus,omitempty"`
 	RepoRoot string `json:"repo_root,omitempty"`
+	Move     bool   `json:"move,omitempty"`
 	// Rules asks a repeated join to print the member rules again.
 	Rules bool `json:"rules,omitempty"`
 	// Launch is the agent process a hand join runs in, when the session's

@@ -95,6 +95,16 @@ A successful send confirms that the message was stored. Members pick up new work
 
 Members follow the member rules in [PROTOCOL.md](../PROTOCOL.md). `crosshall join` states them, and a member without an adapter follows them by hand.
 
+## Moving a session between channels
+
+Run `crosshall join inventory --move --as writer` inside the session you want to move. The move leaves its current channel and joins the named destination in one transaction. The conversation and its session identity stay the same. If the destination channel or alias is unavailable, the session stays in its current channel. After a voluntary `crosshall leave`, you can join a different channel using ordinary `crosshall join`.
+
+The move receipt shows the channel you left and its unread, owed and waiting counts. With `--json`, these are in `move.channel`, `move.unread`, `move.owed` and `move.waiting`. Open work, subsequent replies and history stay in that channel. To tend that work again, move back to the original channel. A return uses the original binding and the channel's alias availability rules.
+
+An unresolved notice submission can hold the move. Use the attempt ID in the refusal to check the status through the owner, then retry after the attempt resolves. The destination's notice route needs fresh proof. Use `crosshall read` or `crosshall wait` in the destination while it is unavailable. Start a new wait after moving because a wait is scoped to the membership where it began.
+
+The owner can inspect earlier memberships in `crosshall owner who --all`. To restore a lost identity, use its selected binding, which is the current membership or the one it last left.
+
 ## When a member goes quiet
 
 From the owner's terminal, `crosshall owner who --all` lists each binding's ID and state, how long ago its last command or other activity was observed, and any open requests it owes in that channel. For a live member with unread requests that nothing will tell it about (no notice, no running wait that will return it, no turn end that offers it, and not answered with more time), the line adds `; 2 unread requests, oldest 41m`, and one line above the channels sums them up: `3 requests wait on members the hall cannot wake: @sol 2 (oldest 41m), @agy 1.` Ask such a member's user, or give the work to a member the hall can wake. It also reports whether exit is tracked by the member process or by adapter hooks. An eligible member with a confirmed running host appears as `live, alive`, even after long inactivity. A stopped process remains alive. Without current process evidence, old activity can mark a member `stale`. A `live, stale` member can still receive messages. To mark the member departed, copy the ID and depart token from its live row.

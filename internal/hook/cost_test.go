@@ -36,7 +36,7 @@ func TestQuietHookCostBreakdown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for file, value := range map[string]string{"stamp": "fixture-host fixture-gen 1 0\n", "seen-notice": "fixture-host fixture-gen 1\n"} {
+	for file, value := range map[string]string{"stamp": "fixture-host fixture-gen 1 0\n", seenReceiptNotice: "fixture-host fixture-gen 1\n"} {
 		must(os.WriteFile(filepath.Join(member, file), []byte(value), 0600))
 	}
 	must(os.Mkdir(filepath.Join(member, "in"), 0700))
@@ -81,7 +81,7 @@ func TestQuietHookCostBreakdown(t *testing.T) {
 		timed("full_in_process_prompt", func() {
 			// Match the host's payload-only identity regardless of the
 			// ambient agent used to start this benchmark.
-			runTimed(time.Now(), io.Discard, func() (*os.Root, *hookCounter) {
+			runTimed(time.Now(), Budget, Budget, io.Discard, func() (*os.Root, *hookCounter) {
 				r, err := ident.OpenPrivateDir(dir)
 				if err != nil {
 					return nil, nil

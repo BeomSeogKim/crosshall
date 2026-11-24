@@ -11,6 +11,7 @@ import (
 
 type hookScope struct {
 	digest, generation, adapter, launch string
+	membership                          wire.Membership
 }
 
 type queuedHook struct {
@@ -140,6 +141,9 @@ func readQueuedHook(dir *os.Root, packet serverPacket) (hookScope, queuedHook, b
 		return scope, hook, false
 	}
 	scope.digest, scope.generation = req.KeyDigest, req.Generation
+	if req.Membership != nil {
+		scope.membership = *req.Membership
+	}
 	hook.publishSeq = req.PublishSeq
 	switch req.Verb {
 	case wire.VerbHookEnroll:

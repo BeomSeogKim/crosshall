@@ -92,8 +92,11 @@ func PublishThreadRouted() string {
 // r: it is the route's launch, and either both are verified or the route
 // is thread-routed, so its transport proves the hosting server instead.
 func PublishLaunchBinds() string {
-	return "(l.launch_ref = r.launch_ref AND (r.launch_verified = 1 AND l.verified = 1 OR " + PublishThreadRouted() + "))"
+	return "(l.launch_ref = r.launch_ref AND l.fenced = 0 AND " + PublishLaunchAfterOwnerFence +
+		" AND (r.launch_verified = 1 AND l.verified = 1 OR " + PublishThreadRouted() + "))"
 }
+
+const PublishLaunchAfterOwnerFence = "(b.owner_hook_fence_ms IS NULL OR l.started_hook_at_ms > b.owner_hook_fence_ms)"
 
 // PublishLane is the queue route r's notices hold once proven by p, which
 // one open notice at a time may use (publish_attempt.lane): the thread of
@@ -107,7 +110,8 @@ func PublishLane() string {
 // PublishNotSuspended holds when no suspension of the route's launch,
 // committed after the owner's last resume, is still in force at nowMS.
 func PublishNotSuspended(nowMS int64) string {
-	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s WHERE s.binding_id = r.binding_id
+	return fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM publish_suspension s
+		WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = r.principal_id)
 		AND s.launch_ref = r.launch_ref AND s.id > b.publish_resume_suspension
 		AND COALESCE((%s) > %d, 1))`, publishSuspensionExpiry, nowMS)
 }
@@ -136,7 +140,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		mode, socketPath, threadID                                         string
 		principal, resumedAfter                                            int64
 		verified, dnd, quiet, enabled, epochOK, current                    bool
-		proven, activated                                                  bool
+		afterOwnerFence, proven, activated                                 bool
 		owner, vendor, hall                                                sql.NullBool
 		host                                                               publish.Queue
 		home                                                               string
@@ -147,6 +151,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			b.publish_resume_suspension, COALESCE(policy.enabled, 0), policy.publish,
 			COALESCE(policy.epoch = r.policy_epoch, 0), (SELECT h.enabled FROM hall_publish h WHERE h.id = 1),
 			COALESCE(`+PublishLaunchBinds()+`, 0),
+			COALESCE(`+PublishLaunchAfterOwnerFence+`, 1),
 			COALESCE(l.profile, '{}'),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation),
 			EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id AND p.generation = r.generation
@@ -158,7 +163,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 			ORDER BY current.started_hook_at_ms DESC, current.rowid DESC LIMIT 1)
 		WHERE r.binding_id = ?`, bindingID).Scan(&routeState, &routeReason, &state.Generation, &adapter, &launchRef,
 		&principal, &verified, &mode, &socketPath, &threadID, &host.PID, &host.StartMS, &home, &bindingState, &dnd, &quiet, &owner, &resumedAfter, &enabled, &vendor, &epochOK,
-		&hall, &current, &profile, &proven, &activated)
+		&hall, &current, &afterOwnerFence, &profile, &proven, &activated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, nil
 	}
@@ -188,6 +193,9 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 		return off("do not disturb")
 	case routeState != "active":
 		return off(routeReason)
+	case !afterOwnerFence:
+		state.State, state.Reason = "candidate", "launch predates owner departure"
+		return state, true, nil
 	}
 	var build capabilityBuildEvidence
 	if verified && current {
@@ -202,10 +210,10 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	var recoveryHint int
 	err = tx.QueryRowContext(ctx, `WITH suspensions AS (
 		SELECT s.id, s.reason, s.notice, s.at_ms, s.recovery_hint, `+publishSuspensionExpiry+` AS until_ms FROM publish_suspension s
-		WHERE s.binding_id = ? AND s.launch_ref = ? AND s.id > ?
+		WHERE s.binding_id IN (SELECT id FROM binding WHERE principal_id = ?) AND s.launch_ref = ? AND s.id > ?
 	)
 		SELECT id, reason, notice, at_ms, until_ms, recovery_hint FROM suspensions WHERE until_ms IS NULL OR until_ms > ?
-		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, bindingID, launchRef, resumedAfter, now.UnixMilli()).
+		ORDER BY until_ms IS NULL DESC, until_ms DESC, id DESC LIMIT 1`, principal, launchRef, resumedAfter, now.UnixMilli()).
 		Scan(&suspensionID, &reason, &notice, &at, &until, &recoveryHint)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return PublishState{}, false, err

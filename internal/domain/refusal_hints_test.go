@@ -101,19 +101,19 @@ func TestHintCarriesTheSpecificationRules(t *testing.T) {
 // A refusal's next step must be one its recipient can take: a member is not
 // pointed at a command that refuses it or at an owner-only command.
 func TestRefusalStepsAreUsableForTheirRecipient(t *testing.T) {
-	t.Run("one channel after leaving", func(t *testing.T) {
+	t.Run("moving needs an explicit opt-in", func(t *testing.T) {
 		f := newFixture(t)
 		f.owner(CreateChannel{Name: "checkout"}, "")
 		f.owner(CreateChannel{Name: "inventory"}, "")
 		a := f.newSession("claude")
 		wantOK(t, f.join(a, Join{Channel: "checkout", Alias: "form"}, ""))
-		wantOK(t, f.run(a, Leave{}, ""))
 		r := f.join(a, Join{Channel: "inventory"}, "")
 		wantCode(t, r, core.ExitRefused, core.CodeOneChannel)
 		hint := decode[Refusal](t, r).Hint
-		if hint == "crosshall who" || !strings.Contains(hint, "crosshall join checkout") || !strings.Contains(hint, "new session") {
+		if !strings.Contains(hint, "crosshall join inventory --move") {
 			t.Fatalf("hint %q", hint)
 		}
+		wantOK(t, f.join(a, Join{Channel: "inventory", Move: true}, ""))
 	})
 	t.Run("archived channel on ask", func(t *testing.T) {
 		f, a, _, _ := channel3(t)
@@ -123,7 +123,7 @@ func TestRefusalStepsAreUsableForTheirRecipient(t *testing.T) {
 		}
 		r := f.ask(a, Ask{To: []string{"tax"}, Body: "q"}, "")
 		wantCode(t, r, core.ExitRefused, core.CodeArchived)
-		if hint := decode[Refusal](t, r).Hint; strings.Contains(hint, "crosshall leave") || !strings.Contains(hint, "new session") {
+		if hint := decode[Refusal](t, r).Hint; !strings.Contains(hint, "crosshall join <channel> --move") {
 			t.Fatalf("hint %q", hint)
 		}
 	})
@@ -140,7 +140,7 @@ func TestRefusalStepsAreUsableForTheirRecipient(t *testing.T) {
 		r := f.join(a, Join{RepoRoot: repo, Alias: "form"}, "repo-join")
 		wantCode(t, r, core.ExitRefused, core.CodeArchived)
 		hint := decode[Refusal](t, r).Hint
-		if strings.HasPrefix(hint, "crosshall owner") || !strings.Contains(hint, "owner") || !strings.Contains(hint, "new session") {
+		if strings.HasPrefix(hint, "crosshall owner") || !strings.Contains(hint, "owner") || !strings.Contains(hint, "crosshall join <channel> --move") {
 			t.Fatalf("hint %q", hint)
 		}
 	})

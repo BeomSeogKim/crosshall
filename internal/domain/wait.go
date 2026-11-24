@@ -30,8 +30,9 @@ func (Wait) command()     {}
 func (Wait) Verb() string { return VerbWait }
 
 type WaitCursor struct {
-	BindingID int64 `json:"binding_id"`
-	MessageID int64 `json:"message_id"`
+	BindingID  int64 `json:"binding_id"`
+	MessageID  int64 `json:"message_id"`
+	Generation int64 `json:"membership_generation,omitempty"`
 }
 
 type WaitSnapshot struct {
@@ -48,11 +49,11 @@ type WaitSnapshot struct {
 func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, waits *waitPresence, now time.Time) (core.Result, error) {
 	result, poll, err := waitSnapshotOf(ctx, tx, caller, cmd, now)
 	switch {
-	case err != nil || poll.binding == 0:
+	case err != nil || poll.cursor.BindingID == 0:
 	case poll.ends:
-		waits.forget(poll.binding)
+		waits.forget(poll.cursor.BindingID)
 	default:
-		waits.saw(poll.binding, cmd.WorkOnly, poll.cursor, now)
+		waits.saw(poll.cursor, cmd.WorkOnly, now)
 	}
 	return result, err
 }
@@ -60,11 +61,8 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 // snapshotPoll names the binding a successful snapshot answered, zero for a
 // refusal, and whether the snapshot ends the wait.
 type snapshotPoll struct {
-	binding int64
-	ends    bool
-	// cursor is the message ID a running wait continues from: it returns
-	// only messages above it.
-	cursor int64
+	cursor WaitCursor
+	ends   bool
 }
 
 func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
@@ -78,15 +76,16 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 	if !ok {
 		return notEnrolled(), snapshotPoll{}, nil
 	}
+	if cmd.Cursor != nil && (cmd.Cursor.BindingID != member.binding ||
+		cmd.Cursor.Generation != member.generation && (cmd.Cursor.Generation != 0 || member.generation > 1)) {
+		return noPoll(waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", nil))
+	}
 	summary, err := memberInboxSummary(ctx, tx, member.principal, member.channel)
 	if err != nil {
 		return core.Result{}, snapshotPoll{}, err
 	}
 	if cmd.Any && cmd.WorkOnly {
 		return noPoll(waitFailure(core.ExitUsage, "", "--any and --work-only cannot be used together", "crosshall wait --any, or crosshall wait --work-only", &summary))
-	}
-	if cmd.Cursor != nil && cmd.Cursor.BindingID != member.binding {
-		return noPoll(waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", &summary))
 	}
 	if cmd.Cursor != nil && cmd.Cursor.MessageID < 0 {
 		return noPoll(waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary))
@@ -98,7 +97,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 		return core.Result{}, snapshotPoll{}, err
 	}
 	out := WaitSnapshot{
-		Cursor:             WaitCursor{BindingID: member.binding},
+		Cursor:             WaitCursor{BindingID: member.binding, Generation: member.generation},
 		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers},
 		MemberInboxSummary: &summary,
 	}
@@ -123,11 +122,11 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 			out.Delivers = delivers
 			out.Cancelled = nil // a cancellation is not work: it never ends or rides on a wait
 		}
-		return out.polled(member.binding)
+		return out.polled()
 	}
 	if cmd.Cursor.MessageID == out.Cursor.MessageID {
 		out.PriorCursorFingerprint = out.CursorFingerprint
-		return out.polled(member.binding)
+		return out.polled()
 	}
 	out.PriorCursorFingerprint, err = waitMessageFingerprint(ctx, tx, cmd.Cursor.MessageID)
 	if err != nil {
@@ -166,14 +165,14 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 		}
 		out.Owed = inbox.Owed
 	}
-	return out.polled(member.binding)
+	return out.polled()
 }
 
 // polled returns the snapshot with its binding. Something unread ends the
 // wait.
-func (out WaitSnapshot) polled(binding int64) (core.Result, snapshotPoll, error) {
+func (out WaitSnapshot) polled() (core.Result, snapshotPoll, error) {
 	r, err := OK(out)
-	return r, snapshotPoll{binding: binding, ends: len(out.Unread) != 0, cursor: out.Cursor.MessageID}, err
+	return r, snapshotPoll{cursor: out.Cursor, ends: len(out.Unread) != 0}, err
 }
 
 func noPoll(r core.Result, err error) (core.Result, snapshotPoll, error) {

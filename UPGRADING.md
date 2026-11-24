@@ -2,29 +2,38 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.2.0-rc.4
 
-Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 26. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:
+
+- Migration 023 records whether a session received the owner resume command for a lasting suspension.
+- Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+- Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
+- Migration 026 records why a notice receipt was `unknown`. Receipts observed before it have no cause; `owner doctor` counts them as `cause not recorded`.
+- Migration 027 records when the hook confirms writing a pending line. Earlier offers have no write confirmation. Still-unread IDs can appear again at the next eligible prompt. An older hook continues to count its offers when the dispatcher prepares them.
+- Migration 028 records the selected channel binding for each enrolled session and enforces one live binding per session. It uses existing membership records, including departed bindings, and preserves the message and request ledger. If existing records leave the selected binding ambiguous, the migration stops and reports the affected IDs.
 
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
-3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v22-*.sqlite3` backup beside the database.
-4. Install the new release using the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
+3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the v0.2.0-rc.4 dispatcher also saves a `store-v22-*.sqlite3` backup beside the database.
+4. Install v0.2.0-rc.4 using the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
 5. Run `crosshall owner start`. Set `CROSSHALL_NOTIFY=off` in its environment if you want no desktop notifications.
 
-To roll back, stop the new dispatcher, restore the schema 22 database from your pre-upgrade copy and restart the v0.2.0-rc.3 binary. Restoring the copy discards messages and other changes made since the upgrade.
+To roll back, stop the v0.2.0-rc.4 dispatcher, restore the schema 22 database from your pre-upgrade copy and restart the v0.2.0-rc.3 binary. Restoring the copy discards messages and other changes made since the upgrade.
+
+If migration 028 stops during an upgrade from v0.2.0-rc.3, the dispatcher stays down and the database remains at schema 27. The v0.2.0-rc.3 dispatcher requires schema 22. While the dispatcher is stopped, set aside `store.sqlite3` and any `-wal` or `-shm` files beside it. Copy the `store-v22-*.sqlite3` backup from that upgrade to `store.sqlite3` and start the v0.2.0-rc.3 binary.
+
+Use the upgraded binary for member commands and hooks after restarting the dispatcher. If you were already running a development build, the automatic backup matches the schema of that build, for example `store-v27-*.sqlite3` when upgrading from schema 27.
 
 Sessions need no new start, and the hooks need not be installed again. A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`. The usage statistics question is not asked again: your answer stays, and reports now use registry 2, which adds the `send.wake` counts. See [telemetry](docs/telemetry.md).
 
-Some output that a script may read has changed. For each recipient, a send result now says `stored -> notice queued`, `stored -> its wait is running` or `stored -> not woken: <reason>` and where the recipient sees the message; it used to say `notice queued` or `waits for its next crosshall command`. `crosshall who` ends a member's line with `woken by a notice`, `woken by its wait` or `not woken: <reason>`, where it said `pull` or the route's state. In JSON nothing is removed: each delivery of a send result gains `wake`, `why`, `seen_at` and `until_ms`, and its `next` can be `its wait is running`. `crosshall wait` can end with exit code 1 and the error code `wait_host_gone` when the agent process it names has ended. A failed `crosshall owner start` now begins `owner start failed:`.
+After its first start, and then once a UTC day, the v0.2.0-rc.4 dispatcher deletes stored command results, recorded commands and hook facts that are older than 7 days. [Operations](docs/operations.md#state-directory) lists what it keeps at any age. Your pre-upgrade copy still holds them. A command repeated with the same `--key` replays its stored result for at least 7 days and may run again after that.
 
-An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded. A session that already received the old reach-loss line gets the owner resume command at its next prompt while the suspension is in effect.
+Some output that a script may read has changed. For each recipient, a send result now says `stored -> notice queued`, `stored -> its wait is running` or `stored -> not woken: <reason>` and where the recipient sees the message; it used to say `notice queued` or `waits for its next crosshall command`. `crosshall who` ends a member's line with `woken by a notice`, `woken by its wait` or `not woken: <reason>`, where it said `pull` or the route's state. In JSON nothing is removed: each delivery of a send result gains `wake`, `why`, `seen_at` and `until_ms`, and its `next` can be `its wait is running`. `crosshall wait` can end with exit code 1 and the error code `wait_host_gone` when the agent process it names has ended. A failed `crosshall owner start` now begins `owner start failed:`. `crosshall owner who` can end a member's line with its unread requests that nothing will tell it about, for example `; 2 unread requests, oldest 41m`, and print one line above the channels that names those members; in its JSON such a member carries `unread_not_woken`. In `owner doctor` JSON, the counters gain `unknown_causes`.
 
-A new round stop shows a desktop notification where the system can show one, and appears once, on stderr, on the owner's next command. See [loop guard](docs/operations.md#loop-guard). In owner status JSON, each `guard_stops` entry gains `sender`, `recipients`, `requests`, `request_count` and, once a grant has reset its thread or member, `last_reset_at_ms`. `owner budget grant <binding-id>` resets a member by binding, including a departed one.
+An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the v0.2.0-rc.4 dispatcher treats it as expiring 30 minutes after it was recorded. A session that already received the old reach-loss line gets the owner resume command at its next prompt while the suspension is in effect.
 
-Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
-
-Migration 026 records why a notice receipt was `unknown`. Receipts observed before it have no cause; `owner doctor` counts them as `cause not recorded`.
+A new round stop shows a desktop notification where the system can show one, and appears once, on stderr, on the owner's next command. A third suspension of a launch's notices, which lasts until that launch ends, is announced in the same two ways. See [loop guard](docs/operations.md#loop-guard). In owner status JSON, each `guard_stops` entry gains `sender`, `recipients`, `requests`, `request_count` and, once a grant has reset its thread or member, `last_reset_at_ms`. `owner budget grant <binding-id>` resets a member by binding, including a departed one.
 
 ## To v0.2.0-rc.3
 

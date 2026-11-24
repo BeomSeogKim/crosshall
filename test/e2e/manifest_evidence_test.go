@@ -172,6 +172,47 @@ func TestManifestEvidenceCoversAnotherBuildsPublishAndStop(t *testing.T) {
 		t.Fatalf("Stop context = %q, want %q", got, want)
 	}
 
+	// #261: a Stop waits for the dispatcher only while an ask is left for a
+	// turn-end notice to announce; a note never continues a turn.
+	claude := &participant{w: w, extra: []string{"TMPDIR=" + tmp, "CLAUDE_CODE_SESSION_ID=" + c.key}}
+	turnStops := func(turnRef string, during func() string, wantOutcome string) {
+		t.Helper()
+		fields := map[string]any{"prompt_id": turnRef}
+		waitForHook("UserPromptSubmit", fields, func() bool {
+			return committed(`SELECT EXISTS(SELECT 1 FROM turn WHERE turn_ref = ?)`, turnRef)
+		})
+		wantContext := during()
+		fields["stop_hook_active"] = false
+		out := fire("Stop", fields)
+		c.waitForConsumption(time.Now().Add(fixtureEventTimeout))
+		if got := hostContext(t, out); got != wantContext || c.lastCounter() != "Stop "+wantOutcome {
+			t.Fatalf("Stop of %s: context %q, counter %q; want %q, Stop %s", turnRef, got, c.lastCounter(), wantContext, wantOutcome)
+		}
+	}
+	quiet := func() string { return "" }
+	turnStops("announced", quiet, "clean")
+	var note, asked int64
+	turnStops("noted", func() string {
+		note = num(t, writer.must("note", "@claude1", "Fixture note during a turn"), "id")
+		return ""
+	}, "clean")
+	turnStops("asked", func() string {
+		asked = num(t, writer.must("ask", "@claude1", "Fixture ask during a turn"), "id")
+		return fmt.Sprintf("[crosshall] pending: %d", asked)
+	}, "rpc")
+	claude.must("read", strconv.FormatInt(note, 10), strconv.FormatInt(asked, 10))
+	claude.must("reply", strconv.FormatInt(asked, 10), "done")
+	// An ask read before its turn ends leaves the Stop waiting for nothing;
+	// the next hook lowers the record, though the ask is still owed.
+	var picked string
+	turnStops("picked-up", func() string {
+		picked = strconv.FormatInt(num(t, writer.must("ask", "@claude1", "Fixture ask read during a turn"), "id"), 10)
+		claude.must("read", picked)
+		return ""
+	}, "rpc")
+	turnStops("after-reading", quiet, "clean")
+	claude.must("reply", picked, "done")
+
 	importEvidence(evidenceVersion, "publish", "tested", time.Now().UnixMilli())
 	deadline := time.Now().Add(fixtureEventTimeout)
 	for !committed(`SELECT EXISTS(SELECT 1 FROM publish_route_proof p JOIN publish_route r
@@ -185,7 +226,6 @@ func TestManifestEvidenceCoversAnotherBuildsPublishAndStop(t *testing.T) {
 	// #194: an empty inbox tells the session the hall reaches that no wait
 	// is needed, and the pull member beside it to wait.
 	const waitLine = "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.\n"
-	claude := &participant{w: w, extra: []string{"TMPDIR=" + tmp, "CLAUDE_CODE_SESSION_ID=" + c.key}}
 	claude.must("read")
 	claude.must("reply", strconv.FormatInt(stopID, 10), "done")
 	if out := claude.mustPlain("inbox"); !strings.HasPrefix(out, "Inbox is empty. "+domain.HallDelivers+"\n") {

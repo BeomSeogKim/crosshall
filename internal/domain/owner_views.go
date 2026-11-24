@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -94,7 +93,7 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		b.joined_at_ms, cmd.observed_at_ms, cmd.source, ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM channel c LEFT JOIN binding b ON b.channel_id=c.id LEFT JOIN principal p ON p.id=b.principal_id
 		LEFT JOIN observation cmd ON cmd.seq=(SELECT o.seq FROM observation o
-			WHERE o.principal_id=b.principal_id AND o.kind='command' ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
+			WHERE `+bindingCommandObservation+` ORDER BY o.observed_at_ms DESC, o.seq DESC LIMIT 1)
 		`+promptAdapter+`
 		ORDER BY c.id, b.id`)
 	if err != nil {
@@ -168,23 +167,23 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 					return core.Result{}, err
 				}
 			}
-			fact, err := latestFact(ctx, tx, m.principal)
-			if err != nil {
-				return core.Result{}, err
-			}
-			if fact != nil {
-				observed := fact.At(nowMS)
-				m.Observed = &observed
-				if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
-					m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
-					m.EvidenceStale = !observed.Current
-				}
-			}
 			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)
 			if err != nil {
 				return core.Result{}, err
 			}
 			if m.BindingState == "live" {
+				fact, err := latestFact(ctx, tx, m.principal)
+				if err != nil {
+					return core.Result{}, err
+				}
+				if fact != nil {
+					observed := fact.At(nowMS)
+					m.Observed = &observed
+					if fact.Verified && (m.LastEvidence == nil || fact.AtMS > m.LastEvidence.AtMS) {
+						m.LastEvidence = &OwnerEvidence{Fact: fact.Fact, Source: fact.Source, AtMS: fact.AtMS, AgeS: observed.AgeS}
+						m.EvidenceStale = !observed.Current
+					}
+				}
 				tracking, host, err := s.exitTracking(ctx, tx, m.principal)
 				if err != nil {
 					return core.Result{}, err
@@ -286,7 +285,7 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 // hall will not tell it about, as a sender of each would read it now: no
 // notice, no running wait that accepts it, and no turn end that offers it.
 func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, principal int64, now time.Time) (*UnreadNotWoken, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms, m.channel_id FROM binding b
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms FROM binding b
 		JOIN obligation o ON o.principal_id = b.principal_id JOIN message m ON m.id = o.message_id
 		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
 		WHERE b.id = ? AND m.channel_id = b.channel_id AND o.state = 'open' AND o.more_time_at_ms IS NULL
@@ -295,11 +294,11 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 	if err != nil {
 		return nil, err
 	}
-	type request struct{ id, at, channel int64 }
+	type request struct{ id, at int64 }
 	var unread []request
 	for rows.Next() {
 		var r request
-		if err := rows.Scan(&r.id, &r.at, &r.channel); err != nil {
+		if err := rows.Scan(&r.id, &r.at); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -310,26 +309,13 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 		return nil, err
 	}
 	var out *UnreadNotWoken
-	var offer []int64 // what the turn end offers, read once when needed
-	offerRead := false
 	for _, r := range unread {
 		w, err := s.messageWake(ctx, tx, binding, principal, r.id, now)
 		if err != nil {
 			return nil, err
 		}
-		if w.Wake != WakeNone {
+		if w.Wake != WakeNone || w.SeenAt == SeenAtTurnEnd {
 			continue
-		}
-		if w.SeenAt == SeenAtTurnEnd {
-			if !offerRead {
-				if offer, err = turnEndOffer(ctx, tx, principal, r.channel); err != nil {
-					return nil, err
-				}
-				offerRead = true
-			}
-			if slices.Contains(offer, r.id) {
-				continue
-			}
 		}
 		if out == nil {
 			out = &UnreadNotWoken{OldestAtMS: r.at, OldestAgeS: max((ms(now)-r.at)/1000, 0)}

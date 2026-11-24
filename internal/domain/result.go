@@ -59,7 +59,15 @@ type JoinResult struct {
 	// Launch is the launch the join bound, for the hooks to use.
 	Launch *JoinLaunch `json:"launch,omitempty"`
 	// RulesGiven says the hint carries the member rules in full.
-	RulesGiven bool `json:"rules_given,omitempty"`
+	RulesGiven bool             `json:"rules_given,omitempty"`
+	Move       *JoinMoveReceipt `json:"move,omitempty"`
+}
+
+type JoinMoveReceipt struct {
+	Channel string `json:"channel"`
+	Unread  int    `json:"unread"`
+	Owed    int    `json:"owed"`
+	Waiting int    `json:"waiting"`
 }
 
 // WhoResult is the data of a roster listing.

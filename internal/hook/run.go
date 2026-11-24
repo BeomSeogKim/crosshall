@@ -23,8 +23,43 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// Budget is the absolute callback deadline from command entry.
+// Budget bounds callback work. An enrolling hook can wait for dispatcher startup first.
 const Budget = 150 * time.Millisecond
+
+// StartBudget is the deadline of a callback that may enroll its session: a
+// start, which takes three round trips to the dispatcher, and a prompt,
+// which enrolls a session whose start was missed or repairs it. A busy disk
+// can hold each round trip; the vendor's own timeout is 1 s.
+const StartBudget = 400 * time.Millisecond
+
+// CallbackBudget is the deadline of adapter's callback for event. A prompt
+// gets the start budget only until it finds it enrolls nothing (dispatchCallback).
+func CallbackBudget(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known {
+		return Budget
+	}
+	return spec.budget()
+}
+
+// CallbackBase is the deadline adapter's callback for event runs on until
+// it extends to CallbackBudget: a prompt starts on the ordinary budget.
+func CallbackBase(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known || (spec.RecoverEnroll && !spec.Enroll) {
+		return Budget
+	}
+	return spec.budget()
+}
+
+func (s eventSpec) budget() time.Duration {
+	if s.Enroll || s.RecoverEnroll {
+		return StartBudget
+	}
+	return Budget
+}
 
 type hookTransport interface {
 	HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error)
@@ -33,17 +68,23 @@ type hookTransport interface {
 
 // Run serves one callback. Path resolution and counter preparation share the
 // callback budget with dispatch. Only the supervisor records an outcome.
-func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
+func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
 	if len(args) != 2 {
 		return
 	}
-	began := entry
 	lifecycle := prepareRepoLifecycle(args, stdin, locate)
 	if lifecycle != nil {
 		defer lifecycle.cancel()
 	}
-	entry, startedState := wake(entry, args, locate)
-	end := entry.Add(Budget)
+	budgetStart, startedState := wake(captured, args, locate)
+	budget := CallbackBudget(args[0], args[1])
+	if startedState != "" {
+		budget = afterStart(captured, budgetStart, budget)
+	}
+	// A prompt runs on the ordinary budget until it finds that it recovers
+	// or repairs its session (extendBudget).
+	base := min(budget, CallbackBase(args[0], args[1]))
+	end := budgetStart.Add(base)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -55,21 +96,21 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		if err != nil || !time.Now().Before(end) {
 			return rv, nil
 		}
-		return rv, openHookCounter(rv, args[0], args[1], entry)
+		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
 	var outcome atomic.Value
-	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(budgetStart, base, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
+		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if lifecycle != nil && !lifecycle.waitUntil(began.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
 		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
-			logLine(startedState, args[0]+" "+args[1], began, "started the dispatcher, but the session start was not answered in time")
+			logLine(startedState, args[0]+" "+args[1], captured, "started the dispatcher, but the session start was not answered in time")
 		}
 	}
 	if !wrote && args[0] == "agy" && time.Now().Before(end) {
@@ -112,6 +153,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err != nil {
 		return "refused"
 	}
+	writer := &frameWriter{dst: stdout}
 	var e event
 	if state.lifecycle == nil {
 		e, err = parseEvent(stdin, m, spec, lookup)
@@ -137,7 +179,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		// With automatic joining on, such a start is outside Git: no line.
 		if outcome == "unmatched" && spec.Enroll && !autoJoin(ctx, rv) {
 			result := domain.UnmappedStart(e.Source, policy.Epoch)
-			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
+			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, writer); failure != "" {
 				return failure
 			}
 		}
@@ -146,6 +188,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	defer leaf.Close()
 	if hookExpired(ctx) {
 		return "deadline"
+	}
+	membership, err := ident.LookupMembership(leaf)
+	if err != nil {
+		return "refused"
 	}
 	pid := e.LaunchRef
 	launch, err := bindLaunch(leaf, gen, e, spec, entry)
@@ -172,15 +218,27 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	notice := spec.Enroll || spec.Notice
 	// The continuation needs a concrete profile. Unknown builds still
-	// publish their lifecycle observation without waiting for a reply.
+	// publish their lifecycle observation without waiting for a reply, and
+	// so does a Stop the dispatcher recorded no ask to announce for (#261).
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
-		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision)
+		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision) && !noTurnEndAsk(rv, leaf, gen)
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
 	}
+	if spec.RecoverEnroll && !spec.Enroll && !repo.none() {
+		extendBudget(ctx) // this prompt repairs its session's enrolment
+	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll &&
+		end.After(entry.Add(Budget-counterAllowance)) {
+		// This prompt enrolls and repairs nothing: no request after the
+		// ordinary budget.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
+		defer cancel()
+	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
+	req.Membership = membership
 	if dispatcherGone(rv) {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
 	}
@@ -194,6 +252,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if clean || !want {
 		if !hookExpired(ctx) {
 			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				routeReq.Membership = membership
 				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 			}
 		}
@@ -202,32 +261,53 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if reply.Response.Status != core.ExitOK {
 		return "refused"
 	}
+	if reply.Membership != nil {
+		membership = reply.Membership
+	}
+	if current, err := ident.ReadMembership(leaf); err != nil ||
+		membership != nil && current != *membership || membership == nil && current.Generation > 1 {
+		return "refused"
+	}
 	var result wire.HookResult
 	if err := json.Unmarshal(reply.Response.Data, &result); err != nil {
 		return "refused"
 	}
-	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, stdout)
+	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, writer)
 	if failure != "" {
 		return failure
 	}
 	reachSeen := confirmReach(ctx, leaf, gen, spec, result)
-	// The one acknowledgement request applies the start line and the reach line.
-	if (joinHintSeen || reachSeen) && !hookExpired(ctx) {
-		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
+	offerEnqueued := false
+	if (joinHintSeen || reachSeen || writer.ack.Offer != nil) && outputAckBudget(ctx) {
+		reqAck := wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck, Membership: membership}
+		if writer.ack.Offer != nil {
+			reqAck.Args, _ = json.Marshal(writer.ack)
+		}
+		_, err := client.HookCall(ctx, e.Identity, gen, reqAck, true)
+		offerEnqueued = writer.ack.Offer != nil && err == nil
 	}
-	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
+	if notice && result.Ack != nil && (result.OfferReceipt == nil || offerEnqueued) &&
+		(result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {
 		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			routeReq.Membership = membership
 			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 		}
 	}
 	return "rpc"
 }
 
+// Leave the work deadline intact when there is little time for the spool write.
+func outputAckBudget(ctx context.Context) bool {
+	const minRemaining = 5 * time.Millisecond
+	end, ok := ctx.Deadline()
+	return ctx.Err() == nil && (!ok || time.Until(end) >= minRemaining)
+}
+
 func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, generation, adapter string, epoch uint64,
-	spec eventSpec, result wire.HookResult, stdout io.Writer) (string, bool) {
+	spec eventSpec, result wire.HookResult, stdout *frameWriter) (string, bool) {
 	ack := result.JoinHintAck
 	if ack == nil {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout), false
@@ -254,7 +334,7 @@ func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, gener
 	if !CurrentJoinHintOffer(leaf, *ack) {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
 	}
-	if failure := writeHookOutput(ctx, stdout, output); failure != "" {
+	if failure := stdout.write(ctx, output); failure != "" {
 		return failure, false
 	}
 	if hookExpired(ctx) {
@@ -285,37 +365,49 @@ func withoutJoinHint(result wire.HookResult) wire.HookResult {
 	return result
 }
 
+func noticeBoundary(spec eventSpec) bool {
+	return (spec.Enroll || spec.Notice) && (spec.Output == "context" || spec.Output == "inject_steps")
+}
+
 func joinHintBoundary(spec eventSpec) bool {
 	return (spec.Enroll || spec.RecoverEnroll) && (spec.Output == "context" || spec.Output == "inject_steps")
 }
 
-func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout io.Writer) string {
+func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout *frameWriter) string {
 	output, failure := prepareHookOutput(rv, adapter, epoch, spec, result)
 	if failure != "" {
 		return failure
 	}
-	return writeHookOutput(ctx, stdout, output)
+	return stdout.write(ctx, output)
 }
 
-func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) ([]byte, string) {
+func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) (hookFrame, string) {
 	output, err := present(spec, result)
 	if err != nil {
-		return nil, "refused"
+		return hookFrame{}, "refused"
 	}
 	current, err := readPolicy(rv, adapter)
 	if err != nil || !current.Enabled || current.Epoch != epoch || result.Epoch != current.Epoch {
-		return nil, "stale_epoch"
+		return hookFrame{}, "stale_epoch"
 	}
 	return output, ""
 }
 
-func writeHookOutput(ctx context.Context, stdout io.Writer, output []byte) string {
+type frameWriter struct {
+	dst io.Writer
+	ack wire.HookOutputAckArgs
+}
+
+func (w *frameWriter) write(ctx context.Context, frame hookFrame) string {
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	if len(output) > 0 {
-		if n, err := stdout.Write(output); err != nil || n != len(output) {
+	if len(frame.data) > 0 {
+		if n, err := w.dst.Write(frame.data); err != nil || n != len(frame.data) {
 			return "refused"
+		}
+		if offer := frame.offer; offer != nil && offer.OfferID > 0 && offer.Nonce != "" {
+			w.ack = wire.HookOutputAckArgs{Offer: offer, WrittenAtMS: time.Now().UnixMilli()}
 		}
 	}
 	return ""
@@ -362,6 +454,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		if repo.none() {
 			return nil, "", enrolment{}, "unmatched"
 		}
+		extendBudget(ctx) // this prompt recovers a missed start
 		intent = "join"
 	}
 	gen, resp, err := client.HookLookup(ctx, e.Identity, intent)
@@ -509,7 +602,10 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 	if profile.Mode == "" {
 		profile.Mode = "unverified"
 	}
-	req := wire.Request{OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref}
+	req := wire.Request{
+		OpKey:         "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		OfferReceipts: want && noticeBoundary(spec),
+	}
 	if spec.Enroll {
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
@@ -564,13 +660,19 @@ func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.
 	}, true
 }
 
+type hookFrame struct {
+	data  []byte
+	offer *wire.HookOfferReceipt
+}
+
 // present renders only the fields appropriate for this boundary.
-func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
+func present(spec eventSpec, result wire.HookResult) (hookFrame, error) {
 	if spec.Stop {
-		return presentTurnEnd(spec, result.TurnEndLine)
+		data, err := presentTurnEnd(spec, result.TurnEndLine)
+		return hookFrame{data: data}, err
 	}
-	if (spec.Output != "context" && spec.Output != "inject_steps") || !(spec.Enroll || spec.Notice) {
-		return nil, nil
+	if !noticeBoundary(spec) {
+		return hookFrame{}, nil
 	}
 	var parts []string
 	cue := result.Cue
@@ -584,7 +686,7 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		if len(result.Roster) != 0 {
 			var members []domain.Member
 			if err := json.Unmarshal(result.Roster, &members); err != nil {
-				return nil, err
+				return hookFrame{}, err
 			}
 			if len(members) > 0 {
 				var roster strings.Builder
@@ -604,23 +706,28 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 			}
 		case "none":
 			if result.Hint == "" {
-				return nil, nil
+				return hookFrame{}, nil
 			}
-			return presentBoundary(spec, result.Hint)
+			data, err := presentBoundary(spec, result.Hint)
+			return hookFrame{data: data}, err
 		default:
-			return nil, nil
+			return hookFrame{}, nil
 		}
 	}
 	if reachShown(spec, result) {
 		parts = append(parts, result.ReachLine)
 	}
+	var frame hookFrame
 	if result.PendingLine != "" {
 		parts = append(parts, result.PendingLine)
+		frame.offer = result.OfferReceipt
 	}
 	if len(parts) == 0 {
-		return nil, nil
+		return hookFrame{}, nil
 	}
-	return presentBoundary(spec, strings.Join(parts, "\n"))
+	var err error
+	frame.data, err = presentBoundary(spec, strings.Join(parts, "\n"))
+	return frame, err
 }
 
 func presentBoundary(spec eventSpec, text string) ([]byte, error) {

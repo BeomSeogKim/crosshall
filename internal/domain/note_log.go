@@ -2,9 +2,7 @@ package domain
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -370,18 +368,9 @@ func logEntry(ctx context.Context, tx store.Tx, channel, id int64) (LogEntry, er
 func (s *Service) leave(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd Leave, now time.Time) (core.Result, error) {
 	// A retried leave arrives after the binding departed, so replay is
 	// looked up by principal before the live-member check.
-	if caller.PrincipalID != nil && req.OpKey != "" {
-		var name string
-		err := tx.QueryRowContext(ctx,
-			`SELECT c.name FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`,
-			*caller.PrincipalID).Scan(&name)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return core.Result{}, err
-		}
-		if err == nil {
-			if r, found, err := replay(ctx, tx, *caller.PrincipalID, req.OpKey, "channel:"+name, cmd); err != nil || found {
-				return r, err
-			}
+	if caller.PrincipalID != nil {
+		if r, found, err := ReplayMembershipChange(ctx, tx, *caller.PrincipalID, req.OpKey, cmd); err != nil || found {
+			return r, err
 		}
 	}
 	m, refusal, err := liveMember(ctx, tx, caller)
@@ -422,12 +411,7 @@ func (s *Service) leave(ctx context.Context, tx store.Tx, caller core.Caller, re
 	if err := audit(ctx, tx, "departed", "channel:"+m.channelName, m.principal, map[string]string{"alias": m.alias}, now); err != nil {
 		return core.Result{}, err
 	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT (SELECT COUNT(*) FROM obligation o JOIN message msg ON msg.id = o.message_id
-		         WHERE o.principal_id = ? AND o.state = 'open' AND msg.channel_id = ?),
-		        (SELECT COUNT(*) FROM obligation o JOIN message msg ON msg.id = o.message_id
-		         WHERE msg.sender_id = ? AND o.state = 'open' AND msg.channel_id = ?)`,
-		m.principal, m.channel, m.principal, m.channel).Scan(&out.Owed, &out.Waiting); err != nil {
+	if out.Owed, out.Waiting, err = openMembershipCounts(ctx, tx, m); err != nil {
 		return core.Result{}, err
 	}
 	r, err := OK(out)

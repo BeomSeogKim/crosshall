@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -32,7 +33,7 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 		return 0, true, receipts, nil
 	}
 	principal = launch.principal
-	if receipts, err = s.readClearedReceipts(ctx, tx, principal); err != nil {
+	if receipts, err = s.readClearedReceipts(ctx, tx, principal, launch.membership); err != nil {
 		return 0, false, receipts, err
 	}
 	// The replaced conversation's keys retire first, so that only the new
@@ -79,7 +80,7 @@ func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int
 	// A member that left by hand or was departed by the owner does not
 	// count either: this join is the explicit one that ends its absence.
 	rows, err := tx.QueryContext(ctx, `SELECT l.launch_ref, l.started_hook_at_ms FROM adapter_launch l
-		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
+		JOIN member_selection s ON s.principal_id = l.principal_id JOIN binding b ON b.id = s.binding_id
 		WHERE json_extract(l.profile, '$.adapter') = ?1 AND l.ended_hook_at_ms IS NULL AND l.fenced = 0
 			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?2 || '-%')
 			AND (b.state = 'live' OR b.departed_by_hook = 1) AND COALESCE(b.owner_hook_fence_ms < ?3, 1)`,
@@ -115,7 +116,8 @@ const joinLaunchAgeMS = 30_000
 
 // processLaunch is the latest launch a process ran for a member.
 type processLaunch struct {
-	principal int64
+	principal  int64
+	membership core.Membership
 	// away says its member left by hand or was departed by the owner, so
 	// nothing in that process joins until an explicit join.
 	away bool
@@ -125,7 +127,7 @@ type processLaunch struct {
 }
 
 // processLaunchAt finds the latest launch the process of launchRef ran
-// before at for adapter (as the launch recorded it, whatever a restore did
+// by at for adapter (as the launch recorded it, whatever a restore did
 // to its principal), if that process still runs (a reused
 // PID is a process born after the launch). When that launch was fenced by an
 // owner restore, the process belongs to no one.
@@ -141,15 +143,15 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, adapter, lau
 	var l processLaunch
 	var ref, state string
 	var began int64
-	var byHook, fenced, restored bool
-	err := tx.QueryRowContext(ctx, `SELECT l.principal_id, l.launch_ref, l.started_hook_at_ms, l.fenced,
-			b.state, b.departed_by_hook, COALESCE(b.owner_hook_fence_ms >= ?4, 0)
+	var byHook, fenced, restored, cutover bool
+	err := tx.QueryRowContext(ctx, `SELECT l.principal_id, s.binding_id, s.generation, l.launch_ref, l.started_hook_at_ms, l.fenced,
+			b.state, b.departed_by_hook, COALESCE(b.owner_hook_fence_ms >= ?4, 0), s.generation > 1 AND s.selected_at_ms >= ?4
 		FROM adapter_launch l JOIN principal p ON p.id = l.principal_id
-		JOIN binding b ON b.id = (SELECT MIN(id) FROM binding WHERE principal_id = l.principal_id)
+		JOIN member_selection s ON s.principal_id = l.principal_id JOIN binding b ON b.id = s.binding_id
 		WHERE p.kind = 'session' AND json_extract(l.profile, '$.adapter') = ?1
-			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?3 || '-%') AND l.started_hook_at_ms < ?4
+			AND (l.launch_ref = ?2 OR l.launch_ref LIKE ?3 || '-%') AND l.started_hook_at_ms <= ?4
 		ORDER BY l.started_hook_at_ms DESC, l.rowid DESC LIMIT 1`,
-		adapter, own, own, at).Scan(&l.principal, &ref, &began, &restored, &state, &byHook, &fenced)
+		adapter, own, own, at).Scan(&l.principal, &l.membership.BindingID, &l.membership.Generation, &ref, &began, &restored, &state, &byHook, &fenced, &cutover)
 	if errors.Is(err, sql.ErrNoRows) {
 		return none, false, nil
 	}
@@ -163,10 +165,10 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, adapter, lau
 	if process, ok := s.LaunchProcess(ref); !ok || process != own || !s.LaunchAlive(ref, began) {
 		return none, false, nil
 	}
-	// A later start of the member already happened: this event is older
-	// than its latest accepted transition.
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ? AND started_hook_at_ms >= ?)`,
-		l.principal, at).Scan(&l.stale); err != nil {
+	// An unbound key cannot name the membership at capture. Its event must be
+	// strictly newer than a cutover and any previously accepted start.
+	if err := tx.QueryRowContext(ctx, `SELECT ? OR EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ? AND started_hook_at_ms >= ?)`,
+		cutover, l.principal, at).Scan(&l.stale); err != nil {
 		return none, false, err
 	}
 	l.away = fenced || (state != "live" && !byHook)
@@ -180,7 +182,7 @@ func (s *Service) processLaunchAt(ctx context.Context, tx store.Tx, adapter, lau
 type clearedReceipts struct{ cursor, rules uint64 }
 
 // readClearedReceipts reads them while the replaced keys are still live.
-func (s *Service) readClearedReceipts(ctx context.Context, tx store.Tx, principal int64) (clearedReceipts, error) {
+func (s *Service) readClearedReceipts(ctx context.Context, tx store.Tx, principal int64, membership core.Membership) (clearedReceipts, error) {
 	var r clearedReceipts
 	if s.LeafReceipts == nil {
 		return r, nil
@@ -205,7 +207,7 @@ func (s *Service) readClearedReceipts(ctx context.Context, tx store.Tx, principa
 		return r, err
 	}
 	for _, k := range keys {
-		cursor, rules := s.LeafReceipts(k.vendor, k.key, k.fileID, k.generation)
+		cursor, rules := s.LeafReceipts(k.vendor, k.key, k.fileID, k.generation, membership)
 		r.cursor, r.rules = max(r.cursor, cursor), max(r.rules, rules)
 	}
 	return r, nil

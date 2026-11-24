@@ -79,6 +79,7 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 	}
 	counts := make(map[string]map[string]int, len(adapters))
 	times := make(map[string][]int, len(adapters))
+	missed := make(map[string]int, len(adapters))
 	for _, adapter := range adapters {
 		counts[adapter.Adapter] = make(map[string]int)
 	}
@@ -103,6 +104,14 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		adapter := fields[0]
 		counts[adapter][fields[2]]++
 		times[adapter] = append(times[adapter], ms)
+		// A callback missed its deadline past its own budget, or when it
+		// ran out of time past the ordinary one: a prompt that enrolls
+		// nothing gives back the start budget, and the counter does not
+		// record which budget it ran on.
+		if ms >= int(hook.CallbackBudget(adapter, fields[1]).Milliseconds()) ||
+			(fields[2] == "deadline" && ms >= int(hook.Budget.Milliseconds())) {
+			missed[adapter]++
+		}
 	}
 	for i := range adapters {
 		adapter := &adapters[i]
@@ -112,11 +121,10 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		}
 		slices.Sort(latencies)
 		p95 := latencies[(95*len(latencies)+99)/100-1]
-		beforeDeadline, _ := slices.BinarySearch(latencies, int(hook.Budget.Milliseconds()))
 		adapter.Hooks = &doctorHookActivity{
 			Date: date, Counts: counts[adapter.Adapter], P95MS: p95,
 			RecordedStarts: len(latencies), HelperTimeouts: counts[adapter.Adapter]["deadline"],
-			MissedDeadlines: len(latencies) - beforeDeadline,
+			MissedDeadlines: missed[adapter.Adapter],
 		}
 	}
 }

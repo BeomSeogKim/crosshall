@@ -2,9 +2,9 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.2.0-rc.3, a release candidate. Since v0.1.0, agent hooks join your sessions by themselves, each repository can have a channel, and notices can start a turn in an idle Claude Code session. Since v0.2.0-rc.1, crosshall asks once about usage statistics and eligible members leave when their agent process exits. Since v0.2.0-rc.2, the loop guard replaces root tokens, exchange units and the join pool, lets members send ordinary requests without owner grants, and gives a clear refusal when a request exceeds a round or burst limit. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.2.0-rc.4, a release candidate. Since v0.1.0, agent hooks join your sessions by themselves, each repository can have a channel, and notices can start a turn in an idle Claude Code session. Since v0.2.0-rc.1, crosshall asks once about usage statistics and eligible members leave when their agent process exits. Since v0.2.0-rc.2, the loop guard replaces root tokens, exchange units and the join pool, lets members send ordinary requests without owner grants, and gives a clear refusal when a request exceeds a round or burst limit. Since v0.2.0-rc.3, a send says what will tell each recipient of its message, and the owner hears of a round stop. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.2.0-rc.4 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
@@ -40,7 +40,7 @@ For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.2.0-rc.3 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.2.0-rc.4 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -63,7 +63,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.2.0-rc.3 at /home/you/.local/bin/crosshall
+Installed crosshall v0.2.0-rc.4 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
@@ -270,7 +270,9 @@ See [operations](docs/operations.md#loop-guard) for thread resets and how the li
 
 ## Connect your agents
 
-With the hooks installed, sessions join by themselves ([quick start](#quick-start)). To join a session by hand, for an agent without hooks, a channel of your own choosing, or after a no at the install question, tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
+With the hooks installed, sessions join by themselves ([quick start](#quick-start)). To join a session by hand, for an agent without hooks, a channel of your own choosing, or after a no at the install question, tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. To print the rules again for the current channel, run `crosshall join demo --rules`.
+
+To move a joined session to another channel, run `crosshall join <channel> --move` in that session. Open requests and replies stay in their original channel. See [moving a session](docs/operations.md#moving-a-session-between-channels).
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |

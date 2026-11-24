@@ -47,14 +47,14 @@ type WaitSnapshot struct {
 
 // waitSnapshot also records in waits whether the caller's wait keeps
 // running: it does unless the snapshot holds something that ends it.
-func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, waits *waitPresence, now time.Time) (core.Result, error) {
-	result, poll, err := waitSnapshotOf(ctx, tx, caller, cmd, now)
+func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, error) {
+	result, poll, err := s.waitSnapshotOf(ctx, tx, caller, cmd, now)
 	switch {
 	case err != nil || poll.cursor.BindingID == 0:
 	case poll.ends:
-		waits.forget(poll.cursor.BindingID)
+		s.waits.forget(poll.cursor.BindingID)
 	default:
-		waits.saw(poll.cursor, cmd.WorkOnly, now)
+		s.waits.saw(poll.cursor, cmd.WorkOnly, now)
 	}
 	return result, err
 }
@@ -66,7 +66,7 @@ type snapshotPoll struct {
 	ends   bool
 }
 
-func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
+func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
 	if caller.Role != core.RoleMember {
 		return notEnrolled(), snapshotPoll{}, nil
 	}
@@ -93,7 +93,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 	}
 
 	// Delivers and AtNextPrompt let a timeout say that this session needs no wait.
-	delivers, atPrompt, err := standby(ctx, tx, member.principal, member.binding, now)
+	delivers, atPrompt, err := s.standby(ctx, tx, member.binding, now)
 	if err != nil {
 		return core.Result{}, snapshotPoll{}, err
 	}
@@ -212,23 +212,18 @@ const HallDelivers = "The hall brings new work to this session: no wait is neede
 const AtNextPrompt = "Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do."
 
 // standby says how an idle member stands by: the hall delivers new work to
-// it (delivers), or its current session's agent cannot stand by on a
-// background wait (atPrompt). Neither means it waits.
-func standby(ctx context.Context, tx store.Tx, principal, binding int64, now time.Time) (delivers, atPrompt bool, err error) {
+// it (delivers), or its next prompt shows new work and its agent does not
+// start a turn when a background command exits, so it ends its turn
+// instead of waiting (atPrompt). Neither means it waits.
+func (s *Service) standby(ctx context.Context, tx store.Tx, binding int64, now time.Time) (delivers, atPrompt bool, err error) {
 	if delivers, err = publishDelivers(ctx, tx, binding, now); err != nil || delivers {
 		return delivers, false, err
 	}
-	var adapter sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.adapter') FROM adapter_launch
-		WHERE principal_id = ? AND ended_hook_at_ms IS NULL
-		ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1`, principal).Scan(&adapter)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, nil
-	}
-	if err != nil {
+	adapter, err := s.promptLineAdapter(ctx, tx, binding)
+	if err != nil || adapter == "" {
 		return false, false, err
 	}
-	a, ok := publish.Lookup(adapter.String)
+	a, ok := publish.Lookup(adapter)
 	return false, ok && !a.BackgroundWakes(), nil
 }
 

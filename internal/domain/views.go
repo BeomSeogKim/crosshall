@@ -196,7 +196,7 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	if err != nil {
 		return core.Result{}, err
 	}
-	if out.Delivers, out.AtNextPrompt, err = standby(ctx, tx, member.principal, member.binding, now); err != nil {
+	if out.Delivers, out.AtNextPrompt, err = s.standby(ctx, tx, member.binding, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {

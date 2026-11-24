@@ -292,3 +292,64 @@ func TestAPromptRunsOnTheOrdinaryBudgetUntilItExtends(t *testing.T) {
 		})
 	}
 }
+
+// A prompt starts on the ordinary budget and may extend to the start
+// budget; a start has the start budget from its entry.
+func TestAPromptStartsOnTheOrdinaryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		adapter, event string
+		want           time.Duration
+	}{
+		{"claude", "SessionStart", StartBudget},
+		{"codex", "SessionStart", StartBudget},
+		{"claude", "UserPromptSubmit", Budget},
+		{"codex", "UserPromptSubmit", Budget},
+		{"claude", "Stop", Budget},
+		{"nosuchadapter", "UserPromptSubmit", Budget},
+	} {
+		if got := CallbackBase(tc.adapter, tc.event); got != tc.want {
+			t.Errorf("%s %s: %v, want %v", tc.adapter, tc.event, got, tc.want)
+		}
+	}
+}
+
+// A prompt whose stdin never closes gives up at the ordinary deadline:
+// until it knows it recovers or repairs, it has no more time.
+func TestAPromptWithStalledStdinReturnsWithinTheOrdinaryBudget(t *testing.T) {
+	_, dir, _ := runFixture(t)
+	state := t.TempDir()
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	locate := func() (Paths, error) { return Paths{State: state, Rendezvous: dir}, nil }
+	synctest.Test(t, func(t *testing.T) {
+		stdin, writer := io.Pipe()
+		defer writer.Close()
+		var out bytes.Buffer
+		began := time.Now()
+		Run(began, []string{"codex", "UserPromptSubmit"}, stdin, &out, locate)
+		if took := time.Since(began); took > Budget || out.Len() != 0 {
+			t.Fatalf("returned after %v with %q", took, out.String())
+		}
+	})
+}
+
+// A prompt that did not extend its budget gives its stalled counter
+// record only what is left of the ordinary budget.
+func TestAStalledCounterRecordKeepsAPromptOnTheOrdinaryBudget(t *testing.T) {
+	rv, _, _ := runFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+		counter := &hookCounter{prefix: "codex UserPromptSubmit ", file: counterWrite(func(p []byte) (int, error) {
+			<-release
+			return len(p), nil
+		})}
+		entry := time.Now()
+		runTimed(entry, Budget, StartBudget, io.Discard, func() (*os.Root, *hookCounter) { return rv, counter },
+			func(context.Context, *os.Root, io.Writer) string { return "clean" })
+		if took := time.Since(entry); took > Budget {
+			t.Fatalf("returned after %v", took)
+		}
+	})
+}

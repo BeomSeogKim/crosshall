@@ -43,6 +43,17 @@ func CallbackBudget(adapter, event string) time.Duration {
 	return spec.budget()
 }
 
+// CallbackBase is the deadline adapter's callback for event runs on until
+// it extends to CallbackBudget: a prompt starts on the ordinary budget.
+func CallbackBase(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known || (spec.RecoverEnroll && !spec.Enroll) {
+		return Budget
+	}
+	return spec.budget()
+}
+
 func (s eventSpec) budget() time.Duration {
 	if s.Enroll || s.RecoverEnroll {
 		return StartBudget
@@ -73,12 +84,7 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 	}
 	// A prompt runs on the ordinary budget until it finds that it recovers
 	// or repairs its session (extendBudget).
-	base := budget
-	if m, ok := loadManifest(args[0]); ok {
-		if spec, known := m.event(args[1]); known && spec.RecoverEnroll && !spec.Enroll {
-			base = Budget
-		}
-	}
+	base := min(budget, CallbackBase(args[0], args[1]))
 	end := entry.Add(base)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {

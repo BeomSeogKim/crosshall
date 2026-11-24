@@ -1,6 +1,11 @@
 {
   "adapter": "claude",
+  "display_name": "Claude Code",
   "revision": "claude-3",
+  "prior_revisions": {
+    "claude-1": ["process_launch", "turn_end", "recover_enroll"],
+    "claude-2": ["process_launch", "turn_end", "recover_enroll"]
+  },
   "event_field": "hook_event_name",
   "session_field": "session_id",
   "session_env": "CLAUDE_CODE_SESSION_ID",

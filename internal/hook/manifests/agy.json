@@ -1,5 +1,6 @@
 {
   "adapter": "agy",
+  "display_name": "Antigravity",
   "revision": "agy-1",
   "event_field": "hookEventName",
   "session_field": "conversationId",

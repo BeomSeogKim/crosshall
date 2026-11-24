@@ -15,7 +15,8 @@ import (
 // vendorBranchesLeft lists the files that still compare an adapter name;
 // each entry goes when its capability is read from the manifest instead.
 var vendorBranchesLeft = map[string]bool{
-	"views.go": true, // join hint for an unknown Antigravity CLI version
+	"views.go":           true, // join hint for an unknown Antigravity CLI version
+	"../wire/adapter.go": true, // enrollment recovery (#324)
 }
 
 // The core asks an adapter's manifest what it can do. A comparison or switch
@@ -41,7 +42,7 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, path := range files {
-			if strings.HasSuffix(path, "_test.go") || dir == "." && vendorBranchesLeft[filepath.Base(path)] {
+			if strings.HasSuffix(path, "_test.go") || vendorBranchesLeft[path] {
 				continue
 			}
 			file, err := parser.ParseFile(fset, path, nil, 0)

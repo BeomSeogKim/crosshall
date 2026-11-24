@@ -36,10 +36,10 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		return Fail(core.ExitUsage, "", "choose a supported adapter and at least one valid policy switch", "crosshall owner adapter set claude --enabled on"), nil
 	}
 	if _, sends := publish.Lookup(cmd.Adapter); !sends && cmd.Publish != nil && *cmd.Publish == "on" {
-		return Fail(core.ExitUsage, "", cmd.Adapter+" has no publish adapter", "crosshall setup status"), nil
+		return Fail(core.ExitUsage, "", manifests.DisplayName(cmd.Adapter)+" has no publish adapter", "crosshall setup status"), nil
 	}
 	if caps, _ := manifests.CapabilitiesOf(cmd.Adapter); !caps.TurnEnd && cmd.TurnEnd != nil && *cmd.TurnEnd == "on" {
-		return Fail(core.ExitUsage, "", cmd.Adapter+" has no turn-end check", "crosshall setup status"), nil
+		return Fail(core.ExitUsage, "", manifests.DisplayName(cmd.Adapter)+" has no turn-end check", "crosshall setup status"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {

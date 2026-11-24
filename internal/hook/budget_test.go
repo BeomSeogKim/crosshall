@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -138,5 +140,107 @@ func TestASlowStartStillOpensItsCounter(t *testing.T) {
 	if c := openHookCounter(rv, "codex", "Stop", entry); c != nil {
 		c.file.Close()
 		t.Fatal("a Stop 200 ms after entry opened a counter")
+	}
+}
+
+// ctxTransport answers a first contact after join and an event after
+// event, unless the callback's deadline comes first; the first contact
+// restores the parked leaf.
+type ctxTransport struct {
+	join, event  time.Duration
+	parked, leaf string
+	events       *int
+}
+
+func wait(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c ctxTransport) HookLookup(ctx context.Context, _ ident.Identity, intent string) (string, wire.Response, error) {
+	if err := wait(ctx, c.join); err != nil {
+		return "", wire.Response{}, err
+	}
+	if intent != "join" {
+		return "", wire.Response{}, fmt.Errorf("intent %q", intent)
+	}
+	if err := os.Rename(c.parked, c.leaf); err != nil {
+		return "", wire.Response{}, err
+	}
+	return "fixture-gen", wire.Response{Result: core.Result{Status: core.ExitOK}}, nil
+}
+
+func (c ctxTransport) HookCall(ctx context.Context, _ ident.Identity, _ string, req wire.Request, _ bool) (spool.Reply, error) {
+	if req.Verb != wire.VerbHookEvent {
+		return spool.Reply{}, nil
+	}
+	if err := wait(ctx, c.event); err != nil {
+		return spool.Reply{}, err
+	}
+	*c.events++
+	return spool.Reply{Response: wire.Response{Result: core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"epoch":7}`)}}}, nil
+}
+
+// A prompt that recovers a missed start (no leaf) or repairs one (its
+// session started in a repository it maps) keeps the start budget: its
+// event still goes out when the join or the event itself took 200 ms.
+func TestAPromptThatRecoversOrRepairsAStartKeepsTheStartBudget(t *testing.T) {
+	for _, recovering := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recovering %t", recovering), func(t *testing.T) {
+			rv, dir, leaf := runFixture(t)
+			repo, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "repo-defaults"), []byte(repoDigestRecord(repo)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// The session's start was in that repository.
+			state := t.TempDir()
+			records := filepath.Join(state, startupRepoDir)
+			if err := os.Chmod(state, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(records, 0700); err != nil {
+				t.Fatal(err)
+			}
+			id := ident.Identity{Vendor: "codex", Key: "fixture-thread"}
+			if err := os.WriteFile(filepath.Join(records, id.Digest()), []byte(repoDigestRecord(repo)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			parked := filepath.Join(dir, "parked")
+			if recovering {
+				if err := os.Rename(leaf, parked); err != nil {
+					t.Fatal(err)
+				}
+			}
+			events := 0
+			transport := ctxTransport{event: 200 * time.Millisecond, parked: parked, leaf: leaf, events: &events}
+			if recovering {
+				transport = ctxTransport{join: 200 * time.Millisecond, parked: parked, leaf: leaf, events: &events}
+			}
+			stdin := fmt.Sprintf(`{"session_id":"fixture-thread","hook_event_name":"UserPromptSubmit","turn_id":"t1","prompt":"p","cwd":%q}`, repo)
+			synctest.Test(t, func(t *testing.T) {
+				entry := time.Now()
+				ctx, cancel := context.WithDeadline(t.Context(), entry.Add(StartBudget-counterAllowance))
+				defer cancel()
+				var out strings.Builder
+				outcome := dispatchCallback(ctx, entry, rv, transport, []string{"codex", "UserPromptSubmit"}, strings.NewReader(stdin), &out,
+					func(string) (string, bool) { return "", false }, callbackState{root: state})
+				if outcome != "rpc" || events != 1 {
+					t.Fatalf("outcome %q with %d events after %v", outcome, events, time.Since(entry))
+				}
+			})
+		})
 	}
 }

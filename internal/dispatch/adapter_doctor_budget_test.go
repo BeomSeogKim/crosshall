@@ -8,14 +8,17 @@ import (
 )
 
 // A start or a prompt has the start budget: one that took 300 ms did not
-// miss its deadline; a Stop that took 160 ms did.
+// miss its deadline; a Stop that took 160 ms did, and so did a prompt that
+// ran out of time after the ordinary budget, which an enrolled member's
+// prompt keeps.
 func TestDoctorCountsMissedDeadlinesByTheCallbacksBudget(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	records := "claude SessionStart rpc 300\nclaude UserPromptSubmit rpc 390\nclaude Stop clean 160\nclaude SessionStart deadline 410\n"
+	records := "claude SessionStart rpc 300\nclaude UserPromptSubmit rpc 390\nclaude Stop clean 160\nclaude SessionStart deadline 410\n" +
+		"claude UserPromptSubmit deadline 160\nclaude UserPromptSubmit deadline 145\n"
 	if err := os.WriteFile(filepath.Join(dir, "hooks", now.UTC().Format("20060102")), []byte(records), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +29,7 @@ func TestDoctorCountsMissedDeadlinesByTheCallbacksBudget(t *testing.T) {
 	defer rv.Close()
 	adapters := []doctorAdapter{{Adapter: "claude"}}
 	attachDoctorHooks(adapters, rv, now)
-	if h := adapters[0].Hooks; h == nil || h.RecordedStarts != 4 || h.MissedDeadlines != 2 {
-		t.Fatalf("hooks: %+v, want 2 of 4 missed (the Stop and the 410 ms start)", h)
+	if h := adapters[0].Hooks; h == nil || h.RecordedStarts != 6 || h.MissedDeadlines != 3 {
+		t.Fatalf("hooks: %+v, want 3 of 6 missed (the Stop, the 410 ms start, the 160 ms prompt deadline)", h)
 	}
 }

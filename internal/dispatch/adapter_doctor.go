@@ -103,7 +103,12 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		adapter := fields[0]
 		counts[adapter][fields[2]]++
 		times[adapter] = append(times[adapter], ms)
-		if ms >= int(hook.CallbackBudget(adapter, fields[1]).Milliseconds()) {
+		// A callback missed its deadline past its own budget, or when it
+		// ran out of time past the ordinary one: a prompt that enrolls
+		// nothing gives back the start budget, and the counter does not
+		// record which budget it ran on.
+		if ms >= int(hook.CallbackBudget(adapter, fields[1]).Milliseconds()) ||
+			(fields[2] == "deadline" && ms >= int(hook.Budget.Milliseconds())) {
 			missed[adapter]++
 		}
 	}

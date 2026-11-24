@@ -132,4 +132,4 @@ For each vendor version, platform and mode, `crosshall owner doctor` reports cap
 
 There is no reply reminder in this release; `crosshall setup --dry-run` and `crosshall owner doctor` list it as `parked`.
 
-For each adapter, doctor reports recorded hook starts, helper timeouts and missed deadlines for the current UTC day. A callback's deadline is 150 ms from its start, except a session start and a prompt that enrolls or repairs its session, which get 400 ms; the vendors' own hook timeout is 1 s. It shows `hook counters unknown` when it has no records for that adapter that day.
+For each adapter, doctor reports recorded hook starts, helper timeouts and missed deadlines for the current UTC day. A callback's deadline is 150 ms from its start, except a session start and a prompt that enrolls or repairs its session, which get 400 ms, and a prompt that enrolls and repairs nothing keeps 150 ms; the vendors' own hook timeout is 1 s. A callback counts as having missed its deadline when it took its budget or longer, or ran out of time after 150 ms. It shows `hook counters unknown` when it has no records for that adapter that day.

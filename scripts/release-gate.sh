@@ -257,85 +257,114 @@ row_setup() {
   detail "setup ${vendors[*]} installed; uninstall restored the configuration byte for byte"
 }
 
+# Every command of the store row goes through run, capture or capture_some:
+# a non-zero exit, or no output where output is required, fails the row.
+run() {
+  "$@" || { echo "store row: failed: $*"; return 1; }
+}
+capture() { # capture <var> <command...>: the command's output, maybe empty
+  local name=$1 output
+  shift
+  output=$("$@") || { echo "store row: failed: $*"; return 1; }
+  printf -v "$name" '%s' "$output"
+}
+capture_some() { # capture_some <var> <command...>: the command's non-empty output
+  capture "$@" || return 1
+  [[ -n ${!1} ]] || { echo "store row: printed nothing: ${*:2}"; return 1; }
+}
+lines() { # lines <text>: the number of non-empty lines
+  local line n=0
+  while IFS= read -r line; do
+    [[ -z $line ]] || n=$((n + 1))
+  done <<< "$1"
+  echo "$n"
+}
+
 open_store() { # open_store <tree> <state-root>: the production opener, no dispatcher
-  cp -- "$repo/scripts/release_gate_open.go" "$1/scripts/" || return
-  (cd -- "$1" && go run ./scripts/release_gate_open.go "$2")
+  run cp -- "$repo/scripts/release_gate_open.go" "$1/scripts/" && (cd -- "$1" && run go run ./scripts/release_gate_open.go "$2")
 }
 store_sound() { # store_sound <db> <schema>
-  local got
-  got=$(sqlite3 "$1" 'PRAGMA user_version') || return 1
-  [[ $got == "$2" ]] || { echo "$1: schema $got, want $2"; return 1; }
-  [[ $(sqlite3 "$1" 'PRAGMA integrity_check') == ok ]] || { echo "$1: integrity check failed"; return 1; }
-  [[ -z $(sqlite3 "$1" 'PRAGMA foreign_key_check') ]] || { echo "$1: foreign key violations"; return 1; }
-}
-schema_of() { # schema_of <db>: every schema object, in a stable order
-  sqlite3 "$1" "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+  local version check keys
+  capture_some version sqlite3 "$1" 'PRAGMA user_version' || return 1
+  [[ $version == "$2" ]] || { echo "$1: schema $version, want $2"; return 1; }
+  capture_some check sqlite3 "$1" 'PRAGMA integrity_check' || return 1
+  [[ $check == ok ]] || { echo "$1: integrity check failed"; return 1; }
+  capture keys sqlite3 "$1" 'PRAGMA foreign_key_check' || return 1
+  [[ -z $keys ]] || { echo "$1: foreign key violations"; return 1; }
 }
 same_schema() { # same_schema <db> <db>: both schemas read, and equal
-  local a b
-  a=$(schema_of "$1") && b=$(schema_of "$2") && [[ -n $a && $a == "$b" ]]
+  local query="SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name" a b
+  capture_some a sqlite3 "$1" "$query" && capture_some b sqlite3 "$2" "$query" && [[ $a == "$b" ]]
 }
 copy_store() { # copy_store <db> <copy>: a consistent private copy
-  sqlite3 "$1" ".backup '$2'" && [[ -s $2 ]] && chmod 600 "$2"
+  run sqlite3 "$1" ".backup '$2'" && [[ -s $2 ]] && run chmod 600 "$2"
 }
 row_counts() { # row_counts <db>: "<table> <rows>" per table
-  local table
-  sqlite3 "$1" "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name" |
-    while IFS= read -r table; do
-      printf '%s %s\n' "$table" "$(sqlite3 "$1" "SELECT count(*) FROM \"$table\"")"
-    done
+  local tables table count
+  capture_some tables sqlite3 "$1" "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name" ||
+    return 1
+  while IFS= read -r table; do
+    capture_some count sqlite3 "$1" "SELECT count(*) FROM \"$table\"" || return 1
+    printf '%s %s\n' "$table" "$count"
+  done <<< "$tables"
 }
 
 # Whether a migration changes row content correctly is not checked here; that
 # stays with the tier-2 review of the migration.
 row_store() {
-  local snap=$work/store baseline from backups backup rollback
+  local snap=$work/store baseline from found backups backup rollback before after
   needs_builds || return
   [[ -n $head_schema ]] || { detail "needs the schema row"; return 2; }
   [[ -f $live_store ]] || { detail "no store at $live_store; pass --store"; return 2; }
   command -v sqlite3 > /dev/null || { detail "sqlite3 is not installed"; return 2; }
-  mkdir -m 700 -- "$snap" "$snap/up" "$snap/fresh" "$snap/rollback"
+  run mkdir -m 700 -- "$snap" "$snap/up" "$snap/fresh" "$snap/rollback" || { detail "could not make the scratch stores"; return 1; }
   baseline=$snap/baseline.sqlite3
   # An online backup through a read-only connection includes committed WAL data.
-  sqlite3 -readonly "$live_store" ".backup '$baseline'" || { detail "could not snapshot the store"; return 1; }
-  from=$(sqlite3 "$baseline" 'PRAGMA user_version')
+  run sqlite3 -readonly "$live_store" ".backup '$baseline'" || { detail "could not snapshot the store"; return 1; }
+  capture_some from sqlite3 "$baseline" 'PRAGMA user_version' || { detail "could not read the snapshot's schema"; return 1; }
   [[ $from == "$base_schema" ]] || { detail "the store is at schema $from, $base is at $base_schema"; return 2; }
   store_sound "$baseline" "$from" || { detail "the snapshot is not sound"; return 1; }
 
-  cp -- "$baseline" "$snap/up/store.sqlite3" && chmod 600 "$snap/up/store.sqlite3"
+  run cp -- "$baseline" "$snap/up/store.sqlite3" && run chmod 600 "$snap/up/store.sqlite3" ||
+    { detail "could not copy the snapshot to upgrade"; return 1; }
   open_store "$head_tree" "$snap/up" || { detail "the candidate could not open the snapshot"; return 1; }
   store_sound "$snap/up/store.sqlite3" "$head_schema" || { detail "the upgraded store is not sound"; return 1; }
   open_store "$head_tree" "$snap/fresh" || { detail "the candidate could not create a fresh store"; return 1; }
   same_schema "$snap/up/store.sqlite3" "$snap/fresh/store.sqlite3" ||
     { detail "the upgraded schema differs from a fresh store's, or could not be read"; return 1; }
-  backups=$(find "$snap/up" -name 'store-v*.sqlite3' | wc -l | tr -d ' ')
+  capture found find "$snap/up" -name 'store-v*.sqlite3' || { detail "could not list the migration backups"; return 1; }
+  backups=$(lines "$found")
   if ((from < head_schema)); then
-    [[ $backups == 1 ]] || { detail "$backups migration backups, want 1"; return 1; }
-    backup=$(find "$snap/up" -name "store-v$from-*.sqlite3")
+    backup=$found
+    [[ $backups == 1 && ${backup##*/} == "store-v$from-"*.sqlite3 ]] ||
+      { detail "$backups migration backups, want one of schema $from"; return 1; }
   else
     [[ $backups == 0 ]] || { detail "$backups migration backups without a migration"; return 1; }
   fi
   open_store "$head_tree" "$snap/up" || { detail "the candidate could not reopen the store"; return 1; }
-  [[ $(find "$snap/up" -name 'store-v*.sqlite3' | wc -l | tr -d ' ') == "$backups" ]] ||
-    { detail "reopening made another backup"; return 1; }
+  capture found find "$snap/up" -name 'store-v*.sqlite3' || { detail "could not list the migration backups"; return 1; }
+  [[ $(lines "$found") == "$backups" ]] || { detail "reopening made another backup"; return 1; }
 
   # Rollback: the base opens the restored migration backup and leaves it byte
   # for byte as it was; without a migration it reopens the same store.
   rollback=$snap/rollback/store.sqlite3
   if ((from < head_schema)); then
-    cp -- "$backup" "$rollback" && chmod 600 "$rollback"
+    run cp -- "$backup" "$rollback" && run chmod 600 "$rollback"
   else
     copy_store "$snap/up/store.sqlite3" "$rollback"
   fi || { detail "could not copy the store to roll back"; return 1; }
   open_store "$base_tree" "$snap/rollback" || { detail "$base could not open the rollback store"; return 1; }
   store_sound "$rollback" "$((from < head_schema ? from : head_schema))" || { detail "the rollback store is not sound"; return 1; }
   if ((from < head_schema)); then
-    cmp -- "$backup" "$rollback" || { detail "$base changed the restored backup"; return 1; }
+    run cmp -- "$backup" "$rollback" || { detail "$base changed the restored backup"; return 1; }
   fi
 
-  # Row counts are information only.
+  # Row counts are information only, but a store they cannot be read from fails.
+  before=$(row_counts "$baseline") && after=$(row_counts "$snap/up/store.sqlite3") ||
+    { detail "could not count the rows"; return 1; }
   echo "rows per table, before and after the upgrade (information only):"
-  join -a 1 -a 2 -e - -o 0,1.2,2.2 <(row_counts "$baseline") <(row_counts "$snap/up/store.sqlite3")
+  run join -a 1 -a 2 -e - -o 0,1.2,2.2 <(printf '%s\n' "$before") <(printf '%s\n' "$after") ||
+    { detail "could not list the row counts"; return 1; }
   if ((from < head_schema)); then
     detail "schema $from to $head_schema matches a fresh store; the restored backup reopened byte for byte under $base; row content is for tier-2 migration review"
   else

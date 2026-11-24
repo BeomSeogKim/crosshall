@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks of scripts/release-gate.sh that need no build: it never removes the
-# caller's files, and the cross-vendor row passes only when both directions do.
+# caller's files, the cross-vendor row passes only when both directions do,
+# and the store row fails when any command it runs fails.
 set -euo pipefail
 export LC_ALL=C
 
@@ -80,21 +81,74 @@ printf '{"Action":"output","Output":"build failed"}\n' | judge 1
   ev pass T
 } | judge 2
 
-# 3. The store row's helpers fail when sqlite3 fails, instead of comparing or
-#    copying nothing.
-functions=$(sed -n -e '/^schema_of() {/,/^}/p' -e '/^same_schema() {/,/^}/p' -e '/^copy_store() {/,/^}/p' \
-  "$here/release-gate.sh")
-[[ $(grep -c '() {' <<< "$functions") == 3 ]] || fail "the store row helpers were not found"
+# 3. The store row fails when any command it runs fails. A shim makes the
+#    n-th call of sqlite3, cp, chmod, mkdir, find, cmp or join exit 7, for
+#    every n, on an upgrade with a migration and on one without.
+if ! sqlite=$(command -v sqlite3); then
+  fail "sqlite3 is needed for the store row checks"
+fi
+functions=$(sed -n -e '/^run() {/,/^}/p' -e '/^capture() {/,/^}/p' -e '/^capture_some() {/,/^}/p' \
+  -e '/^lines() {/,/^}/p' -e '/^store_sound() {/,/^}/p' -e '/^same_schema() {/,/^}/p' \
+  -e '/^copy_store() {/,/^}/p' -e '/^row_counts() {/,/^}/p' -e '/^row_store() {/,/^}/p' "$here/release-gate.sh")
+[[ $(grep -c '^[a-z_]*() {' <<< "$functions") == 9 ]] || fail "the store row functions were not found"
 eval "$functions"
-mkdir "$root/failing"
-printf '#!/bin/sh\nexit 7\n' > "$root/failing/sqlite3"
-chmod 700 "$root/failing/sqlite3"
-touch "$root/a.sqlite3" "$root/b.sqlite3"
-if PATH="$root/failing:$PATH" same_schema "$root/a.sqlite3" "$root/b.sqlite3"; then
-  fail "same_schema passed two schemas it could not read"
-fi
-if PATH="$root/failing:$PATH" copy_store "$root/a.sqlite3" "$root/copy.sqlite3"; then
-  fail "copy_store passed a copy sqlite3 did not make"
-fi
+needs_builds() { :; }
+detail() { :; }
+# The production opener's part: migrate schema 1 to 2 with a backup, create
+# schema 2 when empty, and leave the base's own schema alone.
+open_store() {
+  local db=$2/store.sqlite3 version
+  [[ $1 == base ]] && return 0
+  if [[ ! -e $db ]]; then
+    "$sqlite" "$db" 'CREATE TABLE m (id INTEGER PRIMARY KEY, body TEXT); CREATE TABLE n (v INTEGER); PRAGMA user_version = 2;'
+    return
+  fi
+  version=$("$sqlite" "$db" 'PRAGMA user_version')
+  if [[ $version == 1 ]]; then
+    "$sqlite" "$db" ".backup '$2/store-v1-gate.sqlite3'" &&
+      "$sqlite" "$db" 'CREATE TABLE n (v INTEGER); PRAGMA user_version = 2;'
+  fi
+}
+shims=$root/shims
+mkdir "$shims"
+for tool in sqlite3 cp chmod mkdir find cmp join; do
+  real=$(command -v "$tool") || fail "$tool is missing"
+  printf '#!/bin/sh\nn=$(($(cat "$GATE_CALLS") + 1))\necho "$n" > "$GATE_CALLS"\n[ "$n" = "$GATE_FAIL_AT" ] && exit 7\nexec %s "$@"\n' \
+    "$real" > "$shims/$tool"
+  chmod 700 "$shims/$tool"
+done
+# shellcheck disable=SC2034 # globals the store row reads
+head_tree=head base_tree=base base=base
+for case in migration same; do
+  live_store=$root/live-$case.sqlite3
+  "$sqlite" "$live_store" "CREATE TABLE m (id INTEGER PRIMARY KEY, body TEXT); INSERT INTO m VALUES (1, 'a');"
+  if [[ $case == migration ]]; then
+    "$sqlite" "$live_store" 'PRAGMA user_version = 1'
+    # shellcheck disable=SC2034
+    base_schema=1
+  else
+    "$sqlite" "$live_store" 'CREATE TABLE n (v INTEGER); PRAGMA user_version = 2'
+    # shellcheck disable=SC2034
+    base_schema=2
+  fi
+  # shellcheck disable=SC2034
+  head_schema=2
+  calls=0
+  at=0
+  while :; do
+    work=$root/$case-$at
+    mkdir "$work"
+    echo 0 > "$root/calls"
+    status=0
+    GATE_CALLS=$root/calls GATE_FAIL_AT=$at PATH="$shims:$PATH" row_store > "$work.log" 2>&1 || status=$?
+    if ((at == 0)); then
+      [[ $status == 0 ]] || fail "the $case store row failed without a fault: $(cat "$work.log")"
+      calls=$(cat "$root/calls")
+    else
+      [[ $status == 1 ]] || fail "the $case store row returned $status when call $at of $calls failed"
+    fi
+    ((++at <= calls)) || break
+  done
+done
 
 echo "release gate checks passed"

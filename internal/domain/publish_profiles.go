@@ -19,6 +19,8 @@ var BuiltinCapabilityEvidence = []BuiltinEvidence{
 		Capability: "turn_end", ResultRef: "conformance:TestClaudeCodeTurnEndConformance@87797cf", CheckedAtMS: 1795476417385},
 	{Vendor: "claude", Version: "2.1.331", Platform: "darwin-arm64", Mode: "interactive", ManifestRev: "claude-3",
 		Capability: "turn_end", ResultRef: "conformance:TestClaudeCodeInteractiveTurnEndConformance@87797cf", CheckedAtMS: 1795477207405},
+	{Vendor: "claude", Version: "2.1.331", Platform: "darwin-arm64", Mode: "interactive", ManifestRev: "claude-3",
+		Capability: "publish", ResultRef: "trial:publish-matrix@0132580", CheckedAtMS: 1795520993007},
 }
 
 // SeedBuiltinEvidence keeps run dates and owner overrides across restarts.

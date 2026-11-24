@@ -146,3 +146,40 @@ func TestPublisherAsksAboutAnApprovalUntilItsServerAnswers(t *testing.T) {
 		}
 	}
 }
+
+// A withdrawal that does not prove the notice gone never frees its lane:
+// new work waits for the notice's receipt (or the owner's release), so a
+// notice that may still run is never followed by a second notice turn.
+func TestPublisherSendsNoSecondNoticeBehindAnUnprovenWithdrawal(t *testing.T) {
+	for _, result := range []publish.Withdrawal{publish.NotPending, publish.Unreachable} {
+		t.Run(string(result), func(t *testing.T) {
+			var sends atomic.Int32
+			f := newPublishTestFixture(t)
+			f.ask(t, 11)
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			useTransport(t, publish.Transport{
+				Send: func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+					sends.Add(1)
+					return domain.PublishSubmitted
+				},
+				Withdraw: func(context.Context, domain.PublishTarget) publish.Withdrawal { return result },
+			})
+			p := &publisher{db: f.db, homes: func(string) string { return home }}
+			t.Cleanup(p.workers.Wait)
+			tickPublisher(t, p, f.now, true)
+			p.workers.Wait()
+			f.exec(t, "UPDATE publish_attempt SET lane = 'thread:claude:thread-1:"+home+"' WHERE id = 1")
+			f.ask(t, 12)
+			for _, after := range []time.Duration{2 * time.Second, 4 * time.Second, publishProveRetry + 6*time.Second} {
+				tickPublisher(t, p, f.now.Add(after), false)
+				p.workers.Wait()
+			}
+			if sends.Load() != 1 {
+				t.Fatalf("%d notices sent; a second followed an unproven withdrawal", sends.Load())
+			}
+		})
+	}
+}

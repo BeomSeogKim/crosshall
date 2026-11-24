@@ -34,9 +34,12 @@ func ApprovalChecks(ctx context.Context, tx store.Tx, now time.Time) ([]Approval
 	rows, err := tx.QueryContext(ctx, `SELECT r.principal_id, r.adapter, r.thread_id, r.vendor_home, r.host_pid, r.host_start
 		FROM publish_route r WHERE r.state = 'active' AND r.thread_id IS NOT NULL AND r.vendor_home IS NOT NULL
 			AND r.host_pid IS NOT NULL AND r.host_start IS NOT NULL
-			AND EXISTS (SELECT 1 FROM observation o WHERE o.principal_id = r.principal_id
-				AND o.kind = 'approval_requested' AND o.observed_at_ms >= ?)
-		ORDER BY r.principal_id`, nowMS-2*factCapMS[FactApprovalRequested])
+			-- The member's newest stored fact: one step down its index, so a
+			-- tick costs nothing per turn of history. The causal latest fact
+			-- is read below.
+			AND (SELECT o.kind FROM observation o WHERE o.principal_id = r.principal_id
+				AND o.kind NOT IN ('command', 'idle_prompt') ORDER BY o.seq DESC LIMIT 1) = 'approval_requested'
+		ORDER BY r.principal_id`)
 	if err != nil {
 		return nil, err
 	}

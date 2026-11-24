@@ -38,8 +38,7 @@ func WithdrawCandidates(ctx context.Context, tx store.Tx) ([]WithdrawCandidate, 
 		NOT EXISTS (SELECT 1 FROM publish_route r WHERE r.binding_id = a.binding_id AND r.state = 'active'
 			AND r.thread_id IS NOT NULL AND r.vendor_home IS NOT NULL AND `+store.PublishThreadLane()+` = a.lane)
 		FROM publish_attempt a
-		WHERE a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state IN ('submitted', 'uncertain')
-			AND a.lane LIKE 'thread:%'
+		WHERE `+openPublishLane+` AND a.state IN ('submitted', 'uncertain') AND a.lane LIKE 'thread:%'
 		ORDER BY a.id`)
 	if err != nil {
 		return nil, err

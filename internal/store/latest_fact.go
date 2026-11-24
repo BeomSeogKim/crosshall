@@ -50,7 +50,7 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 		                FROM adapter_launch WHERE principal_id = ?1
 		                ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1),
 		candidate AS (
-			SELECT o.seq, o.kind, o.source, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
+			SELECT o.seq, o.kind, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
 			       CASE o.kind WHEN 'session_ended' THEN 4 WHEN 'turn_finishing' THEN 3
 			                   WHEN 'approval_requested' THEN 2 ELSE 1 END AS stage,
 			       COALESCE((SELECT t.opened_hook_at_ms FROM turn t WHERE t.principal_id = o.principal_id
@@ -61,7 +61,7 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 		staged AS (
 			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c),
 		pick AS (
-			SELECT c.seq, c.kind, c.source, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
+			SELECT c.seq, c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
 			-- A turn-bound fact belongs to the start its turn opened after, whatever
 			-- its own clock says; any other fact is placed by its own time. Within
 			-- a turn only its latest stage counts.
@@ -70,7 +70,7 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 			LIMIT 1)
 		-- The rest is read for the chosen fact only: per candidate it made a
 		-- hook event's cost grow with the square of the session's turns.
-		SELECT p.seq, p.kind, p.source, p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
+		SELECT p.seq, p.kind, (SELECT source FROM observation WHERE seq = p.seq), p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
 		       (SELECT live FROM latest),
 		       EXISTS (SELECT 1 FROM observation k WHERE k.principal_id = ?1 AND k.kind = 'command' AND k.seq > p.seq)
 		FROM pick p`, principal, slackMS).

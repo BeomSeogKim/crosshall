@@ -115,11 +115,14 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 			logLine(startedState, args[0]+" "+args[1], captured, "started the dispatcher, but the session start was not answered in time")
 		}
 	}
-	if !wrote && args[0] == "agy" && time.Now().Before(end) {
+	if wrote || !time.Now().Before(end) {
+		return
+	}
+	if m, _ := loadManifest(args[0]); m.EmptyOutput != "" {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_, _ = io.WriteString(stdout, "{}\n")
+			_, _ = io.WriteString(stdout, m.EmptyOutput+"\n")
 		}()
 		timer := time.NewTimer(time.Until(end))
 		defer timer.Stop()

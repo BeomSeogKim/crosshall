@@ -112,6 +112,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		for _, line := range approvalLines(r) {
 			fmt.Fprintln(w, line)
 		}
+		for _, line := range endedLines(r.Ended) {
+			fmt.Fprintln(w, line)
+		}
 		hasToken := false
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s", ch.Name)
@@ -547,4 +550,28 @@ func unknownCauseWords(c store.DoctorUnknownCauses) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// endedLines reports the live members whose session ended over 12 hours
+// ago: one line for those with no open request, with the command that
+// departs them, and one per member that still has some.
+func endedLines(ended []domain.EndedMember) []string {
+	var free []string
+	var lines []string
+	for _, m := range ended {
+		if len(m.OpenRequests) == 0 {
+			free = append(free, fmt.Sprintf("@%s in #%s", m.Alias, m.Channel))
+			continue
+		}
+		line := fmt.Sprintf("@%s in #%s: session ended %s, over 12 hours ago; open requests:", m.Alias, m.Channel, clock(m.EndedAtMS))
+		for _, id := range m.OpenRequests {
+			line += fmt.Sprintf(" #%d", id)
+		}
+		lines = append(lines, line+".")
+	}
+	if len(free) > 0 {
+		lines = append([]string{fmt.Sprintf("Sessions ended over 12 hours ago, no open requests: %s. crosshall owner depart --ended departs them.",
+			strings.Join(free, ", "))}, lines...)
+	}
+	return lines
 }

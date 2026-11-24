@@ -370,10 +370,16 @@ func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
 	if r := row(atPrompt); r.SeenAt != "" || r.ShownAtMS == nil {
 		t.Fatalf("after the prompt line showed it: %+v", r)
 	}
-	// A running wait still takes it; shown replaces only where it is seen.
 	wantOK(t, f.run(reader, Wait{}, ""))
-	if r := row(atPrompt); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
-		t.Fatalf("a running wait after the prompt line: %+v", r)
+	if r := row(atPrompt); r.Wake.Wake != WakeNone || r.ShownAtMS == nil {
+		t.Fatalf("a request behind the running wait's cursor: %+v", r)
+	}
+	duringWait := f.turnEndAsk(writer, "reader", "during-wait")
+	if got := f.hook(reader, prompt("launch", "turn-3", f.now.UnixMilli()+2)); !strings.Contains(got.PendingLine, "pending:") {
+		t.Fatalf("the next prompt showed nothing: %+v", got)
+	}
+	if r := row(duringWait); r.Wake != (Wake{Wake: WakeWait}) || r.ShownAtMS != nil {
+		t.Fatalf("a shown request above the running wait's cursor: %+v", r)
 	}
 	f.svc.waits.forget(bindingIDOf(t, f, f.principalOf(reader)))
 	wantOK(t, f.run(reader, Read{IDs: []int64{atPrompt}}, "read"))

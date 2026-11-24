@@ -129,11 +129,11 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	}
 	// A request for more time ends no wait.
 	if endsWait {
-		running, err := s.waits.running(ctx, tx, binding, kind, now)
+		accepts, err := s.waits.accepts(ctx, tx, binding, kind, msg, now)
 		if err != nil {
 			return Wake{}, err
 		}
-		if running {
+		if accepts {
 			return Wake{Wake: WakeWait}, nil
 		}
 	}

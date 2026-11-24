@@ -49,11 +49,11 @@ type WaitSnapshot struct {
 func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, waits *waitPresence, now time.Time) (core.Result, error) {
 	result, poll, err := waitSnapshotOf(ctx, tx, caller, cmd, now)
 	switch {
-	case err != nil || poll.binding == 0:
+	case err != nil || poll.cursor.BindingID == 0:
 	case poll.ends:
-		waits.forget(poll.binding)
+		waits.forget(poll.cursor.BindingID)
 	default:
-		waits.saw(poll.binding, poll.generation, cmd.WorkOnly, now)
+		waits.saw(poll.cursor, cmd.WorkOnly, now)
 	}
 	return result, err
 }
@@ -61,8 +61,8 @@ func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait
 // snapshotPoll names the binding a successful snapshot answered, zero for a
 // refusal, and whether the snapshot ends the wait.
 type snapshotPoll struct {
-	binding, generation int64
-	ends                bool
+	cursor WaitCursor
+	ends   bool
 }
 
 func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
@@ -172,7 +172,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 // wait.
 func (out WaitSnapshot) polled() (core.Result, snapshotPoll, error) {
 	r, err := OK(out)
-	return r, snapshotPoll{binding: out.Cursor.BindingID, generation: out.Cursor.Generation, ends: len(out.Unread) != 0}, err
+	return r, snapshotPoll{cursor: out.Cursor, ends: len(out.Unread) != 0}, err
 }
 
 func noPoll(r core.Result, err error) (core.Result, snapshotPoll, error) {

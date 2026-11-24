@@ -79,6 +79,7 @@ type server struct {
 	readyLease      *os.File
 	cancel          context.CancelFunc
 	nextReap        time.Time
+	retention       retention
 	lastLogged      string
 	adapterSequence uint64
 }
@@ -217,6 +218,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		}
 		if publishTick {
 			now := time.Now()
+			s.retentionTick(ctx, now)
 			launches.start(ctx, db, now)
 			if !now.Before(nextUsage) {
 				usage.Tick(ctx, now)

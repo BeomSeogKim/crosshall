@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -102,5 +103,108 @@ func TestOwnerWhoProjectsEvidenceAndOpenRequests(t *testing.T) {
 	wantOK(t, f.reply(member, Reply{To: id, Body: "done"}, ""))
 	if m = memberRow(); m.OpenRequests == nil || len(m.OpenRequests) != 0 {
 		t.Fatalf("open requests after settlement: %v", m.OpenRequests)
+	}
+}
+
+func (f *fixture) ownerRow(alias string) OwnerMember {
+	f.t.Helper()
+	for _, ch := range decode[OwnerWhoResult](f.t, f.owner(OwnerWho{}, "")).Channels {
+		for _, m := range ch.Members {
+			if m.Alias == alias {
+				return m
+			}
+		}
+	}
+	f.t.Fatalf("owner who lists no @%s", alias)
+	return OwnerMember{}
+}
+
+// owner who counts a member's unread requests that nothing will tell it
+// about, so the owner finds stuck work without reading each line.
+func TestOwnerWhoCountsUnreadRequestsNothingWillTell(t *testing.T) {
+	p := newPublishFixture(t)
+	first := p.now
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 || got.OldestAtMS != first.UnixMilli() || got.OldestAgeS != 0 {
+		t.Fatalf("one unread request before any route: %+v", got)
+	}
+	p.now = p.now.Add(10 * time.Minute)
+	second := p.turnEndAsk(p.writer, "reader", "second")
+	wantOK(t, p.run(p.writer, Note{To: []string{"reader"}, Body: "fyi"}, "note")) // a note is not a request
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 2 || got.OldestAgeS != 600 {
+		t.Fatalf("two unread requests, the oldest ten minutes old: %+v", got)
+	}
+	if got := p.ownerRow("writer").UnreadNotWoken; got != nil {
+		t.Fatalf("a member without requests: %+v", got)
+	}
+
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, ""))
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 || got.OldestAtMS != p.now.UnixMilli() {
+		t.Fatalf("after reading the first, only #%d: %+v", second, got)
+	}
+
+	p.proveRoute()
+	p.turnEndAsk(p.writer, "reader", "noticed")
+	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request a notice will offer is counted: %+v", got)
+	}
+
+	wantOK(t, p.run(p.reader, Leave{}, "leave"))
+	if got := p.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("a departed member: %+v", got)
+	}
+}
+
+// A request the member's turn end will offer is not stuck.
+func TestOwnerWhoLeavesOutARequestTheTurnEndWillOffer(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, "work"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("without turn-end evidence: %+v", got)
+	}
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("in a checked turn: %+v", got)
+	}
+}
+
+// A plain wait returns only messages above its cursor, so it does not
+// tell its member about a request that came before; one sent while it
+// runs, it does.
+func TestOwnerWhoCountsARequestBehindAWaitsCursor(t *testing.T) {
+	f, writer, reader := waitPresenceChannel(t)
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, Body: "older"}, "older"))
+	poll(t, f, reader, Wait{})
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request behind the running wait's cursor: %+v", got)
+	}
+	wantOK(t, f.ask(writer, Ask{To: []string{"reader"}, Body: "newer"}, "newer"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+		t.Fatalf("a request the running wait will return was counted: %+v", got)
+	}
+}
+
+// A request the member already answered with more time is not stuck: its
+// sender sees more_time, not a warning.
+func TestOwnerWhoLeavesOutARequestGivenMoreTime(t *testing.T) {
+	f, writer, reader := waitPresenceChannel(t)
+	ask := decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, Body: "work"}, "ask"))
+	wantOK(t, actLedger(f, reader, Reply{To: ask.ID, Body: "later", Outcome: OutcomeMoreTime}, "more-time"))
+	if got := f.ownerRow("reader").UnreadNotWoken; got != nil {
+		t.Fatalf("a request given more time: %+v", got)
+	}
+}
+
+// A turn end offers at most OfferCap requests, so the rest are stuck.
+func TestOwnerWhoCountsRequestsPastTheTurnEndCap(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	var last int64
+	for i := range OfferCap + 1 {
+		f.now = f.now.Add(time.Second)
+		last = decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, fmt.Sprintf("ask-%d", i))).ID
+	}
+	got := f.ownerRow("reader").UnreadNotWoken
+	if got == nil || got.Requests != 1 || got.OldestAtMS != f.now.UnixMilli() {
+		t.Fatalf("the request past the cap (#%d): %+v", last, got)
 	}
 }

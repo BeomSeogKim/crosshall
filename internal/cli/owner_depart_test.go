@@ -176,3 +176,41 @@ func TestOwnerWhoRendersReachAndStoppedBuild(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnerWhoNamesRequestsNothingWillTell(t *testing.T) {
+	member := func(alias string, binding int64, stuck *domain.UnreadNotWoken) domain.OwnerMember {
+		return domain.OwnerMember{Member: domain.Member{BindingID: binding, Alias: alias, Vendor: "claude", Route: "pull"},
+			Reach: "pull", BindingState: "live", UnreadNotWoken: stuck}
+	}
+	result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{
+		{Name: "dev", Members: []domain.OwnerMember{
+			member("sol", 1, &domain.UnreadNotWoken{Requests: 2, OldestAgeS: 41 * 60}),
+			member("opus", 2, nil),
+		}},
+		{Name: "ops", Members: []domain.OwnerMember{member("agy", 3, &domain.UnreadNotWoken{Requests: 1, OldestAgeS: 5 * 60})}},
+	}}
+	out, stderr, code := run(t, Env{Transport: &fakeTransport{result: okResult(t, result)}}, "owner", "who", "--all")
+	lines := strings.Split(out, "\n")
+	if code != core.ExitOK || lines[0] != "3 requests wait on members the hall cannot wake: @sol 2 (oldest 41m), @agy 1." || lines[1] != "#dev" {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s", code, stderr, out)
+	}
+	for _, want := range []string{"@sol [binding 1]", "; 2 unread requests, oldest 41m\n", "@agy [binding 3]", "; 1 unread request, 5m old\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+	if opus := strings.SplitN(strings.Split(out, "@opus")[1], "\n", 2)[0]; strings.Contains(opus, "unread") {
+		t.Fatalf("a member without stuck requests got a count:\n%s", out)
+	}
+
+	result.Channels = result.Channels[1:]
+	out, _, _ = run(t, Env{Transport: &fakeTransport{result: okResult(t, result)}}, "owner", "who", "--all")
+	if first := strings.Split(out, "\n")[0]; first != "1 request waits on a member the hall cannot wake: @agy 1." {
+		t.Fatalf("one request: %q", first)
+	}
+	result.Channels[0].Members[0].UnreadNotWoken = nil
+	out, _, _ = run(t, Env{Transport: &fakeTransport{result: okResult(t, result)}}, "owner", "who", "--all")
+	if !strings.HasPrefix(out, "#ops\n") {
+		t.Fatalf("a banner without stuck requests:\n%s", out)
+	}
+}

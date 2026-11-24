@@ -61,9 +61,12 @@ type OwnerMember struct {
 	LastEvidence  *OwnerEvidence `json:"last_evidence"`
 	EvidenceStale bool           `json:"evidence_stale"`
 	ExitTracking  ExitTracking   `json:"exit_tracking,omitempty"`
-	HostAlive     bool           `json:"host_alive,omitempty"`
-	OpenRequests  []int64        `json:"open_request_ids"`
-	DepartToken   string         `json:"depart_token,omitempty"`
+	// StartUnseen says a live member without a route was joined by a prompt
+	// whose launch could not be bound: its session start was not seen.
+	StartUnseen  bool    `json:"start_unseen,omitempty"`
+	HostAlive    bool    `json:"host_alive,omitempty"`
+	OpenRequests []int64 `json:"open_request_ids"`
+	DepartToken  string  `json:"depart_token,omitempty"`
 	// UnreadNotWoken counts the live member's unread requests that nothing
 	// will tell it about: no notice, no running wait, no turn end.
 	UnreadNotWoken *UnreadNotWoken `json:"unread_not_woken,omitempty"`
@@ -158,6 +161,11 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			m.Publish = publish
 			if m.BindingState == "live" && publish != nil && PublishReaches(*publish) {
 				m.Reach = "notice"
+			}
+			if m.BindingState == "live" && publish == nil {
+				if m.StartUnseen, err = startUnseen(ctx, tx, m.principal); err != nil {
+					return core.Result{}, err
+				}
 			}
 			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)
 			if err != nil {
@@ -306,7 +314,7 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 		if err != nil {
 			return nil, err
 		}
-		if w.Wake != WakeNone || w.SeenAt == SeenAtTurnEnd {
+		if !w.NeedsManualWake() {
 			continue
 		}
 		if out == nil {

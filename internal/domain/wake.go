@@ -30,6 +30,7 @@ const (
 	WhyOff       = "off"       // switched off, do not disturb included
 	WhyCapped    = "capped"    // the hourly limit, until UntilMS
 	WhyHeld      = "held"      // an earlier notice is unobserved
+	WhyTurnOpen  = "turn_open" // the member already has a running turn
 	WhyKind      = "kind"      // this message starts no turn
 )
 
@@ -48,6 +49,12 @@ type Wake struct {
 	Adapter string `json:"adapter,omitempty"`
 	SeenAt  string `json:"seen_at,omitempty"`
 	UntilMS int64  `json:"until_ms,omitempty"`
+}
+
+// NeedsManualWake reports that neither a current delivery path nor a deferred
+// notice can tell this recipient about the message.
+func (w Wake) NeedsManualWake() bool {
+	return w.Wake == WakeNone && w.SeenAt != SeenAtTurnEnd && w.Why != WhyTurnOpen
 }
 
 // reachWake is what a member's publish state says about any new work.
@@ -100,34 +107,52 @@ func memberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) 
 // sees it.
 func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, principal, msg int64, now time.Time) (Wake, error) {
 	var (
-		offered, endsWait bool
-		kind              string
-		channel           int64
+		attempt, kind string
+		endsWait      bool
+		channel       int64
 	)
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_attempt_item i
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT a.state FROM publish_attempt_item i
 		JOIN publish_attempt a ON a.id = i.attempt_id
-		WHERE i.message_id = m.id AND i.principal_id = ? AND a.state <> 'not_submitted'), m.kind, `+notMoreTime+`, m.channel_id
-		FROM message m WHERE m.id = ?`, principal, msg).Scan(&offered, &kind, &endsWait, &channel); err != nil {
+		WHERE i.message_id = x.message_id AND i.principal_id = x.principal_id AND a.state <> 'not_submitted'
+			AND (a.state <> 'reserved' OR (`+pendingPublishItem+`
+				AND EXISTS (SELECT 1 `+activePublishRoutes(now)+` AND `+reservationMatchesRoute+`)))
+		ORDER BY a.id DESC LIMIT 1), ''), m.kind, `+notMoreTime+`, m.channel_id
+		FROM message m JOIN recipient x ON x.message_id = m.id WHERE x.principal_id = ? AND m.id = ?`,
+		principal, msg).Scan(&attempt, &kind, &endsWait, &channel); err != nil {
 		return Wake{}, err
 	}
-	if offered {
-		return Wake{Wake: WakeNotice}, nil
+	if attempt != "" && attempt != "reserved" {
+		return Wake{Wake: WakeNotice}, nil // already passed the submission fence
 	}
-	w, err := memberWake(ctx, tx, binding, now)
-	if err != nil {
-		return Wake{}, err
-	}
-	if w.Wake == WakeNotice {
-		// An available route offers only an open request or a final reply.
-		var queued bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
-			` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, msg).Scan(&queued); err != nil {
+	eligible := attempt == "reserved"
+	var w Wake
+	if !eligible {
+		var err error
+		w, err = memberWake(ctx, tx, binding, now)
+		if err != nil {
 			return Wake{}, err
 		}
-		if queued {
-			return w, nil
+		if w.Wake == WakeNotice {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
+				` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, msg).Scan(&eligible); err != nil {
+				return Wake{}, err
+			}
+			w = Wake{Wake: WakeNone, Why: WhyKind}
 		}
-		w = Wake{Wake: WakeNone, Why: WhyKind}
+	}
+	var running bool
+	var err error
+	if eligible || kind == "ask" {
+		running, err = inReportedTurn(ctx, tx, principal, now)
+		if err != nil {
+			return Wake{}, err
+		}
+	}
+	if eligible {
+		if !running {
+			return Wake{Wake: WakeNotice}, nil
+		}
+		w = Wake{Wake: WakeNone, Why: WhyTurnOpen}
 	}
 	// A request for more time ends no wait.
 	if endsWait {
@@ -139,8 +164,8 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 			return Wake{Wake: WakeWait}, nil
 		}
 	}
-	if kind == "ask" {
-		turnEnd, err := seesAtTurnEnd(ctx, tx, principal, now)
+	if kind == "ask" && running {
+		turnEnd, err := turnEndCovered(ctx, tx, principal)
 		if err != nil {
 			return Wake{}, err
 		}
@@ -153,26 +178,17 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 			}
 		}
 	}
+	if w.Why == WhyTurnOpen {
+		return w, nil // the publisher will check again when the turn ends
+	}
 	w.SeenAt, err = s.seenAt(ctx, tx, binding)
 	return w, err
 }
 
-// seesAtTurnEnd reports whether the member is in a turn whose end the
-// turn-end check will offer an unread request at: its latest fact is a
-// current prompt or permission request (a turn that reached its Stop shows
-// that stage instead) and
-// its launch's turn-end check is covered and switched on. An open turn row
-// alone is not enough: a typed-ahead placeholder can stay open for good.
-func seesAtTurnEnd(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
-	fact, err := latestFact(ctx, tx, principal)
-	// A session reports nothing after an answered permission dialog, so a
-	// turn that asked for one shows that stage until its Stop.
-	if fact == nil || err != nil || fact.Fact != FactPromptSubmitted && fact.Fact != FactApprovalRequested ||
-		!fact.At(ms(now)).Current {
-		return false, err
-	}
+// turnEndCovered reports whether the current launch can run the turn-end check.
+func turnEndCovered(ctx context.Context, tx store.Tx, principal int64) (bool, error) {
 	var covered bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM adapter_launch l
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM adapter_launch l
 		WHERE l.rowid = (SELECT latest.rowid FROM adapter_launch latest
 				WHERE latest.principal_id = ?1 AND latest.ended_hook_at_ms IS NULL
 				ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)
@@ -192,6 +208,16 @@ const promptAdapter = `LEFT JOIN ` + currentBindingLaunch + `
 
 // seenAt says where a member that is not woken sees new work.
 func (s *Service) seenAt(ctx context.Context, tx store.Tx, binding int64) (string, error) {
+	adapter, err := s.promptLineAdapter(ctx, tx, binding)
+	if err != nil || adapter == "" {
+		return SeenAtCommand, err
+	}
+	return SeenAtPrompt, nil
+}
+
+// promptLineAdapter names the adapter whose prompt line shows the member
+// new work at its next prompt, or "" when its next prompt does not.
+func (s *Service) promptLineAdapter(ctx context.Context, tx store.Tx, binding int64) (string, error) {
 	var adapter, rev sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM binding b `+promptAdapter+` WHERE b.id = ?`, binding).Scan(&adapter, &rev)
@@ -199,9 +225,9 @@ func (s *Service) seenAt(ctx context.Context, tx store.Tx, binding int64) (strin
 		return "", err
 	}
 	if adapter.Valid && rev.Valid && s.HasPromptLine != nil && s.HasPromptLine(adapter.String, rev.String) {
-		return SeenAtPrompt, nil
+		return adapter.String, nil
 	}
-	return SeenAtCommand, nil
+	return "", nil
 }
 
 // sendWakeEvent records, for the daily report, what will tell one recipient

@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Adapter policy and enrollment recovery read the manifest:** `crosshall owner adapter set` refuses `--publish on` for an adapter with no publish adapter and `--turn-end on` for one whose manifest installs no turn-end event, and a prompt may recover a missed enrollment when its manifest declares `recover_enroll`, instead of testing the names `agy`, `claude` and `codex`. The outcomes are unchanged; the refusals name the adapter as typed, so `Antigravity has no publish adapter` is now `agy has no publish adapter`.
 - **Cross-vendor conformance:** real Claude Code and Codex CLI sessions each ask and answer across one disposable hall using loopback models. The check exercises Codex's next-prompt line and a running Claude Code wait.
 
 ## v0.2.0 (2026-11-24)

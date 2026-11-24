@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 )
 
 const (
@@ -88,7 +90,12 @@ type HookEventArgs struct {
 func (a HookEventArgs) CanRecoverEnrollment() bool {
 	return a.EnrollRepoRoot != "" && a.WantOutput && a.Fact == HookPromptSubmitted && a.TurnRef != "" &&
 		(a.EventRef == a.TurnRef+":UserPromptSubmit" || a.EventRef == PromptEventRef(a.TurnRef+":UserPromptSubmit", a.HookAtMS)) &&
-		(a.Profile.Adapter == "claude" || a.Profile.Adapter == "codex")
+		canRecoverEnroll(a.Profile.Adapter)
+}
+
+func canRecoverEnroll(adapter string) bool {
+	caps, _ := manifests.CapabilitiesOf(adapter)
+	return caps.RecoverEnroll
 }
 
 // PromptEventRef is the reference of a prompt callback: its event's

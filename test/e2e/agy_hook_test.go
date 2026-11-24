@@ -28,7 +28,7 @@ func TestAntigravitySetupInstallsAndInvokesOnlyCLIStartup(t *testing.T) {
 	original := readSetupFile(t, config)
 	f.apply("", "setup", "antigravity", "--apply")
 	if result := f.command(f.env, "", "owner", "adapter", "set", "agy", "--publish", "on"); result.exit != 2 ||
-		!strings.Contains(result.stdout, "Antigravity has no publish adapter") {
+		!strings.Contains(result.stdout, "agy has no publish adapter") {
 		t.Fatalf("publish policy for Antigravity: %+v", result)
 	}
 	diagnostic := f.apply("", "owner", "doctor")

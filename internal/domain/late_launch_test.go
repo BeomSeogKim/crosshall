@@ -249,6 +249,12 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 				f.t.Fatal(err)
 			}
 		}, latePrompt},
+		{"a prompt captured before a move", func(f *fixture, s session, at int64) {
+			if _, err := f.db.Exec(`UPDATE member_selection SET generation = 2, selected_at_ms = ? WHERE principal_id = ?`,
+				at+30, *f.caller(s).PrincipalID); err != nil {
+				f.t.Fatal(err)
+			}
+		}, latePrompt},
 		{"a launch time before the clean end", func(f *fixture, s session, at int64) {
 			f.hookAs(s, ended("pid-7-a", at+25))
 		}, latePrompt},
@@ -267,6 +273,34 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 				t.Fatal("launch_bound_late written")
 			}
 		})
+	}
+}
+
+// A member rejoined by hand, whose new launch the join did not bind, gets
+// its route from the prompt that binds the launch, though the launch was
+// recorded before the rejoin.
+func TestALaunchBoundLateAfterAHandRejoinGetsItsRoute(t *testing.T) {
+	f, _, _ := lateFixture(t)
+	s := f.newSession("claude")
+	at := f.now.UnixMilli()
+	f.hookAs(s, start("pid-7-a", "startup", at))
+	wantOK(t, f.run(s, Leave{}, ""))
+	f.now = time.UnixMilli(at + 40)
+	wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "claude1"}, ""))
+	f.hookAs(s, lateProof(prompt("pid-9-b", "t1", at+60), at+20))
+	if got := f.launches(s); len(got) != 2 || got[1] != (launchRow{"pid-9-b", true, at + 20, "print"}) {
+		t.Fatalf("launches %+v", got)
+	}
+	var launch, state string
+	var epoch int64
+	if err := f.db.QueryRow(`SELECT r.launch_ref, r.state || ":" || r.reason, r.binding_epoch FROM publish_route r JOIN binding b ON b.id = r.binding_id
+		WHERE b.principal_id = ?`, *f.caller(s).PrincipalID).Scan(&launch, &state, &epoch); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture has no socket, so a registered route is invalidated for
+	// that alone; the rejoin left the old one ended.
+	if launch != "pid-9-b" || state != "invalidated:no socket" || epoch != 2 {
+		t.Fatalf("route %s %s at epoch %d, want pid-9-b registered at epoch 2", launch, state, epoch)
 	}
 }
 

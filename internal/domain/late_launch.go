@@ -42,8 +42,10 @@ func (s *Service) bindLateLaunch(ctx context.Context, tx store.Tx, req Request, 
 	if err := forgetHost(ctx, tx, principal); err != nil {
 		return false, err
 	}
+	// The route is registered at the prompt's time, not the launch's: the
+	// prompt saw the binding, which may have been joined after the launch.
 	enroll := HookEnroll{wire.HookEnrollArgs{Profile: l.Profile, LaunchRef: l.Ref, LaunchVerified: true,
-		PIDNamespace: l.PIDNamespace, EventRef: cmd.EventRef, Source: "late", HookAtMS: l.AtMS, Epoch: cmd.Epoch}}
+		PIDNamespace: l.PIDNamespace, EventRef: cmd.EventRef, Source: "late", HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch}}
 	if err := registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, enroll,
 		s.routeHost(enroll), now); err != nil {
 		return false, err
@@ -68,7 +70,8 @@ func (s *Service) bindMemberLateLaunch(ctx context.Context, tx store.Tx, req Req
 		return false, err
 	}
 	b, found, err := bindingOf(ctx, tx, principal)
-	if err != nil || !found || b.ownerHookFence.Valid && (b.state != "live" || l.AtMS <= b.ownerHookFence.Int64) {
+	if err != nil || !found || !b.acceptsHookAt(cmd.HookAtMS) ||
+		b.ownerHookFence.Valid && (b.state != "live" || l.AtMS <= b.ownerHookFence.Int64) {
 		return false, err
 	}
 	if b.state != "live" {

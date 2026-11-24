@@ -95,7 +95,7 @@ func TestTelemetryOfferAtOwnerEntryPoints(t *testing.T) {
 				TelemetryStateRoot:         filepath.Join(t.TempDir(), "state"),
 				ResolveTelemetryPolicyPath: temporaryPolicyPath(t, filepath.Join(t.TempDir(), "telemetry-off")),
 				StartReady:                 func(ctx context.Context) error { return ctx.Err() },
-				Setup: func(req SetupRequest) error {
+				Setup: func(_ context.Context, req SetupRequest) error {
 					input := bufio.NewReader(req.Input)
 					_, _ = input.ReadString('\n')
 					if req.OfferTelemetry != nil {
@@ -174,7 +174,7 @@ func TestTelemetryDurableVetoForOwnerHelpAndDryRun(t *testing.T) {
 			}
 			env := Env{
 				TelemetryStateRoot: filepath.Join(t.TempDir(), "state"),
-				Setup:              func(SetupRequest) error { return nil },
+				Setup:              func(context.Context, SetupRequest) error { return nil },
 			}
 			if _, _, err := telemetryconfig.SetMode(env.TelemetryStateRoot, telemetryconfig.On, "owner-command", ""); err != nil {
 				t.Fatal(err)

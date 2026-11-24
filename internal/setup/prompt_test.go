@@ -71,6 +71,39 @@ func (f *fakeOps) Install(_ context.Context, plan VendorPlan) error {
 	return nil
 }
 
+type expiringInstall struct {
+	*fakeOps
+	expire func()
+}
+
+func (f expiringInstall) Install(ctx context.Context, plan VendorPlan) error {
+	err := f.fakeOps.Install(ctx, plan)
+	if plan.Adapter == "claude" {
+		f.expire()
+	}
+	return err
+}
+
+func TestSetupApplyDeadlineKeepsCompletedVendorAndStopsTheNext(t *testing.T) {
+	deadline := errors.New("setup apply timed out")
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	ops := expiringInstall{newFakeOps(), func() { cancel(deadline) }}
+	var out bytes.Buffer
+	err := (Service{}).prompts(ctx, Request{Action: "setup", Apply: true, JSON: true,
+		Adapters: []string{"claude", "codex"}, Input: strings.NewReader(""), Output: &out}, ops)
+	if !slices.Equal(ops.installed, []string{"claude"}) {
+		t.Fatalf("installed %v after deadline, want only claude", ops.installed)
+	}
+	var result promptResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil || result.OK || err == nil || len(result.Vendors) != 2 {
+		t.Fatalf("result %q, decode error %v, setup error %v", out.String(), decodeErr, err)
+	}
+	if result.Vendors[0].Outcome != "installed" || result.Vendors[1].Outcome != "failed" || result.Vendors[1].Error != deadline.Error() {
+		t.Fatalf("vendor outcomes %+v", result.Vendors)
+	}
+}
+
 func (f *fakeOps) PlanUninstall(_ context.Context, names []string) ([]VendorPlan, error) {
 	var plans []VendorPlan
 	for _, n := range names {

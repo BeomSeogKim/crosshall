@@ -113,7 +113,10 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.TelemetryEndpoint = telemetry.Receiver(version)
 		env.TelemetryCurl = telemetryconfig.CurlPath
 		env.TelemetryStateRoot = paths.state
-		env.Setup = func(req cli.SetupRequest) error {
+		env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
+			return setupApplyDeadline(ctx, 30*time.Second)
+		}
+		env.Setup = func(ctx context.Context, req cli.SetupRequest) error {
 			executable, err := os.Executable()
 			if err != nil {
 				return err
@@ -161,7 +164,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			}
 			installed := false
 			req.Installed = func() { installed = true }
-			runErr := service.Run(context.Background(), setup.Request(req))
+			runErr := service.Run(ctx, setup.Request(req))
 			if !req.Offer || !req.Terminal || os.Getenv("CROSSHALL_INSTALL_READY_RECEIPT") != "1" {
 				return runErr
 			}
@@ -183,6 +186,30 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.Unavailable = pathErr.Error()
 	}
 	return cli.RunEnv(context.Background(), env, args, os.Stdout, os.Stderr)
+}
+
+const setupApplyTimeoutMessage = "setup apply timed out. Some changes may have been applied. Run crosshall setup status, then retry with the same adapters."
+
+func setupApplyDeadline(ctx context.Context, limit time.Duration) (context.Context, func()) {
+	ctx, cancel := context.WithTimeoutCause(ctx, limit, errors.New(setupApplyTimeoutMessage))
+	// Give cooperative cancellation time to report its result. A blocked
+	// syscall cannot observe the context, so the CLI must also exit on its own.
+	watchdog := time.AfterFunc(limit+time.Second, func() {
+		reported := make(chan struct{})
+		go func() {
+			fmt.Fprintln(os.Stderr, setupApplyTimeoutMessage)
+			close(reported)
+		}()
+		select {
+		case <-reported:
+		case <-time.After(100 * time.Millisecond):
+		}
+		os.Exit(int(core.ExitError))
+	})
+	return ctx, func() {
+		watchdog.Stop()
+		cancel()
+	}
 }
 
 func writeInstallerPathConsent(accepted bool) error {

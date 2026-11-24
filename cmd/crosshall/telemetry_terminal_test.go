@@ -41,7 +41,7 @@ func TestTelemetryTerminalChild(t *testing.T) {
 			}
 			return filepath.Join(root, "telemetry-off")
 		},
-		Setup: func(req cli.SetupRequest) error {
+		Setup: func(ctx context.Context, req cli.SetupRequest) error {
 			svc := setup.Service{StateRoot: root, Executable: os.Args[0]}
 			return svc.Run(ctx, setup.Request(req))
 		},

@@ -91,6 +91,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	// owner-views
 	case OwnerWho:
 		return s.ownerWho(ctx, tx, caller, now)
+	case OwnerOwed:
+		return s.ownerOwed(ctx, tx, caller, now)
 	case OwnerDepart:
 		return s.ownerDepart(ctx, tx, caller, req, cmd, now)
 	case OwnerDepartEnded:

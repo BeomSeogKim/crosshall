@@ -466,6 +466,10 @@ func TestInstalledLaterStartChecksStartupRepository(t *testing.T) {
 		for _, place := range []string{"outside git", "different repository", "same repository mapped later", "ended first"} {
 			t.Run(source+" "+place, func(t *testing.T) {
 				f := newSetupWorld(t)
+				// Setup's policy updates share one 3 s budget with a dispatcher
+				// start; under load a cold start used it up. This test is about
+				// later starts, so the dispatcher runs before setup.
+				f.owner().must("owner", "start")
 				f.apply("", "setup", "claude", "--apply")
 				mapped := f.enrollmentRepo()
 				other := filepath.Join(f.home, "other")

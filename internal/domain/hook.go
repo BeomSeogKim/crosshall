@@ -26,6 +26,7 @@ const (
 	FactPromptSubmitted   = wire.HookPromptSubmitted
 	FactTurnFinishing     = wire.HookTurnFinishing
 	FactApprovalRequested = wire.HookApprovalRequested
+	FactIdlePrompt        = wire.HookIdlePrompt
 	FactSessionEnded      = wire.HookSessionEnded
 )
 
@@ -567,6 +568,10 @@ func rejoin(ctx context.Context, tx store.Tx, b hookBinding, principal int64, ve
 func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd HookEvent, now time.Time) (core.Result, error) {
 	switch cmd.Fact {
 	case FactPromptSubmitted, FactTurnFinishing, FactApprovalRequested, FactSessionEnded:
+	case FactIdlePrompt:
+		if cmd.TurnRef != "" || cmd.Receipt != "" {
+			return hookUsage("an idle fact has no turn or receipt"), nil
+		}
 	default:
 		return hookUsage("unknown hook fact"), nil
 	}
@@ -655,6 +660,15 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	if caller.Role != core.RoleMember {
 		return OK(out)
 	}
+	if cmd.Fact == FactIdlePrompt {
+		if !found || b.state != "live" {
+			return OK(out)
+		}
+		valid, err := currentIdlePrompt(ctx, tx, principal, cmd, now)
+		if err != nil || !valid {
+			return okOrErr(out, err)
+		}
+	}
 	origin := "unknown"
 	if cmd.Receipt != "" && found && b.state == "live" && (caller.BindingID == nil || *caller.BindingID == b.id) {
 		// An absorbed notice reuses the original prompt's operation key.
@@ -731,6 +745,10 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		return OK(out)
 	}
 	switch cmd.Fact {
+	case FactIdlePrompt:
+		if err := applyIdlePrompt(ctx, tx, principal, cmd, now); err != nil {
+			return core.Result{}, err
+		}
 	case FactPromptSubmitted, FactTurnFinishing:
 		if cmd.TurnRef == "" {
 			break

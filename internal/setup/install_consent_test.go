@@ -144,7 +144,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + probation, turnEnd: turnEndOn},
 		{name: "seen", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, confirmed)
-				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-2', 'publish', 3)`},
+				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-3', 'publish', 3)`},
 		{name: "owner hall off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "candidate",
 			settings: `INSERT INTO hall_publish VALUES (1, 0, 1); INSERT INTO hall_auto_join VALUES (1, 0, 1)`,
 			notice:   "- Notices (Claude Code, interactive sessions). Off by your setting; installing does not change it. On: crosshall owner publish hall on",
@@ -159,7 +159,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			notice: strings.Replace(noticeOn, "crosshall owner publish hall off", "crosshall owner adapter set claude --publish off", 1)},
 		{name: "stopped", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, stopped_at_ms, stop_reason, stop_ref)
-				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-2', 'publish', 1, 'absorbed', 41)`,
+				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-3', 'publish', 1, 'absorbed', 41)`,
 			notice: "- Notices (Claude Code, interactive sessions). Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."},
 		{name: "turn-end switch off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn,
 			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 0)`,
@@ -209,10 +209,10 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 				err = db.Update(ctx, func(tx store.Tx) error {
 					_, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
 						(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
-						('claude', ?2, ?1, 'interactive', 'claude-2', 'publish', ?3, 'fixture', 1),
-						('claude', ?2, ?1, 'interactive', 'claude-2', 'turn_end', ?4, 'fixture', 1),
-						('claude', ?2, ?1, 'print', 'claude-2', 'turn_end', ?5, 'fixture', 1),
-						('claude', '2.1.325', ?1, 'interactive', 'claude-2', 'publish', 'tested', 'older', 1)`,
+						('claude', ?2, ?1, 'interactive', 'claude-3', 'publish', ?3, 'fixture', 1),
+						('claude', ?2, ?1, 'interactive', 'claude-3', 'turn_end', ?4, 'fixture', 1),
+						('claude', ?2, ?1, 'print', 'claude-3', 'turn_end', ?5, 'fixture', 1),
+						('claude', '2.1.325', ?1, 'interactive', 'claude-3', 'publish', 'tested', 'older', 1)`,
 						platform, tc.version, tc.publishLevel, tc.turnEndLevel, printLevel)
 					if err == nil && tc.settings != "" {
 						_, err = tx.ExecContext(ctx, tc.settings, platform)
@@ -278,7 +278,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 // not "unknown", for the build that evidence names.
 func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 	s, f, _ := realSetup(t)
-	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.330 (Claude Code)'\n"
+	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.331 (Claude Code)'\n"
 	if err := os.WriteFile(filepath.Join(f.Bin, "claude"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		t.Fatalf("the preview created a store: %v", err)
 	}
 	// The Claude Code entry runs from its own line to the next unindented one.
-	_, block, _ := strings.Cut(out, "\nclaude 2.1.330 ")
+	_, block, _ := strings.Cut(out, "\nclaude 2.1.331 ")
 	if i := strings.Index(block, "\n"); i >= 0 {
 		block = block[i+1:]
 	}

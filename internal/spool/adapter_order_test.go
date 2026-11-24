@@ -14,29 +14,35 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+// A Stop, a session end and an idle report each wait for an earlier hook of
+// the launch that arrives while the spool drains.
 func TestMemberSpoolRescansBeforeDependentStop(t *testing.T) {
-	f := setup(t)
-	leaf := f.leaf(t)
-	root, err := os.OpenRoot(leaf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
+	for _, fact := range []string{wire.HookTurnFinishing, wire.HookSessionEnded, wire.HookIdlePrompt} {
+		t.Run(fact, func(t *testing.T) {
+			f := setup(t)
+			leaf := f.leaf(t)
+			root, err := os.OpenRoot(leaf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
 
-	ordinary := strings.Repeat("1", 32)
-	writeMemberPacket(t, leaf, "in", wire.Request{Attempt: ordinary, Verb: "who"})
-	stop := writeOrderHook(t, leaf, "in", "2", wire.HookTurnFinishing, 2)
-	var prompt string
-	var order []string
-	err = spool.DrainMemberSpool(root, func(id string, _ []byte, _ bool) (core.Result, error) {
-		order = append(order, id)
-		if id == ordinary {
-			prompt = writeOrderHook(t, leaf, "in", "3", wire.HookPromptSubmitted, 1)
-		}
-		return core.Result{}, nil
-	})
-	if err != nil || !slices.Equal(order, []string{ordinary, prompt, stop}) {
-		t.Fatalf("drain order %q: %v", order, err)
+			ordinary := strings.Repeat("1", 32)
+			writeMemberPacket(t, leaf, "in", wire.Request{Attempt: ordinary, Verb: "who"})
+			stop := writeOrderHook(t, leaf, "in", "2", fact, 2)
+			var prompt string
+			var order []string
+			err = spool.DrainMemberSpool(root, func(id string, _ []byte, _ bool) (core.Result, error) {
+				order = append(order, id)
+				if id == ordinary {
+					prompt = writeOrderHook(t, leaf, "in", "3", wire.HookPromptSubmitted, 1)
+				}
+				return core.Result{}, nil
+			})
+			if err != nil || !slices.Equal(order, []string{ordinary, prompt, stop}) {
+				t.Fatalf("drain order %q: %v", order, err)
+			}
+		})
 	}
 }
 
@@ -70,28 +76,33 @@ func TestMemberSpoolRechecksNewlyClaimedPredecessors(t *testing.T) {
 	}
 }
 
+// A session end, and an idle report, wait for the launch's earlier hooks.
 func TestMemberSpoolOrdersEqualHookTimesByPublication(t *testing.T) {
-	f := setup(t)
-	leaf := f.leaf(t)
-	root, err := os.OpenRoot(leaf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
+	for _, fact := range []string{wire.HookSessionEnded, wire.HookIdlePrompt} {
+		t.Run(fact, func(t *testing.T) {
+			f := setup(t)
+			leaf := f.leaf(t)
+			root, err := os.OpenRoot(leaf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
 
-	end := writeOrderHook(t, leaf, "work", "1", wire.HookSessionEnded, 2)
-	older := time.Now().Add(-time.Second)
-	if err := os.Chtimes(filepath.Join(leaf, "work", end+".json"), older, older); err != nil {
-		t.Fatal(err)
-	}
-	start := writeOrderHook(t, leaf, "in", "2", "", 1)
-	var order []string
-	err = spool.DrainMemberSpool(root, func(id string, _ []byte, _ bool) (core.Result, error) {
-		order = append(order, id)
-		return core.Result{}, nil
-	})
-	if err != nil || !slices.Equal(order, []string{start, end}) {
-		t.Fatalf("drain order %q: %v", order, err)
+			end := writeOrderHook(t, leaf, "work", "1", fact, 2)
+			older := time.Now().Add(-time.Second)
+			if err := os.Chtimes(filepath.Join(leaf, "work", end+".json"), older, older); err != nil {
+				t.Fatal(err)
+			}
+			start := writeOrderHook(t, leaf, "in", "2", "", 1)
+			var order []string
+			err = spool.DrainMemberSpool(root, func(id string, _ []byte, _ bool) (core.Result, error) {
+				order = append(order, id)
+				return core.Result{}, nil
+			})
+			if err != nil || !slices.Equal(order, []string{start, end}) {
+				t.Fatalf("drain order %q: %v", order, err)
+			}
+		})
 	}
 }
 

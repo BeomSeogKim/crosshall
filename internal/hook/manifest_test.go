@@ -28,6 +28,7 @@ func TestHasPromptLineUsesTheInstalledManifest(t *testing.T) {
 		adapter, revision string
 		want              bool
 	}{
+		{"claude", "claude-3", true},
 		{"claude", "claude-2", true},
 		{"claude", "claude-1", true},
 		{"codex", "codex-1", true},
@@ -123,8 +124,15 @@ func TestHookObservationFields(t *testing.T) {
 	if err != nil || got.Fact != "approval_requested" || got.TurnRef != "turn1" {
 		t.Fatalf("observation: %+v, %v", got, err)
 	}
-	if _, err := parseFixture("claude", "Notification", strings.Replace(notification, "permission_prompt", "idle_prompt", 1), nil); err == nil {
-		t.Fatal("accepted unrelated notification")
+	idle, err := parseFixture("claude", "Notification", strings.Replace(notification, "permission_prompt", "idle_prompt", 1), nil)
+	if err != nil || idle.Fact != "idle_prompt" || idle.TurnRef != "" ||
+		idle.reference(time.UnixMilli(10)) == idle.reference(time.UnixMilli(11)) {
+		t.Fatalf("launch-scoped idle notification: %+v, %v", idle, err)
+	}
+	for _, other := range []string{"auth_success", "idle_prompt_extra", ""} {
+		if _, err := parseFixture("claude", "Notification", strings.Replace(notification, "permission_prompt", other, 1), nil); err == nil {
+			t.Errorf("accepted unrelated notification %q", other)
+		}
 	}
 	ended, err := parseFixture("codex", "SessionEnd", `{"hook_event_name":"SessionEnd","session_id":"room","reason":"other"}`, nil)
 	if err != nil || ended.Reason != "other" || ended.reference(time.UnixMilli(10)) == ended.reference(time.UnixMilli(11)) {

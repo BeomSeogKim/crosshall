@@ -42,7 +42,7 @@ func TestClaudeCodeInteractiveSessionMove(t *testing.T) {
 	if verifyPublish {
 		evidence, err := json.Marshal(map[string]any{
 			"vendor": "claude", "vendor_version": version, "platform": "darwin-arm64",
-			"mode": "interactive", "manifest_rev": "claude-2", "run_at_ms": time.Now().UnixMilli(),
+			"mode": "interactive", "manifest_rev": claudeManifestRevision(), "run_at_ms": time.Now().UnixMilli(),
 			"results": []evidenceResult{{"publish", "tested", "scratch hall only: exercises the destination native route"}},
 		})
 		if err != nil {

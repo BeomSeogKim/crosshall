@@ -18,12 +18,11 @@ func placeholder(ref string, at int64) string {
 	return typedAheadPrefix + ref + "@" + strconv.FormatInt(at, 10)
 }
 
-// turnFact is a recorded prompt or Stop of a launch.
 type turnFact struct {
-	prompt bool
-	ref    string
-	at     int64
-	event  string
+	kind  string
+	ref   string
+	at    int64
+	event string
 }
 
 // assignedTurn is a turn of a launch as its facts in hook order make it.
@@ -57,6 +56,7 @@ func assignTurns(facts []turnFact) ([]assignedTurn, map[string]int) {
 	var turns []assignedTurn
 	byName := map[string]int{}
 	opened := map[string]int{}
+	checkedAtIdle := 0
 	sole := func() int {
 		start := 0
 		for i := len(turns) - 1; i >= 0; i-- {
@@ -90,12 +90,19 @@ func assignTurns(facts []turnFact) ([]assignedTurn, map[string]int) {
 	for _, f := range facts {
 		i, known := byName[f.ref]
 		switch {
-		case f.prompt && known:
+		case f.kind == FactIdlePrompt:
+			for j := checkedAtIdle; j < len(turns); j++ {
+				if turns[j].placeholder && turns[j].finishing == 0 {
+					turns[j].finishing = f.at
+				}
+			}
+			checkedAtIdle = len(turns)
+		case f.kind == FactPromptSubmitted && known:
 			opened[f.event] = -1
 			if i == len(turns)-1 && turns[i].finishing == 0 {
 				opened[f.event] = open(assignedTurn{name: placeholder(f.ref, f.at), opened: f.at, placeholder: true})
 			}
-		case f.prompt:
+		case f.kind == FactPromptSubmitted:
 			if j := sole(); j >= 0 {
 				rename(j, f.ref)
 				opened[f.event] = open(assignedTurn{name: placeholder(f.ref, f.at), opened: f.at, placeholder: true})
@@ -116,17 +123,18 @@ func assignTurns(facts []turnFact) ([]assignedTurn, map[string]int) {
 	return turns, opened
 }
 
-// launchFacts reads a launch's recorded prompts and Stops in hook-time
+// launchFacts reads a launch's recorded turn activity in hook-time
 // order. Within one millisecond, a Stop comes before the prompts (it ended
 // the turn they follow), except after a prompt with its own id: a Stop
 // never precedes its turn's first prompt. Remaining ties go by event, not
 // by delivery. A fact stamped beyond the dispatcher's clock slack is left
 // out until the clock reaches it.
 func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch string, nowMS int64) ([]turnFact, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT kind = ?, turn_ref, hook_at_ms, event_ref FROM observation
-		WHERE principal_id = ? AND launch_ref = ? AND kind IN (?, ?) AND turn_ref IS NOT NULL AND hook_at_ms <= ?
+	rows, err := tx.QueryContext(ctx, `SELECT kind, COALESCE(turn_ref, ''), hook_at_ms, event_ref FROM observation
+		WHERE principal_id = ? AND launch_ref = ? AND hook_at_ms <= ?
+			AND (kind = ? OR (kind IN (?, ?) AND turn_ref IS NOT NULL))
 		ORDER BY hook_at_ms, event_ref`,
-		FactPromptSubmitted, principal, launch, FactPromptSubmitted, FactTurnFinishing, nowMS+futureSlackMS)
+		principal, launch, nowMS+futureSlackMS, FactIdlePrompt, FactPromptSubmitted, FactTurnFinishing)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +142,7 @@ func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch strin
 	var facts []turnFact
 	for rows.Next() {
 		var f turnFact
-		if err := rows.Scan(&f.prompt, &f.ref, &f.at, &f.event); err != nil {
+		if err := rows.Scan(&f.kind, &f.ref, &f.at, &f.event); err != nil {
 			return nil, err
 		}
 		facts = append(facts, f)
@@ -146,13 +154,15 @@ func launchFacts(ctx context.Context, tx store.Tx, principal int64, launch strin
 	return facts, nil
 }
 
-// orderTies orders the facts of each millisecond: Stops of other turns,
+// orderTies orders the facts of each millisecond: idle before tied activity, Stops of other turns,
 // then prompts, then Stops of a turn prompted in that millisecond, keeping
 // the event order within each.
 func orderTies(facts []turnFact) {
 	rank := func(f turnFact, prompted map[string]bool) int {
 		switch {
-		case f.prompt:
+		case f.kind == FactIdlePrompt:
+			return -1
+		case f.kind == FactPromptSubmitted:
 			return 1
 		case prompted[f.ref]:
 			return 2
@@ -167,7 +177,7 @@ func orderTies(facts []turnFact) {
 		if end-start > 1 {
 			prompted := map[string]bool{}
 			for _, f := range facts[start:end] {
-				if f.prompt {
+				if f.kind == FactPromptSubmitted {
 					prompted[f.ref] = true
 				}
 			}

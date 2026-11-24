@@ -70,9 +70,19 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 				OR t.finishing_hook_at_ms BETWEEN l.started_hook_at_ms AND ?4)
 	), last_turn AS (
 		SELECT turn_ref, opened_hook_at_ms, finishing_hook_at_ms FROM previous ORDER BY opened_hook_at_ms DESC, rowid DESC LIMIT 1
+	), last_idle AS (
+		SELECT MAX(o.hook_at_ms) AS at FROM observation o JOIN adapter_launch l
+			ON l.principal_id = o.principal_id AND l.launch_ref = o.launch_ref
+		WHERE o.principal_id = ?1 AND o.launch_ref = ?2 AND o.kind = 'idle_prompt'
+			AND o.hook_at_ms >= l.started_hook_at_ms AND o.hook_at_ms < ?4
 	)
 	SELECT CASE
 		WHEN EXISTS (SELECT 1 FROM previous WHERE turn_ref = ?3) THEN 'absorbed'
+		WHEN EXISTS (SELECT 1 FROM last_idle i WHERE i.at IS NOT NULL AND NOT EXISTS (
+			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
+				AND o.hook_at_ms BETWEEN i.at AND ?4 AND o.kind NOT IN ('command', 'idle_prompt')
+				AND NOT `+duplicatePrompt+`
+		)) THEN 'own_turn'
 		WHEN EXISTS (SELECT 1 FROM last_turn t WHERE t.finishing_hook_at_ms <= ?4 AND NOT EXISTS (
 			SELECT 1 FROM observation o WHERE o.principal_id = ?1 AND o.launch_ref = ?2
 				AND o.hook_at_ms BETWEEN t.finishing_hook_at_ms AND ?4

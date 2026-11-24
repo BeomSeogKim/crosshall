@@ -421,18 +421,18 @@ func TestDoctorShowsOnlyReminderEvidenceForInstalledBuild(t *testing.T) {
 	if err := db.Update(t.Context(), func(tx store.Tx) error {
 		_, err := tx.ExecContext(t.Context(), `
 			INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
-			VALUES ('claude', '9.1.42', ?1, 'print', 'claude-2', 'reminder', 'candidate', 'matching', 19),
-			       ('claude', '2.1.327', ?1, 'print', 'claude-2', 'reminder', 'unavailable', 'other-version', 19),
-			       ('claude', '9.1.42', 'other-platform', 'print', 'claude-2', 'reminder', 'unavailable', 'other-platform', 19),
+			VALUES ('claude', '9.1.42', ?1, 'print', 'claude-3', 'reminder', 'candidate', 'matching', 19),
+			       ('claude', '2.1.327', ?1, 'print', 'claude-3', 'reminder', 'unavailable', 'other-version', 19),
+			       ('claude', '9.1.42', 'other-platform', 'print', 'claude-3', 'reminder', 'unavailable', 'other-platform', 19),
 			       ('claude', '9.1.42', ?1, 'print', 'claude-1', 'reminder', 'unavailable', 'other-revision', 19),
-			       ('claude', '9.1.42', ?1, 'interactive', 'claude-2', 'enroll', 'tested', 'other-capability', 19);`, platform)
+			       ('claude', '9.1.42', ?1, 'interactive', 'claude-3', 'enroll', 'tested', 'other-capability', 19);`, platform)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if r := readReminder(); len(r.Evidence) != 1 || r.Evidence[0].Level != "candidate" ||
 		r.Evidence[0].Version != "9.1.42" || r.Evidence[0].Platform != platform ||
-		r.Evidence[0].Mode != "print" || r.Evidence[0].ManifestRev != "claude-2" {
+		r.Evidence[0].Mode != "print" || r.Evidence[0].ManifestRev != "claude-3" {
 		t.Fatalf("Claude reminder after evidence import: %+v", r)
 	}
 }

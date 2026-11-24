@@ -4,7 +4,14 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## To v0.2.0-rc.5
 
-Upgrading from v0.2.0-rc.4 to v0.2.0-rc.5 keeps the database at schema 28: there is no new migration, and the upgrade makes no migration backup. Stop running crosshall commands, including background waits, run `crosshall owner stop`, and keep a private copy of the stopped store. Install rc.5 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command), then run `crosshall owner start` and `crosshall owner doctor`. Sessions keep their membership, and the installed hooks need no reinstall while the executable path stays the same. To roll back, stop rc.5, put the rc.4 binary back and start it on the same store. Coming from v0.2.0-rc.3 or earlier, follow the sections below as well.
+Upgrading from v0.2.0-rc.4 to v0.2.0-rc.5 moves the database from schema 28 to schema 29. Migration 029 rebuilds the `observation` table to admit Claude Code's idle report; its rows and indexes are kept.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the v0.2.0-rc.5 dispatcher also saves a `store-v28-*.sqlite3` backup beside the database.
+3. Install rc.5 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command), then run `crosshall owner start` and `crosshall owner doctor`.
+4. Run `crosshall setup claude` to move the Claude Code hooks to manifest `claude-3`, whose Notification hook also matches `idle_prompt`. Setup replaces only its own notification hook, and on uninstall still restores the original file when you have not edited it since. Sessions started before keep the `claude-2` hooks until they start again.
+
+Sessions keep their membership. To roll back, stop the rc.5 dispatcher, restore the schema 28 database from your pre-upgrade copy (or the `store-v28-*.sqlite3` backup) and start the rc.4 binary. Restoring discards messages and other changes made since the upgrade. Coming from v0.2.0-rc.3 or earlier, follow the sections below as well.
 
 When a dispatcher holds its lock, `owner start` now waits up to five seconds from the command's start for it to confirm readiness; with no lock holder it still gives up after about three seconds. `setup --apply` and `uninstall --apply` each stop after 30 seconds; after a timeout, run `crosshall setup status` and retry with the same adapters.
 

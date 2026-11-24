@@ -85,7 +85,7 @@ With an adapter's hooks installed, the hall can tell a session about new work wi
 [crosshall] pending: 12 15. This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read.
 ```
 
-An idle session starts a turn for it; a busy one takes it as its own turn after the current one. The session runs `crosshall read`, which picks the work up. The notice carries message IDs only, never a body or a peer's words. Claude Code (seen on 2.1.329) shows it to the person as a message from another session, inside its own wrapper paragraph.
+The dispatcher waits while the session reports a current prompt or permission request. When the turn ends, or its report expires, the dispatcher checks which messages still need a notice. It skips IDs whose prompt-line output the hook has confirmed. If the session becomes busy after submission starts, the vendor can queue the notice for a later turn. The session runs `crosshall read`, which picks the work up. The notice carries message IDs only, never a body or a peer's words. Claude Code (seen on 2.1.329) shows it to the person as a message from another session, inside its own wrapper paragraph.
 
 The binary ships tested publish evidence for Claude Code 2.1.330 on macOS arm64 in interactive mode with manifest `claude-2`. Uncovered sessions stay on pull and the prompt line. The sender is available for Claude Code.
 

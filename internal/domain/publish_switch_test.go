@@ -306,6 +306,7 @@ func TestPublishLastingSuspensionCountsOnlyQualifyingFailures(t *testing.T) {
 				p.resolve(id, PublishSubmitted)
 				p.hook(p.reader, p.promptReceipt("own-turn", publishTestLaunch, p.now.UnixMilli()+1, ids))
 				p.observation(id, "own_turn")
+				p.hook(p.reader, stop(publishTestLaunch, "own-turn", p.now.UnixMilli()+2))
 			}
 			p.turnEndAsk(p.writer, "reader", "third-failure")
 			id := p.reserve()

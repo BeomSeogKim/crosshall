@@ -52,6 +52,10 @@ func publishRoutes(now time.Time, proven bool) string {
 		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileCovered
 }
 
+// An offer is positive evidence only after the hook confirms its output.
+const writtenOffer = `SELECT 1 FROM offer_item oi JOIN offer o ON o.id = oi.offer_id
+	WHERE oi.principal_id = x.principal_id AND oi.message_id = x.message_id AND o.written_at_ms IS NOT NULL`
+
 const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id
 		AND x.message_id > r.watermark_message_id AND x.picked_up_at_ms IS NULL
@@ -59,6 +63,7 @@ const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON 
 			WHERE o.message_id = x.message_id AND o.principal_id = x.principal_id AND o.state = 'open')
 			OR m.kind = 'reply' AND m.outcome IN ('answer', 'decline') AND EXISTS (
 				SELECT 1 FROM message ask WHERE ask.id = m.in_reply_to AND ask.kind = 'ask' AND ask.sender_id = x.principal_id))
+		AND NOT EXISTS (` + writtenOffer + `)
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt a ON a.id = i.attempt_id
 			WHERE i.principal_id = x.principal_id AND i.message_id = x.message_id AND a.binding_id = r.binding_id
@@ -157,18 +162,21 @@ func routeAddress(adapter string, route publish.Route) (string, bool) {
 	return address, reason == ""
 }
 
-// bindingRouteResolves reports whether the binding's route resolves to an
-// address now.
-func bindingRouteResolves(ctx context.Context, tx store.Tx, binding int64) (bool, error) {
+// bindingCanReserve checks the route address and whether its member is in a turn.
+func bindingCanReserve(ctx context.Context, tx store.Tx, binding int64, now time.Time) (bool, error) {
 	var adapter string
 	var route publish.Route
-	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+` FROM publish_route r WHERE r.binding_id = ?`, binding).
-		Scan(routeScan(&adapter, &route)...)
+	var principal int64
+	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, r.principal_id FROM publish_route r WHERE r.binding_id = ?`, binding).
+		Scan(append(routeScan(&adapter, &route), &principal)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	_, ok := routeAddress(adapter, route)
-	return ok && err == nil, err
+	if _, ok := routeAddress(adapter, route); err != nil || !ok {
+		return false, err
+	}
+	running, err := inReportedTurn(ctx, tx, principal, now)
+	return !running && err == nil, err
 }
 
 // PublishProof is a route that could publish but for the transport's
@@ -275,7 +283,7 @@ func PublishCandidates(ctx context.Context, tx store.Tx, now time.Time) ([]Publi
 }
 
 func HasPublishWork(ctx context.Context, tx store.Tx, binding PublishBinding, now time.Time) (bool, error) {
-	if ok, err := bindingRouteResolves(ctx, tx, binding.ID); !ok || err != nil {
+	if ok, err := bindingCanReserve(ctx, tx, binding.ID, now); !ok || err != nil {
 		return false, err
 	}
 	var pending bool
@@ -287,7 +295,7 @@ func HasPublishWork(ctx context.Context, tx store.Tx, binding PublishBinding, no
 
 // ReservePublish reads the route and unread ledger again under the writer transaction.
 func ReservePublish(ctx context.Context, tx store.Tx, binding PublishBinding, now time.Time) (bool, error) {
-	if ok, err := bindingRouteResolves(ctx, tx, binding.ID); !ok || err != nil {
+	if ok, err := bindingCanReserve(ctx, tx, binding.ID, now); !ok || err != nil {
 		return false, err
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO publish_attempt (
@@ -333,14 +341,17 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
+	var principal int64
+	var shown bool
 	var target PublishTarget
 	var route publish.Route
-	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, p.process_pid, p.process_start_ms `+
-		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ? AND a.state = 'reserved'
+	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, p.process_pid, p.process_start_ms, r.principal_id,
+		EXISTS (SELECT 1 FROM publish_attempt_item x WHERE x.attempt_id = ?1 AND EXISTS (`+writtenOffer+`)) `+
+		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ?1 AND a.state = 'reserved'
 			AND a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
 			AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
 			AND a.policy_epoch = r.policy_epoch AND a.process_pid = p.process_pid AND a.process_start_ms = p.process_start_ms)`, id).
-		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS)...)
+		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &shown)...)
 	resolved := false
 	if err == nil {
 		target.Address, resolved = routeAddress(target.Adapter, route)
@@ -349,6 +360,20 @@ func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (Pu
 		return PublishTarget{}, nil, finishPublish(ctx, tx, id, "reserved", PublishNotSubmitted, now)
 	}
 	if err != nil {
+		return PublishTarget{}, nil, err
+	}
+	running, err := inReportedTurn(ctx, tx, principal, now)
+	if err != nil {
+		return PublishTarget{}, nil, err
+	}
+	if running || shown {
+		// Release the batch so the next reservation reads the ledger again.
+		// Keeping its items on a not_submitted attempt would bar them for
+		// this route generation, even though we never called the transport.
+		if err := finishPublish(ctx, tx, id, "reserved", PublishNotSubmitted, now); err != nil {
+			return PublishTarget{}, nil, err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM publish_attempt_item WHERE attempt_id = ?`, id)
 		return PublishTarget{}, nil, err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE publish_attempt SET state = 'submitting', submitting_at_ms = ?

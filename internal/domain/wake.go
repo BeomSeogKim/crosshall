@@ -164,11 +164,8 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 // its launch's turn-end check is covered and switched on. An open turn row
 // alone is not enough: a typed-ahead placeholder can stay open for good.
 func seesAtTurnEnd(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
-	fact, err := latestFact(ctx, tx, principal)
-	// A session reports nothing after an answered permission dialog, so a
-	// turn that asked for one shows that stage until its Stop.
-	if fact == nil || err != nil || fact.Fact != FactPromptSubmitted && fact.Fact != FactApprovalRequested ||
-		!fact.At(ms(now)).Current {
+	running, err := inReportedTurn(ctx, tx, principal, now)
+	if !running || err != nil {
 		return false, err
 	}
 	var covered bool

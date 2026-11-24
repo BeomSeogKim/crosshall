@@ -158,6 +158,93 @@ func TestPublishEligibilityAndReservationBoundary(t *testing.T) {
 	}
 }
 
+func TestPublishSkipsOnlyConfirmedOffers(t *testing.T) {
+	for _, written := range []bool{false, true} {
+		t.Run(fmt.Sprint("written=", written), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.offerReceipts = true
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before"))
+			at := p.now.UnixMilli()
+			first := p.turnEndAsk(p.writer, "reader", "first")
+			receipt := wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+			if written {
+				p.confirmOffer(p.principalOf(p.reader), "g1", receipt, at+2)
+			}
+			p.hook(p.reader, stop(publishTestLaunch, "user", at+3))
+			if got := p.hasWork(); got == written {
+				t.Errorf("pending publish work = %t after written=%t", got, written)
+			}
+			second := p.turnEndAsk(p.writer, "reader", "second")
+			want := []int64{first, second}
+			if written {
+				want = []int64{second}
+			}
+			if got := p.begin(p.reserve()); !slices.Equal(got, want) {
+				t.Fatalf("submitted IDs %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestPublishDefersOpenTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+1))
+	read := p.turnEndAsk(p.writer, "reader", "picked-up")
+	pending := p.turnEndAsk(p.writer, "reader", "unread")
+	if id := p.reserve(); id != 0 {
+		t.Fatalf("reserved notice %d during the user turn", id)
+	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{read}}, "read"))
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+	if got := p.begin(p.reserve()); !slices.Equal(got, []int64{pending}) {
+		t.Fatalf("after Stop submitted %v, want only %d", got, pending)
+	}
+}
+
+func TestPublishRechecksTurnAndOffersBeforeSubmitting(t *testing.T) {
+	for _, written := range []bool{false, true} {
+		t.Run(fmt.Sprint("written=", written), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.offerReceipts = true
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before"))
+			first := p.turnEndAsk(p.writer, "reader", "first")
+			at := p.now.UnixMilli()
+			var id, second int64
+			if written {
+				receipt := wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+				p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+				second = p.turnEndAsk(p.writer, "reader", "second")
+				id = p.reserve()
+				p.confirmOffer(p.principalOf(p.reader), "g1", receipt, at+3)
+			} else {
+				id = p.reserve()
+				wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+				second = p.turnEndAsk(p.writer, "reader", "second")
+			}
+			if id == 0 {
+				t.Fatal("no initial reservation")
+			}
+			if got := p.begin(id); len(got) != 0 {
+				t.Fatalf("reservation still submitted %v", got)
+			}
+			if !written {
+				p.hook(p.reader, stop(publishTestLaunch, "user", at+3))
+			}
+			want := []int64{first, second}
+			if written {
+				want = []int64{second}
+			}
+			if got := p.begin(p.reserve()); !slices.Equal(got, want) {
+				t.Fatalf("on recheck submitted %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestPublishReplacementQueueGetsANewActivationWatermark(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
@@ -211,9 +298,10 @@ func TestPublishAndStopShareTheAnnouncementClaim(t *testing.T) {
 			wantOK(t, p.owner(turnEndEvidence("tested"), "evidence"))
 			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before-route"))
 			ask := p.turnEndAsk(p.writer, "reader", "race")
-			p.hook(p.reader, prompt(publishTestLaunch, "turn", p.now.UnixMilli()+1))
+			open := prompt(publishTestLaunch, "turn", p.now.UnixMilli()+1)
 			cmd := stop(publishTestLaunch, "turn", p.now.UnixMilli()+2)
 			if stopFirst {
+				p.hook(p.reader, open)
 				if got := p.hook(p.reader, cmd).TurnEndLine; got != fmt.Sprintf("[crosshall] pending: %d", ask) {
 					t.Fatalf("Stop line %q", got)
 				}
@@ -224,6 +312,7 @@ func TestPublishAndStopShareTheAnnouncementClaim(t *testing.T) {
 				if id := p.reserve(); id == 0 {
 					t.Fatal("publish did not claim")
 				}
+				p.hook(p.reader, open)
 				if got := p.hook(p.reader, cmd).TurnEndLine; got != "" {
 					t.Fatalf("Stop competed with a committed publish claim: %q", got)
 				}

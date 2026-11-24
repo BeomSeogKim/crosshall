@@ -103,6 +103,7 @@ func TestPublishReceiptBeforeSendReturnsSettlesOnlyTheLane(t *testing.T) {
 	if p.observation(id, "own_turn") != seen {
 		t.Fatal("transport outcome overwrote observation")
 	}
+	p.hook(p.reader, stop(publishTestLaunch, "notice", p.now.UnixMilli()+1))
 	next := p.reserve()
 	if next == 0 || !slices.Equal(p.begin(next), items[OfferCap:]) {
 		t.Fatal("matched observation did not admit the next batch")
@@ -114,12 +115,12 @@ func TestPublishReceiptAbsorbedBeforePromptReplayReturns(t *testing.T) {
 	p.proveRoute()
 	now := p.now.UnixMilli()
 	firstPrompt := prompt(publishTestLaunch, "already-open", now+100)
-	p.hook(p.reader, firstPrompt)
 	ask := p.turnEndAsk(p.writer, "reader", "absorbed")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	p.hook(p.reader, firstPrompt)
 	receipt := p.promptReceipt(firstPrompt.TurnRef, firstPrompt.LaunchRef, now+200, []int64{ask})
 	if hookKey(receipt) != hookKey(firstPrompt) {
 		t.Fatal("absorbed prompt did not replay the original operation")
@@ -141,6 +142,7 @@ func TestPublishReceiptAbsorbedBeforePromptReplayReturns(t *testing.T) {
 	}
 	p.turnEndAsk(p.writer, "reader", "after-absorbed")
 	p.resolve(id, PublishSubmitted)
+	p.hook(p.reader, stop(publishTestLaunch, "already-open", p.now.UnixMilli()+1))
 	if p.reserve() != 0 {
 		t.Fatal("absorbed route still publishes")
 	}
@@ -176,12 +178,14 @@ func TestPublishReceiptAfterTimeoutAndAfterClear(t *testing.T) {
 				if n := p.count(`SELECT COUNT(*) FROM event WHERE kind = 'publish_receipt_rejected' AND json_extract(detail, '$.reason') = 'stale'`); n != 2 {
 					t.Fatalf("late receipts counted = %d, want 2", n)
 				}
+				p.hook(p.reader, stop(crossedClear.LaunchRef, crossedClear.TurnRef, p.now.UnixMilli()+1))
 				if p.reserve() != 0 {
 					t.Fatal("old generation's receipt released its physical queue")
 				}
 			} else {
 				p.observation(id, "own_turn")
 				p.verifyPromptOrigin(cmd, "crosshall_wake")
+				p.hook(p.reader, stop(publishTestLaunch, cmd.TurnRef, p.now.UnixMilli()+1))
 				if p.reserve() == 0 {
 					t.Fatal("late receipt did not release its queue after timeout")
 				}
@@ -203,6 +207,7 @@ func TestPublishReceiptValidatesListAndAuthenticatedScope(t *testing.T) {
 	p.hook(p.reader, typed)
 	p.observation(id, "")
 	p.verifyPromptOrigin(typed, "unknown")
+	p.hook(p.reader, stop(publishTestLaunch, typed.TurnRef, at+150))
 	if !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
@@ -222,7 +227,7 @@ func TestPublishReceiptValidatesListAndAuthenticatedScope(t *testing.T) {
 		Vendor: "claude", OpKey: hookKey(wrongSession)}))
 	p.verifyPromptOrigin(wrongSession, "unknown")
 	p.observation(id, "")
-	// The prompts above opened turns that never got a Stop; a matching
+	// The malformed and unmatched prompts opened turns that never got a Stop; a matching
 	// receipt with an id of its own still counts as its own turn (#169).
 	right := p.promptReceipt("typed-matched", publishTestLaunch, at+500, []int64{ask})
 	p.hook(p.reader, right)
@@ -252,6 +257,7 @@ func TestPublishReceiptInAFreshSessionIsItsOwnTurn(t *testing.T) {
 	p.verifyPromptOrigin(cmd, "crosshall_wake")
 	p.resolve(id, PublishSubmitted)
 	p.turnEndAsk(p.writer, "reader", "after-fresh")
+	p.hook(p.reader, stop(publishTestLaunch, "notice", p.now.UnixMilli()+1))
 	if p.reserve() == 0 {
 		t.Fatal("a fresh session's notice did not admit the next batch")
 	}
@@ -264,13 +270,13 @@ func TestPublishReceiptAfterADeniedTurnIsItsOwnTurn(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	at := p.now.UnixMilli()
-	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
-	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "user:approval", "user", at+60, false))
-	ask := p.turnEndAsk(p.writer, "reader", "during the dialog")
+	ask := p.turnEndAsk(p.writer, "reader", "notice queued before the dialog")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "user:approval", "user", at+60, false))
 	cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
 	p.hook(p.reader, cmd)
 	p.observation(id, "own_turn")
@@ -280,6 +286,7 @@ func TestPublishReceiptAfterADeniedTurnIsItsOwnTurn(t *testing.T) {
 	}
 	p.resolve(id, PublishSubmitted)
 	p.turnEndAsk(p.writer, "reader", "after the notice")
+	p.hook(p.reader, stop(publishTestLaunch, "notice", p.now.UnixMilli()+1))
 	if p.reserve() == 0 {
 		t.Fatal("the route stopped publishing after a denied turn")
 	}
@@ -299,17 +306,17 @@ func TestPublishReceiptIgnoresADuplicatePrompt(t *testing.T) {
 			p.proveRoute()
 			p.finishPreviousTurn()
 			at := p.now.UnixMilli()
+			ask := p.turnEndAsk(p.writer, "reader", "notice queued before the duplicate")
+			id := p.reserve()
+			if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+				t.Fatal("reservation did not start")
+			}
 			if denied {
 				p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 				p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "user:approval", "user", at+60, false))
 			}
 			if r := p.hook(p.reader, duplicate("previous", at+70)); !quiet(r) {
 				t.Fatalf("the duplicate printed %+v", r)
-			}
-			ask := p.turnEndAsk(p.writer, "reader", "after the duplicate")
-			id := p.reserve()
-			if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
-				t.Fatal("reservation did not start")
 			}
 			cmd := p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask})
 			p.hook(p.reader, cmd)
@@ -327,12 +334,12 @@ func TestPublishReceiptOnTheOpenTurnStaysAbsorbed(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	at := p.now.UnixMilli()
-	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 	ask := p.turnEndAsk(p.writer, "reader", "busy")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 	cmd := p.promptReceipt("user", publishTestLaunch, at+100, []int64{ask})
 	cmd.EventRef = "user:prompt@" + strconv.FormatInt(at+100, 10)
 	p.hook(p.reader, cmd)
@@ -347,7 +354,6 @@ func TestPublishReceiptAfterACompactInsideAnOpenTurnStaysUnknown(t *testing.T) {
 			p := newPublishFixture(t)
 			p.proveRoute()
 			at := p.now.UnixMilli()
-			p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 			enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+60, 1)
 			p.proveRoute()
 			ask := p.turnEndAsk(p.writer, "reader", "compact-"+turn)
@@ -355,6 +361,8 @@ func TestPublishReceiptAfterACompactInsideAnOpenTurnStaysUnknown(t *testing.T) {
 			if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 				t.Fatal("reservation did not start")
 			}
+			// The earlier prompt callback arrives after this launch has begun sending.
+			p.hook(p.reader, prompt(publishTestLaunch, "user", at+50))
 			cmd := p.promptReceipt(turn, publishTestLaunch, at+100, []int64{ask})
 			p.hook(p.reader, cmd)
 			p.unknownCause(id, "unfinished_turn")
@@ -445,13 +453,13 @@ func TestPublishReceiptAfterAClearOfAnIdleSessionIsItsOwnTurn(t *testing.T) {
 func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
-	const unrecorded = "unrecorded-user-turn"
-	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, p.now.UnixMilli()+50, false))
 	ask := p.turnEndAsk(p.writer, "reader", "missing-prompt")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, p.now.UnixMilli()+50, false))
 	if n := p.count(`SELECT COUNT(*) FROM turn`); n != 0 {
 		t.Fatalf("fixture recorded %d turns before the notice", n)
 	}
@@ -465,6 +473,7 @@ func TestPublishReceiptWithoutTurnEvidenceStaysUnknown(t *testing.T) {
 	}
 	p.resolve(id, PublishSubmitted)
 	p.turnEndAsk(p.writer, "reader", "after-unknown")
+	p.hook(p.reader, stop(publishTestLaunch, unrecorded, p.now.UnixMilli()+1))
 	if p.reserve() != 0 {
 		t.Fatal("an unclassified receipt allowed another batch on the same launch")
 	}
@@ -475,6 +484,11 @@ func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
 	p.proveRoute()
 	p.finishPreviousTurn()
 	at := p.now.UnixMilli()
+	ask := p.turnEndAsk(p.writer, "reader", "notice queued before the permission prompt")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
 	const unrecorded = "unrecorded-user-turn"
 	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	if n := p.count(`SELECT COUNT(*) FROM observation WHERE kind = 'approval_requested' AND turn_ref = ?`, unrecorded); n != 1 {
@@ -482,11 +496,6 @@ func TestPublishReceiptPriorStopWithLaterActivityStaysUnknown(t *testing.T) {
 	}
 	if n := p.count(`SELECT COUNT(*) FROM turn WHERE turn_ref = ?`, unrecorded); n != 0 {
 		t.Fatal("fixture recorded the missing prompt")
-	}
-	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
-	id := p.reserve()
-	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
-		t.Fatal("reservation did not start")
 	}
 	cmd := p.promptReceipt(unrecorded, publishTestLaunch, at+100, []int64{ask})
 	p.hook(p.reader, cmd)
@@ -502,14 +511,14 @@ func TestPublishReceiptAfterAnUnfinishedTurnWithLaterActivityStaysUnknown(t *tes
 	p := newPublishFixture(t)
 	p.proveRoute()
 	at := p.now.UnixMilli()
-	p.hook(p.reader, prompt(publishTestLaunch, "prior", at+10)) // no Stop
-	const unrecorded = "unrecorded-user-turn"
-	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
-	ask := p.turnEndAsk(p.writer, "reader", "after-permission-prompt")
+	ask := p.turnEndAsk(p.writer, "reader", "queued before the user turn")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	p.hook(p.reader, prompt(publishTestLaunch, "prior", at+10)) // no Stop
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	cmd := p.promptReceipt(unrecorded, publishTestLaunch, at+100, []int64{ask})
 	p.hook(p.reader, cmd)
 	p.unknownCause(id, "unfinished_turn")
@@ -543,18 +552,19 @@ func TestPublishReceiptCauseIgnoresATurnRunningFromBeforeTheStart(t *testing.T) 
 	p := newPublishFixture(t)
 	p.proveRoute()
 	at := p.now.UnixMilli()
-	p.hook(p.reader, prompt(publishTestLaunch, "finished", at+5))
-	p.hook(p.reader, prompt(publishTestLaunch, "running", at+8)) // no Stop
 	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+10, 1)
 	p.proveRoute()
-	p.hook(p.reader, stop(publishTestLaunch, "finished", at+12))
-	const unrecorded = "unrecorded-user-turn"
-	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	ask := p.turnEndAsk(p.writer, "reader", "running-from-before")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	// The earlier prompt callback arrives after this launch has begun sending.
+	p.hook(p.reader, prompt(publishTestLaunch, "finished", at+5))
+	p.hook(p.reader, prompt(publishTestLaunch, "running", at+8)) // no Stop
+	p.hook(p.reader, stop(publishTestLaunch, "finished", at+12))
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask}))
 	p.unknownCause(id, "activity_since_stop")
 }
@@ -569,13 +579,13 @@ func TestPublishReceiptCauseCountsTurnsSinceTheLaunchStart(t *testing.T) {
 	p.hook(p.reader, stop(publishTestLaunch, "before", at+20))
 	enrollAndRoute(t, p.fixture, p.reader, publishTestLaunch, "compact", publishTestSocket, "default", at+30, 1)
 	p.proveRoute()
-	const unrecorded = "unrecorded-user-turn"
-	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	ask := p.turnEndAsk(p.writer, "reader", "after-compact-start")
 	id := p.reserve()
 	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
 		t.Fatal("reservation did not start")
 	}
+	const unrecorded = "unrecorded-user-turn"
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "permission-prompt", unrecorded, at+50, false))
 	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask}))
 	p.unknownCause(id, "no_turn_but_facts")
 }

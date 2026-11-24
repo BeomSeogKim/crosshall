@@ -65,14 +65,14 @@ func TestAReceiptOnARepeatedTurnIdStaysAbsorbed(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
 	now := p.now.UnixMilli()
-	firstPrompt := prompt(publishTestLaunch, "already-open", now+100)
-	p.hook(p.reader, firstPrompt)
 	ask := p.turnEndAsk(p.writer, "reader", "queued")
 	id := p.reserve()
 	if id == 0 {
 		t.Fatal("reservation did not start")
 	}
 	p.begin(id)
+	firstPrompt := prompt(publishTestLaunch, "already-open", now+100)
+	p.hook(p.reader, firstPrompt)
 	receipt := p.promptReceipt(firstPrompt.TurnRef, firstPrompt.LaunchRef, now+200, []int64{ask})
 	receipt.EventRef = firstPrompt.EventRef + "@" + strconv.FormatInt(now+200, 10)
 	p.hook(p.reader, receipt)

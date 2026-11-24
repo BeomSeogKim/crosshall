@@ -33,6 +33,7 @@ const (
 	WhyTurnOpen  = "turn_open"         // the member already has a running turn
 	WhyKind      = "kind"              // this message starts no turn
 	WhyApproval  = "awaiting_approval" // its turn waits on its owner's approval
+	WhyEnded     = "session_ended"     // its session ended; it may be closed
 )
 
 // Where a member that is not woken sees the work.
@@ -80,6 +81,9 @@ func reachWake(status store.PublishState, found bool) Wake {
 	case "off":
 		if status.Invalidated {
 			return none(WhyNoRoute)
+		}
+		if status.Reason == routeSessionEnded {
+			return none(WhyEnded)
 		}
 		return none(WhyOff)
 	}

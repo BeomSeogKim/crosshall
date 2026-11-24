@@ -73,7 +73,11 @@ func ledgerOwnerCall(args []string) (Call, error) {
 	case "restore":
 		return restoreCall(args[1:])
 	case "depart":
-		usage := fmt.Errorf("usage: crosshall owner depart <binding-id> --seen <token> (get the binding ID and token from crosshall owner who --all)")
+		if len(args) == 2 && args[1] == "--ended" {
+			call.Command = domain.OwnerDepartEnded{}
+			return call, nil
+		}
+		usage := fmt.Errorf("usage: crosshall owner depart <binding-id> --seen <token> (get the binding ID and token from crosshall owner who --all), or crosshall owner depart --ended")
 		if len(args) < 3 {
 			return Call{}, usage
 		}

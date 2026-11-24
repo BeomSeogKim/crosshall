@@ -34,6 +34,8 @@ func (OwnerLog) Verb() string { return VerbOwnerLog }
 type OwnerWhoResult struct {
 	Channels      []OwnerWhoChannel   `json:"channels"`
 	StoppedBuilds []OwnerStoppedBuild `json:"stopped_builds,omitempty"`
+	// Ended lists the live members whose session ended over 12 hours ago.
+	Ended []EndedMember `json:"ended,omitempty"`
 }
 
 type OwnerStoppedBuild struct {
@@ -206,6 +208,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 	}
 	out.StoppedBuilds, err = ownerStoppedBuilds(ctx, tx)
 	if err != nil {
+		return core.Result{}, err
+	}
+	if out.Ended, err = endedMembers(ctx, tx, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(out)

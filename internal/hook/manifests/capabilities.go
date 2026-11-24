@@ -1,9 +1,14 @@
 package manifests
 
 import (
+	"cmp"
 	"encoding/json"
+	"slices"
 	"sync"
 )
+
+// Schema is the manifest format this build reads.
+const Schema = 1
 
 // Capabilities are what an adapter's manifest declares that the core asks
 // about. The core reads them here instead of testing adapter names, so an
@@ -20,6 +25,11 @@ type Capabilities struct {
 	// SharedDaemon: the vendor can run sessions in a shared managed server
 	// ("daemon"), whose hooks inherit that server's environment.
 	SharedDaemon bool
+	// PromptLine: an installed prompt event can offer pending work in the
+	// prompt ("notice" with context or inject_steps output).
+	PromptLine bool
+	// SessionEnd: an installed event reports the end of a session.
+	SessionEnd bool
 }
 
 // capabilityNames are the names a manifest's prior_revisions may list.
@@ -28,13 +38,18 @@ var capabilityNames = map[string]func(*Capabilities){
 	"turn_end":       func(c *Capabilities) { c.TurnEnd = true },
 	"recover_enroll": func(c *Capabilities) { c.RecoverEnroll = true },
 	"shared_daemon":  func(c *Capabilities) { c.SharedDaemon = true },
+	"prompt_line":    func(c *Capabilities) { c.PromptLine = true },
+	"session_end":    func(c *Capabilities) { c.SessionEnd = true },
 }
 
 type record struct {
-	revision string
-	caps     Capabilities
-	prior    map[string]Capabilities
-	display  string
+	schema     int
+	revision   string
+	caps       Capabilities
+	prior      map[string]Capabilities
+	display    string
+	aliases    []string
+	setupOrder int
 	// invalid names what the manifest declares that this build cannot read.
 	invalid []string
 }
@@ -71,38 +86,121 @@ func DisplayName(adapter string) string {
 	return adapter
 }
 
-var records = sync.OnceValue(func() map[string]record {
+// Resolve maps a name a person typed, an adapter ID or one of its aliases,
+// to the adapter ID; any other name comes back unchanged.
+func Resolve(name string) string {
+	for _, adapter := range Names() {
+		if slices.Contains(records()[adapter].aliases, name) {
+			return adapter
+		}
+	}
+	return name
+}
+
+// SetupOrder lists the adapters in the order setup presents them.
+func SetupOrder() []string {
+	names := Names()
+	slices.SortStableFunc(names, func(a, b string) int {
+		return cmp.Compare(records()[a].setupOrder, records()[b].setupOrder)
+	})
+	return names
+}
+
+var (
+	readMu sync.Mutex
+	reader = func(adapter string) ([]byte, error) { return FS.ReadFile(adapter + ".json") }
+	loaded func() map[string]record
+)
+
+// Read returns adapter's manifest bytes. Every decode of a manifest reads
+// through it.
+func Read(adapter string) ([]byte, error) {
+	readMu.Lock()
+	read := reader
+	readMu.Unlock()
+	return read(adapter)
+}
+
+// SwapReader replaces Read for a test and returns the function that puts
+// the previous reader back. Both drop the decoded catalog, so the next
+// lookup decodes again through the reader in place.
+func SwapReader(read func(adapter string) ([]byte, error)) (restore func()) {
+	readMu.Lock()
+	defer readMu.Unlock()
+	previous := reader
+	reader, loaded = read, nil
+	return func() {
+		readMu.Lock()
+		defer readMu.Unlock()
+		reader, loaded = previous, nil
+	}
+}
+
+// records is the decoded catalog, decoded once on first use.
+func records() map[string]record {
+	readMu.Lock()
+	if loaded == nil {
+		loaded = sync.OnceValue(decodeAll)
+	}
+	load := loaded
+	readMu.Unlock()
+	return load()
+}
+
+func decodeAll() map[string]record {
 	all := make(map[string]record)
 	for _, adapter := range Names() {
-		raw, err := FS.ReadFile(adapter + ".json")
+		raw, err := Read(adapter)
 		if err != nil {
 			continue
 		}
 		var m struct {
+			Schema         int                 `json:"schema"`
 			Adapter        string              `json:"adapter"`
 			Revision       string              `json:"revision"`
 			DisplayName    string              `json:"display_name"`
+			Aliases        []string            `json:"aliases"`
+			SetupOrder     int                 `json:"setup_order"`
 			PriorRevisions map[string][]string `json:"prior_revisions"`
 			LaunchEnv      string              `json:"launch_env"`
 			Daemon         json.RawMessage     `json:"daemon"`
 			Install        struct {
-				Events []string `json:"events"`
+				Events   []string          `json:"events"`
+				Matchers map[string]string `json:"matchers"`
 			} `json:"install"`
 			Events map[string]struct {
-				Stop          bool `json:"stop"`
-				RecoverEnroll bool `json:"recover_enroll"`
+				Fact          string `json:"fact"`
+				Output        string `json:"output"`
+				Notice        bool   `json:"notice"`
+				Stop          bool   `json:"stop"`
+				RecoverEnroll bool   `json:"recover_enroll"`
 			} `json:"events"`
 		}
 		if json.Unmarshal(raw, &m) != nil || m.Adapter != adapter || m.Revision == "" {
 			continue
 		}
-		r := record{revision: m.Revision, display: m.DisplayName, prior: make(map[string]Capabilities)}
+		r := record{schema: m.Schema, revision: m.Revision, display: m.DisplayName, aliases: m.Aliases,
+			setupOrder: m.SetupOrder, prior: make(map[string]Capabilities)}
+		if m.Schema != Schema {
+			r.invalid = append(r.invalid, "unsupported schema")
+		}
 		r.caps.ProcessLaunch = m.LaunchEnv != ""
 		r.caps.SharedDaemon = len(m.Daemon) > 0 && string(m.Daemon) != "null"
 		for _, name := range m.Install.Events {
-			event := m.Events[name]
+			event, known := m.Events[name]
+			if !known {
+				r.invalid = append(r.invalid, "installed event "+name+" is not declared")
+			}
 			r.caps.TurnEnd = r.caps.TurnEnd || event.Stop
 			r.caps.RecoverEnroll = r.caps.RecoverEnroll || event.RecoverEnroll
+			r.caps.PromptLine = r.caps.PromptLine || event.Fact == "prompt_submitted" && event.Notice &&
+				(event.Output == "context" || event.Output == "inject_steps")
+			r.caps.SessionEnd = r.caps.SessionEnd || event.Fact == "session_ended"
+		}
+		for event := range m.Install.Matchers {
+			if !slices.Contains(m.Install.Events, event) {
+				r.invalid = append(r.invalid, "matcher for "+event+", which is not installed")
+			}
 		}
 		for revision, names := range m.PriorRevisions {
 			if revision == m.Revision {
@@ -122,4 +220,4 @@ var records = sync.OnceValue(func() map[string]record {
 		all[adapter] = r
 	}
 	return all
-})
+}

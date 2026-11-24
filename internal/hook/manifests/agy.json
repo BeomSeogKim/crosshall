@@ -1,6 +1,9 @@
 {
+  "schema": 1,
   "adapter": "agy",
   "display_name": "Antigravity",
+  "aliases": ["antigravity"],
+  "setup_order": 3,
   "revision": "agy-1",
   "event_field": "hookEventName",
   "session_field": "conversationId",

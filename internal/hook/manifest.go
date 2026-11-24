@@ -86,7 +86,7 @@ type eventSpec struct {
 
 func loadManifest(adapter string) (manifest, bool) {
 	var m manifest
-	raw, err := manifests.FS.ReadFile(adapter + ".json")
+	raw, err := manifests.Read(adapter)
 	if err != nil || json.Unmarshal(raw, &m) != nil || m.Adapter != adapter || m.Revision == "" {
 		return manifest{}, false
 	}

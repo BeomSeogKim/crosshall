@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"slices"
@@ -42,7 +43,7 @@ To preview first:
   crosshall setup --dry-run claude codex
 Answers piped to setup, as in v0.1.0-rc.6, are no longer read.`
 
-func runSetup(env Env, opts options, action string, args []string, stdout, stderr io.Writer) core.ExitCode {
+func runSetup(ctx context.Context, env Env, opts options, action string, args []string, stdout, stderr io.Writer) core.ExitCode {
 	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
 	if env.OwnerGate != nil {
 		if msg := env.OwnerGate(); msg != "" {
@@ -59,6 +60,11 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 	}
 	req.JSON, req.Input, req.Output, req.Prompt = opts.json, env.Stdin, stdout, stderr
 	req.Terminal = env.SetupTerminal != nil && env.SetupTerminal()
+	if req.Action == "setup" && req.Apply && env.BeginSetupApply != nil {
+		var stop func()
+		ctx, stop = env.BeginSetupApply(ctx)
+		defer stop()
+	}
 	if action == "setup" && !req.DryRun {
 		if err := applyTelemetryEnvironment(env, stderr); err != nil {
 			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
@@ -86,10 +92,16 @@ func runSetup(env Env, opts options, action string, args []string, stdout, stder
 			return err
 		}
 	}
-	if err := env.Setup(req); err != nil {
+	if err := context.Cause(ctx); err != nil {
+		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+	}
+	if err := env.Setup(ctx, req); err != nil {
 		var result interface{ Reported() bool }
 		if errors.As(err, &result) && result.Reported() {
 			return core.ExitError
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			err = cause
 		}
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}

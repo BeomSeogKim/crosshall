@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,23 +77,84 @@ func newSetupWorld(t *testing.T) *setupWorld {
 
 func (f *setupWorld) command(env []string, input string, args ...string) outcome {
 	f.t.Helper()
-	cmd := exec.CommandContext(f.t.Context(), f.executable, append([]string{"--json"}, args...)...)
+	ctx, cancel := context.WithTimeout(f.t.Context(), 45*time.Second)
+	defer cancel()
+	result, err := f.runCommand(ctx, env, input, args...)
+	if err != nil {
+		f.t.Fatalf("crosshall %v: %v", args, err)
+	}
+	return result
+}
+
+func (f *setupWorld) runCommand(ctx context.Context, env []string, input string, args ...string) (outcome, error) {
+	cmd := exec.CommandContext(ctx, f.executable, append([]string{"--json"}, args...)...)
 	cmd.Dir, cmd.Env, cmd.Stdin = f.home, env, strings.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.WaitDelay = time.Second
+	var snapshot string
+	cmd.Cancel = func() error {
+		snapshot = setupProcessSnapshot(cmd.Process.Pid)
+		return cmd.Process.Kill()
+	}
 	var result outcome
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	result.stdout, result.stderr = stdout.String(), stderr.String()
+	if err != nil {
+		if ctx.Err() != nil && cmd.Process != nil {
+			return result, fmt.Errorf("%w: PID %d process state before termination:\n%s\nfinal state: %v\nstdout: %s\nstderr: %s",
+				ctx.Err(), cmd.Process.Pid, snapshot, cmd.ProcessState, result.stdout, result.stderr)
+		}
 		if process, ok := err.(*exec.ExitError); ok {
 			result.exit = process.ExitCode()
 		} else {
-			f.t.Fatalf("crosshall %v: %v", args, err)
+			return result, fmt.Errorf("%w (final state: %v)\nstdout: %s\nstderr: %s", err, cmd.ProcessState, result.stdout, result.stderr)
 		}
 	}
-	result.stdout, result.stderr = stdout.String(), stderr.String()
 	if err := json.Unmarshal(stdout.Bytes(), &result.obj); err != nil || result.obj == nil {
-		f.t.Fatalf("crosshall %v: missing JSON result in %q (%v); stderr %s", args, result.stdout, err, result.stderr)
+		return result, fmt.Errorf("missing JSON result in %q (%v); stderr %s", result.stdout, err, result.stderr)
 	}
-	return result
+	return result, nil
+}
+
+func setupProcessSnapshot(pid int) string {
+	process := strconv.Itoa(pid)
+	if runtime.GOOS == "linux" {
+		var state strings.Builder
+		for _, name := range []string{"status", "wchan", "stack"} {
+			data, err := os.ReadFile(filepath.Join("/proc", process, name))
+			if err != nil {
+				fmt.Fprintf(&state, "%s: %v\n", name, err)
+			} else {
+				fmt.Fprintf(&state, "%s:\n%s\n", name, data)
+			}
+		}
+		return state.String()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ps := exec.CommandContext(ctx, "/bin/ps", "-o", "pid,ppid,state,etime,time,comm", "-p", process)
+	ps.WaitDelay = 100 * time.Millisecond
+	state, psErr := ps.CombinedOutput()
+	sample := exec.CommandContext(ctx, "/usr/bin/sample", process, "1", "1", "-file", "/dev/stdout")
+	sample.WaitDelay = 100 * time.Millisecond
+	stack, sampleErr := sample.CombinedOutput()
+	return fmt.Sprintf("ps (%v):\n%s\nsample (%v):\n%s", psErr, state, sampleErr, stack[:min(len(stack), 8<<10)])
+}
+
+func TestSetupFixtureCommandTimeoutReportsProcess(t *testing.T) {
+	f := &setupWorld{world: newWorld(t)}
+	f.executable = filepath.Join(f.home, "paused-setup")
+	if err := os.WriteFile(f.executable, []byte("#!/bin/sh\nkill -STOP $$\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	_, err := f.runCommand(ctx, f.baseEnv(), "", "setup", "codex", "--apply")
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "PID ") ||
+		!strings.Contains(err.Error(), "process state") || !strings.Contains(err.Error(), "signal: killed") {
+		t.Fatalf("timeout without the captured and final process state: %v", err)
+	}
 }
 
 func (f *setupWorld) apply(input string, args ...string) outcome {

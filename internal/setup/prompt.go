@@ -315,11 +315,16 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome = "skipped"
 		return o
 	}
-	var err error
-	if c.plan.Action == "uninstall" {
-		err = p.ops.Uninstall(ctx, c.plan)
-	} else {
-		err = p.ops.Install(ctx, c.plan)
+	err := context.Cause(ctx)
+	if err == nil {
+		if c.plan.Action == "uninstall" {
+			err = p.ops.Uninstall(ctx, c.plan)
+		} else {
+			err = p.ops.Install(ctx, c.plan)
+		}
+	}
+	if err != nil && ctx.Err() != nil {
+		err = context.Cause(ctx)
 	}
 	switch {
 	case err != nil:

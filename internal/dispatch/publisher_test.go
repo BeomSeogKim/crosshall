@@ -811,6 +811,7 @@ func (fixtureAdapter) SessionRoute(ref string, launch publish.Route) publish.Rou
 }
 func (fixtureAdapter) ThreadRouted() bool         { return false }
 func (fixtureAdapter) Reach(publish.Route) string { return "" }
+func (fixtureAdapter) BackgroundWakes() bool      { return true }
 func (fixtureAdapter) Notice(ids []int64) (string, bool) {
 	return "fixture " + notice.IDList(ids), true
 }

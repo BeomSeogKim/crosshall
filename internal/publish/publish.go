@@ -129,6 +129,11 @@ type Adapter interface {
 	Echo(prompt string) (ids string, ok bool)
 	// Transport is the adapter's sender, without Send while it has none.
 	Transport() Transport
+	// BackgroundWakes reports whether the agent starts its next turn when a
+	// background command it ran exits, so an idle session can stand by on a
+	// background crosshall wait at no model cost. A session of an adapter
+	// without it is told to end its turn instead of running a wait.
+	BackgroundWakes() bool
 }
 
 // Registry maps an adapter name to its Adapter.

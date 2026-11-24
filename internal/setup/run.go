@@ -277,6 +277,9 @@ func (s Service) setPolicies(ctx context.Context, adapters []string, enabled boo
 		return errors.New("adapter policy transport is unavailable")
 	}
 	for _, adapter := range adapters {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		if err := s.SetPolicy(ctx, adapter, enabled); err != nil {
 			return fmt.Errorf("%s adapter policy: %w", adapter, err)
 		}
@@ -339,11 +342,17 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 		j.Pending = &op
 	}
 	if !prepared || j.Version != j.formatVersion() {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		if err := writeJournal(state, j); err != nil {
 			return err
 		}
 	}
 	for i := range j.Pending.Edits {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
 		e := &j.Pending.Edits[i]
 		result, err := applyEdit(state, j, e)
 		if err != nil {

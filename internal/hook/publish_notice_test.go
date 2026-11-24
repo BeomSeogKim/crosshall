@@ -10,7 +10,11 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
+const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
+
+// rc4NoticeSuffix is the v0.2.0-rc.4 text, which a notice written before an
+// upgrade still carries.
+const rc4NoticeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 
 func TestPublishNoticeReceipt(t *testing.T) {
 	notice := func(ids string) string { return "[crosshall] pending: " + ids + fixtureNoticeSuffix }
@@ -26,6 +30,7 @@ func TestPublishNoticeReceipt(t *testing.T) {
 		name, vendor, promptFields, want string
 	}{
 		{"exact typed notice", "claude", `,"prompt":` + exact, "publish:12 15"},
+		{"rc.4 notice", "claude", `,"prompt":` + quoted("[crosshall] pending: 12 15"+rc4NoticeSuffix), "publish:12 15"},
 		{"one ID", "claude", `,"prompt":` + quoted(notice("9223372036854775807")), "publish:9223372036854775807"},
 		{"at cap", "claude", `,"prompt":` + quoted(notice("1 2 3 4 5 6 7 8 9 10")), "publish:1 2 3 4 5 6 7 8 9 10"},
 		{"another adapter", "codex", `,"prompt":` + exact, ""},

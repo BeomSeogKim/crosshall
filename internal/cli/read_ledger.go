@@ -289,6 +289,8 @@ func renderReadLedger(cmd domain.Command, data []byte, w io.Writer) error {
 		if len(r.Unread) == 0 && len(r.Owed) == 0 && len(r.Cancelled) == 0 {
 			if r.Delivers {
 				fmt.Fprintln(w, "Inbox is empty. "+domain.HallDelivers)
+			} else if r.AtNextPrompt {
+				fmt.Fprintln(w, "Inbox is empty. "+domain.AtNextPrompt)
 			} else {
 				fmt.Fprintln(w, "Inbox is empty. Run crosshall wait --existing --work-only --timeout 9m.")
 			}

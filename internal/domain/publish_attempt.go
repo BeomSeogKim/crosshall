@@ -418,7 +418,7 @@ const (
 // The publish lane orders the launch's receipts by attempt ID, even when
 // an own-turn receipt and a suspension are recorded in the same millisecond.
 func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason string, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
+	res, err := tx.ExecContext(ctx, `INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
 		SELECT a.binding_id, a.launch_ref, ?2, a.id, ?3,
 			CASE WHEN ?2 IN ('absorbed', 'not_submitted') AND (
 				SELECT COUNT(*) FROM publish_suspension s
@@ -432,6 +432,16 @@ func suspendPublish(ctx context.Context, tx store.Tx, attempt int64, reason stri
 		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id WHERE a.id = ?1`,
 		attempt, reason, ms(now), ms(now.Add(store.PublishSuspensionDuration)), publishLastingSuspension)
 	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return err
+	}
+	suspension, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	if err := recordSuspension(ctx, tx, suspension, now); err != nil {
 		return err
 	}
 	_, err = MarkReachChanges(ctx, tx, now)

@@ -422,8 +422,8 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				fmt.Fprintf(&output, "  publish build %s (%s %s %s): %s\n", build.Version, build.Platform, build.Mode, build.ManifestRev, words)
 			}
 			if c := a.Publish.Counters; c != nil {
-				fmt.Fprintf(&output, "  publish notices on %s UTC: %d submitted, %d uncertain, %d not submitted; observed %d own turn, %d absorbed, %d unknown\n",
-					c.Date, c.Submitted, c.Uncertain, c.NotSubmitted, c.OwnTurn, c.Absorbed, c.Unknown)
+				fmt.Fprintf(&output, "  publish notices on %s UTC: %d submitted, %d uncertain, %d not submitted; observed %d own turn, %d absorbed, %d unknown%s\n",
+					c.Date, c.Submitted, c.Uncertain, c.NotSubmitted, c.OwnTurn, c.Absorbed, c.Unknown, unknownCauseWords(c.UnknownCauses))
 			}
 			for _, m := range a.Publish.Members {
 				fmt.Fprintf(&output, "  publish for @%s in #%s (binding %d): %s\n", m.Alias, m.Channel, m.BindingID, publishWords(m.State))
@@ -452,4 +452,28 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 	}
 	_, err := io.WriteString(w, output.String())
 	return err
+}
+
+// unknownCauseWords lists the causes of the day's unknown receipts that
+// occurred, in a fixed order; empty when there were none.
+func unknownCauseWords(c store.DoctorUnknownCauses) string {
+	var parts []string
+	for _, cause := range []struct {
+		n    int
+		name string
+	}{
+		{c.OpenPlaceholder, "open placeholder"},
+		{c.UnfinishedTurn, "unfinished turn"},
+		{c.ActivitySinceStop, "activity since stop"},
+		{c.NoTurnButFacts, "no turn but facts"},
+		{c.NotRecorded, "cause not recorded"},
+	} {
+		if cause.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", cause.n, cause.name))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }

@@ -1,14 +1,16 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestSessionMoveMigrationUsesSlot026(t *testing.T) {
-	if len(migrations) < 26 || migrations[23] != ownerAlertSchema || migrations[24] != threadLanesSchema || migrations[25] != sessionMoveSchema {
-		t.Fatal("migration 026 must follow owner alerts and per-thread publish lanes")
+func TestSessionMoveMigrationUsesSlot027(t *testing.T) {
+	if len(migrations) < 27 || migrations[23] != ownerAlertSchema || migrations[24] != threadLanesSchema ||
+		migrations[25] != unknownReceiptCauseSchema || migrations[26] != sessionMoveSchema {
+		t.Fatal("migration 027 must follow owner alerts, per-thread publish lanes and unknown receipt causes")
 	}
 }
 
@@ -45,9 +47,9 @@ func TestSessionMoveMigrationPreservesBindingsAndLedger(t *testing.T) {
 	}
 }
 
-func TestSessionMoveMigrationRefusesAmbiguousBindings(t *testing.T) {
+func TestSessionMoveMigrationRefusesAmbiguousBindingsAndKeepsRollback(t *testing.T) {
 	ctx, root := t.Context(), t.TempDir()
-	old, err := openWithMigrations(ctx, root, migrations[:len(migrations)-1])
+	old, err := openWithMigrations(ctx, root, migrations[:22])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +67,32 @@ func TestSessionMoveMigrationRefusesAmbiguousBindings(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "principal 1 with bindings 1, 4") {
 		t.Fatalf("migration did not identify the conflicting bindings: %v", err)
 	}
-	if backups, err := filepath.Glob(filepath.Join(root, "store-v*.sqlite3")); err != nil || len(backups) != 1 {
+	if failed, err := openWithMigrations(ctx, root, migrations[:22]); err == nil {
+		failed.Close()
+		t.Fatal("the schema-22 dispatcher opened the partially upgraded database")
+	} else if !strings.Contains(err.Error(), "unsupported schema version 26") {
+		t.Fatalf("last good migration: %v", err)
+	}
+	backups, err := filepath.Glob(filepath.Join(root, "store-v22-*.sqlite3"))
+	if err != nil || len(backups) != 1 {
 		t.Fatalf("migration backup: %v, %v", backups, err)
+	}
+	backup, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(restoreRoot, "store.sqlite3"), backup, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := openWithMigrations(ctx, restoreRoot, migrations[:22])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	var bindings int
+	if err := restored.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM binding`).Scan(&bindings); err != nil || bindings != 4 {
+		t.Fatalf("restored %d bindings, want 4: %v", bindings, err)
 	}
 }
 

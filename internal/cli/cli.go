@@ -301,7 +301,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			return o.unavailableFor(env, "owner start")
 		}
 		if err := start(ctx); err != nil {
-			return o.fail(core.ExitError, CodeLocalError, "dispatcher could not start: "+err.Error(), "")
+			return o.fail(core.ExitError, CodeLocalError, "owner start failed: "+err.Error(), "")
 		}
 		if opts.json {
 			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)

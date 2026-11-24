@@ -263,3 +263,57 @@ func TestCodexWithdrawWithoutAProvenServerIsUnreachable(t *testing.T) {
 		t.Fatalf("overlong queue: %s, deleted %v", got, deleted)
 	}
 }
+
+// The thread's status says whether it waits on its owner's approval; only
+// thread/read is sent, and nothing is answered.
+func TestCodexConfirmApprovalReadsTheThreadStatus(t *testing.T) {
+	standInServer(t, true)
+	s, target := codexSendWorld(t)
+	for _, tc := range []struct {
+		answer func(id int64) []byte
+		want   Approval
+	}{
+		{func(id int64) []byte {
+			return appservertest.Result(id, map[string]any{"thread": map[string]any{"status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnApproval"}}}})
+		}, ApprovalShown},
+		{func(id int64) []byte {
+			return appservertest.Result(id, map[string]any{"thread": map[string]any{"status": map[string]any{"type": "active", "activeFlags": []string{}}}})
+		}, ApprovalAbsent},
+		{func(id int64) []byte {
+			return appservertest.Result(id, map[string]any{"thread": map[string]any{"status": map[string]any{"type": "idle"}}})
+		}, ApprovalAbsent},
+		{func(id int64) []byte { return appservertest.Error(id, -32600, "thread not loaded: thread-1") }, ApprovalAbsent},
+		{func(id int64) []byte { return appservertest.Error(id, -32603, "internal") }, ApprovalUnknown},
+		{func(id int64) []byte {
+			return appservertest.Result(id, map[string]any{"thread": map[string]any{"status": map[string]any{"type": "systemError"}}})
+		}, ApprovalUnknown},
+	} {
+		s.Before = func(id int64, method string, _ map[string]any) [][]byte {
+			return [][]byte{[]byte(fmt.Sprintf(`{"id":%d,"method":"item/commandExecution/requestApproval","params":{}}`, id))}
+		}
+		s.Answer = func(id int64, method string, _ map[string]any) []byte {
+			if method == "thread/read" {
+				return tc.answer(id)
+			}
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		got := confirmCodexApproval(ctx, target)
+		cancel()
+		if got != tc.want {
+			t.Errorf("status answer %s: %s, want %s", tc.answer(1), got, tc.want)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	for _, m := range s.Methods() {
+		if m != "initialize" && m != "initialized" && m != "thread/read" {
+			t.Fatalf("sent %s", m)
+		}
+	}
+	standInServer(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if got := confirmCodexApproval(ctx, target); got != ApprovalUnknown {
+		t.Fatalf("unproven server: %s", got)
+	}
+}

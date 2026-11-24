@@ -97,7 +97,7 @@ func (codex) Echo(prompt string) (string, bool) {
 // stays nil: the server's exit does not retire a queued notice, which
 // survives in the home and runs when the thread is next loaded (C10).
 func (codex) Transport() Transport {
-	return Transport{Prove: proveCodexServer, Send: sendCodex, Withdraw: withdrawCodex}
+	return Transport{Prove: proveCodexServer, Send: sendCodex, Withdraw: withdrawCodex, ConfirmApproval: confirmCodexApproval}
 }
 
 // codexControlSocket is the managed server's control socket in its home.
@@ -221,22 +221,8 @@ func withdrawCodex(ctx context.Context, target Target) Withdrawal {
 	if !filepath.IsAbs(target.Home) || target.Address == "" || target.Attempt == "" {
 		return Unreachable
 	}
-	home := realPath(target.Home)
-	socket, err := filepath.EvalSymlinks(filepath.Join(home, codexControlSocket))
-	if err != nil {
-		return Unreachable
-	}
-	conn, peer, err := proc.DialSocketPeer(ctx, socket)
-	if err != nil {
-		return Unreachable
-	}
-	conn.Close()
-	server := Queue{PID: peer.PID, StartMS: peer.Identity}
-	if _, ok := codexServer(home, server); !ok {
-		return Unreachable
-	}
-	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: server.PID, Start: server.StartMS})
-	if err != nil {
+	c, ok := dialCodexHome(ctx, target.Home)
+	if !ok {
 		return Unreachable
 	}
 	defer c.Close()
@@ -282,4 +268,64 @@ func withdrawCodex(ctx context.Context, target Target) Withdrawal {
 		}
 	}
 	return result
+}
+
+// dialCodexHome connects to whichever process listens on home's control
+// socket, once it is proven to be that home's managed server: a queued
+// notice and a thread outlive the server a route named.
+func dialCodexHome(ctx context.Context, home string) (*appserver.Client, bool) {
+	home = realPath(home)
+	socket, err := filepath.EvalSymlinks(filepath.Join(home, codexControlSocket))
+	if err != nil {
+		return nil, false
+	}
+	conn, peer, err := proc.DialSocketPeer(ctx, socket)
+	if err != nil {
+		return nil, false
+	}
+	conn.Close()
+	server := Queue{PID: peer.PID, StartMS: peer.Identity}
+	if _, ok := codexServer(home, server); !ok {
+		return nil, false
+	}
+	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: server.PID, Start: server.StartMS})
+	return c, err == nil
+}
+
+// confirmCodexApproval reads the thread's status: active with
+// waitingOnApproval is an approval the owner has not answered. The flag
+// belongs to the thread, not to a turn. A thread the server has not loaded
+// waits on nothing.
+func confirmCodexApproval(ctx context.Context, target Target) Approval {
+	if !filepath.IsAbs(target.Home) || target.Address == "" {
+		return ApprovalUnknown
+	}
+	c, ok := dialCodexHome(ctx, target.Home)
+	if !ok {
+		return ApprovalUnknown
+	}
+	defer c.Close()
+	var res struct {
+		Thread struct {
+			Status struct {
+				Type        string   `json:"type"`
+				ActiveFlags []string `json:"activeFlags"`
+			} `json:"status"`
+		} `json:"thread"`
+	}
+	err := c.Call("thread/read", map[string]any{"threadId": target.Address}, &res)
+	var refused *appserver.Error
+	switch {
+	case errors.As(err, &refused) && refused.Code == -32600:
+		return ApprovalAbsent // thread not loaded
+	case err != nil:
+		return ApprovalUnknown
+	}
+	switch st := res.Thread.Status; {
+	case st.Type == "active" && slices.Contains(st.ActiveFlags, "waitingOnApproval"):
+		return ApprovalShown
+	case st.Type == "active", st.Type == "idle", st.Type == "notLoaded":
+		return ApprovalAbsent
+	}
+	return ApprovalUnknown
 }

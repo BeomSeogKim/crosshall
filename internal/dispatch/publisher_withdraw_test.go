@@ -119,3 +119,30 @@ func TestPublisherWithdrawsOnlyThroughTheLanesHome(t *testing.T) {
 		t.Fatalf("withdrew %d times through another home", calls.Load())
 	}
 }
+
+// An approval the server confirms or denies is not asked about again; one
+// it cannot answer is asked again after the retry interval.
+func TestPublisherAsksAboutAnApprovalUntilItsServerAnswers(t *testing.T) {
+	f := newPublishTestFixture(t)
+	p := &publisher{db: f.db}
+	t.Cleanup(p.workers.Wait)
+	for _, tc := range []struct {
+		got   publish.Approval
+		retry bool
+	}{{publish.ApprovalShown, false}, {publish.ApprovalAbsent, false}, {publish.ApprovalUnknown, true}} {
+		c := domain.ApprovalCheck{Principal: 2, FactSeq: 9000 + int64(len(tc.got))}
+		var asked domain.PublishTarget
+		p.confirm(t.Context(), c, func(_ context.Context, target domain.PublishTarget) publish.Approval {
+			asked = target
+			return tc.got
+		}, f.now)
+		after, _ := p.confirming.Load(c.FactSeq)
+		retry := after.(time.Time)
+		if tc.retry != (retry.Equal(f.now.Add(publishProveRetry))) || !tc.retry && retry != maxTime {
+			t.Errorf("%s: retry at %v", tc.got, retry)
+		}
+		if asked != c.Target {
+			t.Errorf("%s: asked about %+v", tc.got, asked)
+		}
+	}
+}

@@ -16,7 +16,12 @@ const FactFutureSlackMS = 5_000
 
 // LatestFact is a principal's effective adapter fact as stored.
 type LatestFact struct {
-	Fact         string
+	// Seq is the observation's sequence number.
+	Seq  int64
+	Fact string
+	// Source is who stored it: a hook ("adapter:<vendor>@<version>"), or
+	// ApprovalShownSource.
+	Source       string
 	Profile      string
 	Adapter      string
 	AtMS         int64
@@ -45,7 +50,7 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 		                FROM adapter_launch WHERE principal_id = ?1
 		                ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1),
 		candidate AS (
-			SELECT o.seq, o.kind, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
+			SELECT o.seq, o.kind, o.source, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
 			       CASE o.kind WHEN 'session_ended' THEN 4 WHEN 'turn_finishing' THEN 3
 			                   WHEN 'approval_requested' THEN 2 ELSE 1 END AS stage,
 			       COALESCE((SELECT t.opened_hook_at_ms FROM turn t WHERE t.principal_id = o.principal_id
@@ -56,7 +61,7 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 		staged AS (
 			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c),
 		pick AS (
-			SELECT c.seq, c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
+			SELECT c.seq, c.kind, c.source, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
 			-- A turn-bound fact belongs to the start its turn opened after, whatever
 			-- its own clock says; any other fact is placed by its own time. Within
 			-- a turn only its latest stage counts.
@@ -65,11 +70,11 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 			LIMIT 1)
 		-- The rest is read for the chosen fact only: per candidate it made a
 		-- hook event's cost grow with the square of the session's turns.
-		SELECT p.kind, p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
+		SELECT p.seq, p.kind, p.source, p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
 		       (SELECT live FROM latest),
 		       EXISTS (SELECT 1 FROM observation k WHERE k.principal_id = ?1 AND k.kind = 'command' AND k.seq > p.seq)
 		FROM pick p`, principal, slackMS).
-		Scan(&f.Fact, &f.Profile, &f.Adapter, &f.AtMS, &f.FreshUntilMS, &f.LaunchLive, &f.CommandSince)
+		Scan(&f.Seq, &f.Fact, &f.Source, &f.Profile, &f.Adapter, &f.AtMS, &f.FreshUntilMS, &f.LaunchLive, &f.CommandSince)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LatestFact{}, false, nil
 	}
@@ -141,9 +146,16 @@ func (f LatestFact) approvalIsDialog() bool {
 	return caps.ApprovalDialog
 }
 
-// ApprovalOpen: the fact is an approval request from an adapter revision
-// whose request means a shown dialog, its launch is not known to have
-// ended, and the member has run no crosshall command since.
+// ApprovalShownSource marks an approval fact the dispatcher stored after
+// the vendor's own server showed the request waiting on its owner, for an
+// adapter whose hook fact alone does not mean a shown dialog.
+const ApprovalShownSource = "appserver"
+
+// ApprovalOpen: the fact is an approval request that is known to wait on
+// the owner (a revision whose request means a shown dialog, or one the
+// vendor's server confirmed), its launch is not known to have ended, and
+// the member has run no crosshall command since.
 func (f LatestFact) ApprovalOpen() bool {
-	return f.Fact == "approval_requested" && f.LaunchLive && !f.CommandSince && f.approvalIsDialog()
+	return f.Fact == "approval_requested" && f.LaunchLive && !f.CommandSince &&
+		(f.Source == ApprovalShownSource || f.approvalIsDialog())
 }

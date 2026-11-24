@@ -40,6 +40,9 @@ type publisher struct {
 	// then the time it may be tried again; a notice found not pending is
 	// left to its receipt for the rest of this start.
 	withdrawing sync.Map
+	// confirming guards one approval check per approval fact, as
+	// withdrawing does per attempt.
+	confirming sync.Map
 	// proving guards one proof per route: zero while one runs, then the
 	// time a failed proof may be retried (publishProveRetry).
 	proving sync.Map
@@ -130,6 +133,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	var attempts []int64
 	var queues []domain.HeldPublishQueue
 	var withdrawals []domain.WithdrawCandidate
+	var approvals []domain.ApprovalCheck
 	var proofs []domain.PublishProof
 	// What the tick's resume pass found, applied only once it commits: a
 	// rolled-back attempt ID may be given to another attempt.
@@ -217,6 +221,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		}
 		if err == nil {
 			withdrawals, err = domain.WithdrawCandidates(ctx, tx)
+		}
+		if err == nil {
+			approvals, err = domain.ApprovalChecks(ctx, tx, now)
 		}
 		return err
 	})
@@ -323,7 +330,73 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		p.withdrawing.Store(c.ID, time.Time{})
 		p.workers.Go(func() { p.withdraw(ctx, c, withdraw, now) })
 	}
+	due := make(map[int64]bool, len(approvals))
+	for _, c := range approvals {
+		due[c.FactSeq] = true
+	}
+	p.confirming.Range(func(key, value any) bool {
+		if !due[key.(int64)] && !value.(time.Time).IsZero() {
+			p.confirming.CompareAndDelete(key, value)
+		}
+		return true
+	})
+	for _, c := range approvals {
+		confirm := p.transport(c.Target.Adapter).ConfirmApproval
+		if confirm == nil || p.homes == nil {
+			continue
+		}
+		c.Target.Home = p.homes(c.Target.Adapter)
+		if home, err := filepath.EvalSymlinks(c.Target.Home); err != nil || home != c.RouteHome {
+			continue
+		}
+		if after, seen := p.confirming.LoadOrStore(c.FactSeq, time.Time{}); seen {
+			if retry := after.(time.Time); retry.IsZero() || now.Before(retry) {
+				continue
+			}
+		}
+		p.confirming.Store(c.FactSeq, time.Time{})
+		p.workers.Go(func() { p.confirm(ctx, c, confirm, now) })
+	}
 	return nil
+}
+
+// confirm asks the member's server whether its approval request waits on
+// its owner, and stores the answer only when it does. Absent, that fact
+// is not asked about again; unknown, it is asked again after
+// publishProveRetry.
+func (p *publisher) confirm(ctx context.Context, c domain.ApprovalCheck,
+	confirm func(context.Context, domain.PublishTarget) publish.Approval, at time.Time) {
+	release := func() { p.confirming.Store(c.FactSeq, at.Add(publishProveRetry)) }
+	call, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
+	defer cancel()
+	if call.Err() != nil {
+		release()
+		return
+	}
+	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() publish.Approval {
+		return confirm(call, c.Target)
+	}, nil)
+	switch {
+	case !ok || call.Err() != nil || got == publish.ApprovalUnknown:
+		release()
+	case got == publish.ApprovalAbsent:
+		p.confirming.Store(c.FactSeq, maxTime)
+	case got == publish.ApprovalShown:
+		record, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
+		defer cancelRecord()
+		err := p.db.Update(record, func(tx store.Tx) error {
+			_, err := domain.ConfirmApproval(record, tx, c.Principal, c.FactSeq, time.Now())
+			return err
+		})
+		logPublishFailure(err)
+		if err != nil {
+			release()
+		} else {
+			p.confirming.Store(c.FactSeq, maxTime)
+		}
+	default:
+		release()
+	}
 }
 
 // withdraw takes back a notice that should not run, and settles it only

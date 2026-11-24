@@ -73,7 +73,25 @@ type Transport struct {
 	// which may be gone: the transport proves whichever server now holds
 	// the home. Nil means notices are never withdrawn.
 	Withdraw func(context.Context, Target) Withdrawal
+	// ConfirmApproval, for an adapter whose approval fact may be a request
+	// the vendor approves on its own, asks the vendor whether the target's
+	// thread now waits on its owner's approval. It runs in the publisher
+	// only, never in a hook. Nil means the hook fact is all there is.
+	ConfirmApproval func(context.Context, Target) Approval
 }
+
+// Approval is what a vendor says about a pending approval.
+type Approval string
+
+const (
+	// ApprovalShown: the thread waits on its owner's approval.
+	ApprovalShown Approval = "shown"
+	// ApprovalAbsent: it does not; the request was answered or approved
+	// by the vendor itself.
+	ApprovalAbsent Approval = "absent"
+	// ApprovalUnknown: no proven server answered.
+	ApprovalUnknown Approval = "unknown"
+)
 
 // Withdrawal is what a transport reports for one withdrawal. Only Deleted
 // settles the notice; the others leave it to its receipt.

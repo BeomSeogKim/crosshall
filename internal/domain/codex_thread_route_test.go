@@ -298,8 +298,11 @@ func TestCodexInheritedBuildIsConfirmedStoppedAndResumed(t *testing.T) {
 		t.Fatalf("after an own-turn receipt: confirmed %d, stopped by %d", confirmed, stopRef)
 	}
 
-	f.hook(first, codexPrompt("open", at+20))
+	finished := stop(SessionLaunch, "confirm", at+15)
+	finished.Profile = codexProfile(publish.ModeDaemon)
+	f.hook(first, finished)
 	absorbed, ids := probationNotice(p, binding(firstBinding), "first", "absorbed")
+	f.hook(first, codexPrompt("open", at+20))
 	f.hook(first, codexReceipt("open", at+30, ids))
 	p.observation(absorbed, "absorbed")
 	if _, stopRef := build(); stopRef != absorbed {

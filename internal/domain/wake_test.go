@@ -406,3 +406,124 @@ func TestARequestPastTheTurnEndCapIsNotSeenWhenTheTurnEnds(t *testing.T) {
 		t.Fatalf("the request past the cap: %+v", d)
 	}
 }
+
+func TestOpenTurnDefersTheSendersNoticePrediction(t *testing.T) {
+	p := wakeFixture(t)
+	p.proveRoute()
+	wantOK(t, p.run(p.reader, Read{}, "initial"))
+	wantOK(t, p.owner(turnEndEvidence("tested"), "evidence"))
+	p.hook(p.reader, prompt(publishTestLaunch, "running", p.now.UnixMilli()+1))
+	send := func(key string, want Wake, next string) int64 {
+		t.Helper()
+		sent := decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, key))
+		d := sent.Recipients[0]
+		if d.Wake != want || d.Next != next {
+			t.Fatalf("%s send = %+v, want %+v", key, d, want)
+		}
+		if row := p.waitingRecipient(sent.ID); row.Wake != want || row.Notice != nil {
+			t.Fatalf("%s waiting = %+v, want %+v", key, row, want)
+		}
+		if n := p.count(`SELECT COUNT(*) FROM event WHERE kind = 'send_wake' AND subject = ?
+			AND json_extract(detail, '$.wake') = ?`, fmt.Sprintf("message:%d", sent.ID), want.Wake); n != 1 {
+			t.Fatalf("%s recorded %d events as %s", key, n, want.Wake)
+		}
+		return sent.ID
+	}
+	poll(t, p.fixture, p.reader, Wait{Existing: true})
+	first := send("waiting", Wake{Wake: WakeWait}, WaitRunning)
+	p.svc.waits.forget(p.binding.ID)
+	second := send("checked-stop", Wake{Wake: WakeNone, Why: WhyTurnOpen, SeenAt: SeenAtTurnEnd}, "at its turn-end check")
+	for i := 2; i < OfferCap; i++ {
+		p.turnEndAsk(p.writer, "reader", fmt.Sprintf("queued-%d", i))
+	}
+	last := send("past-stop-cap", Wake{Wake: WakeNone, Why: WhyTurnOpen}, "the hall checks again after its turn")
+	if row := p.ownerRow("reader").UnreadNotWoken; row != nil {
+		t.Fatalf("owner counted work deferred to Stop or publish as stranded: %+v", row)
+	}
+	if id := p.reserve(); id != 0 {
+		t.Fatalf("reserved %d during a reported turn", id)
+	}
+	line := p.hook(p.reader, stop(publishTestLaunch, "running", p.now.UnixMilli()+1)).TurnEndLine
+	if !strings.HasPrefix(line, pendingLine(first, second)+" ") {
+		t.Fatalf("checked Stop returned %q", line)
+	}
+	if row := p.waitingRecipient(last); row.Wake != (Wake{Wake: WakeNotice}) {
+		t.Fatalf("eligible after Stop: %+v", row)
+	}
+}
+
+func TestSendReplayAfterReservedRouteSwitchesOff(t *testing.T) {
+	p := wakeFixture(t)
+	p.proveRoute()
+	send := func() Delivery {
+		t.Helper()
+		r := p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, "replay")
+		return decode[AskResult](t, r).Recipients[0]
+	}
+	if d := send(); d.Wake.Wake != WakeNotice || p.reserve() == 0 {
+		t.Fatal("idle route did not reserve")
+	}
+	wantOK(t, p.run(p.reader, Publish{}, "off"))
+	if got := send().Wake; got != notWoken(WhyOff) {
+		t.Fatalf("after the switch changed, send replay = %+v, want notices off", got)
+	}
+}
+
+func TestSendReplayDistinguishesReservedAndSubmittedNoticesDuringATurn(t *testing.T) {
+	for _, submit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("submitted=%t", submit), func(t *testing.T) {
+			p := wakeFixture(t)
+			p.offerReceipts = true
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{}, "initial"))
+			poll(t, p.fixture, p.reader, Wait{Existing: true})
+			send := func() AskResult {
+				t.Helper()
+				return decode[AskResult](t, p.ask(p.writer, Ask{To: []string{"reader"}, Body: "work"}, "replay"))
+			}
+			id := send().ID
+			attempt := p.reserve()
+			if attempt == 0 {
+				t.Fatal("idle recipient did not reserve a notice")
+			}
+			if submit {
+				p.begin(attempt)
+				p.resolve(attempt, PublishSubmitted)
+			}
+			p.hook(p.reader, prompt(publishTestLaunch, "running", p.now.UnixMilli()+1))
+			d := send().Recipients[0]
+			row := p.waitingRecipient(id)
+			if submit {
+				if d.Wake.Wake != WakeNotice || row.Notice == nil || row.Notice.State != "submitted" || row.Wake != (Wake{}) {
+					t.Fatalf("submitted notice: send %+v, waiting %+v", d, row)
+				}
+				return
+			}
+			if d.Wake.Wake != WakeWait || row.Wake.Wake != WakeWait || row.Notice == nil || row.Notice.State != "reserved" {
+				t.Fatalf("unsubmitted reservation: send %+v, waiting %+v", d, row)
+			}
+			p.svc.waits.forget(p.binding.ID)
+			row = p.waitingRecipient(id)
+			if row.Wake != (Wake{Wake: WakeNone, Why: WhyTurnOpen}) || row.ShownAtMS != nil {
+				t.Fatalf("a reservation alone cannot show the request: %+v", row)
+			}
+		})
+	}
+}
+
+func TestFinalReplyToAnOpenTurnReportsDeferredNotice(t *testing.T) {
+	p := wakeFixture(t)
+	p.proveRoute()
+	wantOK(t, p.owner(turnEndEvidence("tested"), "evidence"))
+	request := p.turnEndAsk(p.reader, "writer", "request")
+	wantOK(t, p.run(p.writer, Read{IDs: []int64{request}}, "read"))
+	p.hook(p.reader, prompt(publishTestLaunch, "busy", p.now.UnixMilli()+1))
+	reply := decode[ReplyResult](t, p.reply(p.writer, Reply{To: request, Outcome: OutcomeAnswer, Body: "done"}, "answer"))
+	if reply.Delivery.Wake != (Wake{Wake: WakeNone, Why: WhyTurnOpen}) || reply.Delivery.Next != "the hall checks again after its turn" {
+		t.Fatalf("final reply is outside the ask-only Stop check: %+v", reply.Delivery)
+	}
+	if n := p.count(`SELECT COUNT(*) FROM event WHERE kind = 'send_wake' AND subject = ?
+		AND json_extract(detail, '$.wake') = 'none' AND json_extract(detail, '$.why') = 'turn_open'`, fmt.Sprintf("message:%d", reply.ID)); n != 1 {
+		t.Fatal("deferred final reply was not counted as wake=none")
+	}
+}

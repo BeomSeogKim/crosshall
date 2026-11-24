@@ -141,20 +141,172 @@ func TestPublishEligibilityAndReservationBoundary(t *testing.T) {
 
 	picked := p.turnEndAsk(p.writer, "reader", "before-reserve-read")
 	cancelled := p.turnEndAsk(p.writer, "reader", "before-reserve-cancel")
-	lateCancel := p.turnEndAsk(p.writer, "reader", "after-reserve-cancel")
+	lateCancel := p.turnEndAsk(p.writer, "reader", "after-submitting-cancel")
 	wantOK(t, p.run(p.reader, Read{IDs: []int64{picked}}, "read-before"))
 	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: cancelled}, "cancel-before"))
 	id := p.reserve()
 	if id == 0 {
 		t.Fatal("no eligible work reserved")
 	}
-	wantOK(t, p.run(p.reader, Read{IDs: []int64{first}}, "read-after"))
-	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: lateCancel}, "cancel-after"))
 	if ids := p.begin(id); !slices.Equal(ids, []int64{first, lateCancel}) {
 		t.Fatalf("reserved ID list %v", ids)
 	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{first}}, "read-after-submitting"))
+	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: lateCancel}, "cancel-after-submitting"))
 	if n := p.count(`SELECT COUNT(*) FROM announcement WHERE via = 'publish' AND ref = ?`, id); n != 2 {
 		t.Fatalf("claims = %d, want 2", n)
+	}
+}
+
+func TestPublishSkipsOnlyConfirmedOffers(t *testing.T) {
+	for _, written := range []bool{false, true} {
+		t.Run(fmt.Sprint("written=", written), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.offerReceipts = true
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before"))
+			at := p.now.UnixMilli()
+			first := p.turnEndAsk(p.writer, "reader", "first")
+			receipt := wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+			if written {
+				p.confirmOffer(p.principalOf(p.reader), "g1", receipt, at+2)
+			}
+			p.hook(p.reader, stop(publishTestLaunch, "user", at+3))
+			if got := p.hasWork(); got == written {
+				t.Errorf("pending publish work = %t after written=%t", got, written)
+			}
+			second := p.turnEndAsk(p.writer, "reader", "second")
+			want := []int64{first, second}
+			if written {
+				want = []int64{second}
+			}
+			if got := p.begin(p.reserve()); !slices.Equal(got, want) {
+				t.Fatalf("submitted IDs %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestPublishDefersOpenTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+1))
+	read := p.turnEndAsk(p.writer, "reader", "picked-up")
+	pending := p.turnEndAsk(p.writer, "reader", "unread")
+	if id := p.reserve(); id != 0 {
+		t.Fatalf("reserved notice %d during the user turn", id)
+	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{read}}, "read"))
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+	if got := p.begin(p.reserve()); !slices.Equal(got, []int64{pending}) {
+		t.Fatalf("after Stop submitted %v, want only %d", got, pending)
+	}
+}
+
+func TestPublishRechecksTurnAndOffersBeforeSubmitting(t *testing.T) {
+	for _, written := range []bool{false, true} {
+		t.Run(fmt.Sprint("written=", written), func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.offerReceipts = true
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before"))
+			first := p.turnEndAsk(p.writer, "reader", "first")
+			at := p.now.UnixMilli()
+			var id, second int64
+			if written {
+				receipt := wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+				p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+				second = p.turnEndAsk(p.writer, "reader", "second")
+				id = p.reserve()
+				p.confirmOffer(p.principalOf(p.reader), "g1", receipt, at+3)
+			} else {
+				id = p.reserve()
+				wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), first)
+				second = p.turnEndAsk(p.writer, "reader", "second")
+			}
+			if id == 0 {
+				t.Fatal("no initial reservation")
+			}
+			if got := p.begin(id); len(got) != 0 {
+				t.Fatalf("reservation still submitted %v", got)
+			}
+			if !written {
+				p.hook(p.reader, stop(publishTestLaunch, "user", at+3))
+			}
+			want := []int64{first, second}
+			if written {
+				want = []int64{second}
+			}
+			if got := p.begin(p.reserve()); !slices.Equal(got, want) {
+				t.Fatalf("on recheck submitted %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestPublishRechecksHandledAskAfterInterveningTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.offerReceipts = true
+	p.proveRoute()
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "clear-backlog"))
+	handled := p.turnEndAsk(p.writer, "reader", "handled")
+	unread := p.turnEndAsk(p.writer, "reader", "still-unread")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("initial batch was not reserved")
+	}
+
+	at := p.now.UnixMilli()
+	wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), handled, unread)
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{handled}}, "work-on-ask"))
+	wantOK(t, p.reply(p.reader, Reply{To: handled, Outcome: OutcomeAnswer, Body: "done"}, "answer"))
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted stale reservation %v after the user answered %d", ids, handled)
+	}
+	if got := p.begin(p.reserve()); !slices.Equal(got, []int64{unread}) {
+		t.Fatalf("next batch on the same generation = %v, want [%d]", got, unread)
+	}
+}
+
+func TestPublishReleasesReadButUnansweredAskBeforeSubmission(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "read-after-reserve")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("no initial reservation")
+	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{ask}}, "read"))
+	if n := p.count(`SELECT COUNT(*) FROM obligation WHERE message_id = ? AND state = 'open'`, ask); n != 1 {
+		t.Fatal("reading the ask should leave its obligation open")
+	}
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted %v after the recipient read request %d", ids, ask)
+	}
+	p.state(id, "not_submitted")
+	if p.hasWork() {
+		t.Fatal("read request remained eligible")
+	}
+}
+
+func TestPublishReleasesCancelledReservationBeforeSubmission(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "cancel-after-reserve")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("no initial reservation")
+	}
+	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: ask}, "cancel"))
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted cancelled request %v", ids)
+	}
+	p.state(id, "not_submitted")
+	if p.hasWork() {
+		t.Fatal("cancelled request remained eligible")
 	}
 }
 
@@ -211,9 +363,10 @@ func TestPublishAndStopShareTheAnnouncementClaim(t *testing.T) {
 			wantOK(t, p.owner(turnEndEvidence("tested"), "evidence"))
 			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before-route"))
 			ask := p.turnEndAsk(p.writer, "reader", "race")
-			p.hook(p.reader, prompt(publishTestLaunch, "turn", p.now.UnixMilli()+1))
+			open := prompt(publishTestLaunch, "turn", p.now.UnixMilli()+1)
 			cmd := stop(publishTestLaunch, "turn", p.now.UnixMilli()+2)
 			if stopFirst {
+				p.hook(p.reader, open)
 				if got := p.hook(p.reader, cmd).TurnEndLine; got != fmt.Sprintf("[crosshall] pending: %d", ask) {
 					t.Fatalf("Stop line %q", got)
 				}
@@ -224,6 +377,7 @@ func TestPublishAndStopShareTheAnnouncementClaim(t *testing.T) {
 				if id := p.reserve(); id == 0 {
 					t.Fatal("publish did not claim")
 				}
+				p.hook(p.reader, open)
 				if got := p.hook(p.reader, cmd).TurnEndLine; got != "" {
 					t.Fatalf("Stop competed with a committed publish claim: %q", got)
 				}

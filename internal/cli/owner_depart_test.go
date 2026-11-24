@@ -132,16 +132,18 @@ func TestReadmeOwnerWhoMatchesTheCommand(t *testing.T) {
 func TestOwnerWhoRendersReachAndStoppedBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name, reach, route, state, want string
+		unseen                          bool
 	}{
-		{"notice", "notice", "pull", "live", "the hall starts its turn"},
-		{"prompt", "prompt", "pull", "live", "sees work at its next prompt"},
-		{"pull", "pull", "pull", "live", "pull only: sees work when it runs a crosshall command"},
-		{"departed", "", "unavailable", "departed", "unavailable"},
+		{"notice", "notice", "pull", "live", "the hall starts its turn", false},
+		{"start not seen", "prompt", "pull", "live", "sees work at its next prompt; no notice route: its session start was not seen", true},
+		{"prompt", "prompt", "pull", "live", "sees work at its next prompt", false},
+		{"pull", "pull", "pull", "live", "pull only: sees work when it runs a crosshall command", false},
+		{"departed", "", "unavailable", "departed", "unavailable", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "checkout", Members: []domain.OwnerMember{{
 				Member: domain.Member{BindingID: 3, Alias: "reader", Vendor: "claude", Route: tc.route},
-				Reach:  tc.reach, BindingState: tc.state,
+				Reach:  tc.reach, BindingState: tc.state, StartUnseen: tc.unseen,
 			}}}}}
 			env := Env{Transport: &fakeTransport{result: okResult(t, result)}}
 			out, stderr, code := run(t, env, "owner", "who", "--all")

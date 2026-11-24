@@ -2,8 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## Unreleased
+## v0.2.0-rc.5 (2026-11-24)
 
+- **A notice waits for a running turn:** the dispatcher no longer submits a notice while the session reports a current prompt or permission request. When the turn ends, or its report expires, it checks again which requests still need one: a request the member picked up, closed, or saw in its prompt line drops out of the batch. A wait the member is running still takes the work at once, and `send` and `waiting` say which of the two will reach the member.
+- **`setup --apply` has an overall deadline:** a scripted setup stops after 30 seconds instead of waiting without end on a stalled step. Starting the dispatcher, confirming the adapter policy and confirming automatic joining each get up to three seconds within it. When a later step fails or the time runs out, the result names what was already confirmed, such as the policy, and says to run `crosshall setup status` and retry with the same adapters.
+- **A late first contact enrolls nobody:** a session start whose first request reached the dispatcher only after the hook had given up no longer leaves a half-enrolled member behind. The dispatcher drops the expired request; the session's next prompt can still join it. Hooks from older releases, which do not send the deadline, work as before.
 - **`uninstall --apply` has an overall deadline:** like `setup --apply`, it stops after 30 seconds with `uninstall timed out`, keeps what it already removed, and names `crosshall setup status` and the retry. A context error cut by the deadline is shown as the timeout alone.
 - **`owner start` waits up to five seconds for a dispatcher that holds the lock:** a dispatcher that had taken its lock but needed a little over three seconds to publish its ready marker was reported as failed, although it came up. Owner start now allows five seconds to confirm readiness after the lock is taken. A dispatcher that never takes the lock still fails at about three seconds, and `dispatcher running` still needs a matching live probe.
 - **A join after a leave is not reported as a move:** a session that left one channel and later joined another got `[crosshall] Work stays in #<old channel> (...)`, the receipt of `join --move`. Only a move out of a live membership prints it now. Such a join still carries the old membership's notice switches, do not disturb and suspensions, and still waits for a notice that awaits its receipt (#290).

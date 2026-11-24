@@ -2,9 +2,13 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.2.0-rc.5
 
-No schema change. Rule 4 and the notice text change:
+Upgrading from v0.2.0-rc.4 to v0.2.0-rc.5 keeps the database at schema 28: there is no new migration, and the upgrade makes no migration backup. Stop running crosshall commands, including background waits, run `crosshall owner stop`, and keep a private copy of the stopped store. Install rc.5 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command), then run `crosshall owner start` and `crosshall owner doctor`. Sessions keep their membership, and the installed hooks need no reinstall while the executable path stays the same. To roll back, stop rc.5, put the rc.4 binary back and start it on the same store. Coming from v0.2.0-rc.3 or earlier, follow the sections below as well.
+
+`owner start` now waits up to five seconds for a dispatcher that already holds its lock; with no lock holder it still gives up after about three seconds. `setup --apply` and `uninstall --apply` each stop after 30 seconds; after a timeout, run `crosshall setup status` and retry with the same adapters.
+
+Rule 4 and the notice text change:
 
 - A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`.
 - A notice now ends `Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say.` A notice sent with the v0.2.0-rc.4 text before the upgrade still counts as a notice when the session receives it.

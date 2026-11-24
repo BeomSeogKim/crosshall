@@ -40,8 +40,9 @@ type ObservedFact struct {
 	// ApprovalOpen: the fact is a shown permission dialog (Claude Code; a
 	// Codex request may have been approved on its own), its launch is not
 	// known to have ended, and the member has run no crosshall command
-	// since. Only the member's owner can answer it, so it does not age out:
-	// it ends with a later fact, a later command, or its launch. No hook
+	// since. Within the fact's cap the turn waits on the member's owner.
+	// Past it the request stays on show, hedged, but holds nothing: a denied
+	// dialog sends no Stop, so notices go out again as before. No hook
 	// reports an answered dialog, so a turn that goes on without a crosshall
 	// command shows it until its Stop.
 	ApprovalOpen bool `json:"approval_open,omitempty"`
@@ -69,13 +70,8 @@ func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time
 // unfinished turn row, so the observation's freshness still matters.
 func inReportedTurn(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
 	fact, err := latestFact(ctx, tx, principal)
-	return reportedTurn(fact, now), err
-}
-
-// reportedTurn: an open approval holds its turn whatever its age.
-func reportedTurn(fact *ObservedFact, now time.Time) bool {
-	return fact != nil && (fact.ApprovalOpen || fact.At(ms(now)).Current &&
-		(fact.Fact == FactPromptSubmitted || fact.Fact == FactApprovalRequested))
+	return fact != nil && fact.At(ms(now)).Current &&
+		(fact.Fact == FactPromptSubmitted || fact.Fact == FactApprovalRequested), err
 }
 
 // latestFact is the principal's effective fact: the latest, in causal

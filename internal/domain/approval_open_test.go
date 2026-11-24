@@ -48,9 +48,9 @@ func (p *publishFixture) ownerAndFact() (ownerOpen, factOpen bool) {
 	return ownerOpen, fact != nil && fact.ApprovalOpen
 }
 
-// A turn blocked on an approval moves only when the
-// member's owner answers. The sender is told so instead of "notice queued",
-// the owner sees it, and it does not age out at the fact's 30-minute cap.
+// A turn blocked on an approval moves only when the member's owner answers.
+// Within the fact's cap the sender is told so instead of "notice queued",
+// the owner sees it, and the hall sends no notice into the turn.
 func TestAnOpenApprovalWaitsOnTheOwnerUntilSomethingEndsIt(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
@@ -68,9 +68,6 @@ func TestAnOpenApprovalWaitsOnTheOwnerUntilSomethingEndsIt(t *testing.T) {
 	waitsOnOwner("no approval", "before", false)
 	p.approvalFact("turn-1")
 	waitsOnOwner("approval requested", "open", true)
-	p.now = p.now.Add(31 * time.Minute)
-	waitsOnOwner("past the fact's cap", "aged", true)
-	// Nor does the hall send a notice into the blocked turn once the cap passed.
 	if id := p.reserve(); id != 0 {
 		t.Fatalf("a notice was reserved into a turn that waits on its owner: attempt %d", id)
 	}
@@ -82,6 +79,31 @@ func TestAnOpenApprovalWaitsOnTheOwnerUntilSomethingEndsIt(t *testing.T) {
 	waitsOnOwner("a second approval", "second", true)
 	p.hook(p.reader, stop(publishTestLaunch, "turn-2", p.now.UnixMilli()+2))
 	waitsOnOwner("after the turn's Stop", "stopped", false)
+}
+
+// Approval, denied (no Stop), idle report: a denied dialog sends no Stop,
+// so past the fact's 30-minute cap the hall stops claiming that the turn
+// waits on the owner and sends its notice as before. The request stays on
+// show, hedged, for the owner.
+func TestADeniedApprovalStopsHoldingNoticesAtItsCap(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.approvalFact("turn-1")
+	p.now = p.now.Add(31 * time.Minute)
+	send, owner, fact := p.readerApproval("aged")
+	if send.Wake.Why == WhyApproval || !owner || !fact {
+		t.Fatalf("past the cap: send %+v, owner who open %v, fact open %v", send.Wake, owner, fact)
+	}
+	if id := p.reserve(); id == 0 {
+		t.Fatal("no notice was reserved past the cap of a denied dialog")
+	}
+	for _, ch := range decode[OwnerWhoResult](t, p.owner(OwnerWho{}, "")).Channels {
+		for _, m := range ch.Members {
+			if m.Alias == "reader" && (m.Observed == nil || m.Observed.Current) {
+				t.Fatalf("owner who shows the aged dialog as current: %+v", m.Observed)
+			}
+		}
+	}
 }
 
 // An approval must not outlive its session: a launch known dead, without a

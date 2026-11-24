@@ -71,11 +71,14 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 type DoctorApproval struct {
 	Alias, Channel string
 	AtMS           int64
+	// Current: within the fact's cap. Past it no answer was reported, but a
+	// denied dialog reports none either.
+	Current bool
 }
 
 // readDoctorApprovals lists live members whose latest fact is an open
 // approval, by the same test the dispatcher's views use.
-func readDoctorApprovals(ctx context.Context, tx Tx) ([]DoctorApproval, error) {
+func readDoctorApprovals(ctx context.Context, tx Tx, nowMS int64) ([]DoctorApproval, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT b.principal_id, b.alias, c.name FROM binding b
 		JOIN channel c ON c.id = b.channel_id
 		JOIN member_selection s ON s.principal_id = b.principal_id AND s.binding_id = b.id
@@ -106,7 +109,8 @@ func readDoctorApprovals(ctx context.Context, tx Tx) ([]DoctorApproval, error) {
 			return nil, err
 		}
 		if found && f.ApprovalOpen() {
-			out = append(out, DoctorApproval{Alias: m.alias, Channel: m.channel, AtMS: f.AtMS})
+			current := !f.FreshUntilMS.Valid || nowMS < f.FreshUntilMS.Int64
+			out = append(out, DoctorApproval{Alias: m.alias, Channel: m.channel, AtMS: f.AtMS, Current: current})
 		}
 	}
 	return out, nil

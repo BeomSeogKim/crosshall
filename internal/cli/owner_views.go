@@ -486,6 +486,9 @@ func approvalLines(r domain.OwnerWhoResult) []string {
 				continue
 			}
 			line := fmt.Sprintf("@%s in #%s waits on your approval (requested %s ago)", m.Alias, ch.Name, age(m.Observed.AgeS))
+			if !m.Observed.Current {
+				line = fmt.Sprintf("@%s in #%s asked you for approval %s ago, no answer reported", m.Alias, ch.Name, age(m.Observed.AgeS))
+			}
 			if len(m.OpenRequests) > 0 {
 				line += "; open requests:"
 				for _, id := range m.OpenRequests {

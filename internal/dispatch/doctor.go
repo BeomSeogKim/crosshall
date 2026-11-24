@@ -117,8 +117,12 @@ func (check *doctorCheck) record(detail string, err error) {
 func approvalWarnings(approvals []store.DoctorApproval) []string {
 	var out []string
 	for _, a := range approvals {
-		out = append(out, fmt.Sprintf("@%s in #%s waits on your approval since %s: only you can answer it, at its session",
-			a.Alias, a.Channel, time.UnixMilli(a.AtMS).Format("15:04")))
+		at := time.UnixMilli(a.AtMS).Format("15:04")
+		if a.Current {
+			out = append(out, fmt.Sprintf("@%s in #%s waits on your approval since %s: only you can answer it, at its session", a.Alias, a.Channel, at))
+		} else {
+			out = append(out, fmt.Sprintf("@%s in #%s asked you for approval at %s, no answer reported: look at its session", a.Alias, a.Channel, at))
+		}
 	}
 	return out
 }

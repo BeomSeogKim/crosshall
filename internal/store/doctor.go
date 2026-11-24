@@ -182,7 +182,7 @@ func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, ad
 			snapshot.Adapters[name] = state
 		}
 	}
-	approvals, err := readDoctorApprovals(ctx, tx)
+	approvals, err := readDoctorApprovals(ctx, tx, now.UnixMilli())
 	if err != nil {
 		return err
 	}

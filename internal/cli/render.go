@@ -222,10 +222,14 @@ var factWords = map[string]string{
 
 // observedText is "<fact> <age> ago", or "unknown (last: ...)" past its cap,
 // labelled when the launch's version and mode were not established. An open
-// approval says that it waits on the member's owner.
+// approval says that it waits on the member's owner, hedged past its cap.
 func observedText(o *domain.Observed) string {
 	if o.ApprovalOpen {
-		// An open approval does not age out: only the owner can answer it.
+		// A shown dialog stays on show past its cap, hedged: a denied one
+		// sends no Stop, so the hall cannot tell it from an answered one.
+		if !o.Current {
+			return "asked its owner for approval " + age(o.AgeS) + " ago, no answer reported"
+		}
 		return "approval requested " + age(o.AgeS) + " ago, waits on its owner"
 	}
 	words := factWords[o.Fact]

@@ -116,9 +116,10 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	}
 	// A turn blocked on an approval moves only when its owner answers: no
 	// notice, wait or second request can move it. Where the member sees the
-	// message once it does still holds.
+	// message once it does still holds. Past the fact's cap nothing is
+	// claimed: a denied dialog sends no Stop.
 	fact, err := latestFact(ctx, tx, principal)
-	if err != nil || fact == nil || !fact.ApprovalOpen {
+	if err != nil || fact == nil || !fact.ApprovalOpen || !fact.At(ms(now)).Current {
 		return w, err
 	}
 	return Wake{Wake: WakeNone, Why: WhyApproval, SeenAt: w.SeenAt}, nil

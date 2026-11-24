@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Hooks older than the binary are named:** a crosshall binary replaced without rerunning setup kept the earlier revision's hooks, and the only signs were `hooks drift` in `setup status` and `partial` in doctor. `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now add one sentence with both revisions and the command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`; no existing word or field changes, and `owner start --json` is unchanged.
 - **A hook-joined Codex session learns its standby when it joins:** its start-hook join line and `crosshall join <channel> --rules` now end with `` [crosshall] In this session new work shows at your next prompt: under rule 4, do not run `wait`; end the turn when you have nothing else to do. ``, and the join JSON carries `at_next_prompt: true`, under the same test as the empty inbox (Codex adapter on, a prompt line, no do not disturb). A first turn no longer runs a wait only to learn that it should not wait.
 
 ## v0.2.0-rc.5 (2026-11-24)

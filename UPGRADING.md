@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+No schema change. When the hooks on disk were installed for an older revision than the binary installs, `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now say so and name the setup command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`.
+
 ## To v0.2.0-rc.5
 
 Upgrading from v0.2.0-rc.4 to v0.2.0-rc.5 moves the database from schema 28 to schema 29. Migration 029 rebuilds the `observation` table to admit Claude Code's idle report; its rows and indexes are kept.

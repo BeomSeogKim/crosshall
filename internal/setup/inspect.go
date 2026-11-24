@@ -12,11 +12,20 @@ import (
 
 // Inspect reports user-level configuration without launching a vendor.
 func Inspect(stateRoot string) []InstallStatus {
-	j, _, journalErr := readJournal(stateRoot)
 	executable, err := os.Executable()
 	if err == nil {
 		executable, err = filepath.EvalSymlinks(executable)
 	}
+	if err != nil {
+		executable = ""
+	}
+	return inspect(stateRoot, executable)
+}
+
+// inspect is Inspect for hook commands that run the given executable; an
+// empty one leaves the installation unknown.
+func inspect(stateRoot, executable string) []InstallStatus {
+	j, _, journalErr := readJournal(stateRoot)
 	var statuses []InstallStatus
 	for _, spec := range hook.InstallSpecs() {
 		status := InstallStatus{
@@ -33,8 +42,9 @@ func Inspect(stateRoot string) []InstallStatus {
 			}
 		}
 		status.SetReminderEvidence(nil)
-		if err == nil && journalErr == nil && j.Pending == nil {
+		if executable != "" && journalErr == nil && j.Pending == nil {
 			inspectInstall(&status, spec, executable, stateRoot, j.Files[spec.Adapter])
+			status.markOutdated(spec, j.Builds[spec.Adapter].Revision)
 		}
 		statuses = append(statuses, status)
 	}
@@ -101,6 +111,7 @@ func inspectHookEntries(status *InstallStatus, spec hook.InstallSpec, executable
 			if err != nil {
 				return err
 			}
+			status.recorded = len(removed)
 			status.Drifted += len(record.Entries) - len(removed)
 		}
 	}

@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 26. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
+Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 27. Migration 023 records whether a session received the owner resume command for a lasting suspension. Migration 024 adds the `owner_alert` table, which records how each new round stop reached the owner. Stops recorded before the upgrade get no row: they stay in `crosshall owner status` and are never announced.
 
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
@@ -25,6 +25,8 @@ A new round stop shows a desktop notification where the system can show one, and
 Migration 025 records the server process and home a Codex daemon start names on the session's route, and gives each open notice a lane: notices recorded before it keep their process's lane, so one notice at a time stays open per process as before. A Codex route registered before it names no server and reads `codex daemon not confirmed` until the session's next start.
 
 Migration 026 records why a notice receipt was `unknown`. Receipts observed before it have no cause; `owner doctor` counts them as `cause not recorded`.
+
+Migration 027 records when the hook confirms writing a pending line. Earlier offers have no write confirmation. Still-unread IDs can appear again at the next eligible prompt. An older hook continues to count its offers when the dispatcher prepares them.
 
 ## To v0.2.0-rc.3
 

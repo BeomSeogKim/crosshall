@@ -36,7 +36,7 @@ func TestQuietHookCostBreakdown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for file, value := range map[string]string{"stamp": "fixture-host fixture-gen 1 0\n", "seen-notice": "fixture-host fixture-gen 1\n"} {
+	for file, value := range map[string]string{"stamp": "fixture-host fixture-gen 1 0\n", seenReceiptNotice: "fixture-host fixture-gen 1\n"} {
 		must(os.WriteFile(filepath.Join(member, file), []byte(value), 0600))
 	}
 	must(os.Mkdir(filepath.Join(member, "in"), 0700))

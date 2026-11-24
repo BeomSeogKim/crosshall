@@ -21,10 +21,11 @@ import (
 )
 
 type fixture struct {
-	t   *testing.T
-	db  *sql.DB
-	svc *Service
-	now time.Time
+	offerReceipts bool
+	t             *testing.T
+	db            *sql.DB
+	svc           *Service
+	now           time.Time
 }
 
 func newFixture(t *testing.T) *fixture {

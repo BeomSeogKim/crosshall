@@ -18,6 +18,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -42,7 +43,7 @@ func adapterFilesFixture(t *testing.T) (*server, *os.Root) {
 
 func adapterLeafFixture(t *testing.T, s *server, root *os.Root, registered bool) *os.Root {
 	t.Helper()
-	digest := strings.Repeat("a", 64)
+	digest := (ident.Identity{Vendor: "codex", Key: "synthetic-key"}).Digest()
 	members, err := spool.OpenServerChild(root, "m", false)
 	if err != nil {
 		t.Fatal(err)
@@ -614,5 +615,23 @@ func TestATurnEndRecordLoweredByARolledBackHookIsRemoved(t *testing.T) {
 				t.Fatalf("rolled-back hook left the record %q (%v), command error %v", got, err, cmdErr)
 			}
 		})
+	}
+}
+
+func TestPublishReadyRefreshesDirtyNoticeFromUpgrade(t *testing.T) {
+	s, root := adapterFilesFixture(t)
+	leaf := adapterLeafFixture(t, s, root, true)
+	initial, err := s.publishAdapterStamp(leaf, "test-gen", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.fixtureSQL(t, "INSERT INTO adapter_dirty(principal_id, notice) VALUES (1,1)")
+	if err := s.publishReady(t.Context(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.withdrawReady)
+	after, ok := s.adapterStamp(leaf, "test-gen")
+	if !ok || after.NoticeSeq <= initial.NoticeSeq || after.ReminderSeq != initial.ReminderSeq {
+		t.Fatalf("stamp at readiness %+v, before upgrade %+v", after, initial)
 	}
 }

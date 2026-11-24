@@ -43,7 +43,7 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 		"claude": {"SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd"},
 		"codex":  {"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "SessionEnd"},
 	}
-	reminders := make(map[string]reminderStatus)
+	previewed := make(map[string]PlanFile)
 	for _, f := range preview.Files {
 		if f.AddText != "" {
 			if f.Adapter != "codex" || f.Reminder != nil {
@@ -64,7 +64,7 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 			f.Reminder.Reason == "" || f.Reminder.Provenance == "" {
 			t.Fatalf("%s reminder = %+v", f.Adapter, f.Reminder)
 		}
-		reminders[f.Adapter] = *f.Reminder
+		previewed[f.Adapter] = f
 	}
 	for _, path := range []string{claudePath, filepath.Join(codexHome, "hooks.json"), service.StateRoot} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -72,13 +72,34 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 		}
 	}
 
-	installed, err := runSetupTest(t, service, "setup", "y\nn\nn\n", false)
-	if err != nil {
+	// Doctor reads the build the install recorded. The install's own result
+	// comes from the same version probe; the preview ran its own, which can
+	// time out under load, so it is compared only when both read one version.
+	var installed, result bytes.Buffer
+	if err := service.Run(t.Context(), Request{Action: "setup", JSON: true, Input: strings.NewReader("y\nn\nn\n"),
+		Output: &result, Prompt: &installed}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(installed, "Reply reminder parked (no opt-in)") != 2 ||
-		strings.Count(installed, "the reminder adds 1 model request") != 2 {
-		t.Fatalf("setup omitted the availability or cost: %s", installed)
+	if strings.Count(installed.String(), "Reply reminder parked (no opt-in)") != 2 ||
+		strings.Count(installed.String(), "the reminder adds 1 model request") != 2 {
+		t.Fatalf("setup omitted the availability or cost: %s", installed.String())
+	}
+	var applied plan
+	if err := json.Unmarshal(result.Bytes(), &applied); err != nil || !applied.Applied {
+		t.Fatalf("install result %s: %v", result.String(), err)
+	}
+	reminders := make(map[string]reminderStatus)
+	for _, f := range applied.Files {
+		if f.Reminder == nil {
+			continue
+		}
+		reminders[f.Adapter] = *f.Reminder
+		if p := previewed[f.Adapter]; p.Version == f.Version && !reflect.DeepEqual(*p.Reminder, *f.Reminder) {
+			t.Errorf("%s preview reminder = %+v, install = %+v", f.Adapter, *p.Reminder, *f.Reminder)
+		}
+	}
+	if len(reminders) != 2 {
+		t.Fatalf("install result reminders: %+v", reminders)
 	}
 	for _, status := range Inspect(service.StateRoot) {
 		if want, ok := reminders[status.Adapter]; ok && !reflect.DeepEqual(status.Reminder, want) {

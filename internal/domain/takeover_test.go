@@ -190,9 +190,13 @@ func TestEnrolledSessionTakesOverAtGrant(t *testing.T) {
 	if !req.AtGrant {
 		t.Fatalf("request %+v", req)
 	}
+	executeGuardFixture(t, f, `INSERT INTO member_host (principal_id, pid, start_identity, pid_namespace, seen_at_ms) VALUES (?, 4242, 1, '', 1)`, oldPrincipal)
 	grant := decode[OwnerTakeoverResult](t, f.owner(OwnerTakeover{ID: req.ID}, "grant"))
 	if !grant.Completed || grant.BindingID != binding {
 		t.Fatalf("grant %+v", grant)
+	}
+	if f.count(`SELECT COUNT(*) FROM member_host WHERE principal_id = ?`, oldPrincipal) != 0 {
+		t.Fatal("the member still names the old conversation's process as its host")
 	}
 	if f.principalOf(asker) != oldPrincipal || f.keyState(old) != "retired" ||
 		f.count(`SELECT COUNT(*) FROM principal_key WHERE principal_id = ? AND state = 'live'`, oldPrincipal) != 1 ||

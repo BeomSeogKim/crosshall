@@ -365,6 +365,12 @@ func handOverBinding(ctx context.Context, tx store.Tx, binding, principal, actor
 		ended_hook_at_ms = COALESCE(ended_hook_at_ms, ?) WHERE principal_id = ?`, SessionLaunch, ms(now), principal); err != nil {
 		return err
 	}
+	// The old conversation's process no longer hosts the member: if it
+	// exited before the new session's first command, it would depart the
+	// member by process. The next command records the new one.
+	if err := forgetHost(ctx, tx, principal); err != nil {
+		return err
+	}
 	return audit(ctx, tx, "binding_restored", bindingSubject(binding), actor, detail, now)
 }
 

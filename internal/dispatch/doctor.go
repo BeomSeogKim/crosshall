@@ -72,6 +72,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		}
 		if marker := readReady(cfg.Rendezvous); marker.live(state) {
 			readiness.record(fmt.Sprintf("dispatcher PID %d is ready", marker.PID), nil)
+			warnings = append(warnings, unknownRevisionWarnings(state, marker.Instance)...)
 		} else {
 			readiness.record("", errors.New("no live dispatcher readiness marker"))
 		}

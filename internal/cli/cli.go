@@ -136,6 +136,9 @@ type Env struct {
 	Unavailable string
 	// Doctor checks existing local state without launching the dispatcher.
 	Doctor func(context.Context) core.Result
+	// OutdatedHooks returns one sentence per adapter whose installed hooks
+	// an earlier crosshall left; the explicit owner start prints them.
+	OutdatedHooks func() []string
 	// Setup manages the explicitly selected user-level adapter configuration.
 	Setup func(context.Context, SetupRequest) error
 	// BeginSetupApply bounds a setup or uninstall --apply as a whole; the
@@ -311,6 +314,11 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)
 		} else {
 			fmt.Fprintln(stdout, "dispatcher running")
+			if env.OutdatedHooks != nil {
+				for _, line := range env.OutdatedHooks() {
+					fmt.Fprintln(stdout, line)
+				}
+			}
 		}
 		return core.ExitOK
 	case len(args) == 1 && args[0] == "stop":

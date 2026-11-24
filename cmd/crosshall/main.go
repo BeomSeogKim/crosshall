@@ -109,6 +109,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			return err
 		}
 		env.StartReady = paths.launch(true).StartReady
+		env.OutdatedHooks = func() []string { return setup.OutdatedHooks(paths.state) }
 		env.Stop = paths.launch(true).Stop
 		env.TelemetryEndpoint = telemetry.Receiver(version)
 		env.TelemetryCurl = telemetryconfig.CurlPath

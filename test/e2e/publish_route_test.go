@@ -69,14 +69,15 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(fixtureEventTimeout)
 		var last route
+		var reason string
 		var lastErr error
 		var who outcome
 		var checkedWho bool
 		var queued []string
 		attempt := 0
 		for time.Now().Before(deadline) {
-			lastErr = db.QueryRow(`SELECT state, mode, COALESCE(socket_path, '')
-				FROM publish_route WHERE session_ref = ? AND adapter = 'claude'`, sessionID).Scan(&last.state, &last.mode, &last.socket)
+			lastErr = db.QueryRow(`SELECT state, mode, COALESCE(socket_path, ''), reason
+				FROM publish_route WHERE session_ref = ? AND adapter = 'claude'`, sessionID).Scan(&last.state, &last.mode, &last.socket, &reason)
 			if lastErr == nil && last == want {
 				who, checkedWho = peer.run("who"), true
 				members, _ := who.obj["members"].([]any)
@@ -100,8 +101,23 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		if !checkedWho {
 			who = peer.run("who")
 		}
-		t.Fatalf("after %d callbacks wanted committed route %+v and who state %q, last route %+v (%v), queued packets %v\nwho exit %d, stdout %s, stderr %s",
-			attempt, want, wantWho, last, lastErr, queued, who.exit, who.stdout, who.stderr)
+		counterDir := filepath.Join(w.rendezvous(), "hooks")
+		logs, err := os.ReadDir(counterDir)
+		if err != nil {
+			t.Logf("read hook counter directory: %v", err)
+		} else if len(logs) == 0 {
+			t.Log("no hook counter files")
+		}
+		for _, log := range logs {
+			raw, err := os.ReadFile(filepath.Join(counterDir, log.Name()))
+			if err != nil {
+				t.Logf("read hook counters %s: %v", log.Name(), err)
+				continue
+			}
+			t.Logf("hook counters %s: %q", log.Name(), raw)
+		}
+		t.Fatalf("after %d callbacks wanted committed route %+v and who state %q, last route %+v, reason %q (%v), queued packets %v\nwho exit %d, stdout %s, stderr %s",
+			attempt, want, wantWho, last, reason, lastErr, queued, who.exit, who.stdout, who.stderr)
 	}
 
 	socket := "/tmp/cc-socks/" + pid + ".sock"

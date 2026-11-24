@@ -265,8 +265,14 @@ func TestClaudeRunningTurnLatency(t *testing.T) {
 				pre[arm] = msg.request.arrival.Sub(msg.start)
 				model[arm] = msg.request.reply.Sub(msg.request.arrival)
 				post[arm] = msg.result.Sub(msg.request.reply)
+				// The Stop hook appends its counter row after its output, so
+				// the row can land just after the native result.
+				rows := w.counters(t)[before:]
+				for wait := time.Now().Add(2 * time.Second); arm == 1 && len(rows) < 2 && time.Now().Before(wait); rows = w.counters(t)[before:] {
+					time.Sleep(time.Millisecond)
+				}
 				events := map[string]int{}
-				for _, row := range w.counters(t)[before:] {
+				for _, row := range rows {
 					fields := strings.Fields(row)
 					if len(fields) != 4 {
 						t.Fatalf("unexpected hook counter %q", row)

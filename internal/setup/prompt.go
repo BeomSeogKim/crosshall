@@ -323,7 +323,8 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 			err = p.ops.Install(ctx, c.plan)
 		}
 	}
-	if err != nil && ctx.Err() != nil {
+	// Name the deadline only for an error it caused; keep any other.
+	if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		err = context.Cause(ctx)
 	}
 	switch {

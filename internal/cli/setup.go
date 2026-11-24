@@ -60,9 +60,9 @@ func runSetup(ctx context.Context, env Env, opts options, action string, args []
 	}
 	req.JSON, req.Input, req.Output, req.Prompt = opts.json, env.Stdin, stdout, stderr
 	req.Terminal = env.SetupTerminal != nil && env.SetupTerminal()
-	if req.Action == "setup" && req.Apply && env.BeginSetupApply != nil {
+	if (req.Action == "setup" || req.Action == "uninstall") && req.Apply && env.BeginSetupApply != nil {
 		var stop func()
-		ctx, stop = env.BeginSetupApply(ctx)
+		ctx, stop = env.BeginSetupApply(ctx, req.Action)
 		defer stop()
 	}
 	if action == "setup" && !req.DryRun {
@@ -100,7 +100,8 @@ func runSetup(ctx context.Context, env Env, opts options, action string, args []
 		if errors.As(err, &result) && result.Reported() {
 			return core.ExitError
 		}
-		if cause := context.Cause(ctx); cause != nil {
+		// Name the deadline only for an error it caused; keep any other.
+		if cause := context.Cause(ctx); cause != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			err = cause
 		}
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")

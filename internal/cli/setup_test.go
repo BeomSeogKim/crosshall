@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +25,7 @@ func setupEnv(terminal bool, got *[]SetupRequest) Env {
 	}
 }
 
-func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
+func TestOnlyAnApplyUsesItsOperationDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want bool
@@ -31,15 +33,21 @@ func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
 		{[]string{"setup", "codex", "--apply"}, true},
 		{[]string{"setup", "codex"}, false},
 		{[]string{"setup", "codex", "--dry-run"}, false},
-		{[]string{"uninstall", "codex", "--apply"}, false},
+		{[]string{"uninstall", "codex", "--apply"}, true},
+		{[]string{"uninstall", "--apply"}, true},
+		{[]string{"uninstall", "codex"}, false},
+		{[]string{"uninstall", "--dry-run"}, false},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			env := setupEnv(true, new([]SetupRequest))
 			env.CommandDeadline = time.Now().Add(-time.Second)
 			deadline := time.Now().Add(time.Minute)
 			var started, stopped bool
-			env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
+			env.BeginSetupApply = func(ctx context.Context, action string) (context.Context, func()) {
 				started = true
+				if action != tc.args[0] {
+					t.Errorf("deadline for %q, want %q", action, tc.args[0])
+				}
 				ctx, cancel := context.WithDeadline(ctx, deadline)
 				return ctx, func() { stopped = true; cancel() }
 			}
@@ -52,6 +60,33 @@ func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
 			}
 			if out, stderr, code := run(t, env, tc.args...); code != core.ExitOK || started != tc.want || stopped != tc.want {
 				t.Fatalf("exit %d, started %v, stopped %v, stdout %q, stderr %q", code, started, stopped, out, stderr)
+			}
+		})
+	}
+}
+
+func TestAnApplyPastItsDeadlineKeepsARealError(t *testing.T) {
+	timeout := errors.New("uninstall timed out")
+	for _, tc := range []struct {
+		name           string
+		returned, want error
+	}{
+		{"real error", errors.New("configuration changed"), errors.New("configuration changed")},
+		{"context error", fmt.Errorf("codex adapter policy: %w", context.Canceled), timeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupEnv(true, new([]SetupRequest))
+			var expire context.CancelCauseFunc
+			env.BeginSetupApply = func(ctx context.Context, _ string) (context.Context, func()) {
+				ctx, expire = context.WithCancelCause(ctx)
+				return ctx, func() { expire(nil) }
+			}
+			env.Setup = func(context.Context, SetupRequest) error {
+				expire(timeout)
+				return tc.returned
+			}
+			if _, stderr, code := run(t, env, "uninstall", "codex", "--apply"); code != core.ExitError || !strings.Contains(stderr, tc.want.Error()) {
+				t.Fatalf("exit %d, stderr %q, want %q", code, stderr, tc.want)
 			}
 		})
 	}

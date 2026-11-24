@@ -137,8 +137,10 @@ type Env struct {
 	// Doctor checks existing local state without launching the dispatcher.
 	Doctor func(context.Context) core.Result
 	// Setup manages the explicitly selected user-level adapter configuration.
-	Setup           func(context.Context, SetupRequest) error
-	BeginSetupApply func(context.Context) (context.Context, func())
+	Setup func(context.Context, SetupRequest) error
+	// BeginSetupApply bounds a setup or uninstall --apply as a whole; the
+	// action names which, for the timeout message.
+	BeginSetupApply func(ctx context.Context, action string) (context.Context, func())
 	// SetupTerminal reports whether standard input and output are both a
 	// terminal, so setup may ask questions. Nil means no terminal.
 	SetupTerminal      func() bool

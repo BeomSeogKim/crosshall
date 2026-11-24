@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -278,7 +277,7 @@ func (s *Service) ownerLog(ctx context.Context, tx store.Tx, caller core.Caller,
 // hall will not tell it about, as a sender of each would read it now: no
 // notice, no running wait that accepts it, and no turn end that offers it.
 func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, principal int64, now time.Time) (*UnreadNotWoken, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms, m.channel_id FROM binding b
+	rows, err := tx.QueryContext(ctx, `SELECT m.id, m.created_at_ms FROM binding b
 		JOIN obligation o ON o.principal_id = b.principal_id JOIN message m ON m.id = o.message_id
 		JOIN recipient r ON r.message_id = o.message_id AND r.principal_id = o.principal_id
 		WHERE b.id = ? AND m.channel_id = b.channel_id AND o.state = 'open' AND o.more_time_at_ms IS NULL
@@ -287,11 +286,11 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 	if err != nil {
 		return nil, err
 	}
-	type request struct{ id, at, channel int64 }
+	type request struct{ id, at int64 }
 	var unread []request
 	for rows.Next() {
 		var r request
-		if err := rows.Scan(&r.id, &r.at, &r.channel); err != nil {
+		if err := rows.Scan(&r.id, &r.at); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -302,26 +301,13 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 		return nil, err
 	}
 	var out *UnreadNotWoken
-	var offer []int64 // what the turn end offers, read once when needed
-	offerRead := false
 	for _, r := range unread {
 		w, err := s.messageWake(ctx, tx, binding, principal, r.id, now)
 		if err != nil {
 			return nil, err
 		}
-		if w.Wake != WakeNone {
+		if w.Wake != WakeNone || w.SeenAt == SeenAtTurnEnd {
 			continue
-		}
-		if w.SeenAt == SeenAtTurnEnd {
-			if !offerRead {
-				if offer, err = turnEndOffer(ctx, tx, principal, r.channel); err != nil {
-					return nil, err
-				}
-				offerRead = true
-			}
-			if slices.Contains(offer, r.id) {
-				continue
-			}
 		}
 		if out == nil {
 			out = &UnreadNotWoken{OldestAtMS: r.at, OldestAgeS: max((ms(now)-r.at)/1000, 0)}

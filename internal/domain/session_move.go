@@ -56,6 +56,9 @@ func ReplayMembershipChange(ctx context.Context, tx store.Tx, principal int64, k
 	return replay(ctx, tx, principal, key, scope, cmd)
 }
 
+// prepareChannelMove refuses a move while a notice of the source awaits its
+// receipt, and departs a live source. Only a live source gets a receipt: a
+// departed one already left its channel, and the join moves nothing out.
 func prepareChannelMove(ctx context.Context, tx store.Tx, source membershipSelection, now time.Time) (*JoinMoveReceipt, *core.Result, error) {
 	attempt, err := pendingPublishForMove(ctx, tx, source.binding, source.principal)
 	if err != nil {
@@ -66,6 +69,9 @@ func prepareChannelMove(ctx context.Context, tx store.Tx, source membershipSelec
 			"retry the move after the notice is resolved; the owner can check it with crosshall owner doctor")
 		return nil, &r, nil
 	}
+	if source.state != "live" {
+		return nil, nil, nil
+	}
 	summary, err := memberInboxSummary(ctx, tx, source.principal, source.channel)
 	if err != nil {
 		return nil, nil, err
@@ -75,16 +81,14 @@ func prepareChannelMove(ctx context.Context, tx store.Tx, source membershipSelec
 		Scan(&out.Waiting); err != nil {
 		return nil, nil, err
 	}
-	if source.state == "live" {
-		if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ? WHERE id = ?`, ms(now), source.binding); err != nil {
-			return nil, nil, err
-		}
-		if err := rosterChange(ctx, tx, source.channel, source.principal, "departed"); err != nil {
-			return nil, nil, err
-		}
-		if err := audit(ctx, tx, "departed", "channel:"+source.channelName, source.principal, map[string]string{"alias": source.alias}, now); err != nil {
-			return nil, nil, err
-		}
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ? WHERE id = ?`, ms(now), source.binding); err != nil {
+		return nil, nil, err
+	}
+	if err := rosterChange(ctx, tx, source.channel, source.principal, "departed"); err != nil {
+		return nil, nil, err
+	}
+	if err := audit(ctx, tx, "departed", "channel:"+source.channelName, source.principal, map[string]string{"alias": source.alias}, now); err != nil {
+		return nil, nil, err
 	}
 	return out, nil, nil
 }

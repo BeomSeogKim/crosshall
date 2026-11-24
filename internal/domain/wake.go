@@ -130,8 +130,14 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 		w = Wake{Wake: WakeNone, Why: WhyKind}
 	}
 	// A request for more time ends no wait.
-	if endsWait && s.waits.accepts(binding, kind, msg, now) {
-		return Wake{Wake: WakeWait}, nil
+	if endsWait {
+		accepts, err := s.waits.accepts(ctx, tx, binding, kind, msg, now)
+		if err != nil {
+			return Wake{}, err
+		}
+		if accepts {
+			return Wake{Wake: WakeWait}, nil
+		}
 	}
 	if kind == "ask" {
 		turnEnd, err := seesAtTurnEnd(ctx, tx, principal, now)
@@ -178,11 +184,11 @@ func seesAtTurnEnd(ctx context.Context, tx store.Tx, principal int64, now time.T
 // promptAdapter joins, as ap, the adapter whose hooks offer a binding's
 // pending work at a prompt, as owner who reports it: the current launch's
 // adapter, enabled, the launch not fenced, the member not in do not disturb,
-// and the binding its session's first.
+// and the binding selected for its session.
 const promptAdapter = `LEFT JOIN ` + currentBindingLaunch + `
 	LEFT JOIN adapter_policy ap ON ap.adapter = json_extract(l.profile, '$.adapter') AND ap.enabled = 1
 		AND l.fenced = 0 AND b.dnd = 0 AND (b.owner_hook_fence_ms IS NULL OR l.started_hook_at_ms > b.owner_hook_fence_ms)
-		AND b.id = (SELECT MIN(id) FROM binding WHERE principal_id = b.principal_id)`
+		AND b.id = (SELECT binding_id FROM member_selection WHERE principal_id = b.principal_id)`
 
 // seenAt says where a member that is not woken sees new work.
 func (s *Service) seenAt(ctx context.Context, tx store.Tx, binding int64) (string, error) {

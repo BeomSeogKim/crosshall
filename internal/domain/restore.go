@@ -45,13 +45,18 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if r, found, err := replay(ctx, tx, owner, req.OpKey, scope, cmd); err != nil || found {
 		return r, err
 	}
-	var principal int64
-	err = tx.QueryRowContext(ctx, "SELECT principal_id FROM binding WHERE id=?", cmd.BindingID).Scan(&principal)
+	var principal, selected int64
+	err = tx.QueryRowContext(ctx, `SELECT b.principal_id, COALESCE(s.binding_id, 0) FROM binding b
+		LEFT JOIN member_selection s ON s.principal_id = b.principal_id WHERE b.id = ?`, cmd.BindingID).Scan(&principal, &selected)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Refuse(core.CodeNotFound, fmt.Sprintf("no binding with ID %d", cmd.BindingID), "crosshall owner who --all"), nil
 	}
 	if err != nil {
 		return core.Result{}, err
+	}
+	if selected != cmd.BindingID {
+		return Refuse(core.CodeBindingChanged, fmt.Sprintf("binding %d is historical", cmd.BindingID),
+			fmt.Sprintf("retry with crosshall owner restore %d and the replacement identity", selected)), nil
 	}
 	if s.RestoreKey == nil {
 		return core.Result{}, errors.New("domain: missing identity restore handler")

@@ -115,20 +115,21 @@ func (r SQLResolver) Resolve(ctx context.Context, tx store.Tx, ingress Ingress, 
 		return Resolution{}, leafMismatch()
 	}
 
-	var binding sql.NullInt64
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT min(id), count(*) FROM binding
-		WHERE principal_id=? AND state='live'`, principal.Int64).Scan(&binding, &count); err != nil {
+	caller := core.Caller{Role: core.RoleUnenrolled, PrincipalID: &principal.Int64}
+	var selected core.Membership
+	var live bool
+	err = tx.QueryRowContext(ctx, `SELECT s.binding_id, s.generation, b.state = 'live'
+		FROM member_selection s JOIN binding b ON b.id = s.binding_id AND b.principal_id = s.principal_id
+		WHERE s.principal_id = ?`, principal.Int64).Scan(&selected.BindingID, &selected.Generation, &live)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Resolution{}, err
 	}
-	caller := core.Caller{Role: core.RoleUnenrolled, PrincipalID: &principal.Int64}
-	switch count {
-	case 0:
-	case 1:
+	if err == nil {
+		caller.Membership = &selected
+	}
+	if live {
 		caller.Role = core.RoleMember
-		caller.BindingID = &binding.Int64
-	default:
-		return Resolution{}, &EnvironmentError{core.CodeBindingAmbiguous, "session has multiple live memberships"}
+		caller.BindingID = &selected.BindingID
 	}
 	return Resolution{Caller: caller, Vendor: id.Vendor, Key: id.Key}, nil
 }

@@ -21,6 +21,7 @@ type Registration struct {
 	fileID     string
 	generation string
 	version    string
+	membership core.Membership
 }
 
 // RegisterHello processes first contact in the dispatcher's transaction. The
@@ -111,6 +112,9 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 	if err == nil && principal.Valid && reg.version != "" {
 		_, err = tx.ExecContext(ctx, "UPDATE principal SET vendor_version=? WHERE id=? AND vendor_version IS NOT ?",
 			reg.version, principal.Int64, reg.version)
+	}
+	if err == nil && principal.Valid {
+		reg.membership, err = SelectedMembership(ctx, tx, principal.Int64)
 	}
 	return reg, err
 }
@@ -206,7 +210,10 @@ func (reg Registration) Publish() error {
 			return err
 		}
 	}
-	return publishGeneration(leaf, reg.generation, true)
+	if err := publishGeneration(leaf, reg.generation, true); err != nil {
+		return err
+	}
+	return RepublishMembership(leaf, reg.membership)
 }
 
 func publishMetadata(leaf *os.Root, name, value string) error {

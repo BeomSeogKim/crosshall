@@ -24,11 +24,12 @@ func liveMember(ctx context.Context, tx store.Tx, caller core.Caller) (member, *
 		return m, &r, nil
 	}
 	var state string
+	var generation int64
 	err := tx.QueryRowContext(ctx,
-		`SELECT b.id, b.channel_id, c.name, c.state, b.alias
-		 FROM binding b JOIN channel c ON c.id = b.channel_id
-		 WHERE b.principal_id = ? AND b.state = 'live' ORDER BY b.id LIMIT 1`, *caller.PrincipalID).
-		Scan(&m.binding, &m.channel, &m.channelName, &state, &m.alias)
+		`SELECT b.id, b.channel_id, c.name, c.state, b.alias, s.generation
+		 FROM member_selection s JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		 WHERE s.principal_id = ? AND b.state = 'live'`, *caller.PrincipalID).
+		Scan(&m.binding, &m.channel, &m.channelName, &state, &m.alias, &generation)
 	if errors.Is(err, sql.ErrNoRows) {
 		r := notEnrolled()
 		return m, &r, nil
@@ -36,9 +37,14 @@ func liveMember(ctx context.Context, tx store.Tx, caller core.Caller) (member, *
 	if err != nil {
 		return m, nil, err
 	}
+	if caller.BindingID != nil && *caller.BindingID != m.binding ||
+		caller.Membership != nil && (caller.Membership.BindingID != m.binding || caller.Membership.Generation != generation) {
+		r := Refuse(core.CodeBindingChanged, "the session's channel changed before this command ran", "run the command again from the current session")
+		return m, &r, nil
+	}
 	m.principal = *caller.PrincipalID
 	if state != "active" {
-		r := Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", m.channelName), "this session cannot move to another channel; a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>")
+		r := Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", m.channelName), "move this session to an active channel with crosshall join <channel> --move")
 		return m, &r, nil
 	}
 	return m, nil, nil

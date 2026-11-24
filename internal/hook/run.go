@@ -23,7 +23,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// Budget is the absolute callback deadline from command entry.
+// Budget bounds callback work. An enrolling hook can wait for dispatcher startup first.
 const Budget = 150 * time.Millisecond
 
 type hookTransport interface {
@@ -33,17 +33,16 @@ type hookTransport interface {
 
 // Run serves one callback. Path resolution and counter preparation share the
 // callback budget with dispatch. Only the supervisor records an outcome.
-func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
+func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, locate func() (Paths, error)) {
 	if len(args) != 2 {
 		return
 	}
-	began := entry
 	lifecycle := prepareRepoLifecycle(args, stdin, locate)
 	if lifecycle != nil {
 		defer lifecycle.cancel()
 	}
-	entry, startedState := wake(entry, args, locate)
-	end := entry.Add(Budget)
+	budgetStart, startedState := wake(captured, args, locate)
+	end := budgetStart.Add(Budget)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -55,21 +54,21 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		if err != nil || !time.Now().Before(end) {
 			return rv, nil
 		}
-		return rv, openHookCounter(rv, args[0], args[1], entry)
+		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
 	var outcome atomic.Value
-	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(budgetStart, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
-		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
+		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if lifecycle != nil && !lifecycle.waitUntil(began.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
 		if o, _ := outcome.Load().(string); o == "" || o == "deadline" {
-			logLine(startedState, args[0]+" "+args[1], began, "started the dispatcher, but the session start was not answered in time")
+			logLine(startedState, args[0]+" "+args[1], captured, "started the dispatcher, but the session start was not answered in time")
 		}
 	}
 	if !wrote && args[0] == "agy" && time.Now().Before(end) {
@@ -148,6 +147,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
+	membership, err := ident.LookupMembership(leaf)
+	if err != nil {
+		return "refused"
+	}
 	pid := e.LaunchRef
 	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
 	if err != nil {
@@ -175,6 +178,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
+	req.Membership = membership
 	if dispatcherGone(rv) {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
 	}
@@ -188,12 +192,20 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if clean || !want {
 		if !hookExpired(ctx) {
 			if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+				routeReq.Membership = membership
 				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 			}
 		}
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
+		return "refused"
+	}
+	if reply.Membership != nil {
+		membership = reply.Membership
+	}
+	if current, err := ident.ReadMembership(leaf); err != nil ||
+		membership != nil && current != *membership || membership == nil && current.Generation > 1 {
 		return "refused"
 	}
 	var result wire.HookResult
@@ -207,7 +219,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	reachSeen := confirmReach(ctx, leaf, gen, spec, result)
 	offerEnqueued := false
 	if (joinHintSeen || reachSeen || writer.ack.Offer != nil) && outputAckBudget(ctx) {
-		reqAck := wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}
+		reqAck := wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck, Membership: membership}
 		if writer.ack.Offer != nil {
 			reqAck.Args, _ = json.Marshal(writer.ack)
 		}
@@ -220,6 +232,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if !hookExpired(ctx) {
 		if routeReq, ok := makeRouteRequest(entry, m, e, policy.Epoch); ok {
+			routeReq.Membership = membership
 			_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 		}
 	}

@@ -270,7 +270,9 @@ See [operations](docs/operations.md#loop-guard) for thread resets and how the li
 
 ## Connect your agents
 
-With the hooks installed, sessions join by themselves ([quick start](#quick-start)). To join a session by hand, for an agent without hooks, a channel of your own choosing, or after a no at the install question, tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. A session that is already joined is not sent them again; if it lost its context, `crosshall join demo --rules` prints them.
+With the hooks installed, sessions join by themselves ([quick start](#quick-start)). To join a session by hand, for an agent without hooks, a channel of your own choosing, or after a no at the install question, tell the agent, for example: *"Run `crosshall join demo --as reviewer` and follow the rules it prints."* The join output teaches it the rules. If a session does not inherit your shell's PATH, use `~/.local/bin/crosshall` in the command. To print the rules again for the current channel, run `crosshall join demo --rules`.
+
+To move a joined session to another channel, run `crosshall join <channel> --move` in that session. Open requests and replies stay in their original channel. See [moving a session](docs/operations.md#moving-a-session-between-channels).
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |

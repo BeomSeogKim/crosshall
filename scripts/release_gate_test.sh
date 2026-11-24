@@ -120,6 +120,19 @@ for style, text in (("line", "UPDATE m SET body = 'reset' -- , kind = 'x'\nWHERE
         f.write(text)
     cases.append((f"a column named in a {style} comment", 1,
                   store(f"comment_{style}", "UPDATE m SET body = 'reset', kind = 'x' WHERE kind = 'ask';"), commented))
+# A commented statement is read; a WHERE sees the columns earlier statements
+# add; UPDATE ... FROM with an alias selects its rows; a dropped table may go.
+later = f"{root}/004_later.sql"
+with open(later, "w") as f:
+    f.write("-- The flag follows the kind.\nALTER TABLE m ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;\n\n"
+            "-- Asks are flagged.\nUPDATE m AS x SET flag = 1, body = 'flagged' FROM k WHERE x.kind = 'ask' AND x.flag = 0 AND k.v = 1;\n"
+            "DROP TABLE u;\n")
+cases.append(("a commented, later-column, aliased migration", 0,
+              store("later", "ALTER TABLE m ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;"
+                    "UPDATE m SET flag = 1, body = 'flagged' WHERE kind = 'ask'; DROP TABLE u;"), later))
+cases.append(("a row that migration's WHERE does not select", 1,
+              store("later_note", "ALTER TABLE m ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;"
+                    "UPDATE m SET flag = 1, body = 'flagged'; DROP TABLE u;"), later))
 for label, want, after, *own in cases:
     got = subprocess.run([sys.executable, "-B", rows, before, after, *(own or [migration])], capture_output=True, text=True)
     if got.returncode != want:

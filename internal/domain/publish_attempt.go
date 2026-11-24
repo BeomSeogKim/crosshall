@@ -385,6 +385,13 @@ func finishPublish(ctx context.Context, tx store.Tx, id int64, from string, outc
 	if err != nil || n == 0 || outcome != PublishNotSubmitted {
 		return err
 	}
+	// The withdrawn announcement gives its asks back to the turn-end line:
+	// mark the member, so the record its Stop reads is raised (#261).
+	if _, err = tx.ExecContext(ctx, `INSERT INTO adapter_dirty (principal_id, notice)
+		SELECT DISTINCT principal_id, 1 FROM announcement WHERE via = 'publish' AND ref = ?
+		ON CONFLICT(principal_id) DO UPDATE SET notice = 1`, id); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM announcement WHERE via = 'publish' AND ref = ?`, id); err != nil || from != "submitting" {
 		return err
 	}

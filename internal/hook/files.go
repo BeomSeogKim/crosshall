@@ -191,6 +191,27 @@ func hasSeenNotice(leaf *os.Root, generation string) bool {
 	return err == nil && len(fields) == 3 && fields[1] == generation
 }
 
+// TurnEndAskFile is the dispatcher's record, per member leaf, of whether a
+// turn-end notice may have an ask to announce: "<instance> <generation> 0|1".
+const TurnEndAskFile = "turn-end-ask"
+
+// noTurnEndAsk reports whether the current dispatcher recorded, for this
+// generation, that no ask waits for a turn-end notice. Anything else waits.
+func noTurnEndAsk(rv, leaf *os.Root, generation string) bool {
+	ready, err := ident.ReadPrivateFile(rv, "ready", 4096)
+	if err != nil {
+		return false
+	}
+	var marker struct {
+		Instance string `json:"instance"`
+	}
+	if json.Unmarshal(ready, &marker) != nil || marker.Instance == "" || generation == "" {
+		return false
+	}
+	record, err := ident.ReadPrivateFile(leaf, TurnEndAskFile, 4096)
+	return err == nil && string(record) == marker.Instance+" "+generation+" 0\n"
+}
+
 const seenJoinHint = "seen-join-hint"
 
 const JoinHintOfferFile = "join-hint-offer"

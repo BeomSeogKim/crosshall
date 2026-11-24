@@ -82,6 +82,7 @@ type server struct {
 	retention       retention
 	lastLogged      string
 	adapterSequence uint64
+	revisions       revisionNotes
 }
 
 // Serve runs in the dedicated dispatcher process until ctx is canceled.

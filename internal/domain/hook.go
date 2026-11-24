@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
-	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -78,13 +77,6 @@ func validProfile(p wire.HookProfile) bool {
 }
 
 func hookUsage(msg string) core.Result { return Fail(core.ExitUsage, "", msg, "") }
-
-// UnknownRevisionMessage is the refusal of a hook whose manifest revision
-// this build does not know, and owner doctor's warning about it.
-func UnknownRevisionMessage(revision string) string {
-	return "Hook manifest revision " + revision + " is unknown to this dispatcher. " +
-		"If Crosshall was upgraded, restart the dispatcher (crosshall owner stop, then crosshall owner start)."
-}
 
 // policyOpen reports whether adapter effects are on for this epoch. Off or a
 // changed epoch means the hook prints nothing.
@@ -591,20 +583,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	if !validProfile(cmd.Profile) || cmd.LaunchRef == "" || !validRef(cmd.LaunchRef) || cmd.EventRef == "" ||
 		!validRef(cmd.EventRef) || !validRef(cmd.TurnRef) || cmd.HookAtMS <= 0 || cmd.LaunchAtMS < 0 ||
 		(cmd.PIDNamespace != "" && !validRef(cmd.PIDNamespace)) ||
-		(cmd.EnrollRepoRoot != "" && !validRepoRoot(cmd.EnrollRepoRoot)) ||
+		(cmd.EnrollRepoRoot != "" && (!cmd.CanRecoverEnrollment() || !validRepoRoot(cmd.EnrollRepoRoot))) ||
 		(cmd.EnrollRepository != "" && (cmd.EnrollRepoRoot == "" || !validRepoRoot(cmd.EnrollRepository))) {
-		return hookUsage("invalid hook.event arguments"), nil
-	}
-	if cmd.EnrollRepoRoot != "" && !cmd.CanRecoverEnrollment() {
-		// A hook of a newer build than this dispatcher names a revision it
-		// does not know: say so, and let owner doctor say it too.
-		adapter, revision := cmd.Profile.Adapter, cmd.Profile.ManifestRev
-		if _, known := manifests.CapabilitiesAt(adapter, revision); !known && manifests.Has(adapter) {
-			if s.UnknownRevision != nil {
-				s.UnknownRevision(adapter, revision)
-			}
-			return hookUsage(UnknownRevisionMessage(revision)), nil
-		}
 		return hookUsage("invalid hook.event arguments"), nil
 	}
 	out := wire.HookResult{Epoch: cmd.Epoch}

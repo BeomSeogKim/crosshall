@@ -610,3 +610,54 @@ func endedLines(ended []domain.EndedMember) []string {
 	}
 	return lines
 }
+
+// startOwedLine asks the started dispatcher who owes replies, for the one
+// line owner start prints. An older dispatcher, or any failure, prints none.
+func startOwedLine(ctx context.Context, env Env) string {
+	if env.Transport == nil {
+		return ""
+	}
+	result, err := env.Transport.Do(ctx, Call{Owner: true, Command: domain.OwnerOwed{}})
+	if err != nil || result.Status != core.ExitOK {
+		return ""
+	}
+	var r domain.OwnerOwedResult
+	if json.Unmarshal(result.Data, &r) != nil {
+		return ""
+	}
+	return owedLine(r.Members)
+}
+
+// owedLine sums up the members that owe replies at a start: how many get
+// a resume notice when their turn is free, and who nothing can wake.
+func owedLine(members []domain.OwingMember) string {
+	if len(members) == 0 {
+		return ""
+	}
+	owed, woken := 0, 0
+	var cannot []string
+	for _, m := range members {
+		owed += m.Owed
+		if m.CanResume() {
+			woken++
+		} else {
+			cannot = append(cannot, fmt.Sprintf("@%s in #%s: %s", m.Alias, m.Channel, whyText(m.Wake, false)))
+		}
+	}
+	who, what := "members owe", "requests"
+	if len(members) == 1 {
+		who = "member owes"
+	}
+	if owed == 1 {
+		what = "request"
+	}
+	line := fmt.Sprintf("%d %s %d open %s", len(members), who, owed, what)
+	var parts []string
+	if woken > 0 {
+		parts = append(parts, fmt.Sprintf("%d can be woken and get one resume notice when their turn is free", woken))
+	}
+	if len(cannot) > 0 {
+		parts = append(parts, fmt.Sprintf("%d cannot be woken (%s)", len(cannot), strings.Join(cannot, ", ")))
+	}
+	return line + ": " + strings.Join(parts, "; ") + "."
+}

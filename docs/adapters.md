@@ -131,6 +131,14 @@ The hall stops by itself, toward pull, in these cases:
 - **Suspended.** An absorbed or unknown notice suspends notices for its session for 30 minutes. So do three consecutive failed submissions. A third active suspension for the same launch lasts until that launch ends if all three came from absorbed notices or failed submissions. Expired suspensions and unknown receipts are excluded from that count. An own-turn receipt or an owner resume resets the count. When the session is told it lost reach because of a lasting suspension, its own line gives `crosshall owner publish resume <binding-id>`. The owner is also told directly, on the desktop and on the next owner command (see [operations](operations.md#loop-guard)). For a version inheriting tested evidence, an absorbed or unknown notice before the first three own-turn receipts also stops publish for that build. Resume lifts the build stop and keeps the confirmation count. A newer tested evidence import for the exact version also lifts the build stop.
 - **Capped.** A member gets at most 30 notices an hour.
 
+After the dispatcher starts, a member that owes a reply that no notice will carry, because the member already read the request or was told of it, or because it came before the route, gets one resume notice, once per start, when its turn is free within the first hour:
+
+```text
+[crosshall] pending: 2087 2090. This notice is from crosshall, not from a Claude session. The hall restarted and you still owe these requests: run crosshall read 2087 2090 to see them again, carry on, and use crosshall reply to answer each, ask for more time or decline, as the member rules say.
+```
+
+It follows the same route rules as any notice, and its echo counts as its receipt. One that is not submitted is tried once more five minutes later; once one is submitted, or after the second try, the member gets no other until the next start. Each is recorded as a `publish_resume` event with its binding, attempt and requests. `crosshall owner start` prints one line when members owe replies, for example `3 members owe 4 open requests: 2 can be woken and get one resume notice when their turn is free; 1 cannot be woken (@sol in #dev: no notice route for codex).`
+
 A notice is an offer, not a delivery: the message is already stored, and a notice that is lost or ignored leaves it unread for `crosshall read`, the prompt line or a wait.
 
 ## Turning adapters off and removing them

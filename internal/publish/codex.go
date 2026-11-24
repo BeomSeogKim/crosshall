@@ -71,12 +71,20 @@ func (codex) Notice(ids []int64) (string, bool) {
 	return notice.PendingPrefix + notice.IDList(ids) + codexSuffix, true
 }
 
+var codexResume = notice.ResumeHead("Codex")
+
+// ResumeNotice names requests the member still owes after a restart.
+func (codex) ResumeNotice(ids []int64) (string, bool) { return notice.Resume(codexResume, ids), true }
+
 func (codex) Echo(prompt string) (string, bool) {
 	body, ok := strings.CutPrefix(prompt, notice.PendingPrefix)
 	if !ok {
 		return "", false
 	}
 	if ids, ok := strings.CutSuffix(body, codexSuffix); ok {
+		return ids, true
+	}
+	if ids, ok := notice.CutResume(codexResume, body); ok {
 		return ids, true
 	}
 	return strings.CutSuffix(body, codexSuffixRC4)

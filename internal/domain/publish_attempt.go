@@ -347,6 +347,12 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
+	return beginPublish(ctx, tx, id, pendingPublishItem, now)
+}
+
+// beginPublish releases the batch as stale when an item no longer meets
+// itemOK, a predicate on recipient x and message m.
+func beginPublish(ctx context.Context, tx store.Tx, id int64, itemOK string, now time.Time) (PublishTarget, []int64, error) {
 	var principal int64
 	var stale bool
 	var target PublishTarget
@@ -355,7 +361,7 @@ func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (Pu
 		EXISTS (SELECT 1 FROM publish_attempt_item i
 			JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
 			JOIN message m ON m.id = x.message_id
-			WHERE i.attempt_id = ?1 AND NOT (`+pendingPublishItem+`)) `+
+			WHERE i.attempt_id = ?1 AND NOT (`+itemOK+`)) `+
 		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ?1 AND a.state = 'reserved'
 			AND `+reservationMatchesRoute+`)`, id).
 		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &stale)...)

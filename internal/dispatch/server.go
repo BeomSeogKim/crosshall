@@ -566,11 +566,16 @@ var errRefusalRollback = errors.New("refusal rolled back")
 
 func (s *server) hello(ctx context.Context, id string, raw []byte) (core.Result, error) {
 	var envelope struct {
-		Version int    `json:"v"`
-		Attempt string `json:"attempt"`
+		Version     int    `json:"v"`
+		Attempt     string `json:"attempt"`
+		ExpiresAtMS int64  `json:"expires_at_ms"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Version != wire.Version || envelope.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid first-contact envelope"), nil
+	}
+	// Older clients omit the deadline.
+	if envelope.ExpiresAtMS != 0 && envelope.ExpiresAtMS <= time.Now().UnixMilli() {
+		return commandError(core.ExitUnavailable, core.CodeUnsent, "first contact expired"), nil
 	}
 	var result core.Result
 	var publish func() error

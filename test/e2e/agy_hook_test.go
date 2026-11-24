@@ -85,11 +85,24 @@ func TestAntigravitySetupInstallsAndInvokesOnlyCLIStartup(t *testing.T) {
 	if got := invoke("antigravity"); got != "{}\n" {
 		t.Fatalf("non-CLI payload should be a no-op: %q", got)
 	}
+	before, err := f.hookCounterRecords("agy", "SessionStart")
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := invoke("antigravity-cli")
+	if out == "{}\n" {
+		after, err := f.hookCounterRecords("agy", "SessionStart")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) == len(before)+1 && strings.HasPrefix(after[len(before)], "agy SessionStart deadline ") {
+			out = invoke("antigravity-cli")
+		}
+	}
 	if !strings.Contains(out, `"injectSteps":[{"systemMessage":{"systemMessage":`) ||
 		!strings.Contains(out, "Joined #setup-check as @agy1") || strings.Contains(out, "private input") {
 		f.logDispatcher()
-		t.Fatalf("wrong installed SessionStart output: %q", out)
+		t.Fatalf("wrong installed SessionStart output: %q (last hook counter %q)", out, f.hookCounter("agy", "SessionStart"))
 	}
 	var routes int
 	if err := f.db().QueryRow("SELECT COUNT(*) FROM publish_route WHERE adapter = 'agy'").Scan(&routes); err != nil || routes != 0 {

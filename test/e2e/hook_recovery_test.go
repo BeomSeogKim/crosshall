@@ -18,8 +18,9 @@ func TestM2OneWayObservationRecovery(t *testing.T) {
 	w, writer, claimed := m2World(t)
 	unclaimed := claimed
 	unclaimed.key = "synthetic-unclaimed-session"
-	enrollForRecovery(t, claimed)
-	enrollForRecovery(t, unclaimed)
+	enrollForRecovery(t, claimed, "startup", 1)
+	enrollForRecovery(t, claimed, "resume", 2)
+	enrollForRecovery(t, unclaimed, "startup", 1)
 	if !rosterHas(t, writer, "claude1") || !rosterHas(t, writer, "claude2") {
 		t.Fatal("both synthetic Claude sessions must be enrolled")
 	}
@@ -59,33 +60,22 @@ func TestM2OneWayObservationRecovery(t *testing.T) {
 	}
 }
 
-// The recovery test needs a committed, verified launch for each fixture. A
-// SessionStart can return silently on its callback deadline before enrollment.
-func enrollForRecovery(t *testing.T, c claudeSession) {
+func enrollForRecovery(t *testing.T, c claudeSession, source string, starts int) {
 	t.Helper()
 	digest := (ident.Identity{Vendor: "claude", Key: c.key}).Digest()
 	db := c.w.db()
-	deadline := time.Now().Add(fixtureEventTimeout)
-	for {
-		c.fire("SessionStart", map[string]any{"source": "startup"})
-		var enrolled bool
-		err := db.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM leaf l
+	c.fireUntil("SessionStart", map[string]any{"source": source}, "the expected committed launches and a live binding", func(string) bool {
+		var total int
+		var running bool
+		err := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(a.ended_hook_at_ms IS NULL), 0) FROM leaf l
 			JOIN binding b ON b.principal_id = l.principal_id AND b.state = 'live'
 			JOIN adapter_launch a ON a.principal_id = l.principal_id
-			WHERE l.digest = ? AND a.verified = 1 AND a.ended_hook_at_ms IS NULL
-		)`, digest).Scan(&enrolled)
+			WHERE l.digest = ? AND a.verified = 1`, digest).Scan(&total, &running)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if enrolled {
-			c.waitForConsumption(deadline)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("synthetic SessionStart did not commit a verified live binding; last hook counter %q", c.lastCounter())
-		}
-	}
+		return total >= starts && running
+	})
 }
 
 func queueCleanEnd(t *testing.T, c claudeSession, area, eventRef string) (string, int64) {
@@ -97,7 +87,8 @@ func queueCleanEnd(t *testing.T, c claudeSession, area, eventRef string) (string
 	var profile string
 	err := c.w.db().QueryRow(`SELECT l.generation, a.launch_ref, a.profile, a.verified, p.epoch
 		FROM leaf l JOIN adapter_launch a ON a.principal_id = l.principal_id
-		JOIN adapter_policy p ON p.adapter = l.vendor WHERE l.digest = ?`, digest).
+		JOIN adapter_policy p ON p.adapter = l.vendor WHERE l.digest = ? AND a.ended_hook_at_ms IS NULL
+		ORDER BY a.started_hook_at_ms DESC, a.rowid DESC LIMIT 1`, digest).
 		Scan(&generation, &args.LaunchRef, &profile, &args.LaunchVerified, &args.Epoch)
 	if err != nil {
 		t.Fatal(err)

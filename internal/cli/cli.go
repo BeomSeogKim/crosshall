@@ -118,7 +118,7 @@ type Env struct {
 	OwnerGate func() string
 	// Start starts the dispatcher if it is not running.
 	Start func(ctx context.Context) error
-	// StartReady confirms a dispatcher response for the explicit owner start.
+	// StartReady owns the readiness deadline for the explicit owner start.
 	StartReady func(ctx context.Context) error
 	// Stop waits for the running dispatcher to release its lock.
 	Stop func(ctx context.Context) (bool, error)
@@ -285,7 +285,8 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			}
 		}
 	}
-	if !deadline.IsZero() {
+	explicitStart := len(args) == 1 && args[0] == "start"
+	if !deadline.IsZero() && (!explicitStart || env.StartReady == nil) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
@@ -293,7 +294,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	switch {
 	case args[0] == "telemetry":
 		return runOwnerTelemetry(env, opts, args[1:], stdout, stderr)
-	case len(args) == 1 && args[0] == "start":
+	case explicitStart:
 		start := env.StartReady
 		if start == nil {
 			start = env.Start

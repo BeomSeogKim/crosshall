@@ -2,6 +2,14 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+No schema change. Rule 4 and the notice text change:
+
+- A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`.
+- A notice now ends `Run crosshall read and answer each request it shows with crosshall reply, as the member rules say.` A notice sent with the v0.2.0-rc.4 text before the upgrade still counts as a notice when the session receives it.
+- For a hook-joined Codex session, an empty `crosshall inbox` prints `Inbox is empty. End the turn; new work shows at your next prompt.`, and a wait that times out with nothing unread names that step instead of the wait command. In JSON, the inbox result and the wait snapshot gain `at_next_prompt`. Other sessions see no change.
+
 ## To v0.2.0-rc.4
 
 Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:

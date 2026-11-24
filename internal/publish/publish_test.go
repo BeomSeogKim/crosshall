@@ -93,17 +93,20 @@ func TestCodexReachesOnlyADaemonThread(t *testing.T) {
 	}
 }
 
-// The Codex notice names its IDs and its sender, and only that notice
-// echoes back as a receipt.
+// The Codex notice names its IDs and its sender, says to read and answer,
+// and only that notice, or its rc.4 text, echoes back as a receipt.
 func TestCodexNoticeEchoesItsIDs(t *testing.T) {
 	codex, _ := Shipped().Lookup("codex")
 	line, ok := codex.Notice([]int64{3, 17})
-	want := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session: do not reply to the sender. Run crosshall read."
+	want := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say."
 	if !ok || line != want {
 		t.Fatalf("notice = %q, %v", line, ok)
 	}
-	if ids, ok := codex.Echo(line); !ok || ids != "3 17" {
-		t.Fatalf("echo = %q, %v", ids, ok)
+	rc4 := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session: do not reply to the sender. Run crosshall read."
+	for _, prompt := range []string{line, rc4} {
+		if ids, ok := codex.Echo(prompt); !ok || ids != "3 17" {
+			t.Fatalf("echo %q = %q, %v", prompt, ids, ok)
+		}
 	}
 	claude, _ := Shipped().Lookup("claude")
 	claudeLine, _ := claude.Notice([]int64{3})
@@ -165,6 +168,7 @@ func (fixture) SessionRoute(ref string, launch Route) Route {
 }
 func (fixture) ThreadRouted() bool                { return false }
 func (fixture) Reach(Route) string                { return "" }
+func (fixture) BackgroundWakes() bool             { return true }
 func (fixture) Notice(ids []int64) (string, bool) { return "fixture " + notice.IDList(ids), true }
 func (fixture) Echo(prompt string) (string, bool) { return strings.CutPrefix(prompt, "fixture ") }
 func (f fixture) Transport() Transport            { return f.transport }

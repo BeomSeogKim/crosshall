@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A notice says what to do, and a Codex session no longer holds its turn on a wait:** a notice now ends `... not from a Claude session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say.` In a recorded run, the old ending `do not reply to the sender` made a Codex model read a request and then neither answer nor decline it. A notice with the old text still counts as a notice. Rule 4 now waits in the background only where a background command's exit starts the next turn; a session whose next prompt shows new work ends its turn instead of holding it on `crosshall wait`, where the same run saw one model request a minute. For a hook-joined Codex session an empty `crosshall inbox` and a timed-out wait say `End the turn; new work shows at your next prompt.` instead of naming the wait, and the inbox and wait results gain `at_next_prompt` (#288).
+
 ## v0.2.0-rc.4 (2026-11-24)
 
 - **Session starts get more time under load:** a session start, and a prompt that enrolls or repairs its session, now answers within 400 ms instead of 150 ms; every other hook keeps 150 ms. A start makes three round trips to the dispatcher, and when other processes flush the disk each of them slows, so starts missed the 150 ms deadline and left the session unbound. A hook also picks up the dispatcher's reply every 1 ms instead of every 4 ms. `owner doctor` counts a missed deadline against the callback's own budget.

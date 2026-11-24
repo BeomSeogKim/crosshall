@@ -53,6 +53,10 @@ type InboxResult struct {
 	// Delivers reports that the hall can publish new work to this member
 	// now, so an empty inbox needs no wait.
 	Delivers bool `json:"delivers,omitempty"`
+	// AtNextPrompt reports that the member's agent does not start a turn
+	// when a background command exits, so it ends its turn instead of
+	// waiting; its prompt hook shows new work at the next prompt.
+	AtNextPrompt bool `json:"at_next_prompt,omitempty"`
 }
 
 type MemberInboxSummary struct {
@@ -192,7 +196,7 @@ func (s *Service) inbox(ctx context.Context, tx store.Tx, caller core.Caller, no
 	if err != nil {
 		return core.Result{}, err
 	}
-	if out.Delivers, err = publishDelivers(ctx, tx, member.binding, now); err != nil {
+	if out.Delivers, out.AtNextPrompt, err = standby(ctx, tx, member.principal, member.binding, now); err != nil {
 		return core.Result{}, err
 	}
 	if err := observe(ctx, tx, member.principal, now); err != nil {

@@ -55,7 +55,15 @@ func (claude) ThreadRouted() bool { return false }
 
 func (claude) Reach(Route) string { return "" }
 
-const claudeSuffix = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
+// BackgroundWakes is true: Claude Code starts a turn when a background
+// Bash command exits.
+func (claude) BackgroundWakes() bool { return true }
+
+const claudeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say."
+
+// claudeSuffixRC4 is the v0.2.0-rc.4 text: a notice written before an upgrade
+// still counts as a notice when the session receives it after.
+const claudeSuffixRC4 = ". This notice is from crosshall, not from a Claude session: do not reply to the sender. Run crosshall read."
 
 func (claude) Notice(ids []int64) (string, bool) {
 	return notice.PendingPrefix + notice.IDList(ids) + claudeSuffix, true
@@ -66,7 +74,10 @@ func (claude) Echo(prompt string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return strings.CutSuffix(body, claudeSuffix)
+	if ids, ok := strings.CutSuffix(body, claudeSuffix); ok {
+		return ids, true
+	}
+	return strings.CutSuffix(body, claudeSuffixRC4)
 }
 
 func (claude) Transport() Transport {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -91,14 +92,14 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 		return noPoll(waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary))
 	}
 
-	// Delivers lets a timeout say that this session needs no wait.
-	delivers, err := publishDelivers(ctx, tx, member.binding, now)
+	// Delivers and AtNextPrompt let a timeout say that this session needs no wait.
+	delivers, atPrompt, err := standby(ctx, tx, member.principal, member.binding, now)
 	if err != nil {
 		return core.Result{}, snapshotPoll{}, err
 	}
 	out := WaitSnapshot{
 		Cursor:             WaitCursor{BindingID: member.binding, Generation: member.generation},
-		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers},
+		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers, AtNextPrompt: atPrompt},
 		MemberInboxSummary: &summary,
 	}
 	// Message IDs increase across channels. Use the indexed high-water mark
@@ -119,7 +120,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 			if err != nil {
 				return core.Result{}, snapshotPoll{}, err
 			}
-			out.Delivers = delivers
+			out.Delivers, out.AtNextPrompt = delivers, atPrompt
 			out.Cancelled = nil // a cancellation is not work: it never ends or rides on a wait
 		}
 		return out.polled()
@@ -205,17 +206,46 @@ func WaitCursorInvalidated(summary *MemberInboxSummary) (core.Result, error) {
 // timeout with nothing unread.
 const HallDelivers = "The hall brings new work to this session: no wait is needed."
 
+// AtNextPrompt is what a member whose agent does not start a turn when a
+// background command exits is told instead of a wait: holding a turn on a
+// wait costs a model request at each poll.
+const AtNextPrompt = "End the turn; new work shows at your next prompt."
+
+// standby says how an idle member stands by: the hall delivers new work to
+// it (delivers), or its current session's agent cannot stand by on a
+// background wait (atPrompt). Neither means it waits.
+func standby(ctx context.Context, tx store.Tx, principal, binding int64, now time.Time) (delivers, atPrompt bool, err error) {
+	if delivers, err = publishDelivers(ctx, tx, binding, now); err != nil || delivers {
+		return delivers, false, err
+	}
+	var adapter sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT json_extract(profile, '$.adapter') FROM adapter_launch
+		WHERE principal_id = ? AND ended_hook_at_ms IS NULL
+		ORDER BY started_hook_at_ms DESC, rowid DESC LIMIT 1`, principal).Scan(&adapter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	a, ok := publish.Lookup(adapter.String)
+	return false, ok && !a.BackgroundWakes(), nil
+}
+
 // WaitTimeout adds the latest successful hall snapshot to a local timeout.
 // The snapshot is an inbox check, so the next step is the pickup when
-// something is unread, another wait for a member that has to poll, and
-// none for one the hall delivers to, which Delivers marks.
-func WaitTimeout(summary *MemberInboxSummary, delivers bool) (core.Result, error) {
+// something is unread, another wait for a member that has to poll, none
+// for one the hall delivers to, which Delivers marks, and the end of the
+// turn for one whose agent cannot stand by on a background wait.
+func WaitTimeout(summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
 	next := "crosshall wait --existing --work-only --timeout 9m"
 	switch {
 	case summary != nil && len(summary.Pending) > 0:
 		next, delivers = "crosshall read", false
 	case delivers:
 		next = ""
+	case atPrompt:
+		next = AtNextPrompt
 	}
 	result, err := OK(struct {
 		Refusal

@@ -129,6 +129,12 @@ func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 		"an unread note, the hall delivers": {domain.WaitSnapshot{InboxResult: domain.InboxResult{Delivers: true},
 			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}}},
 			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
+		"clear, ends the turn": {domain.WaitSnapshot{InboxResult: domain.InboxResult{AtNextPrompt: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{}}},
+			"crosshall: no new messages before the wait timeout\nnext: End the turn; new work shows at your next prompt.\n[crosshall] 0 unread, 0 owed.\n"},
+		"an unread note, ends the turn": {domain.WaitSnapshot{InboxResult: domain.InboxResult{AtNextPrompt: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}}},
+			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
 		"an unread note": {domain.WaitSnapshot{MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}, OwedCount: 1}},
 			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 1 owed. Run crosshall read.\n"},
 	} {

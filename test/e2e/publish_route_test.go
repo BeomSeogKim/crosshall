@@ -157,6 +157,7 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 	session := claudeSession{w: w, key: sessionID}
 	db := w.db()
 	type route struct{ state, socket, reason string }
+	var lastRoute route
 	await := func(event string, want, pending route, payload func(int) string) {
 		t.Helper()
 		deadline := time.Now().Add(fixtureEventTimeout)
@@ -169,13 +170,17 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 			var got route
 			err := db.QueryRowContext(ctx, `SELECT state, COALESCE(socket_path, ''), reason FROM publish_route WHERE session_ref = ?`, sessionID).
 				Scan(&got.state, &got.socket, &got.reason)
+			if err == nil {
+				lastRoute = got
+			}
 			if err == nil && got.state == want.state && got.socket == want.socket && (want.reason == "" || got.reason == want.reason) {
 				return
 			}
 			waiting := err == nil && got == pending || event == "SessionStart" && errors.Is(err, sql.ErrNoRows)
-			if !waiting || !time.Now().Before(deadline) {
-				t.Fatalf("%s after %d callbacks: route %+v (%v), want %+v, last hook counter %q",
-					event, attempt, got, err, want, session.lastCounter())
+			counter := session.lastCounter()
+			if !waiting || counter != event+" deadline" || !time.Now().Before(deadline) {
+				t.Fatalf("%s after %d callbacks: last route %+v (%v), want %+v, last hook counter %q",
+					event, attempt, lastRoute, err, want, counter)
 			}
 		}
 	}

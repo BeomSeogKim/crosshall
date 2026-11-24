@@ -463,6 +463,82 @@ func TestPublishReceiptAfterACompactBetweenSubmitAndReceiptSettles(t *testing.T)
 	}
 }
 
+// A receipt from another launch of the same binding (the prompt that crossed
+// a clear) arrives first: it must settle nothing.
+func TestPublishReceiptFromAnotherLaunchSettlesNothing(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	ask := p.turnEndAsk(p.writer, "reader", "timeout")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.resolve(id, PublishUncertain)
+	enrollAndRoute(t, p.fixture, p.reader, "pid-42-clear", "clear", publishTestSocket, "default", p.now.UnixMilli()+100, 1)
+	p.proveRoute()
+	crossed := p.promptReceipt("crossed-clear", "pid-42-clear", p.now.UnixMilli()+300, []int64{ask})
+	p.hook(p.reader, crossed)
+	if p.count(`SELECT COUNT(*) FROM publish_attempt WHERE id = ? AND (retired_at_ms IS NOT NULL OR observed_at_ms IS NOT NULL)`, id) != 0 {
+		t.Fatal("another launch's receipt settled the attempt")
+	}
+}
+
+// After a stale receipt frees the lane, the same messages must not be
+// announced again: only new work reserves.
+func TestPublishReceiptSettledMessagesAreNotNoticedAgain(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	ask := p.turnEndAsk(p.writer, "reader", "policy")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.resolve(id, PublishSubmitted)
+	p.mutate(`UPDATE publish_route SET policy_epoch = policy_epoch + 1 WHERE binding_id = ?`, p.binding.ID)
+	cmd := p.promptReceipt("late", publishTestLaunch, p.now.UnixMilli()+200, []int64{ask})
+	p.hook(p.reader, cmd)
+	p.mutate(`UPDATE publish_route SET policy_epoch = policy_epoch - 1 WHERE binding_id = ?`, p.binding.ID)
+	p.hook(p.reader, stop(publishTestLaunch, cmd.TurnRef, p.now.UnixMilli()+300))
+	if again := p.reserve(); again != 0 {
+		t.Fatalf("the settled notice's message was announced again by attempt %d", again)
+	}
+	// The same receipt replayed settles and rejects nothing more.
+	before := p.count(`SELECT COUNT(*) FROM event`)
+	p.hook(p.reader, cmd)
+	if after := p.count(`SELECT COUNT(*) FROM event`); after != before {
+		t.Fatalf("a replayed stale receipt wrote %d more events", after-before)
+	}
+	next := p.turnEndAsk(p.writer, "reader", "next")
+	p.hook(p.reader, stop(publishTestLaunch, cmd.TurnRef, p.now.UnixMilli()+400))
+	nid := p.reserve()
+	if nid == 0 || !slices.Equal(p.begin(nid), []int64{next}) {
+		t.Fatalf("new work reserved %d", nid)
+	}
+}
+
+// A receipt older than the attempt's submission (an echo of an earlier,
+// identical notice) from the attempt's own lane must not settle it.
+func TestPublishReceiptBeforeTheAttemptSettlesNothing(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	early := p.now.UnixMilli() - 5000
+	p.now = p.now.Add(time.Minute)
+	ask := p.turnEndAsk(p.writer, "reader", "early")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.resolve(id, PublishSubmitted)
+	p.mutate(`UPDATE publish_route SET policy_epoch = policy_epoch + 1 WHERE binding_id = ?`, p.binding.ID)
+	p.hook(p.reader, p.promptReceipt("early", publishTestLaunch, early, []int64{ask}))
+	if p.count(`SELECT COUNT(*) FROM publish_attempt WHERE id = ? AND (retired_at_ms IS NOT NULL OR observed_at_ms IS NOT NULL)`, id) != 0 {
+		t.Fatal("a receipt from before the attempt settled it")
+	}
+}
+
 func TestPublishReceiptAfterACompactedTurnFinishedIsItsOwnTurn(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()

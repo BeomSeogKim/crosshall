@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -75,7 +76,7 @@ func TestOwnerStartTimesOutWhenIncumbentIsSilent(t *testing.T) {
 			if got.exit != 1 {
 				t.Fatalf("owner start exit %d, want 1: %s", got.exit, got.stdout)
 			}
-			assertOwnerStartTimeout(t, got.stdout, tc.stage, "the state lock was held and "+tc.marker)
+			assertOwnerStartTimeout(t, got.stdout, "the state lock was held and "+tc.marker, tc.stage)
 		})
 	}
 }
@@ -152,24 +153,29 @@ func TestOwnerStartSeparatesLastObservedStageFromFinalState(t *testing.T) {
 		if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		assertOwnerStartTimeout(t, result.Message, "waiting for a readiness probe reply",
-			"the state lock was free and no valid readiness marker was observed")
+		// On resume the owner can observe the freed lock before its timeout is scheduled.
+		assertOwnerStartTimeout(t, result.Message, "the state lock was free and no valid readiness marker was observed",
+			"waiting for a readiness probe reply", "waiting for the dispatcher to hold its state lock")
 	case <-time.After(fixtureEventTimeout):
 		t.Fatal("owner start did not return after its deadline")
 	}
 }
 
-func assertOwnerStartTimeout(t *testing.T, message, stage, final string) {
+func assertOwnerStartTimeout(t *testing.T, message, final string, stages ...string) {
 	t.Helper()
 	for _, want := range []string{
 		"dispatcher readiness was not confirmed",
 		"context deadline exceeded",
-		"Last observed stage was " + stage + ".",
 		"At the final check, " + final + ".",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("owner start error %q does not contain %q", message, want)
 		}
+	}
+	if !slices.ContainsFunc(stages, func(stage string) bool {
+		return strings.Contains(message, "Last observed stage was "+stage+".")
+	}) {
+		t.Fatalf("owner start error %q does not name one of the expected last stages %q", message, stages)
 	}
 }
 

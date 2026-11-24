@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Cross-vendor conformance:** real Claude Code and Codex CLI sessions each ask and answer across one disposable hall using loopback models. The check exercises Codex's next-prompt line and a running Claude Code wait.
+
 ## v0.2.0 (2026-11-24)
 
 - **Hooks older than the binary are named:** a crosshall binary replaced without rerunning setup kept the earlier revision's hooks, and the only signs were `hooks drift` in `setup status` and `partial` in doctor. When setup's hook entries are still on disk, their recorded revision differs from the one this binary installs and a hook of the current revision is missing, `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now add one sentence with both revisions and the command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`; no existing word or field changes, and `owner start --json` is unchanged.

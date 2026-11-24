@@ -2,6 +2,7 @@ package setup
 
 import (
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 )
@@ -17,7 +18,7 @@ func (s *InstallStatus) markOutdated(spec hook.InstallSpec, installedRev string)
 	s.InstalledRev = installedRev
 	if installedRev != spec.Revision && s.Installed < s.Intended {
 		s.outdated = fmt.Sprintf("The %s hooks on disk were installed for %s; this crosshall installs %s. Run crosshall setup %s.",
-			statusAdapterName(spec.Adapter), installedRev, spec.Revision, spec.Adapter)
+			manifests.DisplayName(spec.Adapter), installedRev, spec.Revision, spec.Adapter)
 	}
 }
 

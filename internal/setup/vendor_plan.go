@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"io"
 	"os"
 	"reflect"
@@ -218,7 +219,7 @@ func newVendorPlan(op operation, targets []installTarget, j journal, digest stri
 	}
 	if len(op.Adapters) == 1 {
 		p.Adapter = op.Adapters[0]
-		p.Name = statusAdapterName(p.Adapter)
+		p.Name = manifests.DisplayName(p.Adapter)
 		for _, spec := range hook.InstallSpecs() {
 			if spec.Adapter == p.Adapter {
 				path, _ := resolveConfigPath(spec)

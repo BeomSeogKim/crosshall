@@ -159,7 +159,12 @@ func TestLastOfferReceiptMakesNextPromptOneWay(t *testing.T) {
 	}
 	defer leaf.Close()
 	hookFile(t, leaf, "stamp", "fixture-host fixture-gen 2 9\n")
+	// An older hook acknowledged this sequence without checking historical offers.
+	hookFile(t, leaf, "seen-notice", "fixture-host fixture-gen 2\n")
 
+	if !hasSeenNotice(leaf, "fixture-gen") {
+		t.Fatal("a legacy stamp lost the enrollment history for this generation")
+	}
 	lastAck := &wire.HookAck{Kind: "notice", Instance: "fixture-host", Generation: "fixture-gen", Seq: 2}
 	first := &wire.HookOfferReceipt{OfferID: 1, Nonce: "first"}
 	last := &wire.HookOfferReceipt{OfferID: 2, Nonce: "last"}
@@ -205,6 +210,9 @@ func TestLastOfferReceiptMakesNextPromptOneWay(t *testing.T) {
 		} else if calls != 2 || !strings.Contains(out, step.line) || outcome != "rpc" {
 			t.Fatalf("turn %s made %d calls, outcome %s, output %q", step.turn, calls, outcome, out)
 		}
+	}
+	if legacy, err := leaf.ReadFile("seen-notice"); err != nil || string(legacy) != "fixture-host fixture-gen 2\n" {
+		t.Fatalf("capable hook changed the legacy stamp: %q (%v)", legacy, err)
 	}
 }
 

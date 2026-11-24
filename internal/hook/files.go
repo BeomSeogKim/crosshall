@@ -168,6 +168,16 @@ func currentAck(rv, leaf *os.Root, generation, effect, turn string) (wire.HookAc
 	return ack, nil
 }
 
+// Older hooks use seen-notice and do not check historical offers.
+const seenReceiptNotice = "seen-notice-receipts"
+
+func seenFile(effect string) string {
+	if effect == "notice" {
+		return seenReceiptNotice
+	}
+	return "seen-" + effect
+}
+
 func seenText(ack wire.HookAck) string {
 	text := fmt.Sprintf("%s %s %d", ack.Instance, ack.Generation, ack.Seq)
 	if ack.Kind == "reminder" {
@@ -181,14 +191,18 @@ func stampClean(rv, leaf *os.Root, generation, effect, turn string) bool {
 	if err != nil {
 		return false
 	}
-	seen, err := ident.ReadPrivateFile(leaf, "seen-"+effect, 4096)
+	seen, err := ident.ReadPrivateFile(leaf, seenFile(effect), 4096)
 	return err == nil && string(seen) == seenText(ack)
 }
 
 func hasSeenNotice(leaf *os.Root, generation string) bool {
-	seen, err := ident.ReadPrivateFile(leaf, "seen-notice", 4096)
-	fields := strings.Fields(string(seen))
-	return err == nil && len(fields) == 3 && fields[1] == generation
+	for _, name := range []string{seenReceiptNotice, "seen-notice"} {
+		seen, err := ident.ReadPrivateFile(leaf, name, 4096)
+		if fields := strings.Fields(string(seen)); err == nil && len(fields) == 3 && fields[1] == generation {
+			return true
+		}
+	}
+	return false
 }
 
 const seenJoinHint = "seen-join-hint"
@@ -262,7 +276,7 @@ func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookA
 	if current != ack {
 		return errors.New("hook acknowledgement no longer matches")
 	}
-	return writeRecord(leaf, "seen-"+effect, seenText(ack))
+	return writeRecord(leaf, seenFile(effect), seenText(ack))
 }
 
 func writeRecord(leaf *os.Root, name, record string) error {

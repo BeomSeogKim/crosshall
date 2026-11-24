@@ -380,7 +380,7 @@ func TestHookEntryPrintedLastBatchWithoutReceipt(t *testing.T) {
 		t.Fatalf("while receipt publication was blocked got %q, want %q", got, line)
 	}
 	h.assertSpoolsEmpty()
-	if _, err := os.Lstat(filepath.Join(h.leaf, "seen-notice")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(h.leaf, "seen-notice-receipts")); !os.IsNotExist(err) {
 		t.Fatalf("last batch without receipt left a clean stamp: %v", err)
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
@@ -410,7 +410,7 @@ func TestHookEntryPrintedLastBatchWithoutReceipt(t *testing.T) {
 func TestHookEntryCleanPromptPublishesWithoutWaiting(t *testing.T) {
 	h := newHookWorld(t, true)
 	h.write(filepath.Join(h.leaf, "stamp"), "fixture-instance fixture-generation 3 4\n")
-	h.write(filepath.Join(h.leaf, "seen-notice"), "fixture-instance fixture-generation 3\n")
+	h.write(filepath.Join(h.leaf, "seen-notice-receipts"), "fixture-instance fixture-generation 3\n")
 	h.write(filepath.Join(h.leaf, "ack"), "9\n")
 	if out := h.run(strings.NewReader(hookPrompt), nil, "codex", "UserPromptSubmit"); out != "" {
 		t.Fatalf("clean prompt emitted %q", out)

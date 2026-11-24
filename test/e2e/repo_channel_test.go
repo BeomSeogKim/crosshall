@@ -171,12 +171,12 @@ func testRepositoryChannel(t *testing.T, stall bool) {
 	}
 
 	deadline := time.Now().Add(fixtureEventTimeout)
-	prompt := func(turn int) worktreeCallback {
+	prompt := func(turn int) repositoryCallback {
 		fields := fmt.Sprintf(`"prompt_id":"prompt-%d","turn_id":"turn-%d","prompt":"synthetic"`, turn, turn)
-		return linkedWorktreeCallback(f, worktree, "UserPromptSubmit", fields)
+		return observeRepositoryCallback(f, "codex", "two", worktree, "UserPromptSubmit", fields)
 	}
 	const welcome = "[crosshall] Joined #shop-api as @codex1, with @claude1. `crosshall join shop-api --rules` prints the member rules."
-	offer := linkedWorktreeCallback(f, worktree, "SessionStart", `"source":"startup"`)
+	offer := observeRepositoryCallback(f, "codex", "two", worktree, "SessionStart", `"source":"startup"`)
 	printed := false
 	turn := 0
 	for {
@@ -249,7 +249,7 @@ func testRepositoryChannel(t *testing.T, stall bool) {
 	}
 }
 
-type worktreeCallback struct {
+type repositoryCallback struct {
 	output    string
 	bindings  int
 	channel   string
@@ -260,10 +260,9 @@ type worktreeCallback struct {
 
 // Capture the records appended by this installed callback and the state of its
 // own session. Consecutive calls can append byte-for-byte identical counters.
-func linkedWorktreeCallback(f *setupWorld, dir, event, fields string) worktreeCallback {
+func observeRepositoryCallback(f *setupWorld, adapter, session, dir, event, fields string) repositoryCallback {
 	t := f.t
 	t.Helper()
-	const adapter, session = "codex", "two"
 	before, err := f.hookCounterRecords(adapter, event)
 	if err != nil {
 		t.Fatal(err)
@@ -283,14 +282,14 @@ func linkedWorktreeCallback(f *setupWorld, dir, event, fields string) worktreeCa
 		t.Fatalf("%s counter records changed from %q to %q", event, before, after)
 	}
 	delta := after[len(before):]
-	result := worktreeCallback{output: string(out)}
+	result := repositoryCallback{output: string(out)}
 	if len(delta) == 1 {
 		outcome := strings.Fields(delta[0])[2]
 		result.expired = outcome == "deadline"
 		result.processed = outcome == "rpc" || outcome == "clean"
 	} else {
 		// A callback suspended through its whole budget can drop its counter.
-		result.expired = elapsed >= hook.Budget
+		result.expired = elapsed >= hook.CallbackBudget(adapter, event)
 	}
 	var stage string
 	var seen bool
@@ -327,12 +326,10 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 	owner.must("owner", "channel", "create", "review-team")
 	owner.must("owner", "channel", "default", "review-team", "--repo", worktree)
 
-	startAs(f, "claude", "one", repo)
-	if got := joinedChannel(f, "claude", "one"); got != "api-2" {
+	if got := awaitRepositoryJoin(f, "claude", "one", repo); got != "api-2" {
 		t.Fatalf("a repository whose name is taken joined %q", got)
 	}
-	startAs(f, "codex", "two", worktree)
-	if got := joinedChannel(f, "codex", "two"); got != "review-team" {
+	if got := awaitRepositoryJoin(f, "codex", "two", worktree); got != "review-team" {
 		t.Fatalf("a worktree with its own default joined %q", got)
 	}
 	owner.must("owner", "channel", "auto", "off")
@@ -347,6 +344,20 @@ func TestAutomaticJoiningKeepsOwnerChoices(t *testing.T) {
 	if err := f.db().QueryRow(`SELECT COUNT(*) FROM channel`).Scan(&channels); err != nil || channels != 3 {
 		t.Fatalf("channels %d (%v)", channels, err)
 	}
+}
+
+func awaitRepositoryJoin(f *setupWorld, adapter, session, dir string) string {
+	f.t.Helper()
+	deadline := time.Now().Add(fixtureEventTimeout)
+	callback := observeRepositoryCallback(f, adapter, session, dir, "SessionStart", `"source":"startup"`)
+	for turn := 1; callback.bindings == 0 && callback.expired && time.Now().Before(deadline); turn++ {
+		fields := fmt.Sprintf(`"prompt_id":"first-%d","turn_id":"first-%d","prompt":"synthetic"`, turn, turn)
+		callback = observeRepositoryCallback(f, adapter, session, dir, "UserPromptSubmit", fields)
+	}
+	if callback.bindings > 1 {
+		f.t.Fatalf("%s session %s joined %d live bindings", adapter, session, callback.bindings)
+	}
+	return callback.channel
 }
 
 // A repository made with git init --separate-git-dir has one identity for

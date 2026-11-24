@@ -129,13 +129,44 @@ func ownerStartAtReadinessProbe(t *testing.T, w *world) (*os.Process, *bytes.Buf
 	}
 }
 
+func TestOwnerStartWaitsForReadinessAfterAcquisitionCutoff(t *testing.T) {
+	w := newWorld(t)
+	w.owner().must("owner", "start")
+	pids := w.dispatcherPIDs()
+	if len(pids) != 1 {
+		t.Fatalf("expected one fixture dispatcher, got %v", pids)
+	}
+	dispatcher, err := os.FindProcess(pids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseFixtureProcess(t, dispatcher)
+	_, output, done := ownerStartAtReadinessProbe(t, w)
+	select {
+	case err := <-done:
+		t.Fatalf("owner start returned before the dispatcher could answer: %v, %s", err, output)
+	case <-time.After(3400 * time.Millisecond):
+	}
+	resumeFixtureProcess(t, dispatcher)
+
+	select {
+	case err := <-done:
+		var response struct{ OK bool }
+		if err != nil || json.Unmarshal(output.Bytes(), &response) != nil || !response.OK {
+			t.Fatalf("dispatcher did not confirm readiness: %v, %s", err, output)
+		}
+	case <-time.After(fixtureEventTimeout):
+		t.Fatal("owner start did not return after the dispatcher resumed")
+	}
+}
+
 func TestOwnerStartSeparatesLastObservedStageFromFinalState(t *testing.T) {
 	w := newWorld(t)
 	release := holdSilentDispatcher(t, w, true)
 	owner, output, done := ownerStartAtReadinessProbe(t, w)
 	pauseFixtureProcess(t, owner)
-	// The probe proves the three-second owner startup deadline has started.
-	// Keep its caller stopped through expiry; the incumbent goes away meanwhile.
+	// Release the incumbent after the owner's lock-acquisition cutoff so the
+	// resumed caller cannot launch a replacement.
 	time.Sleep(3 * time.Second)
 	if err := os.Remove(filepath.Join(w.rendezvous(), "ready")); err != nil {
 		t.Fatal(err)

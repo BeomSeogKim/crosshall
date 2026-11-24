@@ -97,7 +97,7 @@ Members follow the member rules in [PROTOCOL.md](../PROTOCOL.md). `crosshall joi
 
 ## Moving a session between channels
 
-Run `crosshall join inventory --move --as writer` inside the session you want to move. The move leaves its current channel and joins the named destination in one transaction. The conversation and its session identity stay the same. If the destination channel or alias is unavailable, the session stays in its current channel. After a voluntary `crosshall leave`, you can join a different channel using ordinary `crosshall join`.
+Run `crosshall join inventory --move --as writer` inside the session you want to move. The move leaves its current channel and joins the named destination in one transaction. The conversation and its session identity stay the same. If the destination channel or alias is unavailable, the session stays in its current channel. After a voluntary `crosshall leave`, you can join a different channel using ordinary `crosshall join`. That join prints no move receipt, but the unresolved notice submission described below can still hold it.
 
 The move receipt shows the channel you left and its unread, owed and waiting counts. With `--json`, these are in `move.channel`, `move.unread`, `move.owed` and `move.waiting`. Open work, subsequent replies and history stay in that channel. To tend that work again, move back to the original channel. A return uses the original binding and the channel's alias availability rules.
 

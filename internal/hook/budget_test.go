@@ -124,3 +124,19 @@ func TestACallbackThatStartedTheDispatcherKeepsTheRestOfTheStartDeadline(t *test
 		}
 	}
 }
+
+// A start whose preparation took longer than the ordinary budget still
+// records its outcome: its counter opens within its own budget.
+func TestASlowStartStillOpensItsCounter(t *testing.T) {
+	rv, _, _ := runFixture(t)
+	entry := time.Now().Add(-200 * time.Millisecond)
+	counter := openHookCounter(rv, "codex", "SessionStart", entry)
+	if counter == nil {
+		t.Fatal("no counter for a start 200 ms after entry")
+	}
+	counter.file.Close()
+	if c := openHookCounter(rv, "codex", "Stop", entry); c != nil {
+		c.file.Close()
+		t.Fatal("a Stop 200 ms after entry opened a counter")
+	}
+}

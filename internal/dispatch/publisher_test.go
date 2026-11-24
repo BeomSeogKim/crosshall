@@ -259,6 +259,44 @@ func TestPublisherCoalescesAndRereadsUnreadWork(t *testing.T) {
 	requireNoPublish(t, calls)
 }
 
+func TestPublisherReconsidersUnreadWorkAfterStop(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	f.ask(t, 12)
+	p, calls := f.publisher(t, nil)
+	tickPublisher(t, p, f.now, false)
+	observe := func(kind string, at time.Time) {
+		t.Helper()
+		f.exec(t, `INSERT INTO observation(principal_id, kind, origin, source, observed_at_ms,
+			fresh_until_ms, launch_ref, turn_ref, hook_at_ms, profile)
+			VALUES (2, ?1, 'owner', 'hook', ?2, ?3, 'launch', 'user-turn', ?2, '{"adapter":"claude"}')`,
+			kind, at.UnixMilli(), at.Add(time.Hour).UnixMilli())
+	}
+	observe(wire.HookPromptSubmitted, f.now.Add(publishCoalesce/2))
+	tickPublisher(t, p, f.now.Add(publishCoalesce), false)
+	p.workers.Wait()
+	requireNoPublish(t, calls)
+	f.update(t, func(tx store.Tx) error {
+		var attempts int
+		if err := tx.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM publish_attempt").Scan(&attempts); err != nil {
+			return err
+		}
+		if attempts != 0 {
+			return fmt.Errorf("open user turn reserved %d attempts, want zero", attempts)
+		}
+		return nil
+	})
+	stop := f.now.Add(2 * publishCoalesce)
+	f.exec(t, "UPDATE recipient SET picked_up_at_ms = ? WHERE message_id = 11", stop.UnixMilli())
+	observe(wire.HookTurnFinishing, stop)
+	tickPublisher(t, p, stop, false)
+	tickPublisher(t, p, stop.Add(publishCoalesce), false)
+	p.workers.Wait()
+	requirePublished(t, awaitPublishTest(t, calls), 12)
+	requireNoPublish(t, calls)
+	f.requireAttempt(t, 1, domain.PublishSubmitted)
+}
+
 func TestPublisherStartsFreshCoalescingWindowOnlyAfterDrainingBatch(t *testing.T) {
 	for _, overflow := range []bool{false, true} {
 		t.Run(fmt.Sprintf("overflow=%t", overflow), func(t *testing.T) {

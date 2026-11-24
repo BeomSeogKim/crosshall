@@ -425,11 +425,15 @@ func (s *Service) deliveries(ctx context.Context, tx store.Tx, msg int64, now ti
 			return nil, err
 		}
 		out[at].Wake, out[at].Next = w, "waits for its next crosshall command"
-		switch w.Wake {
-		case WakeNotice:
+		switch {
+		case w.Wake == WakeNotice:
 			out[at].Next = "notice queued"
-		case WakeWait:
+		case w.Wake == WakeWait:
 			out[at].Next = WaitRunning
+		case w.Why == WhyTurnOpen && w.SeenAt == SeenAtTurnEnd:
+			out[at].Next = "at its turn-end check"
+		case w.Why == WhyTurnOpen:
+			out[at].Next = "the hall checks again after its turn"
 		}
 	}
 	return out, nil

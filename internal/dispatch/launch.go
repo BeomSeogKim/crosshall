@@ -207,7 +207,9 @@ type readyMarker struct {
 	Lease    bool   `json:"lease,omitempty"`
 	Probe    bool   `json:"probe,omitempty"`
 	// Hello lists the first-contact intents beyond lookup and join that
-	// this dispatcher accepts. A hook sends one only if it is listed here.
+	// this dispatcher accepts, and the hook arguments it accepts beyond
+	// those an older dispatcher knows. A hook sends one only if it is
+	// listed here.
 	Hello []string `json:"hello,omitempty"`
 }
 
@@ -218,7 +220,7 @@ func (r readyMarker) same(o readyMarker) bool {
 
 func newReadyMarker(instance string) readyMarker {
 	return readyMarker{Instance: instance, Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true,
-		Hello: []string{wire.HelloStart}}
+		Hello: []string{wire.HelloStart, wire.HelloLaunchProof}}
 }
 
 func (r readyMarker) live(state *os.Root) bool {

@@ -536,10 +536,13 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 			if bindingState == "departed" {
 				r.BindingState = bindingState
 			}
-			// A request with a notice of its own shows that notice instead.
-			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && r.Notice == nil {
+			// Before submission the reservation can still yield to another wake.
+			if bindingState == "live" && binding != nil && r.PickedUpAtMS == nil && r.MoreTimeAtMS == nil && (r.Notice == nil || r.Notice.State == "reserved") {
 				if r.Wake, err = s.messageWake(ctx, tx, *binding, r.PrincipalID, m.ID, now); err != nil {
 					return nil, err
+				}
+				if r.Notice != nil && r.Wake.Wake == WakeNotice {
+					r.Wake = Wake{} // the reservation already describes the queued notice
 				}
 				if r.Wake.Wake == WakeNone {
 					if r.ShownAtMS, err = shownAt(ctx, tx, r.PrincipalID, m.ID); err != nil {
@@ -761,7 +764,7 @@ func memberInboxSummary(ctx context.Context, tx store.Tx, principal, channel int
 func shownAt(ctx context.Context, tx store.Tx, principal, message int64) (*int64, error) {
 	var at sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT MIN(at_ms) FROM (
-		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2
+		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2 AND a.via = 'turn_end'
 		UNION ALL SELECT CASE WHEN o.receipt_mode = 'legacy' THEN o.at_ms ELSE o.written_at_ms END
 			FROM offer_item i JOIN offer o ON o.id = i.offer_id
 			WHERE i.principal_id = ?1 AND i.message_id = ?2)`, principal, message).Scan(&at)

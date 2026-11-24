@@ -29,8 +29,9 @@ const Budget = 150 * time.Millisecond
 
 // StartBudget is the deadline of a callback that may enroll its session: a
 // start, which takes three round trips to the dispatcher, and a prompt,
-// which enrolls a session whose start was missed or repairs it. A busy disk
-// can hold each round trip; the vendor's own timeout is 1 s.
+// which enrolls a session whose start was missed, repairs it or binds its
+// launch. A busy disk can hold each round trip; the vendor's own timeout is
+// 1 s.
 const StartBudget = 400 * time.Millisecond
 
 // CallbackBudget is the deadline of adapter's callback for event. A prompt
@@ -83,7 +84,7 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		budget = afterStart(captured, budgetStart, budget)
 	}
 	// A prompt runs on the ordinary budget until it finds that it recovers
-	// or repairs its session (extendBudget).
+	// or repairs its session or binds its launch (extendBudget).
 	base := min(budget, CallbackBase(args[0], args[1]))
 	end := budgetStart.Add(base)
 	var stateRoot string
@@ -195,9 +196,18 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "refused"
 	}
 	pid := e.LaunchRef
-	e.LaunchRef, e.LaunchVerified, err = bindLaunch(leaf, gen, e, spec, entry)
+	launch, err := bindLaunch(leaf, gen, e, spec, entry)
+	e.LaunchRef, e.LaunchVerified = launch.ref, launch.verified
 	if err != nil {
 		return "refused"
+	}
+	if spec.Fact == wire.HookPromptSubmitted && e.LaunchVerified {
+		// The proof the dispatcher needs for a launch it has no row for.
+		e.LaunchAtMS, e.PIDNamespace = launch.atMS, proc.PIDNamespace()
+		if launch.late {
+			markLaunch(rv, pid)
+			extendBudget(ctx) // this prompt binds a launch whose start was missed
+		}
 	}
 	if spec.Enroll && e.LaunchVerified {
 		e.PIDNamespace = proc.PIDNamespace()
@@ -221,18 +231,22 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if spec.RecoverEnroll && !spec.Enroll && !repo.none() {
 		extendBudget(ctx) // this prompt repairs its session's enrolment
-	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll &&
+	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll && !launch.late &&
 		end.After(entry.Add(Budget-counterAllowance)) {
-		// This prompt enrolls and repairs nothing: no request after the
-		// ordinary budget.
+		// This prompt enrolls, repairs and binds nothing: no request after
+		// the ordinary budget.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
 		defer cancel()
 	}
 	want := turnEnd || (notice && !clean)
+	gone, offers := readDispatcher(rv)
+	if !spec.Enroll && !slices.Contains(offers, wire.HelloLaunchProof) {
+		e.LaunchAtMS, e.PIDNamespace = 0, "" // an older dispatcher refuses the proof
+	}
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	req.Membership = membership
-	if dispatcherGone(rv) {
+	if gone {
 		return "no_dispatcher" // a stopped dispatcher must not cost the turn the deadline
 	}
 	if hookExpired(ctx) {
@@ -625,6 +639,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 			EnrollCreate:       repo.create,
 			Receipt:            e.receipt,
 			ContinuationActive: e.stopActive == "true",
+			LaunchAtMS:         e.LaunchAtMS,
+			PIDNamespace:       e.PIDNamespace,
 		})
 	}
 	return req
@@ -786,8 +802,8 @@ func dispatcherGone(rv *os.Root) bool {
 }
 
 // readDispatcher reads the ready marker: whether the dispatcher is gone,
-// and the first-contact intents beyond lookup and join it accepts. An older
-// dispatcher lists none.
+// and what it accepts beyond an older dispatcher (wire.HelloStart,
+// wire.HelloLaunchProof). An older dispatcher lists none.
 func readDispatcher(rv *os.Root) (bool, []string) {
 	raw, err := ident.ReadPrivateFile(rv, "ready", 4096)
 	if err != nil {

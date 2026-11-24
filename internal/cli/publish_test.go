@@ -201,7 +201,7 @@ func TestOwnerAdapterSetTurnEndSwitch(t *testing.T) {
 }
 
 // Every fixed reason word has one sentence, the same in a send result, in
-// who and in waiting, and only a recipient nothing will tell gets the next:
+// who and in waiting, and only a recipient nothing will wake gets the next:
 // line.
 func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 	until := time.Now().Add(20 * time.Minute).UnixMilli()
@@ -259,7 +259,7 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 			t.Errorf("who lacks @%s %q:\n%s", c.alias, member, who)
 		}
 	}
-	const next = "next: nothing will tell @sol, @agy, @astra, @lead, @lyra, @recv, @fable or @orion. " +
+	const next = "next: nothing will wake @sol, @agy, @astra, @lead, @lyra, @recv, @fable or @orion. " +
 		"Ask a member the hall can wake (crosshall who), or tell your user.\n"
 	if strings.Count(ask, "next:") != 1 || !strings.Contains(ask, next) {
 		t.Errorf("send result lacks the one next: line %q:\n%s", next, ask)
@@ -290,7 +290,7 @@ func TestNoNextLineWhenEveryRecipientIsTold(t *testing.T) {
 	if !strings.Contains(note, "@opus  stored -> not woken: a note starts no turn; it sees this at its next prompt\n") {
 		t.Errorf("note result:\n%s", note)
 	}
-	if !strings.Contains(answer, "next: nothing will tell @lead. Ask a member the hall can wake (crosshall who), or tell your user.\n") {
+	if !strings.Contains(answer, "next: nothing will wake @lead. Ask a member the hall can wake (crosshall who), or tell your user.\n") {
 		t.Errorf("final reply lacks its next: line:\n%s", answer)
 	}
 }
@@ -305,7 +305,7 @@ func TestTurnEndRecipientIsLeftOutOfTheNextLine(t *testing.T) {
 		"--key", "k", "ask", "@opus", "work")
 	for _, want := range []string{
 		"@opus  stored -> not woken: notices off; it sees this when its turn ends\n",
-		"next: nothing will tell @agy. Ask a member the hall can wake (crosshall who), or tell your user.\n",
+		"next: nothing will wake @agy. Ask a member the hall can wake (crosshall who), or tell your user.\n",
 	} {
 		if !strings.Contains(ask, want) {
 			t.Errorf("send result lacks %q:\n%s", want, ask)

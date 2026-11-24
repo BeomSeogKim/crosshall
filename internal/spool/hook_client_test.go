@@ -26,7 +26,8 @@ func TestHookLookupPreservesRefusalAndReturnsNewGeneration(t *testing.T) {
 		err        error
 	}
 	first := filepath.Join(f.rv, "first")
-	for _, intent := range []string{"lookup", "join"} {
+	for _, intent := range []string{"lookup", "join", wire.HelloStart} {
+		f.member.Key = "sample-" + intent // a leaf of its own
 		done := make(chan result, 1)
 		go func() {
 			gen, resp, err := f.client.HookLookup(ctx, f.member, intent)

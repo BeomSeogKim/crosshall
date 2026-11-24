@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -430,7 +431,8 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	if !spec.Enroll && !spec.RecoverEnroll {
 		return nil, "", enrolment{}, "unmatched"
 	}
-	if dispatcherGone(rv) {
+	gone, offers := readDispatcher(rv)
+	if gone {
 		return nil, "", enrolment{}, "no_dispatcher"
 	}
 	if hookExpired(ctx) {
@@ -438,6 +440,15 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	}
 	intent := "lookup"
 	var repo enrolment
+	if spec.Enroll && startedHere(stateRoot, e, false) {
+		repo = enrolTarget(ctx, rv, e)
+	}
+	// A start that would join an unknown key asks for that in one round
+	// trip, where the dispatcher accepts it; a retired key is refused as
+	// the lookup would refuse it.
+	if spec.Enroll && slices.Contains(offers, wire.HelloStart) && (!repo.none() || continuesMember(rv, e)) {
+		intent = wire.HelloStart
+	}
 	if spec.RecoverEnroll {
 		repo = mappedEnrollmentRoot(ctx, rv, stateRoot, e)
 		if hookExpired(ctx) {
@@ -457,13 +468,8 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	if resp.Status != core.ExitOK && !newSession {
 		return nil, "", enrolment{}, "refused"
 	}
-	if spec.Enroll && startedHere(stateRoot, e, false) {
-		repo = enrolTarget(ctx, rv, e)
-	}
 	if newSession && spec.Enroll {
-		// A /clear in a process that ran a member may continue that member
-		// wherever it joined.
-		if repo.none() && (e.Source != "clear" || e.LaunchRef == "" || !launchMarked(rv, e.LaunchRef)) {
+		if repo.none() && !continuesMember(rv, e) {
 			return nil, "", enrolment{}, "unmatched"
 		}
 		if hookExpired(ctx) {
@@ -775,25 +781,40 @@ func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
 // dispatcherGone reports whether the dispatcher has stopped serving this
 // rendezvous. The hook then publishes nothing and does not wait.
 func dispatcherGone(rv *os.Root) bool {
+	gone, _ := readDispatcher(rv)
+	return gone
+}
+
+// readDispatcher reads the ready marker: whether the dispatcher is gone,
+// and the first-contact intents beyond lookup and join it accepts. An older
+// dispatcher lists none.
+func readDispatcher(rv *os.Root) (bool, []string) {
 	raw, err := ident.ReadPrivateFile(rv, "ready", 4096)
 	if err != nil {
-		return true
+		return true, nil
 	}
 	var marker struct {
-		Instance string `json:"instance"`
-		PID      int    `json:"pid"`
-		Lease    bool   `json:"lease"`
+		Instance string   `json:"instance"`
+		PID      int      `json:"pid"`
+		Lease    bool     `json:"lease"`
+		Hello    []string `json:"hello"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || marker.PID <= 0 {
-		return true
+		return true, nil
 	}
 	if marker.Lease {
 		held, err := spool.ReadyLeaseHeld(rv, marker.Instance)
 		if !errors.Is(err, os.ErrPermission) {
-			return !held
+			return !held, marker.Hello
 		}
 	}
 	// Older dispatchers omit the lease. A sandbox that denies inspection may
 	// still reach the dispatcher, so retain the legacy PID check there too.
-	return errors.Is(syscall.Kill(marker.PID, 0), syscall.ESRCH)
+	return errors.Is(syscall.Kill(marker.PID, 0), syscall.ESRCH), marker.Hello
+}
+
+// continuesMember reports a /clear in a process that ran a member: it may
+// continue that member wherever it joined.
+func continuesMember(rv *os.Root, e event) bool {
+	return e.Source == "clear" && e.LaunchRef != "" && launchMarked(rv, e.LaunchRef)
 }

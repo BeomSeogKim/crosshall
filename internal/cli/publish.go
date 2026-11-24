@@ -153,7 +153,8 @@ func memberWakeText(w domain.Wake) string {
 }
 
 // notWokenLine is the one next: line after a request or a final reply that
-// nothing will tell some recipient about, or "" when every one is told.
+// nothing will wake some recipient for, or "" when every one is woken or
+// sees it when its running turn ends.
 func notWokenLine(ds []domain.Delivery) string {
 	var aliases []string
 	for _, d := range ds {
@@ -169,5 +170,5 @@ func notWokenLine(ds []domain.Delivery) string {
 	if len(aliases) > 1 {
 		who = strings.Join(aliases[:len(aliases)-1], ", ") + " or " + who
 	}
-	return "next: nothing will tell " + who + ". Ask a member the hall can wake (crosshall who), or tell your user."
+	return "next: nothing will wake " + who + ". Ask a member the hall can wake (crosshall who), or tell your user."
 }

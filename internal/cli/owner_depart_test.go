@@ -216,3 +216,30 @@ func TestOwnerWhoNamesRequestsNothingWillTell(t *testing.T) {
 		t.Fatalf("a banner without stuck requests:\n%s", out)
 	}
 }
+
+// The owner sees each member whose turn waits on its approval, first,
+// with the requests that wait behind it, and the member's row says so. Past
+// the fact's cap both are hedged: a denied dialog sends no Stop.
+func TestOwnerWhoNamesMembersThatWaitOnTheOwnersApproval(t *testing.T) {
+	blocked := domain.OwnerMember{Member: domain.Member{BindingID: 1, Alias: "claude1", Vendor: "claude", Route: "pull",
+		Observed: &domain.Observed{Fact: domain.FactApprovalRequested, Source: "claude", AgeS: 2 * 60, Current: true, ApprovalOpen: true}},
+		Reach: "prompt", BindingState: "live", OpenRequests: []int64{7}}
+	idle := domain.OwnerMember{Member: domain.Member{BindingID: 2, Alias: "opus", Vendor: "codex", Route: "pull",
+		Observed: &domain.Observed{Fact: domain.FactApprovalRequested, Source: "codex", AgeS: 40 * 60}},
+		Reach: "pull", BindingState: "live"}
+	denied := domain.OwnerMember{Member: domain.Member{BindingID: 3, Alias: "fable", Vendor: "claude", Route: "pull",
+		Observed: &domain.Observed{Fact: domain.FactApprovalRequested, Source: "claude", AgeS: 40 * 60, ApprovalOpen: true}},
+		Reach: "pull", BindingState: "live"}
+	result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "dev", Members: []domain.OwnerMember{blocked, idle, denied}}}}
+	out, stderr, code := run(t, Env{Transport: &fakeTransport{result: okResult(t, result)}}, "owner", "who", "--all")
+	lines := strings.Split(out, "\n")
+	if code != core.ExitOK || lines[0] != "@claude1 in #dev waits on your approval (requested 2m ago); open requests: #7." ||
+		lines[1] != "@fable in #dev asked you for approval 40m ago, no answer reported." || lines[2] != "#dev" {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s", code, stderr, out)
+	}
+	if !strings.Contains(out, "last observed: approval requested 2m ago, waits on its owner") ||
+		!strings.Contains(out, "last observed: unknown (last: approval requested 40m ago, unverified)") ||
+		!strings.Contains(out, "last observed: asked its owner for approval 40m ago, no answer reported") {
+		t.Fatalf("member rows:\n%s", out)
+	}
+}

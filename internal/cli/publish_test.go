@@ -229,6 +229,8 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 		{"later", none(domain.WhyTurnOpen, ""), "not woken: a turn is running; the hall checks again after its turn"},
 		{"busy", none(domain.WhyTurnOpen, domain.SeenAtTurnEnd), "not woken: a turn is running; it sees this when its turn ends"},
 		{"orion", none(domain.WhyKind, domain.SeenAtPrompt), "not woken: this message starts no turn; it sees this at its next prompt"},
+		{"held", none(domain.WhyApproval, ""), "not woken: its turn waits on its owner's approval (asking again cannot help)"},
+		{"heldend", none(domain.WhyApproval, domain.SeenAtTurnEnd), "not woken: its turn waits on its owner's approval (asking again cannot help); it sees this when its turn ends"},
 	}
 	var recipients []domain.Delivery
 	var ledger []domain.LedgerRecipient

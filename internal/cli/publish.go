@@ -138,6 +138,8 @@ func whyText(w domain.Wake, note bool) string {
 		return "an earlier notice is unobserved"
 	case domain.WhyTurnOpen:
 		return "a turn is running"
+	case domain.WhyApproval:
+		return "its turn waits on its owner's approval (asking again cannot help)"
 	case domain.WhyKind:
 		if note {
 			return "a note starts no turn"

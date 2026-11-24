@@ -106,6 +106,24 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(w, "@%s in #%s departed (binding %d).\n", r.Alias, r.Channel, r.BindingID)
+	case domain.OwnerDepartEnded:
+		var r domain.OwnerDepartEndedResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if len(r.Departed) == 0 {
+			fmt.Fprintln(w, "No member's session ended over 12 hours ago with nothing owed.")
+		}
+		for _, m := range r.Departed {
+			fmt.Fprintf(w, "@%s in #%s departed (binding %d, session ended %s).\n", m.Alias, m.Channel, m.BindingID, clock(m.EndedAtMS))
+		}
+		for _, m := range r.Owing {
+			line := fmt.Sprintf("@%s in #%s kept (binding %d): it owes replies to", m.Alias, m.Channel, m.BindingID)
+			for _, id := range m.OpenRequests {
+				line += fmt.Sprintf(" #%d", id)
+			}
+			fmt.Fprintln(w, line+".")
+		}
 	case domain.CreateChannel:
 		var r domain.ChannelResult
 		if err := json.Unmarshal(data, &r); err != nil {

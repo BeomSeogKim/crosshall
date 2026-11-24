@@ -114,6 +114,8 @@ crosshall owner who --all
 crosshall owner depart <binding-id> --seen <token>
 ```
 
+A member whose session ended over 12 hours ago, with no fact or command from it since, is listed above the channels of `crosshall owner who`: one line for all such members that owe no reply, `Sessions ended over 12 hours ago, nothing owed: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.`, and one line per member that still owes, with its open requests. A Codex session end does not prove that the window closed, so the hall never departs these members by itself. `crosshall owner depart --ended` departs those that owe nothing, as an owner departure of each, and names any it kept because they owe replies. In `owner who --json` they are under `ended`.
+
 If the token is stale, crosshall says `the binding changed since it was listed` and tells you to run `crosshall owner who --all` again. Review the refreshed row before using its new token.
 
 Departure frees the alias and leaves existing requests open. A sender checking `crosshall waiting` sees `recipient departed` on an open request. After a process- or hook-detected exit, a command with the original identity and a live host can restore the membership. After a manual leave or owner departure, run `crosshall join <channel>` with the original identity to return. The returning member reclaims its former alias if available and gets a generated alias if another member has taken it. `crosshall whoami --full` shows the exit tracking for a live membership.

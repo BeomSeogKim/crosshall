@@ -740,7 +740,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		}
 		switch request.Command.Verb() {
 		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
-			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbPublish, domain.VerbOwnerPublish:
+			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbOwnerDepartEnded, domain.VerbPublish, domain.VerbOwnerPublish:
 			if req.OpKey == "" {
 				result = commandError(core.ExitUsage, "", "an operation key is required for this command")
 				return errRefusalRollback

@@ -64,6 +64,8 @@ Owner commands (from a separate owner terminal):
   owner channel create <name> [--topic "..."]         Create a channel
   owner who --all                                   List all channel bindings
   owner depart <binding-id> --seen <token>           Mark a binding departed
+  owner depart --ended                              Depart members whose session ended over 12 hours
+                                                    ago and that owe no reply
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
   owner channel default <channel> [--repo <dir>]     Set a repository's default channel
   owner channel auto on|off                         Give each Git repository its own channel

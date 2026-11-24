@@ -1,12 +1,15 @@
 package hook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
@@ -81,6 +84,58 @@ func TestOnlyAPromptOfAProcessLaunchCarriesTheLateStartProof(t *testing.T) {
 					t.Fatalf("a %s carries the late-start proof: %+v", a.Fact, a)
 				}
 			}
+		})
+	}
+}
+
+// A prompt that binds a launch whose start was missed keeps the start
+// budget: the dispatcher binds the launch in the prompt's request. A prompt
+// of a session nested under the process binds nothing and keeps the
+// ordinary one.
+func TestAPromptThatBindsAMissedStartKeepsTheStartBudget(t *testing.T) {
+	for _, under := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hosted-%t", under), func(t *testing.T) {
+			hosted(t, under)
+			rv, dir, oldLeaf := runFixture(t)
+			id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
+			if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("claude 1 0 7\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			lookup := func(key string) (string, bool) {
+				switch key {
+				case "CLAUDE_PID":
+					return "72", true
+				case "CLAUDE_CODE_SESSION_ID":
+					return "fixture-thread", true
+				}
+				return "", false
+			}
+			events := 0
+			transport := ctxTransport{event: 200 * time.Millisecond, events: &events}
+			stdin := `{"hook_event_name":"UserPromptSubmit","session_id":"fixture-thread","prompt_id":"turn-0"}`
+			synctest.Test(t, func(t *testing.T) {
+				entry := time.Now()
+				var out strings.Builder
+				prepare := func() (*os.Root, *hookCounter) {
+					return rv, openHookCounter(rv, "claude", "UserPromptSubmit", entry)
+				}
+				runTimed(entry, Budget, StartBudget, &out, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+					return dispatchCallback(ctx, entry, rv, transport, []string{"claude", "UserPromptSubmit"}, strings.NewReader(stdin), w,
+						lookup, callbackState{root: t.TempDir()})
+				})
+				time.Sleep(time.Second) // let a dispatch the deadline left behind finish
+				raw, err := os.ReadFile(filepath.Join(dir, "hooks", entry.UTC().Format("20060102")))
+				want, sent := "claude UserPromptSubmit rpc 200\n", 1
+				if !under {
+					want, sent = "claude UserPromptSubmit deadline 145\n", 0
+				}
+				if err != nil || string(raw) != want || events != sent {
+					t.Fatalf("counter %q (%v) with %d events", raw, err, events)
+				}
+			})
 		})
 	}
 }

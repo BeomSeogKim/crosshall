@@ -4,7 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
-- **A missed Claude Code start no longer costs the session its notices:** when a session's start hook misses its deadline, its next prompt ties the session to its process under the checks of a hand join, registers its notice route and brings back a member whose resumed start was missed. When the checks fail, the session joins without a route as before, and `owner who --all` and `owner doctor` say that its start was not seen. Each late binding records a `launch_bound_late` event (#252).
+- **A missed Claude Code start no longer costs the session its notices:** when a session's start hook misses its deadline, its next prompt ties the session to its process under the checks of a hand join, registers its notice route and brings back a member whose resumed start was missed. When the checks fail, the session joins without a route as before, and `owner who --all` and `owner doctor` say that its start was not seen. Such a prompt gets the start's 400 ms budget. Each late binding records a `launch_bound_late` event (#252).
 
 ## v0.2.0-rc.4 (2026-11-24)
 

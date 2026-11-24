@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The cause of an unknown suspension:** `owner who --all` and doctor show the cause doctor counts, for example `suspended: notice 11 unknown (open placeholder)`. A receipt recorded before causes were kept shows none.
+
 ## v0.2.0-rc.4 (2026-11-24)
 
 - **Session starts get more time under load:** a session start, and a prompt that enrolls or repairs its session, now answers within 400 ms instead of 150 ms; every other hook keeps 150 ms. A start makes three round trips to the dispatcher, and when other processes flush the disk each of them slows, so starts missed the 150 ms deadline and left the session unbound. A hook also picks up the dispatcher's reply every 1 ms instead of every 4 ms. `owner doctor` counts a missed deadline against the callback's own budget.

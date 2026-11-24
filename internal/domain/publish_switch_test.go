@@ -675,3 +675,24 @@ func TestPublishResumeCountsAnOutstandingReservationByItsOutcome(t *testing.T) {
 	p.turnEndAsk(p.writer, "reader", "after")
 	p.requirePublish("A, B and C failed after the resume", "suspended", "the third in a row")
 }
+
+// An unknown suspension names the cause the receipt recorded, as doctor
+// counts it; one recorded before causes were stored names none.
+func TestUnknownSuspensionNamesItsCause(t *testing.T) {
+	for _, tc := range []struct {
+		cause any
+		want  string
+	}{
+		{"open_placeholder", "unknown (open placeholder)"},
+		{"no_turn_but_facts", "unknown (no turn but facts)"},
+		{nil, "unknown"},
+	} {
+		p := newPublishFixture(t)
+		p.proveRoute()
+		notice := p.observed("unknown")
+		p.mutate(`UPDATE publish_attempt SET unknown_cause = ? WHERE id = ?`, tc.cause, notice)
+		if got := p.publishState().Reason; got != fmt.Sprintf("notice %d %s", notice, tc.want) {
+			t.Fatalf("cause %v: reason %q, want notice %d %s", tc.cause, got, notice, tc.want)
+		}
+	}
+}

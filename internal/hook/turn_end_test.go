@@ -27,13 +27,13 @@ func TestTurnEndEnvelopesContainOnlyPendingIDs(t *testing.T) {
 			m, _ := loadManifest(vendor)
 			stop, _ := m.event("Stop")
 			out, err := present(stop, wire.HookResult{TurnEndLine: line, PendingLine: "ordinary notice", ReminderText: "parked reminder"})
-			if err != nil || string(out) != want+"\n" {
-				t.Fatalf("native Stop output = %q (%v), want %s", out, err, want)
+			if err != nil || string(out.data) != want+"\n" {
+				t.Fatalf("native Stop output = %q (%v), want %s", out.data, err, want)
 			}
 			for _, invalid := range []string{"body", "[crosshall] pending: 0", "[crosshall] pending: 15 12", line + " message text", line + fixtureNoticeSuffix} {
 				out, _ := present(stop, wire.HookResult{TurnEndLine: invalid})
-				if len(out) != 0 {
-					t.Errorf("invalid Stop line reached vendor: %q", out)
+				if len(out.data) != 0 {
+					t.Errorf("invalid Stop line reached vendor: %q", out.data)
 				}
 			}
 		})

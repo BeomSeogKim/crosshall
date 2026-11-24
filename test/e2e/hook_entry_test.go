@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -351,6 +352,59 @@ func TestHookEntryStartLooksUpBeforeDefault(t *testing.T) {
 	}
 	h.assertSpoolsEmpty()
 	h.assertCounter("SessionStart", "unmatched")
+}
+
+// The dispatcher-shaped spool lets the test take the publication lock after the
+// request has arrived. The hook can finish writing stdout, but cannot enqueue
+// its receipt for that write.
+func TestHookEntryPrintedLastBatchWithoutReceipt(t *testing.T) {
+	h := newHookWorld(t, true)
+	h.write(filepath.Join(h.leaf, "stamp"), "fixture-instance fixture-generation 2 9\n")
+	const line = "[crosshall] pending: 42"
+	response := core.Result{Data: json.RawMessage(`{"epoch":7,"pending_line":"[crosshall] pending: 42","offer_receipt":{"offer_id":1,"nonce":"fixture"},"ack":{"kind":"notice","instance":"fixture-instance","generation":"fixture-generation","seq":2}}`)}
+	lock, err := os.OpenFile(filepath.Join(h.leaf, "hook-publish.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	run := func(turn string, beforeReply func()) string {
+		t.Helper()
+		in := strings.Replace(hookPrompt, "turn-1", turn, 1)
+		return hostContext(t, h.run(strings.NewReader(in), func() { h.serve(h.leaf, response, beforeReply) }, "codex", "UserPromptSubmit"))
+	}
+	if got := run("missed", func() {
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+	}); got != line {
+		t.Fatalf("while receipt publication was blocked got %q, want %q", got, line)
+	}
+	h.assertSpoolsEmpty()
+	if _, err := os.Lstat(filepath.Join(h.leaf, "seen-notice")); !os.IsNotExist(err) {
+		t.Fatalf("last batch without receipt left a clean stamp: %v", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("retry", nil); got != line {
+		t.Fatalf("retry after the lock was released got %q, want %q", got, line)
+	}
+	packets := fixtureQueuedPackets(t, h.leaf)
+	if len(packets) != 1 {
+		t.Fatalf("expected one receipt after the retry, got %v", packets)
+	}
+	raw, err := os.ReadFile(filepath.Join(h.leaf, packets[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req wire.Request
+	if err := json.Unmarshal(raw, &req); err != nil || req.Verb != wire.VerbHookJoinHintAck || !req.OneWayHook() {
+		t.Fatalf("unexpected receipt packet %s (%v)", raw, err)
+	}
+	var ack wire.HookOutputAckArgs
+	if err := json.Unmarshal(req.Args, &ack); err != nil || ack.Offer == nil || ack.Offer.OfferID != 1 || ack.Offer.Nonce != "fixture" || ack.WrittenAtMS <= 0 {
+		t.Fatalf("receipt for retry %s (%v)", req.Args, err)
+	}
 }
 
 func TestHookEntryCleanPromptPublishesWithoutWaiting(t *testing.T) {

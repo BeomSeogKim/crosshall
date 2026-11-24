@@ -112,6 +112,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err != nil {
 		return "refused"
 	}
+	writer := &frameWriter{dst: stdout}
 	var e event
 	if state.lifecycle == nil {
 		e, err = parseEvent(stdin, m, spec, lookup)
@@ -137,7 +138,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		// With automatic joining on, such a start is outside Git: no line.
 		if outcome == "unmatched" && spec.Enroll && !autoJoin(ctx, rv) {
 			result := domain.UnmappedStart(e.Source, policy.Epoch)
-			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, stdout); failure != "" {
+			if failure := writeHookResult(ctx, rv, m.Adapter, policy.Epoch, spec, result, writer); failure != "" {
 				return failure
 			}
 		}
@@ -198,16 +199,22 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err := json.Unmarshal(reply.Response.Data, &result); err != nil {
 		return "refused"
 	}
-	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, stdout)
+	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, writer)
 	if failure != "" {
 		return failure
 	}
 	reachSeen := confirmReach(ctx, leaf, gen, spec, result)
-	// The one acknowledgement request applies the start line and the reach line.
-	if (joinHintSeen || reachSeen) && !hookExpired(ctx) {
-		_, _ = client.HookCall(ctx, e.Identity, gen, wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}, true)
+	offerEnqueued := false
+	if (joinHintSeen || reachSeen || writer.ack.Offer != nil) && outputAckBudget(ctx) {
+		reqAck := wire.Request{Verb: wire.VerbHookJoinHintAck, OpKey: wire.VerbHookJoinHintAck}
+		if writer.ack.Offer != nil {
+			reqAck.Args, _ = json.Marshal(writer.ack)
+		}
+		_, err := client.HookCall(ctx, e.Identity, gen, reqAck, true)
+		offerEnqueued = writer.ack.Offer != nil && err == nil
 	}
-	if notice && result.Ack != nil && (result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
+	if notice && result.Ack != nil && (result.OfferReceipt == nil || offerEnqueued) &&
+		(result.JoinHintAck == nil || joinHintSeen) && (result.ReachAck == nil || reachSeen) && !hookExpired(ctx) {
 		_ = saveSeen(rv, leaf, gen, "notice", "", *result.Ack)
 	}
 	if !hookExpired(ctx) {
@@ -218,8 +225,15 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	return "rpc"
 }
 
+// Leave the work deadline intact when there is little time for the spool write.
+func outputAckBudget(ctx context.Context) bool {
+	const minRemaining = 5 * time.Millisecond
+	end, ok := ctx.Deadline()
+	return ctx.Err() == nil && (!ok || time.Until(end) >= minRemaining)
+}
+
 func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, generation, adapter string, epoch uint64,
-	spec eventSpec, result wire.HookResult, stdout io.Writer) (string, bool) {
+	spec eventSpec, result wire.HookResult, stdout *frameWriter) (string, bool) {
 	ack := result.JoinHintAck
 	if ack == nil {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, result, stdout), false
@@ -246,7 +260,7 @@ func writeHookResultAndConfirmJoin(ctx context.Context, rv, leaf *os.Root, gener
 	if !CurrentJoinHintOffer(leaf, *ack) {
 		return writeHookResult(ctx, rv, adapter, epoch, spec, withoutJoinHint(result), stdout), false
 	}
-	if failure := writeHookOutput(ctx, stdout, output); failure != "" {
+	if failure := stdout.write(ctx, output); failure != "" {
 		return failure, false
 	}
 	if hookExpired(ctx) {
@@ -277,37 +291,49 @@ func withoutJoinHint(result wire.HookResult) wire.HookResult {
 	return result
 }
 
+func noticeBoundary(spec eventSpec) bool {
+	return (spec.Enroll || spec.Notice) && (spec.Output == "context" || spec.Output == "inject_steps")
+}
+
 func joinHintBoundary(spec eventSpec) bool {
 	return (spec.Enroll || spec.RecoverEnroll) && (spec.Output == "context" || spec.Output == "inject_steps")
 }
 
-func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout io.Writer) string {
+func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult, stdout *frameWriter) string {
 	output, failure := prepareHookOutput(rv, adapter, epoch, spec, result)
 	if failure != "" {
 		return failure
 	}
-	return writeHookOutput(ctx, stdout, output)
+	return stdout.write(ctx, output)
 }
 
-func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) ([]byte, string) {
+func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) (hookFrame, string) {
 	output, err := present(spec, result)
 	if err != nil {
-		return nil, "refused"
+		return hookFrame{}, "refused"
 	}
 	current, err := readPolicy(rv, adapter)
 	if err != nil || !current.Enabled || current.Epoch != epoch || result.Epoch != current.Epoch {
-		return nil, "stale_epoch"
+		return hookFrame{}, "stale_epoch"
 	}
 	return output, ""
 }
 
-func writeHookOutput(ctx context.Context, stdout io.Writer, output []byte) string {
+type frameWriter struct {
+	dst io.Writer
+	ack wire.HookOutputAckArgs
+}
+
+func (w *frameWriter) write(ctx context.Context, frame hookFrame) string {
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	if len(output) > 0 {
-		if n, err := stdout.Write(output); err != nil || n != len(output) {
+	if len(frame.data) > 0 {
+		if n, err := w.dst.Write(frame.data); err != nil || n != len(frame.data) {
 			return "refused"
+		}
+		if offer := frame.offer; offer != nil && offer.OfferID > 0 && offer.Nonce != "" {
+			w.ack = wire.HookOutputAckArgs{Offer: offer, WrittenAtMS: time.Now().UnixMilli()}
 		}
 	}
 	return ""
@@ -501,7 +527,10 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 	if profile.Mode == "" {
 		profile.Mode = "unverified"
 	}
-	req := wire.Request{OpKey: "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref}
+	req := wire.Request{
+		OpKey:         "hook:" + m.Adapter + ":" + e.LaunchRef + ":" + ref,
+		OfferReceipts: want && noticeBoundary(spec),
+	}
 	if spec.Enroll {
 		req.Verb = wire.VerbHookEnroll
 		req.Args, _ = json.Marshal(wire.HookEnrollArgs{
@@ -554,13 +583,19 @@ func makeRouteRequest(entry time.Time, m manifest, e event, epoch uint64) (wire.
 	}, true
 }
 
+type hookFrame struct {
+	data  []byte
+	offer *wire.HookOfferReceipt
+}
+
 // present renders only the fields appropriate for this boundary.
-func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
+func present(spec eventSpec, result wire.HookResult) (hookFrame, error) {
 	if spec.Stop {
-		return presentTurnEnd(spec, result.TurnEndLine)
+		data, err := presentTurnEnd(spec, result.TurnEndLine)
+		return hookFrame{data: data}, err
 	}
-	if (spec.Output != "context" && spec.Output != "inject_steps") || !(spec.Enroll || spec.Notice) {
-		return nil, nil
+	if !noticeBoundary(spec) {
+		return hookFrame{}, nil
 	}
 	var parts []string
 	cue := result.Cue
@@ -574,7 +609,7 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 		if len(result.Roster) != 0 {
 			var members []domain.Member
 			if err := json.Unmarshal(result.Roster, &members); err != nil {
-				return nil, err
+				return hookFrame{}, err
 			}
 			if len(members) > 0 {
 				var roster strings.Builder
@@ -594,23 +629,28 @@ func present(spec eventSpec, result wire.HookResult) ([]byte, error) {
 			}
 		case "none":
 			if result.Hint == "" {
-				return nil, nil
+				return hookFrame{}, nil
 			}
-			return presentBoundary(spec, result.Hint)
+			data, err := presentBoundary(spec, result.Hint)
+			return hookFrame{data: data}, err
 		default:
-			return nil, nil
+			return hookFrame{}, nil
 		}
 	}
 	if reachShown(spec, result) {
 		parts = append(parts, result.ReachLine)
 	}
+	var frame hookFrame
 	if result.PendingLine != "" {
 		parts = append(parts, result.PendingLine)
+		frame.offer = result.OfferReceipt
 	}
 	if len(parts) == 0 {
-		return nil, nil
+		return hookFrame{}, nil
 	}
-	return presentBoundary(spec, strings.Join(parts, "\n"))
+	var err error
+	frame.data, err = presentBoundary(spec, strings.Join(parts, "\n"))
+	return frame, err
 }
 
 func presentBoundary(spec eventSpec, text string) ([]byte, error) {

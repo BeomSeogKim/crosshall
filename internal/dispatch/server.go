@@ -460,7 +460,7 @@ func (s *server) withdrawReady() {
 
 func (s *server) runSpool(dir *os.Root, reap bool, now time.Time, handle func(string, []byte) (core.Result, error)) {
 	if reap {
-		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour)))
+		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), false))
 	}
 	s.logFailure(spool.DrainServerSpool(dir, handle))
 }
@@ -491,7 +491,7 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 	}
 	watched.add(filepath.Join(path, "in"))
 	if reap {
-		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour)))
+		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), true))
 	}
 	s.logFailure(spool.DrainMemberSpool(dir, func(id string, raw []byte, admittedOneWay bool) (core.Result, error) {
 		return s.command(ctx, Arrival{Path: path, Dir: dir, admittedOneWay: admittedOneWay}, id, raw)
@@ -600,7 +600,8 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
 	}
 	oneWayHook := req.OneWayHook()
-	if req.ExpiresAtMS <= time.Now().UnixMilli() && (!arrival.admittedOneWay || arrival.Owner || !oneWayHook) {
+	outputAck := !arrival.Owner && oneWayHook && req.Verb == wire.VerbHookJoinHintAck
+	if req.ExpiresAtMS <= time.Now().UnixMilli() && !outputAck && (!arrival.admittedOneWay || arrival.Owner || !oneWayHook) {
 		return unknownOutcome("attempt expired", req.OpKey), nil
 	}
 	if req.Reply != nil && !*req.Reply && (arrival.Owner || !oneWayHook) {
@@ -644,14 +645,21 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return err
 		}
 		if req.Verb == wire.VerbHookJoinHintAck {
-			if arrival.Owner || resolved.Caller.Role != core.RoleMember || !oneWayHook || req.OpKey != wire.VerbHookJoinHintAck {
+			if !outputAck || resolved.Caller.Role != core.RoleMember || resolved.Caller.PrincipalID == nil || req.OpKey != wire.VerbHookJoinHintAck {
 				result = commandError(core.ExitRefused, "", "hook join acknowledgement requires member ingress")
 				return errRefusalRollback
 			}
 			if err := acknowledgeHookJoinHint(ctx, tx, arrival, req, resolved.Caller); err != nil {
 				return err
 			}
-			return acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller)
+			if err := acknowledgeHookReach(ctx, tx, arrival, req, resolved.Caller); err != nil {
+				return err
+			}
+			var ack wire.HookOutputAckArgs
+			if len(req.Args) > 0 && json.Unmarshal(req.Args, &ack) == nil && ack.Offer != nil {
+				return domain.ConfirmHookOffer(ctx, tx, *resolved.Caller.PrincipalID, req.Generation, *ack.Offer, ack.WrittenAtMS)
+			}
+			return nil
 		}
 		var hook *domain.AdapterContext
 		if isHook {
@@ -743,8 +751,8 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		return result, nil
 	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return core.Result{}, err // Keep the claim for recovery on shutdown.
+		if ctx.Err() != nil || outputAck {
+			return core.Result{}, err // Keep the claim on shutdown or retry an uncommitted output acknowledgement.
 		}
 		s.logFailure(err)
 		var uncertain *store.CommitError

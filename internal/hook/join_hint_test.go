@@ -39,7 +39,7 @@ func TestHookJoinHintReceiptRequiresAFullWriteAndSuppressesOnlyGuidance(t *testi
 		t.Fatal(err)
 	}
 	write := func(w io.Writer) (string, bool) {
-		return writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, w)
+		return writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, &frameWriter{dst: w})
 	}
 	if outcome, seen := write(shortJoinHintWriter{}); outcome != "refused" || seen {
 		t.Fatalf("short write was acknowledged: %q %t", outcome, seen)
@@ -94,7 +94,7 @@ func TestRevokedJoinHintDoesNotReachStdoutOrCreateALock(t *testing.T) {
 	stale := wire.HookJoinHintAck{Generation: "fixture-gen", BindingID: 5, RouteEpoch: 1, RosterSeq: 2, Offer: "revoked"}
 	result := wire.HookResult{Epoch: 7, Hint: "fixture member rules", PendingLine: "[crosshall] pending: 12", JoinHintAck: &stale}
 	var output strings.Builder
-	failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, stale.Generation, "codex", 7, spec, result, &output)
+	failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, stale.Generation, "codex", 7, spec, result, &frameWriter{dst: &output})
 	if failure != "" || seen || strings.Contains(output.String(), result.Hint) || !strings.Contains(output.String(), result.PendingLine) {
 		t.Fatalf("revoked guide reached stdout or hid unrelated output: %q %t %q", failure, seen, output.String())
 	}
@@ -128,7 +128,7 @@ func TestAClearPrintsTheWholeCueWhenItCannotPrintTheStartLine(t *testing.T) {
 	}
 	write := func() (string, bool) {
 		var output strings.Builder
-		failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, &output)
+		failure, seen := writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, &frameWriter{dst: &output})
 		if failure != "" {
 			t.Fatal(failure)
 		}

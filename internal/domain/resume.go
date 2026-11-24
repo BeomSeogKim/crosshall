@@ -21,8 +21,8 @@ const ResumeWindow = time.Hour
 
 // owedResumeItems selects, as recipient x of message m, the requests the
 // member of route r (binding ?2) still owes in its channel that no notice
-// will carry: read, already told of, or stored before the route's
-// watermark. It starts from the member's open obligations (an index), so
+// will carry: read, already told of by a notice or a prompt's pending
+// line, or stored before the route's watermark. It starts from the member's open obligations (an index), so
 // a member's history of received messages is never scanned.
 const owedResumeItems = `FROM publish_route r JOIN binding b ON b.id = r.binding_id
 	JOIN obligation o ON o.principal_id = r.principal_id AND o.state = 'open'
@@ -30,7 +30,9 @@ const owedResumeItems = `FROM publish_route r JOIN binding b ON b.id = r.binding
 	JOIN message m ON m.id = o.message_id
 	WHERE r.binding_id = ?2 AND b.state = 'live' AND m.channel_id = b.channel_id AND m.kind = 'ask'
 		AND (x.picked_up_at_ms IS NOT NULL OR x.message_id <= r.watermark_message_id OR EXISTS (SELECT 1 FROM announcement a
-			WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id))`
+			WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id) OR EXISTS (SELECT 1 FROM offer_item oi
+			JOIN offer f ON f.id = oi.offer_id WHERE oi.principal_id = x.principal_id AND oi.message_id = x.message_id
+				AND f.written_at_ms IS NOT NULL))`
 
 // openResumeItem is BeginPublish's check of a resume attempt's item: still
 // an open obligation of the member, read or not.

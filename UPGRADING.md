@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+Known issue when going back to v0.2.0 or earlier: a hook of the older binary does not recognize a resume notice (`... The hall restarted and you still owe these requests ...`) that the session echoes, so its receipt never comes. A resume still being submitted when you switch back then holds that session's notices (`crosshall owner who --all` shows `not woken: an earlier notice is unobserved`) until the held alert, or until you run `crosshall owner publish resume <binding-id>` for that member.
+
 ## To v0.2.0
 
 Upgrading from v0.2.0-rc.5 keeps the database at schema 29. No migration runs.

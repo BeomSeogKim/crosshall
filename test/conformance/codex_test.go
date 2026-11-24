@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/testreap"
 	_ "modernc.org/sqlite" // Read the disposable ledger with Crosshall's own driver.
 )
 
@@ -359,6 +360,7 @@ func codexBinary(t *testing.T, root string, buildFlags ...string) string {
 	dir := filepath.Join(root, "owner's fixture bin")
 	codexMust(t, os.Mkdir(dir, 0700))
 	exe := filepath.Join(dir, "crosshall")
+	testreap.Arm(t, exe)
 	if override := os.Getenv("CROSSHALL_CONFORMANCE_CROSSHALL"); override != "" && len(buildFlags) == 0 {
 		source, err := os.Open(codexOutsideVendorHomes(t, override))
 		codexMust(t, err)

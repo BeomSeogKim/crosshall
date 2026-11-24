@@ -29,6 +29,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/testreap"
 
 	_ "modernc.org/sqlite"
 )
@@ -61,6 +62,7 @@ func newConformance(t *testing.T) *conformance {
 		t.Fatal(err)
 	}
 	c.crosshall = filepath.Join(root, "bin", "crosshall")
+	testreap.Arm(t, c.crosshall)
 	build := exec.Command("go", "build", "-o", c.crosshall, "./cmd/crosshall")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {

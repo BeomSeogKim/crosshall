@@ -23,7 +23,7 @@ type launchSweep struct {
 
 type launchSweepResult struct {
 	after  int64
-	probes []domain.ClaudeLaunchProbe
+	probes []domain.ProcessLaunchProbe
 	// afterHost and goneHosts are the same for members a host tracks.
 	afterHost int64
 	goneHosts []domain.HostedMember
@@ -38,7 +38,7 @@ func (s *launchSweep) start(ctx context.Context, db *store.Store, now time.Time)
 	result := make(chan launchSweepResult, 1)
 	s.pending = result
 	go func(after, afterHost int64) {
-		r := probeClaudeLaunches(ctx, db, after)
+		r := probeProcessLaunches(ctx, db, after)
 		if r.err == nil {
 			r.afterHost, r.goneHosts, r.err = probeMemberHosts(ctx, db, afterHost)
 		}
@@ -83,11 +83,11 @@ func hostGone(platform, dispatcher string, m domain.HostedMember, processGone fu
 	return previousBoot || sameNamespace && processGone(m.PID, m.StartIdentity)
 }
 
-func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) launchSweepResult {
-	var launches []domain.ClaudeLaunch
+func probeProcessLaunches(ctx context.Context, db *store.Store, after int64) launchSweepResult {
+	var launches []domain.ProcessLaunch
 	err := db.Update(ctx, func(tx store.Tx) error {
 		var err error
-		launches, err = domain.LiveClaudeLaunches(ctx, tx, after, launchSweepBatch)
+		launches, err = domain.LiveProcessLaunches(ctx, tx, after, launchSweepBatch)
 		return err
 	})
 	if err != nil {
@@ -104,7 +104,7 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 		}
 		sameNamespace, previousBoot := compareLaunchPIDNamespaces(runtime.GOOS, pidNamespace, launch.PIDNamespace)
 		if previousBoot {
-			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true, PreviousBoot: true})
+			result.probes = append(result.probes, domain.ProcessLaunchProbe{ProcessLaunch: launch, Gone: true, PreviousBoot: true})
 			continue
 		}
 		if !sameNamespace {
@@ -112,15 +112,15 @@ func probeClaudeLaunches(ctx context.Context, db *store.Store, after int64) laun
 		}
 		if launch.ProcessPID != 0 {
 			if proc.ProcessGone(launch.ProcessPID, launch.ProcessStartIdentity) {
-				result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true})
+				result.probes = append(result.probes, domain.ProcessLaunchProbe{ProcessLaunch: launch, Gone: true})
 			}
 			continue
 		}
 		pid, identity, gone := proc.ProbeLaunch(launch.LaunchRef, launch.StartedAtMS)
 		if gone {
-			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true})
+			result.probes = append(result.probes, domain.ProcessLaunchProbe{ProcessLaunch: launch, Gone: true})
 		} else if identity != 0 {
-			result.probes = append(result.probes, domain.ClaudeLaunchProbe{ClaudeLaunch: launch, PID: pid, StartIdentity: identity})
+			result.probes = append(result.probes, domain.ProcessLaunchProbe{ProcessLaunch: launch, PID: pid, StartIdentity: identity})
 		}
 	}
 	return result
@@ -148,7 +148,7 @@ func (r *launchSweep) apply(ctx context.Context, s *server, result launchSweepRe
 	}
 	return s.db.Update(ctx, func(tx store.Tx) error {
 		now := time.Now()
-		changed, err := domain.ApplyClaudeLaunchProbes(ctx, tx, result.probes, now)
+		changed, err := domain.ApplyProcessLaunchProbes(ctx, tx, result.probes, now)
 		if err != nil {
 			return err
 		}

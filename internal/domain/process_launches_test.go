@@ -8,16 +8,16 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-func liveClaudeLaunches(f *fixture, after int64, limit int) []ClaudeLaunch {
+func liveProcessLaunches(f *fixture, after int64, limit int) []ProcessLaunch {
 	f.t.Helper()
-	launches, err := LiveClaudeLaunches(f.t.Context(), f.db, after, limit)
+	launches, err := LiveProcessLaunches(f.t.Context(), f.db, after, limit)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	return launches
 }
 
-func applyClaudeProbes(f *fixture, results ...ClaudeLaunchProbe) bool {
+func applyProcessProbes(f *fixture, results ...ProcessLaunchProbe) bool {
 	f.t.Helper()
 	ctx := f.t.Context()
 	tx, err := f.db.BeginTx(ctx, nil)
@@ -25,7 +25,7 @@ func applyClaudeProbes(f *fixture, results ...ClaudeLaunchProbe) bool {
 		f.t.Fatal(err)
 	}
 	defer tx.Rollback()
-	changed, err := ApplyClaudeLaunchProbes(ctx, tx, results, f.now)
+	changed, err := ApplyProcessLaunchProbes(ctx, tx, results, f.now)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -43,14 +43,14 @@ func TestClaudeProcessExitEndsPublishAndAllowsDelayedResume(t *testing.T) {
 	if attempt == 0 {
 		t.Fatal("fixture did not reserve the notice")
 	}
-	launches := liveClaudeLaunches(p.fixture, 0, 5)
+	launches := liveProcessLaunches(p.fixture, 0, 5)
 	if len(launches) != 1 || launches[0].ProcessPID != p.queue.PID || launches[0].ProcessStartIdentity != p.queue.StartMS {
 		t.Fatalf("publish proof didn't pin the launch: %+v", launches)
 	}
 	launch := launches[0]
 	p.now = p.now.Add(2 * time.Second)
-	probe := ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true}
-	if !applyClaudeProbes(p.fixture, probe) || applyClaudeProbes(p.fixture, probe) {
+	probe := ProcessLaunchProbe{ProcessLaunch: launch, Gone: true}
+	if !applyProcessProbes(p.fixture, probe) || applyProcessProbes(p.fixture, probe) {
 		t.Fatal("known death did not commit exactly once")
 	}
 	if n := p.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?
@@ -97,23 +97,23 @@ func TestClaudeProcessExitKeepsAnUnknownOverlap(t *testing.T) {
 	at := f.now.UnixMilli()
 	f.hook(s, start("pid-1-a", "startup", at))
 	f.hook(s, start("pid-2-b", "resume", at+10))
-	first := liveClaudeLaunches(f, 0, 1)
+	first := liveProcessLaunches(f, 0, 1)
 	if len(first) != 1 {
 		t.Fatalf("first page: %+v", first)
 	}
-	second := liveClaudeLaunches(f, first[0].RowID, 3)
+	second := liveProcessLaunches(f, first[0].RowID, 3)
 	if len(second) != 1 || second[0].LaunchRef != "pid-2-b" {
 		t.Fatalf("second page: %+v", second)
 	}
 	unknown := second[0]
-	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, PID: 1, StartIdentity: 20}) {
+	if applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: unknown, PID: 1, StartIdentity: 20}) {
 		t.Fatal("a probe associated the launch with another PID")
 	}
-	if !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: unknown, PID: 2, StartIdentity: 20}) {
+	if !applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: unknown, PID: 2, StartIdentity: 20}) {
 		t.Fatal("a matching positive probe did not pin the identity")
 	}
-	bound := liveClaudeLaunches(f, first[0].RowID, 3)[0]
-	if !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: bound, Gone: true}) || f.memberRow(writer, "claude1").Alias == "" {
+	bound := liveProcessLaunches(f, first[0].RowID, 3)[0]
+	if !applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: bound, Gone: true}) || f.memberRow(writer, "claude1").Alias == "" {
 		t.Fatal("the unknown older launch did not keep the binding live")
 	}
 	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE launch_ref = 'pid-1-a' AND ended_hook_at_ms IS NULL`); n != 1 {
@@ -130,16 +130,16 @@ func TestClaudeProcessExitAppliesUnboundProofWithoutRetiringQueue(t *testing.T) 
 		t.Fatal("fixture did not reserve a notice")
 	}
 	p.mutate(`UPDATE adapter_launch SET process_pid = NULL, process_start_identity = NULL WHERE launch_ref = ?`, publishTestLaunch)
-	stale := liveClaudeLaunches(p.fixture, 0, 1)[0]
+	stale := liveProcessLaunches(p.fixture, 0, 1)[0]
 	p.mutate(`UPDATE adapter_launch SET pid_namespace = 'pid:[200]' WHERE launch_ref = ?`, publishTestLaunch)
-	if applyClaudeProbes(p.fixture, ClaudeLaunchProbe{ClaudeLaunch: stale, Gone: true}) {
+	if applyProcessProbes(p.fixture, ProcessLaunchProbe{ProcessLaunch: stale, Gone: true}) {
 		t.Fatal("a legacy snapshot crossed the namespace fence")
 	}
-	launch := liveClaudeLaunches(p.fixture, 0, 1)[0]
+	launch := liveProcessLaunches(p.fixture, 0, 1)[0]
 	if launch.PIDNamespace != "pid:[200]" || launch.ProcessPID != 0 || launch.ProcessStartIdentity != 0 {
 		t.Fatalf("wrong unbound launch snapshot: %+v", launch)
 	}
-	if !applyClaudeProbes(p.fixture, ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true}) {
+	if !applyProcessProbes(p.fixture, ProcessLaunchProbe{ProcessLaunch: launch, Gone: true}) {
 		t.Fatal("a current unbound process exit proof was not applied")
 	}
 	if _, _, _, _, state, _, _ := routeState(t, p.fixture, launch.BindingID); state != "ended" {
@@ -173,7 +173,7 @@ func TestClaudePreviousBootRetiresOnlyItsPublishLane(t *testing.T) {
 				p.mutate(`UPDATE adapter_launch SET process_pid = NULL, process_start_identity = NULL WHERE launch_ref = ?`, publishTestLaunch)
 			}
 			p.mutate(`UPDATE adapter_launch SET pid_namespace = '12345678-1234-1234-1234-123456789abc:100' WHERE launch_ref = ?`, publishTestLaunch)
-			old := liveClaudeLaunches(p.fixture, 0, 1)[0]
+			old := liveProcessLaunches(p.fixture, 0, 1)[0]
 
 			peer := p.newSession("claude")
 			wantOK(t, p.join(peer, Join{Channel: "checkout", Alias: "peer"}, "peer-join"))
@@ -189,8 +189,8 @@ func TestClaudePreviousBootRetiresOnlyItsPublishLane(t *testing.T) {
 				t.Fatalf("fixture proved %d queues, want two identical numeric identities", n)
 			}
 
-			probe := ClaudeLaunchProbe{ClaudeLaunch: old, Gone: true, PreviousBoot: true}
-			if !applyClaudeProbes(p.fixture, probe) || applyClaudeProbes(p.fixture, probe) {
+			probe := ProcessLaunchProbe{ProcessLaunch: old, Gone: true, PreviousBoot: true}
+			if !applyProcessProbes(p.fixture, probe) || applyProcessProbes(p.fixture, probe) {
 				t.Fatal("prior-boot exit did not commit exactly once")
 			}
 			p.state(attempt, string(outcome))
@@ -215,34 +215,34 @@ func TestClaudeLaunchPinsItsFirstKnownPIDNamespace(t *testing.T) {
 	cmd := start("pid-7-a", "startup", at)
 	cmd.PIDNamespace = "pid:[100]"
 	f.hook(s, cmd)
-	launch := liveClaudeLaunches(f, 0, 1)[0]
+	launch := liveProcessLaunches(f, 0, 1)[0]
 	if launch.PIDNamespace != cmd.PIDNamespace || launch.StartedAtMS != at {
 		t.Fatalf("first namespace was not stored: %+v", launch)
 	}
 	conflict := start(launch.LaunchRef, "resume", at+10)
 	conflict.PIDNamespace = "pid:[200]"
-	if r := f.hook(s, conflict); !quiet(r) || liveClaudeLaunches(f, 0, 1)[0] != launch {
+	if r := f.hook(s, conflict); !quiet(r) || liveProcessLaunches(f, 0, 1)[0] != launch {
 		t.Fatalf("conflicting namespace changed the existing launch: %+v", r)
 	}
 	f.hook(s, start(launch.LaunchRef, "resume", at+20))
-	if got := liveClaudeLaunches(f, 0, 1)[0]; got.PIDNamespace != cmd.PIDNamespace {
+	if got := liveProcessLaunches(f, 0, 1)[0]; got.PIDNamespace != cmd.PIDNamespace {
 		t.Fatalf("legacy resume cleared the verified namespace: %+v", got)
 	}
 }
 
 func TestStaleClaudeProcessProbeCannotDepartClearedMember(t *testing.T) {
 	f, writer, old, owed, unread := clearFixture(t, true)
-	launch := liveClaudeLaunches(f, 0, 1)[0]
-	if !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: launch, PID: 7, StartIdentity: 100}) {
+	launch := liveProcessLaunches(f, 0, 1)[0]
+	if !applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: launch, PID: 7, StartIdentity: 100}) {
 		t.Fatal("fixture did not pin the prior launch identity")
 	}
-	launch = liveClaudeLaunches(f, 0, 1)[0]
+	launch = liveProcessLaunches(f, 0, 1)[0]
 	cleared := f.newSession("claude")
 	result := f.hook(cleared, start("pid-7-b", "clear", f.now.UnixMilli()+20))
 	if result.Enrollment != "restored" {
 		t.Fatalf("fixture clear did not restore: %+v", result)
 	}
-	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true}) {
+	if applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: launch, Gone: true}) {
 		t.Fatal("a stale probe altered state after a clear")
 	}
 	wantTakenOver(t, f, writer, old, cleared, owed, unread, result.Cue+"\n"+result.PendingLine)
@@ -252,15 +252,15 @@ func TestStaleClaudeProcessProbeDoesNotRewriteCleanEnd(t *testing.T) {
 	f, _ := adapterChannel(t)
 	s := f.newSession("claude")
 	f.hook(s, start("pid-7-launch", "startup", f.now.UnixMilli()))
-	launch := liveClaudeLaunches(f, 0, 1)[0]
-	if !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: launch, PID: 7, StartIdentity: 100}) {
+	launch := liveProcessLaunches(f, 0, 1)[0]
+	if !applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: launch, PID: 7, StartIdentity: 100}) {
 		t.Fatal("fixture did not pin the launch identity")
 	}
-	launch = liveClaudeLaunches(f, 0, 1)[0]
+	launch = liveProcessLaunches(f, 0, 1)[0]
 	cleanEndAt := f.now.UnixMilli() + 100
 	f.hook(s, ended(launch.LaunchRef, cleanEndAt))
 	f.now = f.now.Add(time.Second)
-	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: launch, Gone: true}) {
+	if applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: launch, Gone: true}) {
 		t.Fatal("a stale probe changed a clean end into a synthetic one")
 	}
 	if n := f.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND launch_ref = ?
@@ -269,5 +269,22 @@ func TestStaleClaudeProcessProbeDoesNotRewriteCleanEnd(t *testing.T) {
 	}
 	if r := f.hook(s, start("pid-8-launch", "resume", cleanEndAt-1)); !quiet(r) {
 		t.Fatalf("resume predating a native clean end restored a member: %+v", r)
+	}
+}
+
+// The sweep checks only launches of a revision that declares
+// process_launch; a process reference alone is not enough.
+func TestOnlyADeclaredRevisionIsAProcessLaunch(t *testing.T) {
+	p := newPublishFixture(t)
+	if got := liveProcessLaunches(p.fixture, 0, 5); len(got) != 1 || got[0].Adapter != "claude" {
+		t.Fatalf("live process launches %+v, want the reader's Claude launch", got)
+	}
+	for _, profile := range []string{`{"adapter":"codex","manifest_rev":"codex-1"}`, `{"adapter":"claude","manifest_rev":"claude-9"}`, `{"adapter":"claude"}`} {
+		if _, err := p.db.Exec(`UPDATE adapter_launch SET profile = ? WHERE principal_id = ?`, profile, p.principalOf(p.reader)); err != nil {
+			t.Fatal(err)
+		}
+		if got := liveProcessLaunches(p.fixture, 0, 5); len(got) != 0 {
+			t.Fatalf("profile %s: the sweep checks %+v", profile, got)
+		}
 	}
 }

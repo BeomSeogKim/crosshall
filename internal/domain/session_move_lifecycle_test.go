@@ -218,19 +218,19 @@ func TestHostProbeCannotDepartAMemberAfterMovingAwayAndBack(t *testing.T) {
 
 func TestClaudeProbeFollowsTheSelectionAndFencesTheEarlierGeneration(t *testing.T) {
 	f, _, member, _, _ := clearFixture(t, true)
-	old := liveClaudeLaunches(f, 0, 1)[0]
+	old := liveProcessLaunches(f, 0, 1)[0]
 	wantOK(t, f.owner(CreateChannel{Name: "review"}, "create-review"))
 	wantOK(t, f.join(member, Join{Channel: "review", Alias: "moved", Move: true}, "move-review"))
-	moved := liveClaudeLaunches(f, 0, 1)
+	moved := liveProcessLaunches(f, 0, 1)
 	if len(moved) != 1 || moved[0].BindingID == old.BindingID || moved[0].LaunchRef != old.LaunchRef || moved[0].MembershipGeneration <= old.MembershipGeneration {
 		t.Fatalf("launch probe did not follow the destination: %+v", moved)
 	}
 	wantOK(t, f.join(member, Join{Channel: "checkout", Alias: "claude1", Move: true}, "move-back"))
-	if applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: old, Gone: true}) {
+	if applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: old, Gone: true}) {
 		t.Fatal("an old launch probe departed the returned member")
 	}
-	current := liveClaudeLaunches(f, 0, 1)[0]
-	if current.BindingID != old.BindingID || !applyClaudeProbes(f, ClaudeLaunchProbe{ClaudeLaunch: current, Gone: true}) {
+	current := liveProcessLaunches(f, 0, 1)[0]
+	if current.BindingID != old.BindingID || !applyProcessProbes(f, ProcessLaunchProbe{ProcessLaunch: current, Gone: true}) {
 		t.Fatal("a fresh launch probe did not depart the returned member")
 	}
 }

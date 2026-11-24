@@ -98,7 +98,7 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing")
 	}
-	var at500 time.Duration
+	var at250, at500 time.Duration
 	for _, turns := range []int{250, 400, 500} {
 		f, reader, _ := turnEndFixture(t, "launch")
 		at := f.now.UnixMilli() + 10
@@ -115,9 +115,19 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 		}
 		per := time.Since(start) / 20
 		t.Logf("%d turns: %v per hook event", turns, per)
+		if turns == 250 {
+			at250 = per
+		}
 		at500 = per
 	}
 	if at500 > 100*time.Millisecond {
 		t.Fatalf("a hook event after 500 turns took %v, want under 100ms", at500)
+	}
+	// The bound alone let a cost six times higher pass on a fast machine.
+	// A hook event reads the session's facts, so its cost may grow with the
+	// turns (about 1.9 times from 250 to 500 turns), but not faster: work
+	// done per earlier fact made it 4.6 times.
+	if ratio := float64(at500) / float64(at250); ratio > 2.5 {
+		t.Fatalf("a hook event after 500 turns took %v, %.1f times the %v after 250: the cost grows faster than the turns", at500, ratio, at250)
 	}
 }

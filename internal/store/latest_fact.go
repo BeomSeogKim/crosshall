@@ -50,16 +50,21 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 			WHERE o.principal_id = ?1 AND o.kind NOT IN ('command', 'idle_prompt')
 			  AND o.hook_at_ms <= o.observed_at_ms + ?2),
 		staged AS (
-			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c)
-		SELECT c.kind, c.profile, COALESCE(json_extract(c.profile, '$.adapter'), ''), c.hook_at_ms, c.fresh_until_ms, (SELECT live FROM latest),
-		       EXISTS (SELECT 1 FROM observation k WHERE k.principal_id = ?1 AND k.kind = 'command' AND k.seq > c.seq)
-		FROM staged c
-		-- A turn-bound fact belongs to the start its turn opened after, whatever
-		-- its own clock says; any other fact is placed by its own time. Within
-		-- a turn only its latest stage counts.
-		WHERE c.position >= (SELECT started_hook_at_ms FROM latest) AND (c.turn_ref IS NULL OR c.stage = c.top)
-		ORDER BY c.position DESC, c.stage DESC, c.hook_at_ms DESC, c.seq DESC
-		LIMIT 1`, principal, slackMS).
+			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c),
+		pick AS (
+			SELECT c.seq, c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
+			-- A turn-bound fact belongs to the start its turn opened after, whatever
+			-- its own clock says; any other fact is placed by its own time. Within
+			-- a turn only its latest stage counts.
+			WHERE c.position >= (SELECT started_hook_at_ms FROM latest) AND (c.turn_ref IS NULL OR c.stage = c.top)
+			ORDER BY c.position DESC, c.stage DESC, c.hook_at_ms DESC, c.seq DESC
+			LIMIT 1)
+		-- The rest is read for the chosen fact only: per candidate it made a
+		-- hook event's cost grow with the square of the session's turns.
+		SELECT p.kind, p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
+		       (SELECT live FROM latest),
+		       EXISTS (SELECT 1 FROM observation k WHERE k.principal_id = ?1 AND k.kind = 'command' AND k.seq > p.seq)
+		FROM pick p`, principal, slackMS).
 		Scan(&f.Fact, &f.Profile, &f.Adapter, &f.AtMS, &f.FreshUntilMS, &f.LaunchLive, &f.CommandSince)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LatestFact{}, false, nil

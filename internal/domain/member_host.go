@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -121,7 +122,7 @@ type HostedMember struct {
 func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit int) ([]HostedMember, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT h.principal_id, b.id, b.route_epoch, s.generation, h.pid, h.start_identity, h.pid_namespace
 		FROM member_host h JOIN member_selection s ON s.principal_id = h.principal_id JOIN binding b ON b.id = s.binding_id
-		WHERE h.principal_id > ? AND b.state = 'live' AND NOT `+governingLaunch+`
+		WHERE h.principal_id > ? AND b.state = 'live' AND NOT `+governingLaunch()+`
 		ORDER BY h.principal_id LIMIT ?`, afterPrincipal, limit)
 	if err != nil {
 		return nil, err
@@ -144,10 +145,12 @@ func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit
 // ended by nothing certain: a session launch (Antigravity's, Codex's, or
 // Claude Code's without a launch ID) ends by no hook, and an end hook does
 // not fire on a kill, a crash or a closed terminal. Its member's host
-// governs.
-var governingLaunch = `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = h.principal_id
+// governs. It is built on first use, not at package initialization.
+var governingLaunch = sync.OnceValue(func() string {
+	return `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = h.principal_id
 	AND l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND l.verified = 1
 	AND ` + processLaunchProfile("l.profile") + ` AND l.launch_ref GLOB 'pid-*')`
+})
 
 // DepartGoneHosts departs each member whose probed host was proven gone,
 // if nothing changed since the probe: the binding is the same live one, the
@@ -158,7 +161,7 @@ func DepartGoneHosts(ctx context.Context, tx store.Tx, gone []HostedMember, now 
 	changed := false
 	for _, m := range gone {
 		res, err := tx.ExecContext(ctx, `DELETE FROM member_host AS h WHERE h.principal_id = ?1 AND h.pid = ?2
-			AND h.start_identity = ?3 AND h.pid_namespace = ?4 AND NOT `+governingLaunch+`
+			AND h.start_identity = ?3 AND h.pid_namespace = ?4 AND NOT `+governingLaunch()+`
 			AND EXISTS (SELECT 1 FROM member_selection s JOIN binding b ON b.id = s.binding_id
 				WHERE s.principal_id = ?1 AND s.binding_id = ?5 AND s.generation = ?7 AND b.route_epoch = ?6 AND b.state = 'live')`,
 			m.PrincipalID, m.PID, m.StartIdentity, m.PIDNamespace, m.BindingID, m.BindingEpoch, m.MembershipGeneration)

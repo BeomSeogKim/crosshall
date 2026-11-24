@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -49,11 +50,15 @@ func LiveProcessLaunches(ctx context.Context, tx store.Tx, afterRowID int64, lim
 
 var processLaunchProfile = store.ProcessLaunchProfile
 
-var sameProcessLaunch = `WHERE rowid = ?1 AND principal_id = ?2 AND launch_ref = ?3 AND started_hook_at_ms = ?4
+// sameProcessLaunch is built on first use, not at package initialization,
+// so a hook does not decode the manifest catalog it never needs.
+var sameProcessLaunch = sync.OnceValue(func() string {
+	return `WHERE rowid = ?1 AND principal_id = ?2 AND launch_ref = ?3 AND started_hook_at_ms = ?4
 	AND EXISTS (SELECT 1 FROM member_selection s JOIN binding b ON b.id = s.binding_id
 		WHERE s.principal_id = ?2 AND s.binding_id = ?5 AND s.generation = ?10 AND b.route_epoch = ?6 AND b.state = 'live')
 	AND verified = 1 AND fenced = 0 AND ended_hook_at_ms IS NULL AND ` + processLaunchProfile("profile") + `
 	AND COALESCE(process_pid, 0) = ?7 AND COALESCE(process_start_identity, 0) = ?8 AND pid_namespace = ?9`
+})
 
 type affectedProcessMember struct {
 	binding hookBinding
@@ -72,7 +77,7 @@ func ApplyProcessLaunchProbes(ctx context.Context, tx store.Tx, results []Proces
 			if l.ProcessPID != 0 || l.ProcessStartIdentity != 0 || result.PID <= 0 || result.StartIdentity <= 0 {
 				continue
 			}
-			res, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET process_pid = ?11, process_start_identity = ?12 `+sameProcessLaunch+
+			res, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET process_pid = ?11, process_start_identity = ?12 `+sameProcessLaunch()+
 				` AND (launch_ref = 'pid-' || ?11 OR launch_ref GLOB 'pid-' || ?11 || '-*')`, append(args, result.PID, result.StartIdentity)...)
 			if err != nil {
 				return false, err
@@ -100,7 +105,7 @@ func ApplyProcessLaunchProbes(ctx context.Context, tx store.Tx, results []Proces
 			member = &affectedProcessMember{binding: b, before: before, last: l}
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = MAX(?11, started_hook_at_ms), ended_by_process = 1 `+
-			sameProcessLaunch, append(args, ms(now))...)
+			sameProcessLaunch(), append(args, ms(now))...)
 		if err != nil {
 			return false, err
 		}

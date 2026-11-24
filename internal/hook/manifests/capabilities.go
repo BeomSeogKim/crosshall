@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"sync"
+	"sync/atomic"
 )
 
 // Schema is the manifest format this build reads.
@@ -168,6 +169,14 @@ func SwapReader(read func(adapter string) ([]byte, error)) (restore func()) {
 	}
 }
 
+// decoded records that the catalog was decoded.
+var decoded atomic.Bool
+
+// Decoded reports whether this process has decoded the catalog. Nothing
+// may decode it at package initialization: every hook would pay for it.
+// It lets a test pin that.
+func Decoded() bool { return decoded.Load() }
+
 // records is the decoded catalog, decoded once on first use.
 func records() map[string]record {
 	readMu.Lock()
@@ -180,6 +189,7 @@ func records() map[string]record {
 }
 
 func decodeAll() map[string]record {
+	decoded.Store(true)
 	all := make(map[string]record)
 	for _, adapter := range Names() {
 		raw, err := Read(adapter)

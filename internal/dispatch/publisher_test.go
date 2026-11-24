@@ -587,7 +587,10 @@ func TestPublisherRetriesOutcomeWriteWithoutResending(t *testing.T) {
 }
 
 func TestPublisherBlockedTransportLeavesScanAndTickResponsive(t *testing.T) {
+	const requestBudget = 10 * time.Second
 	f := newPublishTestFixture(t)
+	// The publisher's fixture clock can predate the owner request.
+	f.now = f.now.Add(-requestBudget - time.Second)
 	f.ask(t, 11)
 	gate := make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
@@ -611,10 +614,11 @@ func TestPublisherBlockedTransportLeavesScanAndTickResponsive(t *testing.T) {
 	call := awaitPublishTest(t, calls)
 	requirePublished(t, call, 11)
 	owner := filepath.Join(f.root, "owner")
+	issuedAt := time.Now()
 	request := wire.Request{
 		Version: wire.Version, Attempt: "1234567890abcdef1234567890abcdef",
 		OpKey: "publish-scan", Verb: "owner channel create", Args: json.RawMessage(`{"name":"checkout"}`),
-		IssuedAtMS: f.now.UnixMilli(), ExpiresAtMS: f.now.Add(10 * time.Second).UnixMilli(),
+		IssuedAtMS: issuedAt.UnixMilli(), ExpiresAtMS: issuedAt.Add(requestBudget).UnixMilli(),
 	}
 	writePacket(t, filepath.Join(owner, "in"), request)
 	if err := s.scan(t.Context()); err != nil {

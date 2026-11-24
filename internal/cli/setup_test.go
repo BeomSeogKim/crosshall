@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +26,7 @@ func setupEnv(terminal bool, got *[]SetupRequest) Env {
 	}
 }
 
-func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
+func TestOnlyAnApplyUsesItsOperationDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want bool
@@ -31,15 +34,21 @@ func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
 		{[]string{"setup", "codex", "--apply"}, true},
 		{[]string{"setup", "codex"}, false},
 		{[]string{"setup", "codex", "--dry-run"}, false},
-		{[]string{"uninstall", "codex", "--apply"}, false},
+		{[]string{"uninstall", "codex", "--apply"}, true},
+		{[]string{"uninstall", "--apply"}, true},
+		{[]string{"uninstall", "codex"}, false},
+		{[]string{"uninstall", "--dry-run"}, false},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			env := setupEnv(true, new([]SetupRequest))
 			env.CommandDeadline = time.Now().Add(-time.Second)
 			deadline := time.Now().Add(time.Minute)
 			var started, stopped bool
-			env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
+			env.BeginSetupApply = func(ctx context.Context, action string) (context.Context, func()) {
 				started = true
+				if action != tc.args[0] {
+					t.Errorf("deadline for %q, want %q", action, tc.args[0])
+				}
 				ctx, cancel := context.WithDeadline(ctx, deadline)
 				return ctx, func() { stopped = true; cancel() }
 			}
@@ -52,6 +61,35 @@ func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
 			}
 			if out, stderr, code := run(t, env, tc.args...); code != core.ExitOK || started != tc.want || stopped != tc.want {
 				t.Fatalf("exit %d, started %v, stopped %v, stdout %q, stderr %q", code, started, stopped, out, stderr)
+			}
+		})
+	}
+}
+
+func TestAnApplyPastItsDeadlineKeepsARealError(t *testing.T) {
+	timeout := errors.New("uninstall timed out")
+	for _, tc := range []struct {
+		name      string
+		returned  error
+		want, not string
+	}{
+		{"real error", errors.New("configuration changed"), "configuration changed. uninstall timed out", ""},
+		{"wrapped context error", fmt.Errorf("codex adapter policy: %w", context.Canceled), "codex adapter policy: context canceled. uninstall timed out", ""},
+		{"bare context error", context.Canceled, "uninstall timed out", "context canceled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupEnv(true, new([]SetupRequest))
+			var expire context.CancelCauseFunc
+			env.BeginSetupApply = func(ctx context.Context, _ string) (context.Context, func()) {
+				ctx, expire = context.WithCancelCause(ctx)
+				return ctx, func() { expire(nil) }
+			}
+			env.Setup = func(context.Context, SetupRequest) error {
+				expire(timeout)
+				return tc.returned
+			}
+			if _, stderr, code := run(t, env, "uninstall", "codex", "--apply"); code != core.ExitError || !strings.Contains(stderr, tc.want) || tc.not != "" && strings.Contains(stderr, tc.not) {
+				t.Fatalf("exit %d, stderr %q, want %q", code, stderr, tc.want)
 			}
 		})
 	}
@@ -158,6 +196,41 @@ func TestAReportedSetupFailureWritesOneJSONObject(t *testing.T) {
 	out, stderr, code := run(t, env, "--json", "setup", "codex", "--apply")
 	if code != core.ExitError || out != `{"v":1,"ok":false}`+"\n" || stderr != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, stderr)
+	}
+}
+
+func TestSetupApplyDeadlineRendersConfirmedPolicyAndRetry(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			deadline := errors.New("setup apply timed out. Run setup status, then retry with the same adapters")
+			env := setupEnv(false, new([]SetupRequest))
+			var expire context.CancelCauseFunc
+			env.BeginSetupApply = func(ctx context.Context, _ string) (context.Context, func()) {
+				ctx, expire = context.WithCancelCause(ctx)
+				return ctx, func() { expire(nil) }
+			}
+			env.Setup = func(context.Context, SetupRequest) error {
+				expire(deadline)
+				return errors.New("adapter policy was applied. Dispatcher did not confirm automatic joining (outcome_unknown)")
+			}
+			args := []string{"setup", "codex", "--apply"}
+			if format == "json" {
+				args = append([]string{"--json"}, args...)
+			}
+			out, stderr, code := run(t, env, args...)
+			text := out + stderr
+			if format == "json" {
+				var result struct{ Message string }
+				if err := json.Unmarshal([]byte(out), &result); err != nil {
+					t.Fatalf("setup result %q: %v", out, err)
+				}
+				text = result.Message
+			}
+			if code != core.ExitError || !strings.Contains(text, "adapter policy was applied") ||
+				!strings.Contains(text, "automatic joining (outcome_unknown)") || !strings.Contains(text, deadline.Error()) {
+				t.Fatalf("exit %d, rendered setup error %q", code, text)
+			}
+		})
 	}
 }
 

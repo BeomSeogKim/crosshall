@@ -3,11 +3,14 @@
 package e2e
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,7 +55,7 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pauseFixtureProcess(t, child)
+			pauseEnrollmentDispatcher(t, child)
 			if out := f.waitForStartupRepository(repo, test.adapter, "startup", repo); out != "" {
 				t.Fatalf("stalled startup emitted %q", out)
 			}
@@ -78,7 +81,7 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				if got := f.enrollmentEvidence(test.adapter); !strings.Contains(got, "no registered leaf") {
 					t.Fatal(got)
 				}
-				pauseFixtureProcess(t, child)
+				pauseEnrollmentDispatcher(t, child)
 				missed := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("dispatcher-still-paused"))
 				missedStage := f.enrollmentEvidence(test.adapter)
 				resumeFixtureProcess(t, child)
@@ -166,6 +169,33 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				t.Fatal(got)
 			}
 		})
+	}
+}
+
+func pauseEnrollmentDispatcher(t *testing.T, child *os.Process) {
+	t.Helper()
+	pauseFixtureProcess(t, child)
+	args := []string{"-o", "state=", "-p", strconv.Itoa(child.Pid)}
+	if runtime.GOOS == "linux" {
+		// The leader can stop before the thread handling first contact.
+		args = append([]string{"-L"}, args...)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), fixtureEventTimeout)
+	defer cancel()
+	for {
+		out, err := exec.CommandContext(ctx, "/bin/ps", args...).Output()
+		states := strings.Fields(string(out))
+		if err != nil || len(states) == 0 {
+			t.Fatalf("check pause of fixture dispatcher %d: states %q, error %v", child.Pid, states, err)
+		}
+		if !slices.ContainsFunc(states, func(state string) bool { return !strings.HasPrefix(state, "T") }) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("fixture dispatcher %d did not stop: last states %q", child.Pid, states)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

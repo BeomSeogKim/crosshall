@@ -4,24 +4,93 @@ package conformance
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 )
 
 func typedAheadWorld(t *testing.T) *conformance {
 	t.Helper()
 	c := newConformance(t)
 	c.requireClaude()
-	c.owner("owner", "start")
+	startTypedAheadDispatcher(c)
 	c.owner("owner", "channel", "create", "checkout")
 	c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
 	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
 	c.writer("join", "checkout", "--as", "writer")
 	c.installInteractive()
 	return c
+}
+
+// Keep cold dispatcher startup outside the public owner-start deadline in
+// these tests, whose timing assertions begin after the first vendor prompt.
+func startTypedAheadDispatcher(c *conformance) {
+	c.t.Helper()
+	cmd := exec.CommandContext(c.t.Context(), c.crosshall, "__dispatch")
+	cmd.Dir, cmd.Env = c.state, c.base()
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = time.Second
+	log, err := os.Create(filepath.Join(c.state, "dispatcher.log"))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer log.Close()
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		c.t.Fatalf("start fixture dispatcher: %v", err)
+	}
+	done := make(chan struct{})
+	var childErr error
+	go func() {
+		childErr = cmd.Wait()
+		close(done)
+	}()
+	c.t.Cleanup(func() { <-done })
+
+	marker := filepath.Join(ident.Rendezvous(c.state, os.Geteuid()), "ready")
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			c.t.Fatalf("check fixture dispatcher readiness: %v", err)
+		}
+		select {
+		case <-done:
+			c.t.Fatalf("fixture dispatcher exited before publishing its ready marker: %v\n%s", childErr, dispatcherLogTail(log))
+		case <-timeout.C:
+			c.t.Fatalf("fixture dispatcher did not publish its ready marker within 10s\n%s", dispatcherLogTail(log))
+		case <-poll.C:
+		}
+	}
+}
+
+func dispatcherLogTail(log *os.File) string {
+	info, err := log.Stat()
+	if err != nil {
+		return fmt.Sprintf("cannot stat dispatcher log: %v", err)
+	}
+	const maxLogBytes = 4 << 10
+	start := max(0, info.Size()-maxLogBytes)
+	tail, err := io.ReadAll(io.NewSectionReader(log, start, info.Size()-start))
+	if err != nil {
+		return fmt.Sprintf("cannot read dispatcher log: %v", err)
+	}
+	if start > 0 {
+		return fmt.Sprintf("[dispatcher log truncated, %d bytes omitted]\n%s", start, tail)
+	}
+	return string(tail)
 }
 
 type promptBlock struct {

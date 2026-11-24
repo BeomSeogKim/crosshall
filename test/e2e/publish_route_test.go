@@ -69,14 +69,15 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(fixtureEventTimeout)
 		var last route
+		var reason string
 		var lastErr error
 		var who outcome
 		var checkedWho bool
 		var queued []string
 		attempt := 0
 		for time.Now().Before(deadline) {
-			lastErr = db.QueryRow(`SELECT state, mode, COALESCE(socket_path, '')
-				FROM publish_route WHERE session_ref = ? AND adapter = 'claude'`, sessionID).Scan(&last.state, &last.mode, &last.socket)
+			lastErr = db.QueryRow(`SELECT state, mode, COALESCE(socket_path, ''), reason
+				FROM publish_route WHERE session_ref = ? AND adapter = 'claude'`, sessionID).Scan(&last.state, &last.mode, &last.socket, &reason)
 			if lastErr == nil && last == want {
 				who, checkedWho = peer.run("who"), true
 				members, _ := who.obj["members"].([]any)
@@ -100,8 +101,23 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		if !checkedWho {
 			who = peer.run("who")
 		}
-		t.Fatalf("after %d callbacks wanted committed route %+v and who state %q, last route %+v (%v), queued packets %v\nwho exit %d, stdout %s, stderr %s",
-			attempt, want, wantWho, last, lastErr, queued, who.exit, who.stdout, who.stderr)
+		counterDir := filepath.Join(w.rendezvous(), "hooks")
+		logs, err := os.ReadDir(counterDir)
+		if err != nil {
+			t.Logf("read hook counter directory: %v", err)
+		} else if len(logs) == 0 {
+			t.Log("no hook counter files")
+		}
+		for _, log := range logs {
+			raw, err := os.ReadFile(filepath.Join(counterDir, log.Name()))
+			if err != nil {
+				t.Logf("read hook counters %s: %v", log.Name(), err)
+				continue
+			}
+			t.Logf("hook counters %s: %q", log.Name(), raw)
+		}
+		t.Fatalf("after %d callbacks wanted committed route %+v and who state %q, last route %+v, reason %q (%v), queued packets %v\nwho exit %d, stdout %s, stderr %s",
+			attempt, want, wantWho, last, reason, lastErr, queued, who.exit, who.stdout, who.stderr)
 	}
 
 	socket := "/tmp/cc-socks/" + pid + ".sock"
@@ -140,9 +156,9 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 	sessionID := "claude-e2e-late-socket"
 	pid := fmt.Sprintf("%d", os.Getpid())
 	socket := "/tmp/cc-socks/" + pid + ".sock"
-	runHook := func(event, payload, socketPath string) {
+	runHook := func(ctx context.Context, event, payload, socketPath string) {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", event)
+		cmd := exec.CommandContext(ctx, binary, "hook", "claude", event)
 		cmd.Dir = repo
 		cmd.Stdin = strings.NewReader(payload)
 		cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+sessionID, "CLAUDE_PID="+pid,
@@ -154,24 +170,43 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 			t.Fatalf("hook %s: %v\n%s", event, err, out)
 		}
 	}
+	session := claudeSession{w: w, key: sessionID}
 	db := w.db()
-	await := func(what string, wantState, wantSocket, wantReason string) {
+	type route struct{ state, socket, reason string }
+	var lastRoute route
+	await := func(event string, want, pending route, payload func(int) string) {
 		t.Helper()
-		var state, got, reason string
-		for deadline := time.Now().Add(fixtureEventTimeout); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
-			err := db.QueryRow(`SELECT state, COALESCE(socket_path, ''), reason FROM publish_route WHERE session_ref = ?`, sessionID).
-				Scan(&state, &got, &reason)
-			if err == nil && state == wantState && got == wantSocket && (wantReason == "" || reason == wantReason) {
+		deadline := time.Now().Add(fixtureEventTimeout)
+		ctx, cancel := context.WithDeadline(t.Context(), deadline)
+		defer cancel()
+		// A hook can exit successfully when its callback budget expires.
+		for attempt := 1; ; attempt++ {
+			runHook(ctx, event, payload(attempt), want.socket)
+			session.waitForConsumption(deadline)
+			var got route
+			err := db.QueryRowContext(ctx, `SELECT state, COALESCE(socket_path, ''), reason FROM publish_route WHERE session_ref = ?`, sessionID).
+				Scan(&got.state, &got.socket, &got.reason)
+			if err == nil {
+				lastRoute = got
+			}
+			if err == nil && got.state == want.state && got.socket == want.socket && (want.reason == "" || got.reason == want.reason) {
 				return
 			}
+			waiting := err == nil && got == pending || event == "SessionStart" && errors.Is(err, sql.ErrNoRows)
+			counter := session.lastCounter()
+			if !waiting || counter != event+" deadline" || !time.Now().Before(deadline) {
+				t.Fatalf("%s after %d callbacks: last route %+v (%v), want %+v, last hook counter %q",
+					event, attempt, lastRoute, err, want, counter)
+			}
 		}
-		t.Fatalf("%s: route state %q socket %q reason %q, want %q %q %q", what, state, got, reason, wantState, wantSocket, wantReason)
 	}
 
-	runHook("SessionStart", fmt.Sprintf(`{"hook_event_name":"SessionStart","session_id":%q,"source":"startup","cwd":%q,"permission_mode":"default"}`,
-		sessionID, repo), "")
-	await("a start without the socket", "invalidated", "", "no socket at start; the next prompt attaches it")
-	runHook("UserPromptSubmit", fmt.Sprintf(`{"hook_event_name":"UserPromptSubmit","session_id":%q,"prompt_id":"first","permission_mode":"default"}`,
-		sessionID), socket)
-	await("the next prompt with the socket", "active", socket, "")
+	start := fmt.Sprintf(`{"hook_event_name":"SessionStart","session_id":%q,"source":"startup","cwd":%q,"permission_mode":"default"}`,
+		sessionID, repo)
+	started := route{state: "invalidated", reason: "no socket at start; the next prompt attaches it"}
+	await("SessionStart", started, route{state: "invalidated", reason: "no socket"}, func(int) string { return start })
+	await("UserPromptSubmit", route{state: "active", socket: socket}, started, func(attempt int) string {
+		return fmt.Sprintf(`{"hook_event_name":"UserPromptSubmit","session_id":%q,"prompt_id":"prompt-%d","permission_mode":"default"}`,
+			sessionID, attempt)
+	})
 }

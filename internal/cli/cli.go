@@ -118,7 +118,7 @@ type Env struct {
 	OwnerGate func() string
 	// Start starts the dispatcher if it is not running.
 	Start func(ctx context.Context) error
-	// StartReady confirms a dispatcher response for the explicit owner start.
+	// StartReady owns the readiness deadline for the explicit owner start.
 	StartReady func(ctx context.Context) error
 	// Stop waits for the running dispatcher to release its lock.
 	Stop func(ctx context.Context) (bool, error)
@@ -137,8 +137,10 @@ type Env struct {
 	// Doctor checks existing local state without launching the dispatcher.
 	Doctor func(context.Context) core.Result
 	// Setup manages the explicitly selected user-level adapter configuration.
-	Setup           func(context.Context, SetupRequest) error
-	BeginSetupApply func(context.Context) (context.Context, func())
+	Setup func(context.Context, SetupRequest) error
+	// BeginSetupApply bounds a setup or uninstall --apply as a whole; the
+	// action names which, for the timeout message.
+	BeginSetupApply func(ctx context.Context, action string) (context.Context, func())
 	// SetupTerminal reports whether standard input and output are both a
 	// terminal, so setup may ask questions. Nil means no terminal.
 	SetupTerminal      func() bool
@@ -285,7 +287,8 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			}
 		}
 	}
-	if !deadline.IsZero() {
+	explicitStart := len(args) == 1 && args[0] == "start"
+	if !deadline.IsZero() && (!explicitStart || env.StartReady == nil) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
@@ -293,7 +296,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	switch {
 	case args[0] == "telemetry":
 		return runOwnerTelemetry(env, opts, args[1:], stdout, stderr)
-	case len(args) == 1 && args[0] == "start":
+	case explicitStart:
 		start := env.StartReady
 		if start == nil {
 			start = env.Start

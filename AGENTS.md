@@ -40,5 +40,7 @@ name.
 
 ## Checks
 
-`bash scripts/ci-checks.sh` runs what CI runs. Run it before proposing a
-change.
+`bash scripts/ci-checks.sh` runs what CI runs. Before proposing a change,
+run the tests of the packages you changed. The pull request's CI is the full
+run; do not run the full script locally for an ordinary pull request. A
+release candidate gets one local full run before it is tagged.

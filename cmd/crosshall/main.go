@@ -113,8 +113,8 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		env.TelemetryEndpoint = telemetry.Receiver(version)
 		env.TelemetryCurl = telemetryconfig.CurlPath
 		env.TelemetryStateRoot = paths.state
-		env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
-			return setupApplyDeadline(ctx, 30*time.Second)
+		env.BeginSetupApply = func(ctx context.Context, action string) (context.Context, func()) {
+			return applyDeadline(ctx, action, 30*time.Second)
 		}
 		env.Setup = func(ctx context.Context, req cli.SetupRequest) error {
 			executable, err := os.Executable()
@@ -128,36 +128,9 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			dispatcherReady := false
 			service := setup.Service{StateRoot: paths.state, Executable: executable,
 				SetPolicy: func(ctx context.Context, adapter string, enabled bool) error {
-					// Give each policy update its own budget after the interactive plan.
-					ctx, cancel := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
-					defer cancel()
-					if err := env.Start(ctx); err != nil {
-						return err
-					}
-					cmd := domain.AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: adapter, Enabled: &enabled}}
-					result, err := transport.Do(ctx, cli.Call{Owner: true, Command: cmd, OpKey: wire.NewID()})
-					if err != nil {
-						return err
-					}
-					if result.Status != core.ExitOK {
-						var detail struct{ Message string }
-						_ = json.Unmarshal(result.Data, &detail)
-						return fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
-					}
-					dispatcherReady = true
-					if !enabled {
-						return nil
-					}
-					// The plan said so: installing turns automatic joining on, once.
-					auto := domain.ChannelAuto{On: true, Initial: true}
-					result, err = transport.Do(ctx, cli.Call{Owner: true, Command: auto, OpKey: wire.NewID()})
-					if err != nil {
-						return err
-					}
-					if result.Status != core.ExitOK {
-						return fmt.Errorf("dispatcher did not confirm automatic joining (%s)", result.Code)
-					}
-					return nil
+					confirmed, err := setSetupPolicy(ctx, env.Start, transport.Do, adapter, enabled)
+					dispatcherReady = dispatcherReady || confirmed
+					return err
 				}}
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
 				req.PathConsent = writeInstallerPathConsent
@@ -188,16 +161,65 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	return cli.RunEnv(context.Background(), env, args, os.Stdout, os.Stderr)
 }
 
-const setupApplyTimeoutMessage = "setup apply timed out. Some changes may have been applied. Run crosshall setup status, then retry with the same adapters."
+func setSetupPolicy(ctx context.Context, start func(context.Context) error,
+	send func(context.Context, cli.Call) (core.Result, error), adapter string, enabled bool) (bool, error) {
+	startCtx, cancelStart := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
+	err := start(startCtx)
+	cancelStart()
+	if err != nil {
+		return false, err
+	}
+	// A cold start can spend nearly all of its budget. Each confirmation
+	// gets its own deadline within the overall setup deadline.
+	confirm := func(cmd domain.Command) (core.Result, error) {
+		if err := ctx.Err(); err != nil {
+			return core.Result{}, err
+		}
+		stepCtx, cancel := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
+		defer cancel()
+		return send(stepCtx, cli.Call{Owner: true, Command: cmd, OpKey: wire.NewID()})
+	}
+	cmd := domain.AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: adapter, Enabled: &enabled}}
+	result, err := confirm(cmd)
+	if err != nil {
+		return false, err
+	}
+	if result.Status != core.ExitOK {
+		var detail struct{ Message string }
+		_ = json.Unmarshal(result.Data, &detail)
+		return false, fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
+	}
+	if !enabled {
+		return true, nil
+	}
+	// The plan said so: installing turns automatic joining on, once.
+	auto := domain.ChannelAuto{On: true, Initial: true}
+	result, err = confirm(auto)
+	if err != nil {
+		return true, fmt.Errorf("adapter policy was applied. Could not confirm automatic joining (%w)", err)
+	}
+	if result.Status != core.ExitOK {
+		return true, fmt.Errorf("adapter policy was applied. Dispatcher did not confirm automatic joining (%s)", result.Code)
+	}
+	return true, nil
+}
 
-func setupApplyDeadline(ctx context.Context, limit time.Duration) (context.Context, func()) {
-	ctx, cancel := context.WithTimeoutCause(ctx, limit, errors.New(setupApplyTimeoutMessage))
+func applyTimeoutMessage(action string) string {
+	if action == "uninstall" {
+		return "uninstall timed out. Some changes may have been applied. Run crosshall setup status, then retry crosshall uninstall with the same adapters."
+	}
+	return "setup apply timed out. Some changes may have been applied. Run crosshall setup status, then retry with the same adapters."
+}
+
+func applyDeadline(ctx context.Context, action string, limit time.Duration) (context.Context, func()) {
+	message := applyTimeoutMessage(action)
+	ctx, cancel := context.WithTimeoutCause(ctx, limit, errors.New(message))
 	// Give cooperative cancellation time to report its result. A blocked
 	// syscall cannot observe the context, so the CLI must also exit on its own.
 	watchdog := time.AfterFunc(limit+time.Second, func() {
 		reported := make(chan struct{})
 		go func() {
-			fmt.Fprintln(os.Stderr, setupApplyTimeoutMessage)
+			fmt.Fprintln(os.Stderr, message)
 			close(reported)
 		}()
 		select {

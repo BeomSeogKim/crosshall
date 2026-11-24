@@ -9,13 +9,42 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 	f := newSetupWorld(t)
 	f.apply("", "setup", "claude", "--apply")
 	repo := f.enrollmentRepo()
-	f.invokeHook(repo, "claude", "SessionStart", `"source":"startup"`)
+	const currentLaunch = `principal_id = (SELECT principal_id FROM principal_key WHERE vendor = 'claude' AND key = ?)
+		AND json_extract(profile, '$.manifest_rev') = 'claude-3'`
+	key := setupSessionPrefix + "claude"
+	reader := f.db()
+	counters, err := f.hookCounterRecords("claude", "SessionStart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for attempt := 1; ; attempt++ {
+		f.invokeHook(repo, "claude", "SessionStart", `"source":"startup"`)
+		f.waitEnrollmentPackets("claude", "SessionStart", deadline)
+		var launches int
+		if err := reader.QueryRow(`SELECT COUNT(*) FROM adapter_launch WHERE `+currentLaunch, key).Scan(&launches); err != nil {
+			t.Fatal(err)
+		}
+		if launches == 1 {
+			break
+		}
+		after, err := f.hookCounterRecords("claude", "SessionStart")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if launches != 0 || len(after) != len(counters)+1 || !strings.HasPrefix(after[len(counters)], "claude SessionStart deadline ") ||
+			!time.Now().Before(deadline) {
+			t.Fatalf("prepare the launch to upgrade after %d callbacks: %d matching rows; %s", attempt, launches, f.enrollmentEvidence("claude"))
+		}
+		counters = after
+	}
 	owner := f.owner()
 	owner.must("owner", "stop")
 
@@ -24,8 +53,7 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-2')
-		WHERE json_extract(profile, '$.manifest_rev') = 'claude-3'`)
+	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-2') WHERE `+currentLaunch, key)
 	if err != nil {
 		t.Fatal(err)
 	}

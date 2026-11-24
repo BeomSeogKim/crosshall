@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -101,6 +102,26 @@ func TestSetupApplyDeadlineKeepsCompletedVendorAndStopsTheNext(t *testing.T) {
 	}
 	if result.Vendors[0].Outcome != "installed" || result.Vendors[1].Outcome != "failed" || result.Vendors[1].Error != deadline.Error() {
 		t.Fatalf("vendor outcomes %+v", result.Vendors)
+	}
+}
+
+func TestSetupApplyDeadlineReportsConfirmedVendorStage(t *testing.T) {
+	deadline := errors.New("setup apply timed out. Run setup status, then retry with the same adapters")
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	ops := expiringInstall{newFakeOps(), func() { cancel(deadline) }}
+	ops.failing["claude"] = errors.New("adapter policy was applied. Dispatcher did not confirm automatic joining (outcome_unknown)")
+	var out bytes.Buffer
+	err := (Service{}).prompts(ctx, Request{Action: "setup", Apply: true, JSON: true,
+		Adapters: []string{"claude"}, Input: strings.NewReader(""), Output: &out}, ops)
+	var result promptResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil || result.OK || err == nil || len(result.Vendors) != 1 {
+		t.Fatalf("result %q, decode error %v, setup error %v", out.String(), decodeErr, err)
+	}
+	got := result.Vendors[0]
+	if got.Outcome != "failed" || !strings.Contains(got.Error, ops.failing["claude"].Error()) ||
+		!strings.Contains(got.Error, deadline.Error()) || got.Retry == "" {
+		t.Fatalf("vendor outcome %+v", got)
 	}
 }
 
@@ -647,5 +668,37 @@ func TestTheOfferRechecksEligibilityAfterPlanning(t *testing.T) {
 	}
 	if d, _ := s.declinedOffers(); !d["claude"] {
 		t.Fatal("the decline saved meanwhile was lost")
+	}
+}
+
+func TestAnApplyPastItsDeadlineKeepsAConcurrentRealError(t *testing.T) {
+	deadline := errors.New("setup apply timed out")
+	changed := errors.New("configuration changed")
+	for _, tc := range []struct {
+		name     string
+		returned error
+		want     string
+	}{
+		{"real error", changed, "configuration changed. setup apply timed out"},
+		{"bare context error", context.Canceled, "setup apply timed out"},
+		{"wrapped context error", fmt.Errorf("claude adapter policy: %w", context.Canceled), "claude adapter policy: context canceled. setup apply timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			fake := newFakeOps()
+			fake.failing = map[string]error{"claude": tc.returned}
+			ops := expiringInstall{fake, func() { cancel(deadline) }}
+			var out bytes.Buffer
+			_ = (Service{}).prompts(ctx, Request{Action: "setup", Apply: true, JSON: true,
+				Adapters: []string{"claude"}, Input: strings.NewReader(""), Output: &out}, ops)
+			var result promptResult
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.Vendors) != 1 {
+				t.Fatalf("result %q, decode error %v", out.String(), err)
+			}
+			if v := result.Vendors[0]; v.Outcome != "failed" || v.Error != tc.want {
+				t.Fatalf("vendor outcome %+v, want error %q", v, tc.want)
+			}
+		})
 	}
 }

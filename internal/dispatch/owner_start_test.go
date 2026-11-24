@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -47,6 +48,98 @@ func TestReadinessProbeUsesOwnerIngressAndCurrentInstance(t *testing.T) {
 					t.Fatalf("readiness reply does not name the serving instance: %s, %v", got.Data, err)
 				}
 			}
+		})
+	}
+}
+
+func TestOwnerStartRevalidatesReadinessAfterProbe(t *testing.T) {
+	for _, scenario := range []string{"same instance", "marker replaced", "lock released", "wait expired"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				cfg := LaunchConfig{Version: "test", Owner: true, StateRoot: filepath.Join(root, "state"),
+					DefaultStateRoot: filepath.Join(root, "default"), Rendezvous: filepath.Join(root, "rendezvous")}
+				state, err := cfg.openStartState(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer state.Close()
+				lock, err := spool.OpenServerFile(state, "dispatcher.lock", os.O_CREATE|os.O_RDWR)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Close()
+				if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+					t.Fatal(err)
+				}
+				rendezvous, err := openRendezvous(cfg.Rendezvous)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rendezvous.Close()
+				publishMarker := func(instance string) {
+					lease, err := spool.HoldReadyLease(rendezvous, instance)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { lease.Close() })
+					if err := spool.PublishServerFile(rendezvous, "ready", newReadyMarker(instance)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				const instance = "original"
+				publishMarker(instance)
+				owner, err := spool.OpenServerChild(state, "owner", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Close()
+
+				// Expire before the owner's next attempt and between two 1 ms spool polls.
+				deadline := time.Now().Add(5500 * time.Microsecond)
+				ctx, cancel := context.WithDeadline(t.Context(), deadline)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- cfg.StartReady(ctx) }()
+				synctest.Wait()
+
+				var attempt string
+				err = spool.DrainServerSpool(owner, func(id string, raw []byte) (core.Result, error) {
+					var req wire.Request
+					var asked wire.DispatcherInstance
+					if err := json.Unmarshal(raw, &req); err != nil || req.Verb != wire.VerbOwnerReady ||
+						json.Unmarshal(req.Args, &asked) != nil || asked.Instance != instance {
+						t.Fatalf("unexpected probe %q (%v)", raw, err)
+					}
+					attempt = id
+					switch scenario {
+					case "marker replaced":
+						publishMarker("replacement")
+					case "lock released":
+						if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+							t.Fatal(err)
+						}
+					case "wait expired":
+						// The claimed probe checks for its reply again on cancellation.
+						time.Sleep(time.Until(deadline) - time.Nanosecond)
+					}
+					return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"instance":"original"}`)}, nil
+				})
+				if err != nil || attempt == "" {
+					t.Fatalf("serve the readiness probe: attempt %q, error %v", attempt, err)
+				}
+				got := <-done
+				if _, err := owner.Stat(filepath.Join("out", attempt+".json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("owner did not read the probe response: %v", err)
+				}
+				if scenario == "same instance" {
+					if got != nil {
+						t.Fatalf("owner rejected the current live instance: %v", got)
+					}
+				} else if !errors.Is(got, context.DeadlineExceeded) {
+					t.Fatalf("owner start error %v, want deadline exceeded", got)
+				}
+			})
 		})
 	}
 }

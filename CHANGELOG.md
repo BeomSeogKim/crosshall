@@ -2,9 +2,12 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## v0.2.0-rc.5 (2026-11-24)
+## Unreleased
 
 - **A hook-joined Codex session learns its standby when it joins:** its start-hook join line and `crosshall join <channel> --rules` now end with `` [crosshall] In this session new work shows at your next prompt: under rule 4, do not run `wait`; end the turn when you have nothing else to do. ``, and the join JSON carries `at_next_prompt: true`, under the same test as the empty inbox (Codex adapter on, a prompt line, no do not disturb). A first turn no longer runs a wait only to learn that it should not wait.
+
+## v0.2.0-rc.5 (2026-11-24)
+
 - **A prompt absorbed into a running Claude Code turn no longer blocks notices:** Claude Code 2.1.330 takes a prompt typed while a tool runs into the running turn, so the hall's turn for it never ended and every later notice was `unknown`. Manifest `claude-3` also installs the Notification hook for `idle_prompt`; the session's idle report closes such turns and ends an unknown suspension recorded before it, timed or lasting, with a `publish_suspension_lifted` event. The binary ships tested notice and turn-end evidence for Claude Code 2.1.331 on macOS arm64 with `claude-3`. Rerun `crosshall setup claude` (#236).
 - **A notice waits for a running turn:** the dispatcher no longer submits a notice while the session reports a current prompt or permission request. When the turn ends, or its report expires, it checks again which requests still need one: a request the member picked up, closed, or saw in its prompt line drops out of the batch. A wait the member is running still takes the work at once, and `send` and `waiting` say which of the two will reach the member.
 - **`setup --apply` has an overall deadline:** a scripted setup stops after 30 seconds instead of waiting without end on a stalled step. Starting the dispatcher, confirming the adapter policy and confirming automatic joining each get up to three seconds within it. If automatic joining fails after the policy was confirmed, the result says the policy is applied. When the overall time runs out, it also says to run `crosshall setup status` and retry with the same adapters.

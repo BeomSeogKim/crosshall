@@ -94,7 +94,7 @@ func TestAntigravitySessionStartAcceptsOnlySupportedPayload(t *testing.T) {
 				t.Fatalf("unexpected startup event: %+v", got)
 			}
 			req := makeRequest(time.Now(), m, spec, got, enrolment{worktree: workspace, repository: workspace}, true, 1)
-			if req.Verb != wire.VerbHookEnroll || strings.Contains(string(req.Args), "private prompt") ||
+			if req.Verb != wire.VerbHookEnroll || !req.OfferReceipts || strings.Contains(string(req.Args), "private prompt") ||
 				strings.Contains(string(req.Args), transcript("antigravity-cli")) {
 				t.Fatalf("unexpected enrollment request: %+v", req)
 			}
@@ -106,8 +106,14 @@ func TestAntigravitySessionStartWritesInjectionOrNoOpJSON(t *testing.T) {
 	m, _ := loadManifest("agy")
 	spec, _ := m.event("SessionStart")
 	out, err := present(spec, wire.HookResult{Enrollment: "joined", Hint: "member rules"})
-	if err != nil || string(out) != "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"member rules\"}}]}\n" {
-		t.Fatalf("startup output: %q, %v", out, err)
+	if err != nil || string(out.data) != "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"member rules\"}}]}\n" {
+		t.Fatalf("startup output: %q, %v", out.data, err)
+	}
+	offer := &wire.HookOfferReceipt{OfferID: 4, Nonce: "start"}
+	frame, err := present(spec, wire.HookResult{Enrollment: "restored", PendingLine: "[crosshall] pending: 4", OfferReceipt: offer})
+	if err != nil || frame.offer != offer ||
+		string(frame.data) != "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"[crosshall] pending: 4\"}}]}\n" {
+		t.Fatalf("startup offer frame: %q, receipt %+v, error %v", frame.data, frame.offer, err)
 	}
 	var noOp strings.Builder
 	Run(time.Now(), []string{"agy", "SessionStart"}, strings.NewReader("{}"), &noOp, func() (Paths, error) {

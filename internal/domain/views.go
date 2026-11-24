@@ -758,7 +758,8 @@ func shownAt(ctx context.Context, tx store.Tx, principal, message int64) (*int64
 	var at sql.NullInt64
 	err := tx.QueryRowContext(ctx, `SELECT MIN(at_ms) FROM (
 		SELECT a.at_ms FROM announcement a WHERE a.principal_id = ?1 AND a.message_id = ?2
-		UNION ALL SELECT o.at_ms FROM offer_item i JOIN offer o ON o.id = i.offer_id
+		UNION ALL SELECT CASE WHEN o.receipt_mode = 'legacy' THEN o.at_ms ELSE o.written_at_ms END
+			FROM offer_item i JOIN offer o ON o.id = i.offer_id
 			WHERE i.principal_id = ?1 AND i.message_id = ?2)`, principal, message).Scan(&at)
 	if err != nil || !at.Valid {
 		return nil, err

@@ -45,6 +45,7 @@ type Request struct {
 }
 
 type AdapterContext struct {
+	OfferReceipts          bool
 	Instance, Generation   string
 	NoticeSeq, ReminderSeq uint64
 }

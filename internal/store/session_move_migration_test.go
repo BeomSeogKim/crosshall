@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestSessionMoveMigrationUsesSlot027(t *testing.T) {
-	if len(migrations) < 27 || migrations[23] != ownerAlertSchema || migrations[24] != threadLanesSchema ||
-		migrations[25] != unknownReceiptCauseSchema || migrations[26] != sessionMoveSchema {
-		t.Fatal("migration 027 must follow owner alerts, per-thread publish lanes and unknown receipt causes")
+func TestSessionMoveMigrationUsesSlot028(t *testing.T) {
+	if len(migrations) < 28 || migrations[23] != ownerAlertSchema || migrations[24] != threadLanesSchema ||
+		migrations[25] != unknownReceiptCauseSchema || migrations[26] != offerReceiptsSchema || migrations[27] != sessionMoveSchema {
+		t.Fatal("migration 028 must follow owner alerts, per-thread publish lanes, unknown receipt causes and offer receipts")
 	}
 }
 
@@ -70,7 +70,7 @@ func TestSessionMoveMigrationRefusesAmbiguousBindingsAndKeepsRollback(t *testing
 	if failed, err := openWithMigrations(ctx, root, migrations[:22]); err == nil {
 		failed.Close()
 		t.Fatal("the schema-22 dispatcher opened the partially upgraded database")
-	} else if !strings.Contains(err.Error(), "unsupported schema version 26") {
+	} else if !strings.Contains(err.Error(), "unsupported schema version 27") {
 		t.Fatalf("last good migration: %v", err)
 	}
 	backups, err := filepath.Glob(filepath.Join(root, "store-v22-*.sqlite3"))

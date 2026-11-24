@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -385,5 +386,23 @@ func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
 	wantOK(t, f.run(reader, Read{IDs: []int64{atPrompt}}, "read"))
 	if r := row(atPrompt); r.Wake != (Wake{}) || r.ShownAtMS != nil {
 		t.Fatalf("after reading: %+v", r)
+	}
+}
+
+// A turn end offers at most OfferCap requests: the one past the cap is not
+// seen when the turn ends, and its send line says where it is seen.
+func TestARequestPastTheTurnEndCapIsNotSeenWhenTheTurnEnds(t *testing.T) {
+	f, _, writer := turnEndFixture(t, "launch")
+	f.svc.HasPromptLine = func(adapter, revision string) bool { return adapter == "claude" }
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	var d Delivery
+	for i := range OfferCap + 1 {
+		d = decode[AskResult](t, f.ask(writer, Ask{To: []string{"reader"}, New: true, Body: "work"}, fmt.Sprintf("ask-%d", i))).Recipients[0]
+		if i < OfferCap && d.SeenAt != SeenAtTurnEnd {
+			t.Fatalf("request %d inside the cap: %+v", i+1, d)
+		}
+	}
+	if d.Wake.Wake != WakeNone || d.SeenAt != SeenAtPrompt {
+		t.Fatalf("the request past the cap: %+v", d)
 	}
 }

@@ -172,6 +172,16 @@ func currentAck(rv, leaf *os.Root, generation, effect, turn string) (wire.HookAc
 	return ack, nil
 }
 
+// Older hooks use seen-notice and do not check historical offers.
+const seenReceiptNotice = "seen-notice-receipts"
+
+func seenFile(effect string) string {
+	if effect == "notice" {
+		return seenReceiptNotice
+	}
+	return "seen-" + effect
+}
+
 func seenText(ack wire.HookAck) string {
 	text := fmt.Sprintf("%s %s %d", ack.Instance, ack.Generation, ack.Seq)
 	if ack.Membership.Generation > 1 {
@@ -188,25 +198,52 @@ func stampClean(rv, leaf *os.Root, generation, effect, turn string) bool {
 	if err != nil {
 		return false
 	}
-	seen, err := ident.ReadPrivateFile(leaf, "seen-"+effect, 4096)
+	seen, err := ident.ReadPrivateFile(leaf, seenFile(effect), 4096)
 	return err == nil && string(seen) == seenText(ack)
 }
 
 func hasSeenNotice(leaf *os.Root, generation string) bool {
-	seen, err := ident.ReadPrivateFile(leaf, "seen-notice", 4096)
-	fields := strings.Fields(string(seen))
-	if err != nil || len(fields) < 3 || fields[1] != generation {
-		return false
-	}
 	membership, err := ident.ReadMembership(leaf)
 	if err != nil {
 		return false
 	}
-	if membership.Generation <= 1 {
-		return len(fields) == 3
+	for _, name := range []string{seenReceiptNotice, "seen-notice"} {
+		seen, err := ident.ReadPrivateFile(leaf, name, 4096)
+		fields := strings.Fields(string(seen))
+		if err != nil || len(fields) < 3 || fields[1] != generation {
+			continue
+		}
+		if membership.Generation <= 1 && len(fields) == 3 {
+			return true
+		}
+		if membership.Generation > 1 && len(fields) == 5 &&
+			fields[3] == strconv.FormatInt(membership.BindingID, 10) &&
+			fields[4] == strconv.FormatInt(membership.Generation, 10) {
+			return true
+		}
 	}
-	return len(fields) == 5 && fields[3] == strconv.FormatInt(membership.BindingID, 10) &&
-		fields[4] == strconv.FormatInt(membership.Generation, 10)
+	return false
+}
+
+// TurnEndAskFile is the dispatcher's record, per member leaf, of whether a
+// turn-end notice may have an ask to announce: "<instance> <generation> 0|1".
+const TurnEndAskFile = "turn-end-ask"
+
+// noTurnEndAsk reports whether the current dispatcher recorded, for this
+// generation, that no ask waits for a turn-end notice. Anything else waits.
+func noTurnEndAsk(rv, leaf *os.Root, generation string) bool {
+	ready, err := ident.ReadPrivateFile(rv, "ready", 4096)
+	if err != nil {
+		return false
+	}
+	var marker struct {
+		Instance string `json:"instance"`
+	}
+	if json.Unmarshal(ready, &marker) != nil || marker.Instance == "" || generation == "" {
+		return false
+	}
+	record, err := ident.ReadPrivateFile(leaf, TurnEndAskFile, 4096)
+	return err == nil && string(record) == marker.Instance+" "+generation+" 0\n"
 }
 
 const seenJoinHint = "seen-join-hint"
@@ -280,7 +317,7 @@ func saveSeen(rv, leaf *os.Root, generation, effect, turn string, ack wire.HookA
 	if current != ack {
 		return errors.New("hook acknowledgement no longer matches")
 	}
-	return writeRecord(leaf, "seen-"+effect, seenText(ack))
+	return writeRecord(leaf, seenFile(effect), seenText(ack))
 }
 
 func writeRecord(leaf *os.Root, name, record string) error {

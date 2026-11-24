@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -134,7 +133,7 @@ func TestLegacyJoinCannotMakeTheFirstChannelSwitch(t *testing.T) {
 		}
 		return domain.OK(domain.JoinResult{Channel: "beta"})
 	})
-	request := wire.Request{Verb: domain.VerbJoin, OpKey: "switch", Generation: "test-gen", KeyDigest: strings.Repeat("a", 64)}
+	request := wire.Request{Verb: domain.VerbJoin, OpKey: "switch", Generation: "test-gen", KeyDigest: (ident.Identity{Vendor: "codex", Key: "synthetic-key"}).Digest()}
 	out := s.fixtureRequest(t, Arrival{Dir: leaf}, request)
 	if out.Status != core.ExitRefused || out.Code != core.CodeBindingChanged {
 		t.Fatalf("legacy switch: %+v", out)

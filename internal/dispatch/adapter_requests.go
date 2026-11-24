@@ -80,7 +80,7 @@ func (s *server) hookContext(ctx context.Context, tx store.Tx, arrival Arrival, 
 	}
 	stamp, _ := s.adapterStamp(arrival.Dir, req.Generation)
 	return &domain.AdapterContext{
-		Instance: s.ready.Instance, Generation: req.Generation,
+		Instance: s.ready.Instance, Generation: req.Generation, OfferReceipts: req.OfferReceipts,
 		NoticeSeq: stamp.NoticeSeq, ReminderSeq: stamp.ReminderSeq,
 	}, core.Result{}, nil
 }

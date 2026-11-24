@@ -84,6 +84,38 @@ func TestInstallerDisclosesPossibleCostsWhenTheClaudeVersionProbeFails(t *testin
 	}
 }
 
+// The consent matrix supplies known builds. The probe failure and first-install
+// tests exercise vendor discovery through the real setup operations.
+func consentFixturePlans(t *testing.T, s Service) *fakeOps {
+	t.Helper()
+	specs, err := selectedSpecs([]string{"claude", "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := emptyJournal()
+	versions := map[string]string{"claude": "2.1.327", "codex": "0.170.0"}
+	var targets []installTarget
+	for _, spec := range specs {
+		target, err := s.preflightInstall(spec, j)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target.Build.Version = versions[spec.Adapter]
+		targets = append(targets, target)
+	}
+	s.attachEvidence(t.Context(), targets)
+	ops := newFakeOps()
+	for i, target := range targets {
+		single := targets[i : i+1]
+		op, err := makeInstall(j, single)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops.plans[target.Spec.Adapter] = newVendorPlan(op, single, j, "", false)
+	}
+	return ops
+}
+
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 	const noticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
 	const probation = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
@@ -182,20 +214,17 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			}
 			offer := tc.name != "owner adapter off" && tc.name != "owner adapter on" && tc.name != "unreadable" &&
 				!strings.HasPrefix(tc.name, "turn-end switch")
-			req := Request{Offer: offer, Terminal: true}
-			var out string
-			var err error
 			var terminal readmeTerminal
+			req := Request{Action: "setup", Offer: offer, Terminal: true, Input: strings.NewReader("\n"), Output: &terminal}
 			if tc.name == "exact" {
 				req.PathConsent = func(bool) error { return nil }
-				err = runRealPrompts(t, s, f, req, &terminal, &terminal)
-				out = terminal.String()
-			} else {
-				out, err = realRun(t, s, f, req, "\n")
+				req.Input = &terminal
 			}
-			if err != nil {
+			f.CheckTargets(t)
+			if err := s.prompts(ctx, req, consentFixturePlans(t, s)); err != nil {
 				t.Fatal(err)
 			}
+			out := terminal.String()
 			const heading = "Saying yes turns these on for the listed agents:\n"
 			_, disclosure, found := strings.Cut(out, heading)
 			if tc.name == "exact" {

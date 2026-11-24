@@ -15,8 +15,7 @@ import (
 // Match only crosshall's rendered text, excluding host wrappers, conversation
 // history outside the sample and whole tool-result bodies.
 var tokenSamplePatterns = map[string]*regexp.Regexp{
-	"hint":     regexp.MustCompile(`(?m)\[crosshall\] Joined #[^\n]+(?:\n- [^\n]+)+`),
-	"roster":   regexp.MustCompile(`(?m)^#[^\s]+(?:\n  (?:@|Working or idle|\.\.\.)[^\n]+)+`),
+	"hint":     regexp.MustCompile(`\[crosshall\] Joined #[^ \n]+ as @[^ \n]+, with @[^\n]+`),
 	"pending":  regexp.MustCompile(`\[crosshall\] pending: [0-9]+(?: [0-9]+)*`),
 	"reminder": regexp.MustCompile(`\[crosshall\] you picked up [0-9]+(?: [0-9]+)* and have not replied\. Reply, decline, or ask for more time\.`),
 	"presence": regexp.MustCompile(`\[crosshall\] @[a-z0-9-]+ (?:prompt submitted|turn finished|approval requested|session ended) [0-9]+[a-z]+ ago(?: \(unverified\))?`),

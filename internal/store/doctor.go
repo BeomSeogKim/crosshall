@@ -104,23 +104,29 @@ type DoctorTurnEndNotice struct {
 type DoctorSnapshot struct {
 	SchemaVersion    int
 	Adapters         map[string]DoctorAdapterState
-	IdentityVersions []string
+	IdentityVersions []IdentityVersion
 	// Approvals are live members whose turn waits on the owner's approval.
 	Approvals []DoctorApproval
 }
 
+// IdentityVersion is a distinct session version recorded for a vendor.
+type IdentityVersion struct {
+	Vendor  string
+	Version string
+}
+
 // InspectDoctorStore reads an existing store without creating or modifying
-// any database file. A nonempty identityVendor also requests the distinct
-// session versions recorded for that vendor.
-func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, identityVendor string) (DoctorSnapshot, error) {
-	return InspectDoctorStoreAt(ctx, files, adapters, identityVendor, time.Now())
+// any database file. identityVendors also requests the distinct session
+// versions recorded for those vendors.
+func InspectDoctorStore(ctx context.Context, files fs.FS, adapters []string, identityVendors []string) (DoctorSnapshot, error) {
+	return InspectDoctorStoreAt(ctx, files, adapters, identityVendors, time.Now())
 }
 
 // InspectDoctorStoreAt uses the caller's clock for the UTC diagnostics day.
-func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, identityVendor string, now time.Time) (DoctorSnapshot, error) {
+func InspectDoctorStoreAt(ctx context.Context, files fs.FS, adapters []string, identityVendors []string, now time.Time) (DoctorSnapshot, error) {
 	var snapshot DoctorSnapshot
 	err := inspectStore(ctx, files, func(tx Tx) error {
-		return readDoctorSnapshot(ctx, tx, &snapshot, adapters, identityVendor, now)
+		return readDoctorSnapshot(ctx, tx, &snapshot, adapters, identityVendors, now)
 	})
 	return snapshot, err
 }
@@ -167,7 +173,7 @@ func inspectStore(ctx context.Context, files fs.FS, read func(Tx) error) error {
 	return read(tx)
 }
 
-func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, adapters []string, identityVendor string, now time.Time) error {
+func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, adapters []string, identityVendors []string, now time.Time) error {
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&snapshot.SchemaVersion); err != nil {
 		return err
 	}
@@ -187,21 +193,10 @@ func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, ad
 		return err
 	}
 	snapshot.Approvals = approvals
-	if identityVendor != "" {
-		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(vendor_version, ''), 'unknown') AS version
-			FROM principal WHERE kind = 'session' AND vendor = ? ORDER BY version`, identityVendor)
-		if err != nil {
+	for _, vendor := range identityVendors {
+		if err := readIdentityVersions(ctx, tx, snapshot, vendor); err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var version string
-			if err := rows.Scan(&version); err != nil {
-				return err
-			}
-			snapshot.IdentityVersions = append(snapshot.IdentityVersions, version)
-		}
-		return rows.Err()
 	}
 	return nil
 }
@@ -395,4 +390,21 @@ func readDoctorPublish(ctx context.Context, tx Tx, adapter string, day, now time
 		}
 	}
 	return nil
+}
+
+func readIdentityVersions(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, vendor string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(vendor_version, ''), 'unknown') AS version
+		FROM principal WHERE kind = 'session' AND vendor = ? ORDER BY version`, vendor)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		version := IdentityVersion{Vendor: vendor}
+		if err := rows.Scan(&version.Version); err != nil {
+			return err
+		}
+		snapshot.IdentityVersions = append(snapshot.IdentityVersions, version)
+	}
+	return rows.Err()
 }

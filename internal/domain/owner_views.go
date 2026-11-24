@@ -36,6 +36,9 @@ type OwnerWhoResult struct {
 	StoppedBuilds []OwnerStoppedBuild `json:"stopped_builds,omitempty"`
 	// Ended lists the live members whose session ended over 12 hours ago.
 	Ended []EndedMember `json:"ended,omitempty"`
+	// Takeovers lists the open requests of sessions that asked for a
+	// member whose session ended, for crosshall owner takeover.
+	Takeovers []OwnerTakeoverLine `json:"takeovers,omitempty"`
 }
 
 type OwnerStoppedBuild struct {
@@ -211,6 +214,9 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 		return core.Result{}, err
 	}
 	if out.Ended, err = endedMembers(ctx, tx, now); err != nil {
+		return core.Result{}, err
+	}
+	if out.Takeovers, err = openTakeovers(ctx, tx, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(out)

@@ -64,6 +64,9 @@ type JoinResult struct {
 	// AtNextPrompt says the hint names this session's rule 4 case: its next
 	// prompt shows new work, so it ends the turn instead of waiting.
 	AtNextPrompt bool `json:"at_next_prompt,omitempty"`
+	// Takeover is the request a join --takeover recorded instead of
+	// joining; the other fields then only name the channel and alias.
+	Takeover *TakeoverRequest `json:"takeover,omitempty"`
 }
 
 type JoinMoveReceipt struct {

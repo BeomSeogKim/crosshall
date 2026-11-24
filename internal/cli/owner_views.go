@@ -112,6 +112,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		for _, line := range approvalLines(r) {
 			fmt.Fprintln(w, line)
 		}
+		for _, line := range takeoverLines(r.Takeovers) {
+			fmt.Fprintln(w, line)
+		}
 		for _, line := range endedLines(r.Ended) {
 			fmt.Fprintln(w, line)
 		}
@@ -550,6 +553,38 @@ func unknownCauseWords(c store.DoctorUnknownCauses) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// takeoverLines reports each open takeover request with the command that
+// grants it, or, once granted, how long it waits for the session.
+func takeoverLines(takeovers []domain.OwnerTakeoverLine) []string {
+	var lines []string
+	for _, t := range takeovers {
+		end := "session ended " + clock(t.EndedAtMS)
+		if !t.Verified {
+			end += " (unverified)"
+		}
+		if t.LastSeenMS != 0 {
+			end += ", last seen " + clock(t.LastSeenMS)
+		}
+		owes := ""
+		if len(t.Owes) > 0 {
+			owes = "; owes"
+			for _, id := range t.Owes {
+				owes += fmt.Sprintf(" #%d", id)
+			}
+		}
+		line := fmt.Sprintf("takeover %d: #%s/@%s (binding %d), %s%s. Asked by %s session sha256:%s at %s.",
+			t.ID, t.Channel, t.Alias, t.BindingID, end, owes, t.Vendor, t.Session, clock(t.AskedAtMS))
+		if t.Granted {
+			line += fmt.Sprintf(" Granted; it completes when that session runs crosshall join %s --as %s --takeover again before %s.",
+				t.Channel, t.Alias, clock(t.ExpiresAtMS))
+		} else {
+			line += fmt.Sprintf(" crosshall owner takeover %d", t.ID)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // endedLines reports the live members whose session ended over 12 hours

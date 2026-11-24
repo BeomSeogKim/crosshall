@@ -17,9 +17,7 @@ import (
 // vendorBranchesLeft counts the adapter-name decisions each function may
 // still hold, keyed by file and function. An entry goes when its capability
 // is read from the manifest instead.
-var vendorBranchesLeft = map[string]int{
-	"views.go withMemberOutput": 1, // join hint for an unknown Antigravity CLI version
-}
+var vendorBranchesLeft = map[string]int{}
 
 // The core asks an adapter's manifest what it can do. A comparison or switch
 // case against an adapter name, spelled as a literal or as a constant or

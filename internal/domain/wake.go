@@ -70,6 +70,9 @@ func reachWake(status store.PublishState, found bool) Wake {
 	case "held":
 		return none(WhyHeld)
 	case "off":
+		if status.Invalidated {
+			return none(WhyNoRoute)
+		}
 		return none(WhyOff)
 	}
 	if adapter, ok := strings.CutPrefix(status.Reason, store.PublishNoSender); ok {

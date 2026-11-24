@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+A script that reads a send result's, `who`'s or `waiting`'s `why` gets `no_route` instead of `off` for a member whose notice route the hall invalidated, such as a Claude session whose socket no hook has reported yet. `off` now means only a switch, do not disturb, or a route that ended.
+
 ## To v0.2.0-rc.4
 
 Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:

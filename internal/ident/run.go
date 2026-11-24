@@ -87,8 +87,8 @@ func childEnvironment(environ []string) []string {
 }
 
 func isVendorVariable(name string) bool {
-	for _, row := range vendorVariables {
-		if row.name == name {
+	for _, row := range identityIndex {
+		if row.sessionEnv == name {
 			return true
 		}
 	}

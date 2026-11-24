@@ -270,7 +270,7 @@ func writeWhoami(stdout io.Writer, id ident.Identity, result core.Result, asJSON
 		message.Hint = strings.ReplaceAll(message.Hint, id.Key, displayKey)
 	}
 	warning := ""
-	if id.UnknownAntigravityCLI() {
+	if id.UnknownCLI() {
 		warning = id.Warning()
 	}
 	var err error
@@ -403,18 +403,14 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 		return nil, err
 	}
 	original := len(details.Warnings)
-	add := func(identity ident.Identity, showUnknownAntigravity bool) {
-		if identity.UnknownAntigravityCLI() && !showUnknownAntigravity {
+	add := func(identity ident.Identity, showUnknownCLI bool) {
+		if identity.UnknownCLI() && !showUnknownCLI {
 			return
 		}
 		msg := identity.Warning()
 		if verb == "join" && msg != "" {
-			switch identity.Vendor {
-			case "claude", "codex":
-				name := "Claude Code"
-				if identity.Vendor == "codex" {
-					name = "Codex CLI"
-				}
+			if !identity.IndirectVersion() {
+				name := identity.CLIName()
 				if identity.Version == "" || identity.Version == "unknown" {
 					msg = fmt.Sprintf("Crosshall could not detect the %s version to verify how it identifies sessions.", name)
 				} else {
@@ -424,8 +420,8 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 					msg = "Join succeeded. " + msg
 				}
 				msg += " No action is needed for this warning."
-			case "agy":
-				if !identity.UnknownAntigravityCLI() {
+			} else {
+				if !identity.UnknownCLI() {
 					msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions", identity.Vendor, identity.Version)
 				}
 				msg += ". Run `crosshall whoami` to check your current enrollment."

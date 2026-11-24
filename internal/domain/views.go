@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -643,7 +644,7 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 		}
 		ok = ok && member.name == joinedChannel
 	}
-	if joined && req.Vendor == "agy" && fields["hint"] != nil && caller.PrincipalID != nil {
+	if joined && (ident.Identity{Vendor: req.Vendor}).IndirectVersion() && fields["hint"] != nil && caller.PrincipalID != nil {
 		// A keyed replay keeps its original hint even after the member leaves.
 		// Check the binding that survives both departure and leaf recreation.
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(

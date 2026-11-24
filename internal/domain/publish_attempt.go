@@ -52,22 +52,28 @@ func publishRoutes(now time.Time, proven bool) string {
 		AND ` + store.PublishSwitchesOn + ` AND ` + store.PublishNotSuspended(ms(now)) + ` AND ` + store.PublishProfileCovered
 }
 
-// An offer is positive evidence only after the hook confirms its output.
-const writtenOffer = `SELECT 1 FROM offer_item oi JOIN offer o ON o.id = oi.offer_id
-	WHERE oi.principal_id = x.principal_id AND oi.message_id = x.message_id AND o.written_at_ms IS NOT NULL`
-
-const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
-	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id
-		AND x.message_id > r.watermark_message_id AND x.picked_up_at_ms IS NULL
+// pendingPublishItem applies to a recipient x and its message m both when
+// selecting a batch and just before handing it to the transport.
+const pendingPublishItem = `x.picked_up_at_ms IS NULL
 		AND (m.kind = 'ask' AND EXISTS (SELECT 1 FROM obligation o
 			WHERE o.message_id = x.message_id AND o.principal_id = x.principal_id AND o.state = 'open')
 			OR m.kind = 'reply' AND m.outcome IN ('answer', 'decline') AND EXISTS (
 				SELECT 1 FROM message ask WHERE ask.id = m.in_reply_to AND ask.kind = 'ask' AND ask.sender_id = x.principal_id))
-		AND NOT EXISTS (` + writtenOffer + `)
+		AND NOT EXISTS (SELECT 1 FROM offer_item oi JOIN offer o ON o.id = oi.offer_id
+			WHERE oi.principal_id = x.principal_id AND oi.message_id = x.message_id AND o.written_at_ms IS NOT NULL)`
+
+const publishMessages = `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
+	WHERE x.principal_id = r.principal_id AND m.channel_id = b.channel_id
+		AND x.message_id > r.watermark_message_id AND ` + pendingPublishItem + `
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt a ON a.id = i.attempt_id
 			WHERE i.principal_id = x.principal_id AND i.message_id = x.message_id AND a.binding_id = r.binding_id
 				AND a.generation = r.generation AND a.state = 'not_submitted')`
+
+// A reservation can enter submission only on its original route and listener.
+const reservationMatchesRoute = `a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
+	AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
+	AND a.policy_epoch = r.policy_epoch AND a.process_pid = p.process_pid AND a.process_start_ms = p.process_start_ms`
 
 const openPublishLane = `observed_at_ms IS NULL AND retired_at_ms IS NULL AND state <> 'not_submitted'`
 
@@ -342,16 +348,17 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
 	var principal int64
-	var shown bool
+	var stale bool
 	var target PublishTarget
 	var route publish.Route
 	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, p.process_pid, p.process_start_ms, r.principal_id,
-		EXISTS (SELECT 1 FROM publish_attempt_item x WHERE x.attempt_id = ?1 AND EXISTS (`+writtenOffer+`)) `+
+		EXISTS (SELECT 1 FROM publish_attempt_item i
+			JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
+			JOIN message m ON m.id = x.message_id
+			WHERE i.attempt_id = ?1 AND NOT (`+pendingPublishItem+`)) `+
 		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ?1 AND a.state = 'reserved'
-			AND a.binding_id = r.binding_id AND a.principal_id = r.principal_id AND a.binding_epoch = r.binding_epoch
-			AND a.generation = r.generation AND a.adapter = r.adapter AND a.session_ref = r.session_ref AND a.launch_ref = r.launch_ref
-			AND a.policy_epoch = r.policy_epoch AND a.process_pid = p.process_pid AND a.process_start_ms = p.process_start_ms)`, id).
-		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &shown)...)
+			AND `+reservationMatchesRoute+`)`, id).
+		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &stale)...)
 	resolved := false
 	if err == nil {
 		target.Address, resolved = routeAddress(target.Adapter, route)
@@ -366,7 +373,7 @@ func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (Pu
 	if err != nil {
 		return PublishTarget{}, nil, err
 	}
-	if running || shown {
+	if running || stale {
 		// Release the batch so the next reservation reads the ledger again.
 		// Keeping its items on a not_submitted attempt would bar them for
 		// this route generation, even though we never called the transport.

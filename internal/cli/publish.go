@@ -106,6 +106,10 @@ func wakeText(w domain.Wake, note bool) string {
 		text += "; it sees this at its next prompt"
 	case domain.SeenAtCommand:
 		text += "; it sees this at its next crosshall command"
+	default:
+		if w.Why == domain.WhyTurnOpen {
+			text += "; the hall checks again after its turn"
+		}
 	}
 	return text
 }
@@ -132,6 +136,8 @@ func whyText(w domain.Wake, note bool) string {
 		return "notice limit" + until
 	case domain.WhyHeld:
 		return "an earlier notice is unobserved"
+	case domain.WhyTurnOpen:
+		return "a turn is running"
 	case domain.WhyKind:
 		if note {
 			return "a note starts no turn"
@@ -157,8 +163,7 @@ func memberWakeText(w domain.Wake) string {
 func notWokenLine(ds []domain.Delivery) string {
 	var aliases []string
 	for _, d := range ds {
-		// The turn-end check of its running turn tells it.
-		if d.State == "stored" && d.Wake.Wake == domain.WakeNone && d.SeenAt != domain.SeenAtTurnEnd {
+		if d.State == "stored" && d.Wake.NeedsManualWake() {
 			aliases = append(aliases, "@"+d.Alias)
 		}
 	}

@@ -141,18 +141,18 @@ func TestPublishEligibilityAndReservationBoundary(t *testing.T) {
 
 	picked := p.turnEndAsk(p.writer, "reader", "before-reserve-read")
 	cancelled := p.turnEndAsk(p.writer, "reader", "before-reserve-cancel")
-	lateCancel := p.turnEndAsk(p.writer, "reader", "after-reserve-cancel")
+	lateCancel := p.turnEndAsk(p.writer, "reader", "after-submitting-cancel")
 	wantOK(t, p.run(p.reader, Read{IDs: []int64{picked}}, "read-before"))
 	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: cancelled}, "cancel-before"))
 	id := p.reserve()
 	if id == 0 {
 		t.Fatal("no eligible work reserved")
 	}
-	wantOK(t, p.run(p.reader, Read{IDs: []int64{first}}, "read-after"))
-	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: lateCancel}, "cancel-after"))
 	if ids := p.begin(id); !slices.Equal(ids, []int64{first, lateCancel}) {
 		t.Fatalf("reserved ID list %v", ids)
 	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{first}}, "read-after-submitting"))
+	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: lateCancel}, "cancel-after-submitting"))
 	if n := p.count(`SELECT COUNT(*) FROM announcement WHERE via = 'publish' AND ref = ?`, id); n != 2 {
 		t.Fatalf("claims = %d, want 2", n)
 	}
@@ -242,6 +242,71 @@ func TestPublishRechecksTurnAndOffersBeforeSubmitting(t *testing.T) {
 				t.Fatalf("on recheck submitted %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestPublishRechecksHandledAskAfterInterveningTurn(t *testing.T) {
+	p := newPublishFixture(t)
+	p.offerReceipts = true
+	p.proveRoute()
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "clear-backlog"))
+	handled := p.turnEndAsk(p.writer, "reader", "handled")
+	unread := p.turnEndAsk(p.writer, "reader", "still-unread")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("initial batch was not reserved")
+	}
+
+	at := p.now.UnixMilli()
+	wantOffer(t, p.hook(p.reader, prompt(publishTestLaunch, "user", at+1)), handled, unread)
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{handled}}, "work-on-ask"))
+	wantOK(t, p.reply(p.reader, Reply{To: handled, Outcome: OutcomeAnswer, Body: "done"}, "answer"))
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+2))
+
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted stale reservation %v after the user answered %d", ids, handled)
+	}
+	if got := p.begin(p.reserve()); !slices.Equal(got, []int64{unread}) {
+		t.Fatalf("next batch on the same generation = %v, want [%d]", got, unread)
+	}
+}
+
+func TestPublishReleasesReadButUnansweredAskBeforeSubmission(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "read-after-reserve")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("no initial reservation")
+	}
+	wantOK(t, p.run(p.reader, Read{IDs: []int64{ask}}, "read"))
+	if n := p.count(`SELECT COUNT(*) FROM obligation WHERE message_id = ? AND state = 'open'`, ask); n != 1 {
+		t.Fatal("reading the ask should leave its obligation open")
+	}
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted %v after the recipient read request %d", ids, ask)
+	}
+	p.state(id, "not_submitted")
+	if p.hasWork() {
+		t.Fatal("read request remained eligible")
+	}
+}
+
+func TestPublishReleasesCancelledReservationBeforeSubmission(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	ask := p.turnEndAsk(p.writer, "reader", "cancel-after-reserve")
+	id := p.reserve()
+	if id == 0 {
+		t.Fatal("no initial reservation")
+	}
+	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: ask}, "cancel"))
+	if ids := p.begin(id); len(ids) != 0 {
+		t.Fatalf("submitted cancelled request %v", ids)
+	}
+	p.state(id, "not_submitted")
+	if p.hasWork() {
+		t.Fatal("cancelled request remained eligible")
 	}
 }
 

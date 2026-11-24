@@ -306,7 +306,7 @@ func (s *Service) unreadNotWoken(ctx context.Context, tx store.Tx, binding, prin
 		if err != nil {
 			return nil, err
 		}
-		if w.Wake != WakeNone || w.SeenAt == SeenAtTurnEnd {
+		if !w.NeedsManualWake() {
 			continue
 		}
 		if out == nil {

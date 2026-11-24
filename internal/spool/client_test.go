@@ -124,7 +124,9 @@ func TestMemberFirstContactAndRenderedAck(t *testing.T) {
 	done := callMember(ctx, f, wire.Request{Verb: "join", OpKey: "retry-join", Args: json.RawMessage(`{"channel":"one"}`)})
 	first := filepath.Join(f.rv, "first")
 	attempt := claim(t, first, &hello)
-	if hello.Attempt != attempt || hello.Vendor != f.member.Vendor || hello.Key != f.member.Key || hello.Intent != "join" || hello.Version != wire.Version {
+	deadline, _ := ctx.Deadline()
+	if hello.Attempt != attempt || hello.Vendor != f.member.Vendor || hello.Key != f.member.Key || hello.Intent != "join" ||
+		hello.Version != wire.Version || hello.ExpiresAtMS != deadline.UnixMilli() {
 		t.Fatalf("incorrect hello: %+v", hello)
 	}
 	leaf := f.leaf(t)

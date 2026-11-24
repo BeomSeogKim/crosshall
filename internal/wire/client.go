@@ -14,6 +14,7 @@ type Hello struct {
 	Key           string `json:"key"`
 	VendorVersion string `json:"vendor_version,omitempty"`
 	Intent        string `json:"intent"`
+	ExpiresAtMS   int64  `json:"expires_at_ms,omitempty"`
 }
 
 // NewID returns a fresh, filename-safe 128-bit identifier.

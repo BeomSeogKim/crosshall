@@ -98,7 +98,7 @@ func TestCodexReachesOnlyADaemonThread(t *testing.T) {
 func TestCodexNoticeEchoesItsIDs(t *testing.T) {
 	codex, _ := Shipped().Lookup("codex")
 	line, ok := codex.Notice([]int64{3, 17})
-	want := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say."
+	want := "[crosshall] pending: 3 17. This notice is from crosshall, not from a Codex session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
 	if !ok || line != want {
 		t.Fatalf("notice = %q, %v", line, ok)
 	}

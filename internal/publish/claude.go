@@ -59,7 +59,7 @@ func (claude) Reach(Route) string { return "" }
 // Bash command exits.
 func (claude) BackgroundWakes() bool { return true }
 
-const claudeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say."
+const claudeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
 
 // claudeSuffixRC4 is the v0.2.0-rc.4 text: a notice written before an upgrade
 // still counts as a notice when the session receives it after.

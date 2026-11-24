@@ -270,7 +270,7 @@ func TestEmptyInboxSuggestsTheStandardWait(t *testing.T) {
 	}
 	// #288: a session whose agent does not wake on a background wait ends its turn.
 	ft = &fakeTransport{result: okResult(t, domain.InboxResult{AtNextPrompt: true})}
-	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); out != "Inbox is empty. End the turn; new work shows at your next prompt.\n" {
+	if out, _, _ := run(t, Env{Transport: ft}, "inbox"); out != "Inbox is empty. Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.\n" {
 		t.Fatalf("empty inbox of a member that ends its turn:\n%s", out)
 	}
 }

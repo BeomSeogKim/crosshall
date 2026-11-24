@@ -170,6 +170,13 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 			// Observations neither acknowledge roster changes nor pick up items.
 			return render(opts, cmd, arrival, stdout, stderr)
 		}
+		if atPrompt {
+			result, err := domain.WaitNotNeeded(latest)
+			if err != nil {
+				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+			}
+			return render(opts, cmd, result, stdout, stderr)
+		}
 		cmd.Cursor = &snapshot.Cursor
 		cursorFingerprint = snapshot.CursorFingerprint
 		// Start with a short interval, then back off to one snapshot per

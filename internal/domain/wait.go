@@ -209,7 +209,7 @@ const HallDelivers = "The hall brings new work to this session: no wait is neede
 // AtNextPrompt is what a member whose agent does not start a turn when a
 // background command exits is told instead of a wait: holding a turn on a
 // wait costs a model request at each poll.
-const AtNextPrompt = "End the turn; new work shows at your next prompt."
+const AtNextPrompt = "Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do."
 
 // standby says how an idle member stands by: the hall delivers new work to
 // it (delivers), or its current session's agent cannot stand by on a
@@ -238,6 +238,18 @@ func standby(ctx context.Context, tx store.Tx, principal, binding int64, now tim
 // for one the hall delivers to, which Delivers marks, and the end of the
 // turn for one whose agent cannot stand by on a background wait.
 func WaitTimeout(summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
+	return waitEnd("no new messages before the wait timeout", summary, delivers, atPrompt)
+}
+
+// WaitNotNeeded ends a wait at its first hall snapshot in a session whose
+// agent does not start a turn when a background command exits and whose
+// next prompt shows new work: polling would hold its turn, one model
+// request per poll. Like a timeout, it names the next step.
+func WaitNotNeeded(summary *MemberInboxSummary) (core.Result, error) {
+	return waitEnd("this session does not wait", summary, false, true)
+}
+
+func waitEnd(message string, summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
 	next := "crosshall wait --existing --work-only --timeout 9m"
 	switch {
 	case summary != nil && len(summary.Pending) > 0:
@@ -251,7 +263,7 @@ func WaitTimeout(summary *MemberInboxSummary, delivers, atPrompt bool) (core.Res
 		Refusal
 		*MemberInboxSummary
 		Delivers bool `json:"delivers,omitempty"`
-	}{Refusal{Message: "no new messages before the wait timeout", Hint: next}, summary, delivers})
+	}{Refusal{Message: message, Hint: next}, summary, delivers})
 	result.Status, result.Code = core.ExitWaitTimeout, core.CodeWaitTimeout
 	return result, err
 }

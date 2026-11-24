@@ -10,7 +10,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read and answer each request it shows with crosshall reply, as the member rules say."
+const fixtureNoticeSuffix = ". This notice is from crosshall, not from a Claude session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
 
 // rc4NoticeSuffix is the v0.2.0-rc.4 text, which a notice written before an
 // upgrade still carries.

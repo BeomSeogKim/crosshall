@@ -17,7 +17,24 @@ import (
 // vendorBranchesLeft counts the adapter-name decisions each function may
 // still hold, keyed by file and function. An entry goes when its capability
 // is read from the manifest instead.
-var vendorBranchesLeft = map[string]int{}
+var vendorBranchesLeft = map[string]int{
+	"../setup/command_rule_plan.go checkCommandRuleRelocation": 1, // command rules (#327 part 3)
+	"../setup/command_rule_plan.go preflightCommandRules":      3, // command rules (#327 part 3)
+	"../setup/command_rule_syntax.go memberCommandRules":       3, // command rules (#327 part 3)
+	"../setup/detect.go hookEntries":                           3, // hook entries and state pin (#327 part 2)
+	"../setup/inspect.go inspectHookEntries":                   2, // hook recognition, trust status (#327 part 2)
+	"../setup/inspect.go recognizableHook":                     3, // hook recognition (#327 part 2)
+	"../setup/inspect.go recognizableHooks":                    1, // hook recognition (#327 part 2)
+	"../setup/journal.go ownsDirectories":                      1, // owned config directories (#327 part 2)
+	"../setup/plan.go checkHookRelocation":                     1, // hook relocation (#327 part 2)
+	"../setup/plan.go planJSONInstall":                         4, // revision upgrades and relocation (#327 part 2)
+	"../setup/plan.go planRemoval":                             1, // rule removal (#327 part 3)
+	"../setup/plan.go preflightInstall":                        1, // hook layout (#327 part 2)
+	"../setup/plan.go recordedHookExecutable":                  1, // hook relocation (#327 part 2)
+	"../setup/run.go apply":                                    1, // command rule conflict (#327 part 3)
+	"../setup/vendor_plan.go pendingClaudeRules":               1, // command rules (#327 part 3)
+	"../setup/vendor_plan.go resumedLegacyCodex":               1, // legacy rules (#327 part 3)
+}
 
 // The core asks an adapter's manifest what it can do. A comparison or switch
 // case against an adapter name, spelled as a literal or as a constant or
@@ -38,7 +55,7 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 	}
 	found := make(map[string]int)
 	fset := token.NewFileSet()
-	for _, dir := range []string{".", "../wire", "../cli", "../hook"} {
+	for _, dir := range []string{".", "../wire", "../cli", "../hook", "../setup", "../telemetry"} {
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
 			t.Fatal(err)

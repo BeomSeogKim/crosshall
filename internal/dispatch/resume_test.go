@@ -48,52 +48,75 @@ func TestPublisherResumesOwedWorkOncePerStart(t *testing.T) {
 	}
 }
 
-// A resume that is not submitted keeps the member due (it spends nothing);
-// a member that answered meanwhile, or one past the window, is dropped.
-func TestPublisherKeepsAResumeDueUntilSubmitted(t *testing.T) {
+// A resume the transport refuses keeps the member due for one more try,
+// resumeRetry later (Fable F1 on #342): a refusing transport gets two sends
+// per start, not one a tick, and no suspension. A member that answered
+// meanwhile, or one past the window, is dropped.
+func TestPublisherRetriesARefusedResumeOnce(t *testing.T) {
 	f := newPublishTestFixture(t)
 	f.ask(t, 10)
-	lines := make(chan string, 4)
+	lines := make(chan string, 64)
 	setSend(t, func(_ context.Context, _ domain.PublishTarget, line string) domain.PublishOutcome {
 		lines <- line
 		return domain.PublishNotSubmitted
 	})
 	p := &publisher{db: f.db}
 	t.Cleanup(p.workers.Wait)
-	tickPublisher(t, p, f.now, true)
-	p.workers.Wait()
-	if line := awaitPublishTest(t, lines); line != claudeResume(10) {
-		t.Fatalf("sent %q", line)
-	}
 	due := func() bool {
 		p.resumeMu.Lock()
 		defer p.resumeMu.Unlock()
 		_, ok := p.resume[2]
-		return ok && len(p.resumeAttempts) == 0
+		return ok
 	}
-	if !due() {
-		t.Fatal("a resume that was not submitted spent the member's one resume")
+	// Every 250 ms for the first resumeRetry, then past it, then on.
+	for at := time.Duration(0); at <= 2*resumeRetry; at += 250 * time.Millisecond {
+		if at > time.Second && at < resumeRetry-time.Second {
+			at = resumeRetry - time.Second
+		}
+		tickPublisher(t, p, f.now.Add(at), at == 0)
+		p.workers.Wait()
 	}
-
-	f.exec(t, `UPDATE obligation SET state = 'replied' WHERE message_id = 10`)
-	tickPublisher(t, p, f.now.Add(time.Minute), false)
+	var sent []string
+	for len(lines) > 0 {
+		sent = append(sent, <-lines)
+	}
+	if len(sent) != resumeTries || sent[0] != claudeResume(10) {
+		t.Fatalf("a refusing transport got %d sends (%q), want %d", len(sent), sent, resumeTries)
+	}
 	if due() {
-		t.Fatal("a member that owes nothing is still due")
+		t.Fatal("a member is still due after its last try")
 	}
-
-	f.exec(t, `UPDATE obligation SET state = 'open' WHERE message_id = 10`)
-	p.resumeMu.Lock()
-	p.resume[2] = f.now.Add(time.Minute)
-	p.resumeMu.Unlock()
-	tickPublisher(t, p, f.now.Add(2*time.Minute), false)
-	if due() {
-		t.Fatal("a member past the window is still due")
+	if n := countPublish(t, f, "publish_attempt"); n != resumeTries {
+		t.Fatalf("%d attempts, want %d", n, resumeTries)
+	}
+	if n := countPublish(t, f, "publish_suspension"); n != 0 {
+		t.Fatalf("%d suspensions from the resume alone", n)
 	}
 	var events int
 	f.update(t, func(tx store.Tx) error {
 		return tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM event WHERE kind = 'publish_resume'`).Scan(&events)
 	})
-	if events != 1 {
+	if events != resumeTries {
 		t.Fatalf("%d publish_resume events, want one per reservation", events)
+	}
+
+	// A new start: due again; answering drops it, and so does the window.
+	tickPublisher(t, p, f.now.Add(time.Hour), true)
+	p.workers.Wait()
+	f.exec(t, `UPDATE obligation SET state = 'replied' WHERE message_id = 10`)
+	p.resumeMu.Lock()
+	p.resumeNext[2] = time.Time{}
+	p.resumeMu.Unlock()
+	tickPublisher(t, p, f.now.Add(time.Hour+time.Minute), false)
+	if due() {
+		t.Fatal("a member that owes nothing is still due")
+	}
+	f.exec(t, `UPDATE obligation SET state = 'open' WHERE message_id = 10`)
+	p.resumeMu.Lock()
+	p.resume[2] = f.now.Add(time.Hour + time.Minute)
+	p.resumeMu.Unlock()
+	tickPublisher(t, p, f.now.Add(time.Hour+2*time.Minute), false)
+	if due() {
+		t.Fatal("a member past the window is still due")
 	}
 }

@@ -14,6 +14,14 @@ import (
 )
 
 const publishCoalesce = time.Second
+
+// A member's resume notice is reserved at most resumeTries times per start,
+// resumeRetry apart: a transport that refuses, or a fence that releases it,
+// costs at most that many failures toward a suspension.
+const (
+	resumeTries = 2
+	resumeRetry = 5 * time.Minute
+)
 const publishTimeout = time.Second
 const publishRecordRetry = 250 * time.Millisecond
 const publishProveRetry = 10 * time.Second
@@ -42,9 +50,11 @@ type publisher struct {
 	resumeMu       sync.Mutex
 	resume         map[int64]time.Time
 	resumeAttempts map[int64]int64
-	// resumeNext spaces the tries of a member that could not take its
-	// resume yet (a running turn, a held lane) by publishCoalesce.
-	resumeNext map[int64]time.Time
+	// resumeNext spaces the tries of a member: publishCoalesce while it
+	// cannot take its resume yet (a running turn, a held lane), resumeRetry
+	// after a reservation. resumeReserved counts its reservations.
+	resumeNext     map[int64]time.Time
+	resumeReserved map[int64]int
 }
 
 // resumeDue lists the members a tick tries to give their resume notice:
@@ -78,12 +88,12 @@ func (p *publisher) resumeAttempt(id int64) (int64, bool) {
 
 // resumeDone settles a resume attempt: once the transport took it (or may
 // have), the member has had its notice; released or not submitted, it
-// stays due.
+// stays due until its last try.
 func (p *publisher) resumeDone(id, binding int64, submitted bool) {
 	p.resumeMu.Lock()
 	defer p.resumeMu.Unlock()
 	delete(p.resumeAttempts, id)
-	if submitted {
+	if submitted || p.resumeReserved[binding] >= resumeTries {
 		delete(p.resume, binding)
 	}
 }
@@ -207,7 +217,8 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	p.due = next
 	p.resumeMu.Lock()
 	if startup {
-		p.resume, p.resumeAttempts, p.resumeNext = map[int64]time.Time{}, map[int64]int64{}, map[int64]time.Time{}
+		p.resume, p.resumeAttempts = map[int64]time.Time{}, map[int64]int64{}
+		p.resumeNext, p.resumeReserved = map[int64]time.Time{}, map[int64]int{}
 		for _, m := range owing {
 			if m.CanResume() {
 				p.resume[m.BindingID] = now.Add(domain.ResumeWindow)
@@ -219,6 +230,8 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	}
 	for id, binding := range resumed {
 		p.resumeAttempts[id] = binding
+		p.resumeReserved[binding]++
+		p.resumeNext[binding] = now.Add(resumeRetry)
 	}
 	for _, binding := range deferred {
 		p.resumeNext[binding] = now.Add(publishCoalesce)

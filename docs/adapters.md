@@ -137,7 +137,7 @@ After the dispatcher starts, a member that owes a reply that no notice will carr
 [crosshall] pending: 2087 2090. This notice is from crosshall, not from a Claude session. The hall restarted and you still owe these requests: run crosshall read 2087 2090 to see them again, carry on, and use crosshall reply to answer each, ask for more time or decline, as the member rules say.
 ```
 
-It follows the same route rules as any notice, and its echo counts as its receipt. One that is not submitted is tried again; once one is submitted the member gets no other until the next start. Each is recorded as a `publish_resume` event with its binding, attempt and requests. `crosshall owner start` prints one line when members owe replies, for example `3 members owe 4 open requests: 2 can be woken and get one resume notice when their turn is free; 1 cannot be woken (@sol in #dev: no notice route for codex).`
+It follows the same route rules as any notice, and its echo counts as its receipt. One that is not submitted is tried once more five minutes later; once one is submitted, or after the second try, the member gets no other until the next start. Each is recorded as a `publish_resume` event with its binding, attempt and requests. `crosshall owner start` prints one line when members owe replies, for example `3 members owe 4 open requests: 2 can be woken and get one resume notice when their turn is free; 1 cannot be woken (@sol in #dev: no notice route for codex).`
 
 A notice is an offer, not a delivery: the message is already stored, and a notice that is lost or ignored leaves it unread for `crosshall read`, the prompt line or a wait.
 

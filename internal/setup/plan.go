@@ -215,8 +215,21 @@ func makeInstall(j journal, targets []installTarget) (operation, error) {
 func planJSONInstall(target installTarget, record ownedFile, known, rules bool) (edit, error) {
 	adapter := target.Spec.Adapter
 	base := target.Current.Bytes
+	wanted := target.Wanted
 	var restore [][]span
 	var remove []Entry
+	if known && adapter == "claude" && !rules {
+		var err error
+		base, restore, remove, err = claudeNotificationUpgrade(target, record)
+		if err != nil {
+			return edit{}, err
+		}
+		if len(restore) > 0 {
+			if index := slices.IndexFunc(record.Entries, isClaudeAutoModeDefaults); index >= 0 {
+				wanted = append([]Entry{record.Entries[index]}, wanted...)
+			}
+		}
+	}
 	if adapter == "codex" && !rules {
 		var migrate bool
 		var err error
@@ -235,14 +248,14 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 		if err != nil {
 			return edit{}, err
 		}
-		record.Entries = entries
+		record.Entries = remainingEntries(entries, remove)
 	}
 	if known && (adapter == "claude" || rules) {
 		if err := checkCommandRuleRelocation(target, record.Entries); err != nil {
 			return edit{}, err
 		}
 	}
-	updated, added, err := addEntries(base, target.Wanted)
+	updated, added, err := addEntries(base, wanted)
 	if err != nil {
 		return edit{}, err
 	}
@@ -255,7 +268,7 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 		// adds no hooks and only refreshes the cached vendor build.
 		record.Undo = nil
 	}
-	if len(added) == 0 && len(restore) == 0 {
+	if len(added) == 0 && len(remove) == 0 {
 		e := edit{Adapter: adapter, Rules: rules, Path: target.Path, Before: before, After: before}
 		if known {
 			e.Record = &record

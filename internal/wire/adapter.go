@@ -19,6 +19,7 @@ const (
 	HookPromptSubmitted   = "prompt_submitted"
 	HookTurnFinishing     = "turn_finishing"
 	HookApprovalRequested = "approval_requested"
+	HookIdlePrompt        = "idle_prompt"
 	HookSessionEnded      = "session_ended"
 	HookPickupSeen        = "pickup_seen"
 )

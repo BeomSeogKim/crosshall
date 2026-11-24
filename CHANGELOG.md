@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **A prompt absorbed into a running Claude Code turn no longer blocks notices:** Claude Code 2.1.330 takes a prompt typed while a tool runs into the running turn, so the hall's turn for it never ended and every later notice was `unknown`. Manifest `claude-3` also installs the Notification hook for `idle_prompt`; the session's idle report closes such turns and ends an unknown suspension recorded before it, timed or lasting, with a `publish_suspension_lifted` event. The binary ships tested notice and turn-end evidence for Claude Code 2.1.331 on macOS arm64 with `claude-3`. Rerun `crosshall setup claude` (#236).
 - **`uninstall --apply` has an overall deadline:** like `setup --apply`, it stops after 30 seconds with `uninstall timed out`, keeps what it already removed, and names `crosshall setup status` and the retry. A context error cut by the deadline is shown as the timeout alone.
 - **`owner start` waits up to five seconds for a dispatcher that holds the lock:** a dispatcher that had taken its lock but needed a little over three seconds to publish its ready marker was reported as failed, although it came up. Owner start now allows five seconds to confirm readiness after the lock is taken. A dispatcher that never takes the lock still fails at about three seconds, and `dispatcher running` still needs a matching live probe.
 - **A join after a leave is not reported as a move:** a session that left one channel and later joined another got `[crosshall] Work stays in #<old channel> (...)`, the receipt of `join --move`. Only a move out of a live membership prints it now. Such a join still carries the old membership's notice switches, do not disturb and suspensions, and still waits for a notice that awaits its receipt (#290).
@@ -14,6 +15,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 - **The `next:` line after a send says `nothing will wake`:** it said `nothing will tell @lead`, right under `not woken: ...; it sees this at its next prompt`, which reads as if nobody would ever see the message. The line still names the same recipients: those that no notice, running wait or turn end will tell, so only a prompt or crosshall command started by someone else shows them the message.
 - **A first session start makes one round trip less:** a start that will join its session asks the dispatcher in one first contact (`start`) instead of a lookup followed by a join. A conversation that a `/clear` retired is still refused at its start, as before. A dispatcher lists `start` in its ready marker; a hook that finds no such entry, from an older running dispatcher, keeps the lookup and the join, so hooks and dispatcher can be upgraded in either order.
 - **The cause of an unknown suspension:** `owner who --all` and doctor show the cause doctor counts, for example `suspended: notice 11 unknown (open placeholder)`. A receipt recorded before causes were kept shows none.
+- **Upgrade:** the database moves from schema 28 to 29. See [UPGRADING.md](UPGRADING.md#unreleased).
 
 ## v0.2.0-rc.4 (2026-11-24)
 

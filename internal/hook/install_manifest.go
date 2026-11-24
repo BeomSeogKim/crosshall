@@ -11,8 +11,9 @@ import (
 // HasPromptLine reports whether this revision installs a hook that can
 // offer pending work in a user prompt.
 func HasPromptLine(adapter, revision string) bool {
-	// The v0.1.0 Claude hook already offered pending work on UserPromptSubmit.
-	if adapter == "claude" && revision == "claude-1" {
+	// Sessions started under an earlier Claude Code revision keep its hooks:
+	// claude-1 and claude-2 both offered pending work on UserPromptSubmit.
+	if adapter == "claude" && (revision == "claude-1" || revision == "claude-2") {
 		return true
 	}
 	m, ok := loadManifest(adapter)
@@ -29,7 +30,13 @@ func HasPromptLine(adapter, revision string) bool {
 	return false
 }
 
+// HasSessionEnd reports whether this revision installs a hook that reports
+// the end of a session.
 func HasSessionEnd(adapter, revision string) bool {
+	// claude-2 installed SessionEnd too.
+	if adapter == "claude" && revision == "claude-2" {
+		return true
+	}
 	m, ok := loadManifest(adapter)
 	if !ok || m.Revision != revision {
 		return false

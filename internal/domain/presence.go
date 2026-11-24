@@ -88,7 +88,7 @@ func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFac
 			       COALESCE((SELECT t.opened_hook_at_ms FROM turn t WHERE t.principal_id = o.principal_id
 			                 AND t.launch_ref = o.launch_ref AND t.turn_ref = o.turn_ref), o.hook_at_ms) AS position
 			FROM observation o JOIN latest ON o.launch_ref = latest.launch_ref
-			WHERE o.principal_id = ?1 AND o.kind <> 'command'
+			WHERE o.principal_id = ?1 AND o.kind NOT IN ('command', 'idle_prompt')
 			  AND o.hook_at_ms <= o.observed_at_ms + ?2),
 		staged AS (
 			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c)

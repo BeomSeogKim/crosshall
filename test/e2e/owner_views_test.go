@@ -17,7 +17,7 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 	f.apply("", "setup", "claude", "--apply")
 	repo := f.enrollmentRepo()
 	const currentLaunch = `principal_id = (SELECT principal_id FROM principal_key WHERE vendor = 'claude' AND key = ?)
-		AND json_extract(profile, '$.manifest_rev') = 'claude-2'`
+		AND json_extract(profile, '$.manifest_rev') = 'claude-3'`
 	key := setupSessionPrefix + "claude"
 	reader := f.db()
 	counters, err := f.hookCounterRecords("claude", "SessionStart")
@@ -53,7 +53,7 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-1') WHERE `+currentLaunch, key)
+	result, err := db.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', 'claude-2') WHERE `+currentLaunch, key)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ import (
 
 func TestManifestEvidenceCoversAnotherBuildsPublishAndStop(t *testing.T) {
 	const evidenceVersion, launchVersion = "2.1.9260", "2.1.9261"
-	const manifest, mode = "claude-2", "interactive"
+	const manifest, mode = "claude-3", "interactive"
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	tmp, err := os.MkdirTemp("/tmp", "ch-evidence-")
 	if err != nil {

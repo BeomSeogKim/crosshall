@@ -60,7 +60,7 @@ To publish a run, append its receipt to `test/conformance/member-runs.jsonl`. Re
 
 ## Claude Code hook manifest
 
-The hook reads the session's build and mode from the environment Claude Code gives its hooks, and only labels in an observed form count; anything else is `unverified`, and evidence cannot mark an unverified profile tested. Manifest `claude-2` accepts these observations:
+The hook reads the session's build and mode from the environment Claude Code gives its hooks, and only labels in an observed form count; anything else is `unverified`, and evidence cannot mark an unverified profile tested. Manifests `claude-2` and `claude-3` accept these observations:
 
 | Session | `AI_AGENT` | `CLAUDE_CODE_ENTRYPOINT` | Profile |
 | --- | --- | --- | --- |
@@ -83,9 +83,9 @@ The last part of `AI_AGENT` is not the mode: both forms were seen in interactive
 
 ## Tested capability evidence
 
-Tested evidence covers sessions with the same vendor, platform, mode, capability and hook manifest revision. Evidence for the exact running version takes precedence. An unverified version or mode stays ineligible. For Claude Code, `claude-2` identifies the vendor's hook callback format and profile labels. A manifest revision change needs evidence for the new revision.
+Tested evidence covers sessions with the same vendor, platform, mode, capability and hook manifest revision. Evidence for the exact running version takes precedence. An unverified version or mode stays ineligible. For Claude Code, the manifest revision (`claude-3` since the idle notification hook) identifies the vendor's hook callback format, profile labels and installed hooks. A manifest revision change needs evidence for the new revision.
 
-The binary ships `turn_end` evidence for Claude Code 2.1.330 on macOS arm64 in print and interactive mode. The corresponding native conformance tests use a local stand-in for the model. They verify that an unread request continues an eligible turn once with the pending line.
+The binary ships `turn_end` evidence for Claude Code on macOS arm64 in print and interactive mode: 2.1.330 with manifest `claude-2`, and 2.1.331 with manifest `claude-3`. The corresponding native conformance tests use a local stand-in for the model. They verify that an unread request continues an eligible turn once with the pending line.
 
 ## Publish profiles
 
@@ -97,6 +97,8 @@ The binary ships `publish` evidence for Claude Code 2.1.330 on macOS arm64 in in
 - a notice sent while the person's turn runs comes after that turn, and the prompt and its answer are unchanged;
 - after `/clear` the next notice reaches the new conversation; a resumed session in a new process is reached at its new address and the old one is never written to;
 - a session that was closed, and one that was killed, receive nothing and start nothing.
+
+It also ships `publish` evidence for Claude Code 2.1.331 on macOS arm64 in interactive mode with manifest `claude-3`, from a witnessed run of the same cases on `0132580`. Since a notice is held back while the session's turn is open, the turn-end check offered the request at the turn's Stop in the approval and busy cases, and the session read it in that turn. Those two cases were therefore run again with the turn-end check off: the notice was held while the dialog was open or the tool ran, and was delivered once after the turn's Stop, as a turn of its own. This run does not show what a notice does when it lands in an open dialog or a running turn, which can still happen when the hall's picture of the turn is stale; the `claude-2` run on `c1db3a4` is the evidence for that.
 
 A run in print mode with a stand-in model shows only that the message line still parses; it cannot list a profile. Bypass permission mode is never covered: such a session stays on pull.
 

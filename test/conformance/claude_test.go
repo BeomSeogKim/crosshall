@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 
 	_ "modernc.org/sqlite"
@@ -455,6 +456,15 @@ func (f *fixture) count() int {
 	return len(f.requests)
 }
 
+func claudeManifestRevision() string {
+	for _, spec := range hook.InstallSpecs() {
+		if spec.Adapter == "claude" {
+			return spec.Revision
+		}
+	}
+	panic("missing Claude Code manifest")
+}
+
 type evidenceResult struct {
 	Cap   string `json:"cap"`
 	Level string `json:"level"`
@@ -558,7 +568,7 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 		t.Fatal("a check failed: no evidence is written or recorded")
 	}
 	evidence, _ := json.MarshalIndent(map[string]any{"vendor": "claude", "vendor_version": version,
-		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": "claude-2",
+		"platform": runtime.GOOS + "-" + runtime.GOARCH, "mode": "print", "manifest_rev": claudeManifestRevision(),
 		"run_at_ms": time.Now().UnixMilli(), "results": results}, "", "  ")
 	dir := os.Getenv("CROSSHALL_CONFORMANCE_OUT")
 	if dir == "" {
@@ -579,7 +589,7 @@ func TestClaudeCodePrintModeConformance(t *testing.T) {
 		t.Fatalf("evidence import: %s", out)
 	}
 	// The imported rows are the exported levels for this exact profile.
-	recorded := c.evidenceLevels(version, runtime.GOOS+"-"+runtime.GOARCH, "print", "claude-2")
+	recorded := c.evidenceLevels(version, runtime.GOOS+"-"+runtime.GOARCH, "print", claudeManifestRevision())
 	for _, r := range results {
 		if recorded[r.Cap] != r.Level {
 			t.Errorf("imported %s %q, exported %q", r.Cap, recorded[r.Cap], r.Level)

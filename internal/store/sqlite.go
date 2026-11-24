@@ -99,13 +99,16 @@ var offerReceiptsSchema string
 //go:embed migrations/028_session_move.sql
 var sessionMoveSchema string
 
+//go:embed migrations/029_idle_prompt.sql
+var idlePromptSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
 	publishSwitchesSchema, publishActivationSchema, autoJoinSchema, startLineSchema, clearedKeysSchema, launchProcessSchema,
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
 	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
-	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema,
+	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema, idlePromptSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

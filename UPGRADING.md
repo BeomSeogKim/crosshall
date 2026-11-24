@@ -4,7 +4,9 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-No schema change. Rule 4 and the notice text change:
+Upgrading from v0.2.0-rc.4 moves the database from schema 28 to schema 29. Migration 029 rebuilds the `observation` table to admit Claude Code's idle report; its rows and indexes are kept. The Claude Code hooks move to manifest `claude-3`, whose Notification hook also matches `idle_prompt`. Run `crosshall setup claude` to install it: setup replaces only its own notification hook, and on uninstall still restores the original file when you have not edited it since. Sessions started before keep the `claude-2` hooks until they start again.
+
+Rule 4 and the notice text change:
 
 - A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`.
 - A notice now ends `Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say.` A notice sent with the v0.2.0-rc.4 text before the upgrade still counts as a notice when the session receives it.

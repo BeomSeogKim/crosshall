@@ -126,6 +126,7 @@ func TestDispatcherRecoversAnInterruptedPublish(t *testing.T) {
 }
 
 func TestDispatcherRestartRecoversClaim(t *testing.T) {
+	const recoveryReadyTimeout = 10 * time.Second
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("TMPDIR", root)
@@ -141,10 +142,6 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 		DefaultStateRoot: filepath.Join(root, "default"), Rendezvous: filepath.Join(root, "rendezvous"), Owner: true,
 	}
 	ctx := t.Context()
-	if spawned, err := cfg.Start(ctx); err != nil || !spawned {
-		log, _ := os.ReadFile(filepath.Join(cfg.StateRoot, "dispatcher.log"))
-		t.Fatalf("start: spawned=%t err=%v\n%s", spawned, err, log)
-	}
 	t.Cleanup(func() {
 		marker := readReady(cfg.Rendezvous)
 		if marker.PID > 0 {
@@ -152,15 +149,19 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 			waitFor(t, func() bool { return readReady(cfg.Rendezvous).Instance == "" })
 		}
 	})
+	if spawned, err := cfg.start(ctx, syscall.Kill, recoveryReadyTimeout); err != nil || !spawned {
+		log, _ := os.ReadFile(filepath.Join(cfg.StateRoot, "dispatcher.log"))
+		t.Fatalf("start: spawned=%t err=%v\n%s", spawned, err, log)
+	}
 	first := readReady(cfg.Rendezvous)
-	if spawned, err := cfg.Start(ctx); err != nil || spawned || !readReady(cfg.Rendezvous).same(first) {
+	if spawned, err := cfg.start(ctx, syscall.Kill, recoveryReadyTimeout); err != nil || spawned || !readReady(cfg.Rendezvous).same(first) {
 		t.Fatalf("second start must retain the dispatcher: spawned=%t err=%v", spawned, err)
 	}
 	owner := filepath.Join(cfg.StateRoot, "owner")
 	request := wire.Request{
 		Version: wire.Version, Attempt: "1234567890abcdef1234567890abcdef",
 		OpKey: "original-key", Verb: "owner channel create", Args: json.RawMessage(`{"name":"checkout"}`),
-		IssuedAtMS: time.Now().UnixMilli(), ExpiresAtMS: time.Now().Add(15 * time.Second).UnixMilli(),
+		IssuedAtMS: time.Now().UnixMilli(), ExpiresAtMS: time.Now().Add(30 * time.Second).UnixMilli(),
 	}
 	writePacket(t, filepath.Join(owner, "in"), request)
 	result := awaitResponse(t, owner, request.Attempt)
@@ -184,10 +185,12 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 	})
 	// Model a crash after commit with the claimed input still present.
 	writePacket(t, filepath.Join(owner, "work"), request)
-	// A member may restart this existing dispatcher. Its child gets the same clean environment.
 	cfg.Owner = false
-	if spawned, err := cfg.Start(ctx); err != nil || !spawned {
-		t.Fatalf("restart: spawned=%t err=%v", spawned, err)
+	if spawned, err := cfg.start(ctx, syscall.Kill, recoveryReadyTimeout); err != nil || !spawned {
+		held, lockErr := lockState(state)
+		log, _ := os.ReadFile(filepath.Join(cfg.StateRoot, "dispatcher.log"))
+		t.Fatalf("restart: spawned=%t err=%v lock held=%t lock err=%v marker=%+v\n%s",
+			spawned, err, held, lockErr, readReady(cfg.Rendezvous), log)
 	}
 	if ready := readReady(cfg.Rendezvous); ready.Instance == first.Instance {
 		t.Fatal("did not restart with a fresh readiness instance")

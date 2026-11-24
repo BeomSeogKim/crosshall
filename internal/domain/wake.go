@@ -128,7 +128,7 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 		w = Wake{Wake: WakeNone, Why: WhyKind}
 	}
 	// A request for more time ends no wait.
-	if endsWait && s.waits.running(binding, kind, now) {
+	if endsWait && s.waits.accepts(binding, kind, msg, now) {
 		return Wake{Wake: WakeWait}, nil
 	}
 	if kind == "ask" {

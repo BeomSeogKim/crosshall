@@ -108,6 +108,7 @@ cases = [
     ("the migration's own changes", 0, store("ok", cutover)),
     ("an unselected deletion", 1, store("gone", cutover, "DELETE FROM m WHERE id = 2;")),
     ("an unselected change", 1, store("note", cutover, "UPDATE m SET body = 'x' WHERE id = 2;")),
+    ("a selected row's column SET does not name", 1, store("kind", cutover, "UPDATE m SET kind = 'x' WHERE id = 1;")),
     ("a change only a trigger body names", 1, store("trigger", cutover, "UPDATE k SET v = 0;")),
     ("a lost row of an untouched table", 1, store("plain", cutover, "DELETE FROM u;")),
 ]

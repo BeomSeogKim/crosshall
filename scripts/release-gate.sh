@@ -324,7 +324,7 @@ row_store() {
   python3 -B "$repo/scripts/release_gate_rows.py" "$baseline" "$snap/up/store.sqlite3" ${files[@]+"${files[@]}"} > "$snap/rows.txt" 2>&1
   status=$?
   cat "$snap/rows.txt"
-  ((status == 0)) || { detail "the upgrade changed rows no migration statement selects: $(head -n 1 "$snap/rows.txt")"; return 1; }
+  ((status == 0)) || { detail "the upgrade made changes no migration statement makes: $(head -n 1 "$snap/rows.txt")"; return 1; }
   kept=$(grep -h ' by its migrations$' "$snap/rows.txt" | sed 's/ by its migrations$//' | paste -sd ';' - | sed 's/;/; /g')
   kept="$(tail -n 1 "$snap/rows.txt" | sed 's/^compared //')${kept:+; changed by migrations: $kept}"
   backups=$(find "$snap/up" -name 'store-v*.sqlite3' | wc -l | tr -d ' ')

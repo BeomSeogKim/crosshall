@@ -4,7 +4,8 @@ Usage: release_gate_rows.py <before.sqlite3> <after.sqlite3> <migration.sql>...
 
 Every table, column, row and index of the store before must survive, except
 for what the migrations' own statements select:
-- a row that an UPDATE's WHERE selects in the store before may change;
+- a row that an UPDATE's WHERE selects in the store before may change in the
+  columns its SET names;
 - a row that a DELETE's WHERE selects may be gone;
 - a table that a migration INSERTs into may gain rows.
 The WHERE clauses are evaluated on the store before. A statement this script
@@ -29,11 +30,10 @@ def statements(sql):
             pending = ""
 
 
-def where_clause(statement):
-    """The text after the first WHERE outside parentheses and quotes."""
-    depth, quote, i = 0, None, 0
-    while i < len(statement):
-        c = statement[i]
+def top_level(text):
+    """The indexes of text outside parentheses and quotes."""
+    depth, quote = 0, None
+    for i, c in enumerate(text):
         if quote:
             quote = None if c == quote else quote
         elif c in "'\"":
@@ -42,10 +42,39 @@ def where_clause(statement):
             depth += 1
         elif c == ")":
             depth -= 1
-        elif depth == 0 and re.match(r"\bWHERE\b", statement[i:i + 6], re.I) and not statement[i - 1:i].isalnum():
-            return statement[i + 5:].rstrip().rstrip(";")
-        i += 1
-    return None
+        elif depth == 0:
+            yield i
+
+
+def keyword(text, word, start=0):
+    """The index of the first word outside parentheses and quotes, or -1."""
+    for i in top_level(text):
+        if i >= start and re.match(rf"{word}\b", text[i:], re.I) and not (text[i - 1:i].isalnum() or text[i - 1:i] == "_"):
+            return i
+    return -1
+
+
+def where_clause(statement):
+    i = keyword(statement, "WHERE")
+    return None if i < 0 else statement[i + 5:].rstrip().rstrip(";")
+
+
+def set_columns(statement):
+    """The lower-case columns an UPDATE's SET assigns; empty if unreadable."""
+    start = keyword(statement, "SET")
+    if start < 0:
+        return set()
+    end = keyword(statement, "WHERE", start)
+    clause = statement[start + 3:end if end >= 0 else len(statement)].strip().rstrip(";")
+    cuts = [-1] + [i for i in top_level(clause) if clause[i] == ","] + [len(clause)]
+    columns = set()
+    for a, b in zip(cuts, cuts[1:]):
+        target = clause[a + 1:b].split("=", 1)[0].strip().strip("()")
+        names = [n.strip().strip('"').lower() for n in target.split(",")]
+        if not all(re.fullmatch(r"\w+", n) for n in names):
+            return set()
+        columns.update(names)
+    return columns
 
 
 def main():
@@ -80,14 +109,20 @@ def main():
             except sqlite3.Error as e:
                 print(f"{name}: cannot evaluate the WHERE of {verb} {table} on the store before: {e}")
                 return 1
-            (updated if verb == "UPDATE" else deleted).setdefault(table, set()).update(rows)
+            if verb == "UPDATE":
+                columns = set_columns(statement)
+                for row in rows:
+                    updated.setdefault(table, {}).setdefault(row, set()).update(columns)
+            else:
+                deleted.setdefault(table, set()).update(rows)
             notes.append(f"{name} {verb} {table} selects {len(rows)}")
 
     bad = False
     tables = db.execute("SELECT name FROM ref.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
     total = 0
     for (table,) in tables:
-        cols = ", ".join(f'"{r[1]}"' for r in db.execute(f'PRAGMA ref.table_info("{table}")'))
+        names = [r[1] for r in db.execute(f'PRAGMA ref.table_info("{table}")')]
+        cols = ", ".join(f'"{c}"' for c in names)
         n = key(table).count(",") + 1
         try:
             old = {r[:n]: r[n:] for r in db.execute(f'SELECT {key(table)}, {cols} FROM ref."{table}"')}
@@ -100,12 +135,15 @@ def main():
         gone = [k for k in old if k not in new]
         changed = [k for k in old if k in new and new[k] != old[k]]
         added = [k for k in new if k not in old]
+        def assigned(k):
+            differ = {names[i].lower() for i, (a, b) in enumerate(zip(old[k], new[k])) if a != b}
+            return differ <= updated.get(table, {}).get(k, set())
         unexplained = (any(k not in deleted.get(table, ()) for k in gone) or
-                       any(k not in updated.get(table, ()) for k in changed) or
+                       not all(assigned(k) for k in changed) or
                        (added and table not in inserted))
         if unexplained:
             print(f"{table}: {len(gone)} rows gone, {len(changed)} changed, {len(added)} added; "
-                  "not all of them selected by a migration statement")
+                  "not all of them made by a migration statement")
             bad = True
         elif gone or changed or added:
             print(f"{table}: {len(gone)} rows gone, {len(changed)} changed, {len(added)} added by its migrations")

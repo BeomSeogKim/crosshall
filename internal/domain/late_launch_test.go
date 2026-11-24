@@ -304,6 +304,59 @@ func TestALaunchBoundLateAfterAHandRejoinGetsItsRoute(t *testing.T) {
 	}
 }
 
+// A member recovered without its launch that moves before a prompt binds
+// the launch gets the route on the binding it moved to, whether the launch
+// was recorded before the move or after it.
+func TestALaunchBoundLateAfterAMoveGetsItsRoute(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		recorded int64
+	}{{"recorded before the move", 5}, {"recorded after the move", 50}} {
+		t.Run(c.name, func(t *testing.T) {
+			f, _, _ := lateFixture(t)
+			wantOK(t, f.owner(CreateChannel{Name: "delivery"}, "create-delivery"))
+			s := f.newSession("claude")
+			at := f.now.UnixMilli()
+			f.hookAs(s, recoveryPrompt("pid-7-a", "t1", at+10))
+			f.now = time.UnixMilli(at + 40)
+			wantOK(t, f.join(s, Join{Channel: "delivery", Move: true}, "move"))
+			f.hookAs(s, lateProof(prompt("pid-7-a", "t2", at+60), at+c.recorded))
+			if f.lateBinds() != 1 {
+				t.Fatalf("%d launch_bound_late events, want 1", f.lateBinds())
+			}
+			var launch, channel string
+			if err := f.db.QueryRow(`SELECT r.launch_ref, c.name FROM member_selection s
+				JOIN publish_route r ON r.binding_id = s.binding_id JOIN binding b ON b.id = s.binding_id
+				JOIN channel c ON c.id = b.channel_id WHERE s.principal_id = ?`, *f.caller(s).PrincipalID).Scan(&launch, &channel); err != nil {
+				t.Fatal(err)
+			}
+			if launch != "pid-7-a" || channel != "delivery" {
+				t.Fatalf("route of the selected binding in #%s is on %q, want the late launch in #delivery", channel, launch)
+			}
+			if f.startUnseen("claude1") {
+				t.Fatal("owner who still says the start was not seen")
+			}
+		})
+	}
+}
+
+// As at a start, the recorded host may be the one the late launch replaced.
+func TestALateBindForgetsTheRecordedHost(t *testing.T) {
+	f, _, _ := lateFixture(t)
+	s := f.newSession("claude")
+	at := f.now.UnixMilli()
+	f.hookAs(s, recoveryPrompt("pid-7-a", "t1", at+10))
+	principal := *f.caller(s).PrincipalID
+	if _, err := f.db.Exec(`INSERT INTO member_host (principal_id, pid, start_identity, pid_namespace, seen_at_ms)
+		VALUES (?, 7, 1, '', ?)`, principal, at+10); err != nil {
+		t.Fatal(err)
+	}
+	f.hookAs(s, lateProof(prompt("pid-7-a", "t2", at+20), at))
+	if n := f.count(`SELECT COUNT(*) FROM member_host WHERE principal_id = ?`, principal); n != 0 || f.lateBinds() != 1 {
+		t.Fatalf("%d host records after %d late binds, want none after 1", n, f.lateBinds())
+	}
+}
+
 func (f *fixture) startUnseen(alias string) bool {
 	f.t.Helper()
 	result := f.owner(OwnerWho{}, "")
@@ -339,5 +392,12 @@ func TestTheOwnerSeesWhyARecoveredMemberHasNoRoute(t *testing.T) {
 	f.hookAs(started, start("pid-8-a", "startup", at+30))
 	if f.startUnseen("claude2") {
 		t.Fatal("a started member is reported without a seen start")
+	}
+	// Nor without a route, as with an adapter that has no sender.
+	if _, err := f.db.Exec(`DELETE FROM publish_route WHERE principal_id = ?`, *f.caller(started).PrincipalID); err != nil {
+		t.Fatal(err)
+	}
+	if f.startUnseen("claude2") {
+		t.Fatal("a started member without a route is reported without a seen start")
 	}
 }

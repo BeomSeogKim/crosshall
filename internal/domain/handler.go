@@ -33,7 +33,10 @@ type Service struct {
 	ProcessGone   func(pid, identity int64) bool
 	ProcessAlive  func(pid, identity int64) bool
 	HasPromptLine func(adapter, revision string) bool
-	HasSessionEnd func(adapter, revision string) bool
+	// UnknownRevision records a hook manifest revision this build does not
+	// know, refused in an enrollment recovery; nil records nothing.
+	UnknownRevision func(adapter, revision string)
+	HasSessionEnd   func(adapter, revision string) bool
 	// LeafReceipts reads the roster receipts a session key's member
 	// directory holds and has not sent yet (the cursor and the rules one),
 	// if the directory is the registered one (file identity) and carries

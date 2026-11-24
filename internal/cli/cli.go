@@ -137,7 +137,8 @@ type Env struct {
 	// Doctor checks existing local state without launching the dispatcher.
 	Doctor func(context.Context) core.Result
 	// Setup manages the explicitly selected user-level adapter configuration.
-	Setup func(SetupRequest) error
+	Setup           func(context.Context, SetupRequest) error
+	BeginSetupApply func(context.Context) (context.Context, func())
 	// SetupTerminal reports whether standard input and output are both a
 	// terminal, so setup may ask questions. Nil means no terminal.
 	SetupTerminal      func() bool
@@ -172,7 +173,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return core.ExitOK
 	}
 	verb, rest := rest[0], rest[1:]
-	if verb != domain.VerbWait && verb != "owner" && !env.CommandDeadline.IsZero() {
+	if verb != domain.VerbWait && verb != "owner" && verb != "setup" && verb != "uninstall" && !env.CommandDeadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, env.CommandDeadline)
 		defer cancel()
@@ -243,7 +244,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	case "owner":
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	case "setup", "uninstall":
-		return runSetup(env, opts, verb, rest, stdout, stderr)
+		return runSetup(ctx, env, opts, verb, rest, stdout, stderr)
 	}
 	return o.usage(fmt.Sprintf("unknown command %q; run `crosshall help`", verb))
 }

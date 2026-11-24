@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 )
@@ -14,10 +16,44 @@ func setupEnv(terminal bool, got *[]SetupRequest) Env {
 		OwnerGate:     func() string { return "" },
 		SetupTerminal: func() bool { return terminal },
 		SetupAdapters: []string{"claude", "codex"},
-		Setup: func(req SetupRequest) error {
+		Setup: func(_ context.Context, req SetupRequest) error {
 			*got = append(*got, req)
 			return nil
 		},
+	}
+}
+
+func TestOnlySetupApplyUsesItsOperationDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"setup", "codex", "--apply"}, true},
+		{[]string{"setup", "codex"}, false},
+		{[]string{"setup", "codex", "--dry-run"}, false},
+		{[]string{"uninstall", "codex", "--apply"}, false},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			env := setupEnv(true, new([]SetupRequest))
+			env.CommandDeadline = time.Now().Add(-time.Second)
+			deadline := time.Now().Add(time.Minute)
+			var started, stopped bool
+			env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
+				started = true
+				ctx, cancel := context.WithDeadline(ctx, deadline)
+				return ctx, func() { stopped = true; cancel() }
+			}
+			env.Setup = func(ctx context.Context, _ SetupRequest) error {
+				got, has := ctx.Deadline()
+				if has != tc.want || has && !got.Equal(deadline) {
+					t.Errorf("setup service deadline = %v, %v; want dedicated deadline = %v", got, has, tc.want)
+				}
+				return nil
+			}
+			if out, stderr, code := run(t, env, tc.args...); code != core.ExitOK || started != tc.want || stopped != tc.want {
+				t.Fatalf("exit %d, started %v, stopped %v, stdout %q, stderr %q", code, started, stopped, out, stderr)
+			}
+		})
 	}
 }
 
@@ -115,7 +151,7 @@ func (reported) Reported() bool { return true }
 // A failure the JSON result already carries is not written a second time.
 func TestAReportedSetupFailureWritesOneJSONObject(t *testing.T) {
 	env := setupEnv(true, new([]SetupRequest))
-	env.Setup = func(req SetupRequest) error {
+	env.Setup = func(_ context.Context, req SetupRequest) error {
 		req.Output.Write([]byte(`{"v":1,"ok":false}` + "\n"))
 		return reported{}
 	}

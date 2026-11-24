@@ -175,6 +175,9 @@ func firstContact(ctx context.Context, rv *os.Root, id ident.Identity, intent st
 	defer first.Close()
 	hello := wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: id.Vendor,
 		Key: id.Key, VendorVersion: id.Version, Intent: intent}
+	if deadline, ok := ctx.Deadline(); ok {
+		hello.ExpiresAtMS = deadline.UnixMilli()
+	}
 	resp, _, err := exchange(ctx, first, hello.Attempt, hello)
 	return resp, err
 }

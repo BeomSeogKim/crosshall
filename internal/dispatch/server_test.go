@@ -49,6 +49,44 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestFirstContactChecksExpiryBeforeRegistration(t *testing.T) {
+	db, err := store.Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now()
+	for _, tc := range []struct {
+		name        string
+		expiresAtMS int64
+		wantCode    core.Code
+	}{
+		{"expired", now.Add(-time.Minute).UnixMilli(), core.CodeUnsent},
+		{"current", now.Add(time.Minute).UnixMilli(), ""},
+		{"legacy", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var registered, published bool
+			s := server{db: db}
+			s.cfg.Hello = func(context.Context, store.Tx, []byte) (core.Result, func() error, error) {
+				registered = true
+				return core.Result{Status: core.ExitOK}, func() error { published = true; return nil }, nil
+			}
+			hello := wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: "claude", Key: "fixture", Intent: wire.HelloStart, ExpiresAtMS: tc.expiresAtMS}
+			raw, err := json.Marshal(hello)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.hello(t.Context(), hello.Attempt, raw)
+			wantRegistration := tc.wantCode == ""
+			if err != nil || result.Code != tc.wantCode || (result.Status == core.ExitOK) != wantRegistration ||
+				registered != wantRegistration || published != wantRegistration {
+				t.Fatalf("first contact result %+v, registered %t, published %t, error %v", result, registered, published, err)
+			}
+		})
+	}
+}
+
 type testHandler struct{}
 
 func (testHandler) Handle(ctx context.Context, tx store.Tx, caller core.Caller, req domain.Request) (core.Result, error) {

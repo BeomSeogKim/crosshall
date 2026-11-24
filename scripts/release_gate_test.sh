@@ -112,8 +112,16 @@ cases = [
     ("a change only a trigger body names", 1, store("trigger", cutover, "UPDATE k SET v = 0;")),
     ("a lost row of an untouched table", 1, store("plain", cutover, "DELETE FROM u;")),
 ]
-for label, want, after in cases:
-    got = subprocess.run([sys.executable, "-B", rows, before, after, migration], capture_output=True, text=True)
+# A comment never assigns a column.
+for style, text in (("line", "UPDATE m SET body = 'reset' -- , kind = 'x'\nWHERE kind = 'ask';\n"),
+                    ("block", "UPDATE m SET body = 'reset' /* , kind = 'x' */ WHERE kind = 'ask';\n")):
+    commented = f"{root}/003_{style}.sql"
+    with open(commented, "w") as f:
+        f.write(text)
+    cases.append((f"a column named in a {style} comment", 1,
+                  store(f"comment_{style}", "UPDATE m SET body = 'reset', kind = 'x' WHERE kind = 'ask';"), commented))
+for label, want, after, *own in cases:
+    got = subprocess.run([sys.executable, "-B", rows, before, after, *(own or [migration])], capture_output=True, text=True)
     if got.returncode != want:
         sys.exit(f"release_gate_test: {label}: exit {got.returncode}, want {want}\n{got.stdout}{got.stderr}")
 PY

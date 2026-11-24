@@ -30,6 +30,35 @@ def statements(sql):
             pending = ""
 
 
+def strip_comments(text):
+    """text with each comment replaced by a space, or None if one never ends."""
+    out, i, quote = [], 0, None
+    while i < len(text):
+        c = text[i]
+        if quote:
+            out.append(c)
+            quote = None if c == quote else quote
+        elif c in "'\"`":
+            out.append(c)
+            quote = c
+        elif text.startswith("--", i):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            out.append(" ")
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                return None
+            i = end + 2
+            out.append(" ")
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return None if quote else "".join(out)
+
+
 def top_level(text):
     """The indexes of text outside parentheses and quotes."""
     depth, quote = 0, None
@@ -92,7 +121,12 @@ def main():
     updated, deleted, inserted, notes = {}, {}, set(), []
     for path in files:
         name = path.rsplit("/", 1)[-1].split("_", 1)[0]
-        for statement in statements(open(path).read()):
+        for raw in statements(open(path).read()):
+            statement = strip_comments(raw)
+            if statement is None:
+                print(f"{name}: cannot read a statement; it allows no change")
+                continue
+            statement = statement.strip()
             m = WRITE.match(statement)
             if not m:
                 continue

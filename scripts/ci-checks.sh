@@ -114,6 +114,9 @@ fi
 if ! bash scripts/readme_install_test.sh; then
   fail=1
 fi
+if ! bash scripts/release_gate_test.sh; then
+  fail=1
+fi
 if ! python3 -B test/setupfixture/test_terminal.py; then
   fail=1
 fi

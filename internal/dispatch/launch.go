@@ -159,7 +159,10 @@ func (cfg LaunchConfig) dispatcherEnv() []string {
 	env := []string{"CROSSHALL_STATE_DIR=" + cfg.StateRoot}
 	keys := []string{"HOME", "PATH", "TMPDIR", "XDG_STATE_HOME", telemetryconfig.TelemetryEnv, telemetryconfig.DoNotTrackEnv, notifyEnv,
 		// notify-send reaches the desktop through the session bus.
-		"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
+		"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+		// A test run's token (internal/testreap), so that the run can end
+		// the dispatchers it left; unset outside tests.
+		"CROSSHALL_TESTREAP"}
 	if allowsTestClock(cfg.Version) {
 		keys = append(keys, clockOffsetEnv)
 	}

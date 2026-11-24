@@ -62,7 +62,7 @@ func newConformance(t *testing.T) *conformance {
 		t.Fatal(err)
 	}
 	c.crosshall = filepath.Join(root, "bin", "crosshall")
-	testreap.Arm(t, c.state)
+	testreap.Arm(t)
 	build := exec.Command("go", "build", "-o", c.crosshall, "./cmd/crosshall")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {
@@ -165,7 +165,7 @@ func safeOutputDirFor(dir, login string) error {
 // base is the environment every child starts from; nothing is inherited.
 func (c *conformance) base() []string {
 	return []string{"HOME=" + c.home, "PATH=/usr/bin:/bin", "TMPDIR=" + filepath.Join(c.home, "tmp"),
-		"CROSSHALL_STATE_DIR=" + c.state}
+		"CROSSHALL_STATE_DIR=" + c.state, testreap.Env()}
 }
 
 func (c *conformance) crosshallRun(extra []string, args ...string) (string, error) {

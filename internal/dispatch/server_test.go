@@ -181,7 +181,7 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 		DefaultStateRoot: filepath.Join(root, "default"), Rendezvous: filepath.Join(root, "rendezvous"), Owner: true,
 	}
 	ctx := t.Context()
-	testreap.Arm(t, cfg.StateRoot)
+	testreap.Arm(t)
 	t.Cleanup(func() {
 		marker := readReady(cfg.Rendezvous)
 		if marker.PID > 0 {

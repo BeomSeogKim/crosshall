@@ -1,16 +1,18 @@
 // Package testreap keeps fixture dispatchers from outliving the tests that
 // start them. Only tests import it.
 //
-// A dispatcher belongs to a test when its environment, set when it was
-// launched, names that test's own state root in CROSSHALL_STATE_DIR. Every
-// launch path passes it, including a dispatcher a vendor hook restarts. A
-// parallel run of the same binary, or a process that later reuses the pid,
-// has another state root, and testreap reads the environment again before
-// each signal.
+// Arm gives the test process a random token in CROSSHALL_TESTREAP, which
+// every dispatcher launch passes on. A dispatcher belongs to this run when
+// its environment holds that exact entry. The token rules out an accidental
+// match with a parallel run of the same binary or a process that later
+// reuses a pid; a process crafted to carry it is out of scope. Each pid is
+// checked again right before every signal.
 package testreap
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,103 +26,110 @@ import (
 	"time"
 )
 
-const stateEnv = "CROSSHALL_STATE_DIR="
+// Key is the environment variable that carries the token.
+const Key = "CROSSHALL_TESTREAP"
 
 var (
-	mu    sync.Mutex
-	roots []string // every armed state root, as given and resolved
-	// The watchdogs' pipes stay open, and reachable, until this process
-	// exits: a collected *os.File would close and set its watchdog off.
-	pipes []*os.File
+	arm   sync.Once
+	token string
+	err   error
+	// The watchdog's pipe stays open, and reachable, until this process
+	// exits: a collected *os.File would close and set the watchdog off.
+	pipe *os.File
 )
 
 // The watchdog waits for EOF on its stdin, a pipe only the test process
 // holds, so it wakes when that process exits, however it exits. For ten
 // seconds it then ends, once a second, each dispatcher whose environment
-// names one of its state roots ($@): a vendor session the test left can
-// restart one from a hook. Linux reads /proc; macOS reads ps -E.
+// holds the entry $1: a vendor session the test left can restart one from a
+// hook. It uses the matcher of owned and mine below.
 const watchdog = `cat > /dev/null
-owned() {
+entry=$1
+# mine <pid>: the process is a dispatcher with the exact entry.
+mine() {
   if [ -r /proc/self/environ ]; then
-    for d in /proc/[0-9]*; do
-      case "$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)" in
-      *" __dispatch " | *" __test_dispatch_guardian ") ;;
-      *) continue ;;
-      esac
-      for root in "$@"; do
-        if tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -Fxq "CROSSHALL_STATE_DIR=$root"; then
-          echo "${d#/proc/}"
-          break
-        fi
-      done
-    done
+    # Newlines inside values become \001, NULs become line ends.
+    case "$(tr '\n\0' '\001\n' < "/proc/$1/cmdline" 2>/dev/null | tail -n 1)" in
+    __dispatch | __test_dispatch_guardian) ;;
+    *) return 1 ;;
+    esac
+    tr '\n\0' '\001\n' < "/proc/$1/environ" 2>/dev/null | grep -Fxq "$entry"
   else
-    ps -E -ww -ax -o pid= -o stat= -o command= | while read -r pid stat rest; do
-      case "$stat" in Z*) continue ;; esac
-      case " $rest " in
-      *" __dispatch "* | *" __test_dispatch_guardian "*) ;;
-      *) continue ;;
-      esac
-      for root in "$@"; do
-        case " $rest " in *" CROSSHALL_STATE_DIR=$root "*) echo "$pid"; break ;; esac
-      done
-    done
+    # The arguments alone, then the environment, which ps -E prints after
+    # them with a newline in a value escaped.
+    args=$(ps -ww -p "$1" -o stat= -o args= 2>/dev/null) || return 1
+    case "$args" in Z*) return 1 ;; esac
+    case "$args" in *" __dispatch" | *" __test_dispatch_guardian") ;; *) return 1 ;; esac
+    line=$(ps -E -ww -p "$1" -o command= 2>/dev/null) || return 1
+    case " $line " in *" $entry "*) return 0 ;; esac
+    return 1
   fi
 }
 i=0
 while [ "$i" -lt 10 ]; do
-  for pid in $(owned "$@"); do kill -TERM "$pid" 2>/dev/null; done
+  if [ -r /proc/self/environ ]; then
+    candidates=$(cd /proc && ls -d [0-9]*)
+  else
+    candidates=$(ps -E -ww -ax -o pid= -o command= | grep -F " $entry" | awk '{print $1}')
+  fi
+  for pid in $candidates; do
+    if mine "$pid"; then kill -TERM "$pid" 2>/dev/null; fi
+  done
   i=$((i + 1))
   sleep 1
 done`
 
-// Arm watches the dispatchers launched for stateRoot, a state root only this
-// test uses: when this test process exits, however it exits, they are ended,
-// and Check reports any still running after the tests. The test still stops
-// its own on t.Cleanup.
-func Arm(t testing.TB, stateRoot string) {
+// Arm sets this run's token in the test process's environment and starts
+// its watchdog: when this test process exits, however it exits, the
+// dispatchers that carry the token are ended, and Check reports any still
+// running after the tests. A fixture that builds a child environment from
+// scratch adds Env() to it. The test still stops its own on t.Cleanup.
+func Arm(t testing.TB) {
 	t.Helper()
-	armed := []string{stateRoot}
-	if resolved := resolve(stateRoot); resolved != stateRoot {
-		armed = append(armed, resolved)
-	}
-	r, w, err := os.Pipe()
+	arm.Do(func() {
+		raw := make([]byte, 16)
+		if _, err = rand.Read(raw); err != nil {
+			return
+		}
+		var r *os.File
+		if r, pipe, err = os.Pipe(); err != nil {
+			return
+		}
+		defer r.Close()
+		value := hex.EncodeToString(raw)
+		watch := exec.Command("/bin/sh", "-c", watchdog, "testreap", Key+"="+value)
+		watch.Stdin = r
+		// Its own process group: an interrupt to the test's group must not
+		// end the watchdog before the dispatchers.
+		watch.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err = watch.Start(); err != nil {
+			return
+		}
+		go watch.Wait()
+		if err = os.Setenv(Key, value); err == nil {
+			token = value
+		}
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("testreap:", err)
 	}
-	watch := exec.Command("/bin/sh", append([]string{"-c", watchdog, "testreap"}, armed...)...)
-	watch.Stdin = r
-	// Its own process group: an interrupt to the test's group must not end
-	// the watchdog before the dispatchers.
-	watch.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := watch.Start(); err != nil {
-		r.Close()
-		w.Close()
-		t.Fatal(err)
-	}
-	r.Close()
-	go watch.Wait()
-	mu.Lock()
-	roots = append(roots, armed...)
-	pipes = append(pipes, w)
-	mu.Unlock()
 }
 
-// Check returns code, or 1 when a dispatcher of an armed state root still
-// runs after the tests, or when it cannot list processes. It names and ends
-// each one. Call it in TestMain with the result of m.Run.
+// Env is the environment entry every dispatcher of this run carries.
+func Env() string { return Key + "=" + token }
+
+// Check returns code, or 1 when a dispatcher of this run still runs after
+// the tests, or when it cannot list processes. It names and ends each one.
+// Call it in TestMain with the result of m.Run.
 func Check(code int) int {
-	mu.Lock()
-	armed := append([]string(nil), roots...)
-	mu.Unlock()
-	if len(armed) == 0 {
+	if token == "" {
 		return code
 	}
 	// A dispatcher a cleanup just signalled may still be exiting.
-	var leaked []proc
+	var leaked []int
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
 		var err error
-		if leaked, err = owned(armed); err != nil {
+		if leaked, err = owned(Env()); err != nil {
 			fmt.Fprintln(os.Stderr, "testreap: cannot list processes:", err)
 			return 1
 		}
@@ -128,9 +137,9 @@ func Check(code int) int {
 			break
 		}
 	}
-	for _, p := range leaked {
-		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d of %s running\n", p.pid, p.root)
-		end(p.pid, armed)
+	for _, pid := range leaked {
+		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d running\n", pid)
+		end(pid, Env())
 	}
 	if len(leaked) > 0 && code == 0 {
 		return 1
@@ -138,92 +147,103 @@ func Check(code int) int {
 	return code
 }
 
-type proc struct {
-	pid  int
-	root string
-}
-
-// owned lists the running dispatchers whose environment names one of roots.
-func owned(roots []string) ([]proc, error) {
+// owned lists the running dispatchers whose environment holds entry.
+func owned(entry string) ([]int, error) {
+	var pids []int
 	if runtime.GOOS == "linux" {
-		return ownedProc(roots)
-	}
-	out, err := exec.Command("ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "stat=", "-o", "command=").Output()
-	if err != nil {
-		return nil, err
-	}
-	var found []proc
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 || strings.HasPrefix(fields[1], "Z") {
-			continue
-		}
-		rest := " " + strings.Join(fields[2:], " ") + " "
-		if !strings.Contains(rest, " __dispatch ") && !strings.Contains(rest, " __test_dispatch_guardian ") {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
+		entries, err := os.ReadDir("/proc")
 		if err != nil {
-			return nil, fmt.Errorf("ps printed %q", line)
+			return nil, err
 		}
-		for _, root := range roots {
-			if strings.Contains(rest, " "+stateEnv+root+" ") {
-				found = append(found, proc{pid, root})
-				break
+		for _, e := range entries {
+			if pid, err := strconv.Atoi(e.Name()); err == nil {
+				pids = append(pids, pid)
 			}
+		}
+	} else {
+		// One ps lists the candidates; each is checked again on its own.
+		out, err := exec.Command("ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "stat=", "-o", "command=").Output()
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			pidField, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
+			pid, err := strconv.Atoi(pidField)
+			if err != nil {
+				return nil, fmt.Errorf("ps printed %q", line)
+			}
+			if strings.Contains(rest, entry) { // mine decides
+				pids = append(pids, pid)
+			}
+		}
+	}
+	var found []int
+	for _, pid := range pids {
+		ok, err := mine(pid, entry)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			found = append(found, pid)
 		}
 	}
 	return found, nil
 }
 
-func ownedProc(roots []string) ([]proc, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-	var found []proc
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
+// mine reports whether pid is a dispatcher whose environment holds entry
+// exactly. A process that has ended, or a zombie, is not.
+func mine(pid int, entry string) (bool, error) {
+	if runtime.GOOS == "linux" {
+		dir := filepath.Join("/proc", strconv.Itoa(pid))
+		cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
 		if err != nil {
-			continue
+			return false, nil
 		}
-		// A process that ended meanwhile, or a zombie, has no command line.
-		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
 		args := bytes.Split(bytes.TrimSuffix(cmdline, []byte{0}), []byte{0})
-		if err != nil || len(args) < 2 {
-			continue
-		}
 		if last := string(args[len(args)-1]); last != "__dispatch" && last != "__test_dispatch_guardian" {
-			continue
+			return false, nil
 		}
-		environ, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
+		environ, err := os.ReadFile(filepath.Join(dir, "environ"))
 		if err != nil {
-			continue
+			return false, nil
 		}
-		for _, root := range roots {
-			if bytes.Contains(append([]byte{0}, environ...), []byte("\x00"+stateEnv+root+"\x00")) {
-				found = append(found, proc{pid, root})
-				break
+		for _, e := range bytes.Split(environ, []byte{0}) {
+			if string(e) == entry {
+				return true, nil
 			}
 		}
+		return false, nil
 	}
-	return found, nil
+	// The arguments alone, then the environment, which ps -E prints after
+	// them with a newline in a value escaped, so entries are space separated.
+	args, err := psLine(pid, "-o", "stat=", "-o", "args=")
+	if err != nil || args == "" || strings.HasPrefix(args, "Z") ||
+		!(strings.HasSuffix(args, " __dispatch") || strings.HasSuffix(args, " __test_dispatch_guardian")) {
+		return false, err
+	}
+	line, err := psLine(pid, "-E", "-o", "command=")
+	return err == nil && strings.Contains(" "+line+" ", " "+entry+" "), err
 }
 
-// end signals pid while it is still a dispatcher of roots: TERM, then KILL
-// after five seconds.
-func end(pid int, roots []string) {
+// psLine is ps's line for pid, or "" when pid has ended; a failing ps is an
+// error.
+func psLine(pid int, args ...string) (string, error) {
+	out, err := exec.Command("ps", append([]string{"-ww", "-p", strconv.Itoa(pid)}, args...)...).Output()
+	if err != nil {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// end signals pid while it is still a dispatcher with entry: TERM, then
+// KILL after five seconds.
+func end(pid int, entry string) {
 	still := func() bool {
-		found, err := owned(roots)
-		if err != nil {
-			return false
-		}
-		for _, p := range found {
-			if p.pid == pid {
-				return true
-			}
-		}
-		return false
+		ok, err := mine(pid, entry)
+		return err == nil && ok
 	}
 	if !still() {
 		return
@@ -236,21 +256,5 @@ func end(pid int, roots []string) {
 	}
 	if still() {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
-}
-
-// resolve is path with symlinks resolved in its longest existing prefix, as
-// a dispatcher that resolves its state root sees it.
-func resolve(path string) string {
-	dir, rest := path, ""
-	for {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return path
-		}
-		dir, rest = parent, filepath.Join(filepath.Base(dir), rest)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/testreap"
 )
 
 var codexPaths = map[string]string{
@@ -76,7 +77,8 @@ func codexEnv(t *testing.T, root string) []string {
 	if err := codexCheckRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{codexRootKey + "=" + root, "PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	testreap.Arm(t)
+	env := []string{codexRootKey + "=" + root, "PATH=/usr/bin:/bin:/usr/sbin:/sbin", testreap.Env()}
 	for key, child := range codexPaths {
 		path := filepath.Join(root, child)
 		if key == "CROSSHALL_STATE_DIR" {
@@ -237,7 +239,7 @@ func TestCodexIsolation(t *testing.T) {
 	}
 	for i, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
-		if key == "PATH" {
+		if key == "PATH" || key == testreap.Key {
 			continue
 		}
 		reduced := append([]string(nil), env[:i]...)

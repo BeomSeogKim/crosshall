@@ -2,18 +2,21 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/BeomSeogKim/crosshall/internal/appserver"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 // codex is Codex: a thread in the managed app server that its terminal
-// client runs against. It stays a candidate until trusted capture is shown
-// (design section 3): its transport proves the server but has no sender.
+// client runs against. A notice is queued on that thread through the
+// server's control socket; it stays a candidate until tested evidence for
+// the build is shipped.
 type codex struct{}
 
 // Owner reasons for a Codex session the sender cannot reach.
@@ -90,8 +93,50 @@ func (codex) Echo(prompt string) (string, bool) {
 	return strings.CutSuffix(body, codexSuffixRC4)
 }
 
-// Transport proves the managed server; it has no sender yet.
-func (codex) Transport() Transport { return Transport{Prove: proveCodexServer} }
+// Transport proves the managed server and queues notices on it. Retired
+// stays nil: the server's exit does not retire a queued notice, which
+// survives in the home and runs when the thread is next loaded (C10).
+func (codex) Transport() Transport { return Transport{Prove: proveCodexServer, Send: sendCodex} }
+
+// codexControlSocket is the managed server's control socket in its home.
+var codexControlSocket = filepath.Join("app-server-control", "app-server-control.sock")
+
+// sendCodex queues one notice on the target's thread with
+// thread/queue/add, tagged with the attempt's identity, never with
+// turn/start: on a working thread that steers the running turn. The client
+// writes nothing unless the socket's listener is the proven server. Any
+// failure up to the call is a proven non-submission, an error answer is the
+// server's refusal, and anything else after the call was written is
+// uncertain.
+func sendCodex(ctx context.Context, target Target, line string) Outcome {
+	if !filepath.IsAbs(target.Home) || target.Address == "" || target.Attempt == "" {
+		return NotSubmitted
+	}
+	socket := filepath.Join(realPath(target.Home), codexControlSocket)
+	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: target.Queue.PID, Start: target.Queue.StartMS})
+	if err != nil {
+		return NotSubmitted
+	}
+	defer c.Close()
+	var res struct {
+		QueuedSubmission struct {
+			ID string `json:"id"`
+		} `json:"queuedSubmission"`
+	}
+	err = c.Call("thread/queue/add", map[string]any{
+		"threadId":            target.Address,
+		"clientUserMessageId": target.Attempt,
+		"input":               []map[string]any{{"type": "text", "text": line}},
+	}, &res)
+	var refused *appserver.Error
+	switch {
+	case err == nil && res.QueuedSubmission.ID != "":
+		return Submitted
+	case errors.As(err, &refused):
+		return NotSubmitted
+	}
+	return Uncertain
+}
 
 // The managed server's release tree under its home, and the arguments it
 // runs with, as the Codex hook manifest names them.

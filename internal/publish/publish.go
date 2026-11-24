@@ -33,6 +33,13 @@ type Target struct {
 	Adapter string
 	Address string
 	Queue   Queue
+	// Home is the vendor's configuration home setup installed the hooks
+	// into (as Probe.InstalledHome), never a path a hook reported; empty
+	// when none is recorded.
+	Home string
+	// Attempt is the attempt's stable identity, unique across the store's
+	// life: a transport may tag the notice with it to find it again.
+	Attempt string
 }
 
 // Outcome is what a transport reports for one notice.

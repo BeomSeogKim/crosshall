@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
@@ -345,6 +346,13 @@ func publishAttemptIDs(ctx context.Context, tx store.Tx, id int64) ([]int64, err
 	return selectIDs(ctx, tx, `SELECT message_id FROM publish_attempt_item WHERE attempt_id = ? ORDER BY message_id`, id)
 }
 
+// AttemptIdentity names an attempt for a transport's tag. The row ID alone
+// may be given again after its row is deleted; with the reservation time it
+// is not.
+func AttemptIdentity(id, reservedAtMS int64) string {
+	return "crosshall-" + strconv.FormatInt(id, 10) + "-" + strconv.FormatInt(reservedAtMS, 10)
+}
+
 // BeginPublish is the final fence. Only its winner may call the transport.
 func BeginPublish(ctx context.Context, tx store.Tx, id int64, now time.Time) (PublishTarget, []int64, error) {
 	return beginPublish(ctx, tx, id, pendingPublishItem, now)
@@ -357,14 +365,17 @@ func beginPublish(ctx context.Context, tx store.Tx, id int64, itemOK string, now
 	var stale bool
 	var target PublishTarget
 	var route publish.Route
+	var reservedAt int64
 	err := tx.QueryRowContext(ctx, `SELECT `+publishRouteColumns+`, p.process_pid, p.process_start_ms, r.principal_id,
+		(SELECT reserved_at_ms FROM publish_attempt WHERE id = ?1),
 		EXISTS (SELECT 1 FROM publish_attempt_item i
 			JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
 			JOIN message m ON m.id = x.message_id
 			WHERE i.attempt_id = ?1 AND NOT (`+itemOK+`)) `+
 		activePublishRoutes(now)+` AND EXISTS (SELECT 1 FROM publish_attempt a WHERE a.id = ?1 AND a.state = 'reserved'
 			AND `+reservationMatchesRoute+`)`, id).
-		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &stale)...)
+		Scan(append(routeScan(&target.Adapter, &route), &target.Queue.PID, &target.Queue.StartMS, &principal, &reservedAt, &stale)...)
+	target.Attempt = AttemptIdentity(id, reservedAt)
 	resolved := false
 	if err == nil {
 		target.Address, resolved = routeAddress(target.Adapter, route)

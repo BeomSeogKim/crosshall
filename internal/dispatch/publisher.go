@@ -308,6 +308,9 @@ func (p *publisher) submit(ctx context.Context, id int64) {
 		logPublishFailure(err)
 		return
 	}
+	if p.homes != nil {
+		target.Home = p.homes(target.Adapter)
+	}
 	outcome := domain.PublishNotSubmitted // an adapter without a sender sends nothing
 	if a, ok := publish.Lookup(target.Adapter); ok {
 		line, ok := a.Notice(ids)

@@ -27,7 +27,7 @@ var (
 const watchdog = `read -r _
 i=0
 while [ "$i" -lt 10 ]; do
-  ps -ww -axo pid=,args= | while read -r pid args; do
+  ps -e -ww -o pid=,args= | while read -r pid args; do
     for exe in "$@"; do
       case "$args" in
       "$exe __dispatch"|"$exe __test_dispatch_guardian") kill -TERM "$pid" 2>/dev/null ;;
@@ -104,7 +104,7 @@ func Check(code int) int {
 // dispatchers maps the pid of each live dispatcher run from one of binaries
 // to its command line.
 func dispatchers(binaries []string) map[int]string {
-	out, _ := exec.Command("ps", "-ww", "-axo", "pid=,stat=,args=").Output()
+	out, _ := exec.Command("ps", "-e", "-ww", "-o", "pid=,stat=,args=").Output()
 	found := map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		pidText, rest, _ := strings.Cut(strings.TrimSpace(line), " ")

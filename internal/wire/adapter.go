@@ -155,11 +155,12 @@ type HookOutputAckArgs struct {
 }
 
 type HookJoinHintAck struct {
-	BindingID  int64  `json:"binding_id"`
-	RouteEpoch int64  `json:"route_epoch"`
-	Generation string `json:"gen"`
-	RosterSeq  uint64 `json:"roster_seq"`
-	Offer      string `json:"offer,omitempty"`
+	BindingID            int64  `json:"binding_id"`
+	RouteEpoch           int64  `json:"route_epoch"`
+	Generation           string `json:"gen"`
+	RosterSeq            uint64 `json:"roster_seq"`
+	Offer                string `json:"offer,omitempty"`
+	MembershipGeneration int64  `json:"membership_generation,omitempty"`
 }
 
 func (a HookJoinHintAck) ValidFor(generation string) bool {
@@ -169,18 +170,19 @@ func (a HookJoinHintAck) ValidFor(generation string) bool {
 
 func (a HookJoinHintAck) SameOffer(b HookJoinHintAck) bool {
 	return a.Offer != "" && a.Offer == b.Offer && a.BindingID == b.BindingID &&
-		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation
+		a.RouteEpoch == b.RouteEpoch && a.Generation == b.Generation && a.MembershipGeneration == b.MembershipGeneration
 }
 
 // HookReachAck identifies a reach line offered to a binding: Told is the
 // value stored once the line was printed (1 brings, 0 cannot reach).
 type HookReachAck struct {
-	BindingID    int64  `json:"binding_id"`
-	RouteEpoch   int64  `json:"route_epoch"`
-	Told         int    `json:"told"`
-	SuspensionID int64  `json:"suspension_id,omitempty"`
-	Generation   string `json:"gen"`
-	Offer        string `json:"offer,omitempty"`
+	BindingID            int64  `json:"binding_id"`
+	RouteEpoch           int64  `json:"route_epoch"`
+	Told                 int    `json:"told"`
+	SuspensionID         int64  `json:"suspension_id,omitempty"`
+	Generation           string `json:"gen"`
+	Offer                string `json:"offer,omitempty"`
+	MembershipGeneration int64  `json:"membership_generation,omitempty"`
 }
 
 func (a HookReachAck) ValidFor(generation string) bool {
@@ -193,11 +195,12 @@ func (a HookReachAck) SameOffer(b HookReachAck) bool {
 }
 
 type HookAck struct {
-	Kind       string `json:"kind"`
-	Instance   string `json:"instance"`
-	Generation string `json:"gen"`
-	Seq        uint64 `json:"seq"`
-	TurnRef    string `json:"turn_ref,omitempty"`
+	Kind       string     `json:"kind"`
+	Instance   string     `json:"instance"`
+	Generation string     `json:"gen"`
+	Seq        uint64     `json:"seq"`
+	TurnRef    string     `json:"turn_ref,omitempty"`
+	Membership Membership `json:"membership,omitzero"`
 }
 
 type AdapterPolicyArgs struct {

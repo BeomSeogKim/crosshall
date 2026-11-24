@@ -38,13 +38,16 @@ type Reply struct {
 	wire.Response
 	OpKey string
 	// PriorRosterAck is the last successfully displayed cursor sent with this request.
-	PriorRosterAck uint64
+	PriorRosterAck     uint64
+	RequestMembership  *wire.Membership
+	MembershipCaptured bool
 
-	rendezvous string
-	digest     string
-	generation string
-	cursor     uint64
-	rules      bool // the reply carries the member rules
+	rendezvous       string
+	digest           string
+	generation       string
+	rosterMembership wire.Membership
+	cursor           uint64
+	rules            bool // the reply carries the member rules
 	// rotated says the request registered the directory again; the
 	// dispatcher may publish the new generation just after its reply.
 	rotated bool
@@ -57,6 +60,14 @@ const RulesReceipt = "rules"
 // Member sends a command through the registered member leaf. The caller may
 // set a deadline at CLI entry so discovery and startup use the same budget.
 func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request) (Reply, error) {
+	return c.member(ctx, id, req, false)
+}
+
+func (c Client) MemberPinned(ctx context.Context, id ident.Identity, req wire.Request) (Reply, error) {
+	return c.member(ctx, id, req, true)
+}
+
+func (c Client) member(ctx context.Context, id ident.Identity, req wire.Request, membershipPinned bool) (Reply, error) {
 	ctx, cancel := commandContext(ctx)
 	defer cancel()
 	req = prepare(ctx, req)
@@ -107,15 +118,32 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 
 	req.VendorVersion = id.Version
 	req.KeyDigest, req.Generation = digest, generation
-	req.Ack, err = readSequence(leaf, "ack")
+	if req.Membership == nil && !membershipPinned {
+		membership, err := ident.LookupMembership(leaf)
+		if err != nil {
+			return c.failure(req, core.CodeUnsent, err)
+		}
+		req.Membership = membership
+	}
+	var admitted wire.Membership
+	if req.Membership != nil {
+		admitted = *req.Membership
+	}
+	req.Ack, err = ident.ReadRosterReceipt(leaf, "ack", admitted)
 	if err != nil {
 		return c.failure(req, core.CodeUnsent, err)
 	}
 	resp, code, err := exchange(ctx, leaf, req.Attempt, req)
 	if err != nil {
-		return c.failure(req, code, err)
+		reply, err := c.failure(req, code, err)
+		reply.MembershipCaptured = true
+		return reply, err
 	}
-	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack}
+	reply := Reply{Response: resp, OpKey: req.OpKey, PriorRosterAck: req.Ack,
+		RequestMembership: req.Membership, MembershipCaptured: true}
+	if resp.Membership != nil && *resp.Membership != admitted && (req.Membership != nil || resp.Membership.Generation > 1) {
+		reply.PriorRosterAck = 0
+	}
 	var trailer struct {
 		Cursor uint64 `json:"roster_seq"`
 		Rules  bool   `json:"rules_given"`
@@ -123,9 +151,15 @@ func (c Client) Member(ctx context.Context, id ident.Identity, req wire.Request)
 		// (a cleared conversation joining as a new member).
 		Generation string `json:"generation"`
 	}
-	if err := json.Unmarshal(resp.Data, &trailer); err == nil && trailer.Cursor > 0 {
+	if err := json.Unmarshal(resp.Data, &trailer); err == nil && trailer.Cursor > 0 &&
+		(req.Verb != "join" || resp.Membership != nil || admitted.Generation <= 1) {
 		if trailer.Generation != "" {
 			generation, reply.rotated = trailer.Generation, true
+		}
+		reply.rosterMembership = admitted
+		if resp.Membership != nil {
+			reply.rosterMembership = *resp.Membership
+			reply.rotated = reply.rotated || resp.Membership.Generation > admitted.Generation
 		}
 		reply.cursor, reply.rendezvous, reply.digest, reply.generation = trailer.Cursor, c.Rendezvous, digest, generation
 		reply.rules = trailer.Rules
@@ -162,6 +196,7 @@ func (c Client) Owner(ctx context.Context, req wire.Request) (Reply, error) {
 	defer owner.Close()
 	req.VendorVersion = ""
 	req.Generation, req.KeyDigest, req.Ack = "", "", 0
+	req.Membership = nil
 	resp, code, err := exchange(ctx, owner, req.Attempt, req)
 	if err != nil {
 		return c.failure(req, code, err)
@@ -260,7 +295,7 @@ func (r Reply) Acknowledge() error {
 			if r.rules {
 				rules = r.cursor
 			}
-			return ident.LeavePendingReceipt(leaf, r.generation, r.cursor, rules)
+			return ident.LeavePendingReceipt(leaf, r.generation, r.cursor, rules, r.rosterMembership)
 		}
 		if err == nil && !r.rotated {
 			return nil // a reply of an older generation has nothing to record
@@ -289,18 +324,21 @@ func (r Reply) record(leaf *os.Root) (bool, error) {
 	if err != nil || strings.TrimSpace(string(generation)) != r.generation {
 		return false, err
 	}
+	membership, err := ident.ReadMembership(leaf)
+	if err != nil || membership != r.rosterMembership {
+		return false, err
+	}
 	if r.rules {
 		// Before the cursor, which an older version may already have set as far.
-		record := []byte(strconv.FormatUint(r.cursor, 10) + "\n")
-		if err := publishFile(context.Background(), leaf, wire.NewID()+".part", RulesReceipt, record); err != nil {
+		if err := ident.PublishRosterReceipt(leaf, RulesReceipt, r.rosterMembership, r.cursor); err != nil {
 			return false, err
 		}
 	}
-	last, err := readSequence(leaf, "ack")
+	last, err := ident.ReadRosterReceipt(leaf, "ack", r.rosterMembership)
 	if err != nil || last >= r.cursor {
 		return err == nil, err
 	}
-	return true, publishFile(context.Background(), leaf, wire.NewID()+".part", "ack", []byte(strconv.FormatUint(r.cursor, 10)+"\n"))
+	return true, ident.PublishRosterReceipt(leaf, "ack", r.rosterMembership, r.cursor)
 }
 
 func exchange(ctx context.Context, dir *os.Root, attempt string, packet any) (wire.Response, core.Code, error) {
@@ -414,5 +452,6 @@ func (c Client) failure(req wire.Request, code core.Code, cause error) (Reply, e
 		Hint    string `json:"hint"`
 	}{req.OpKey, string(code), hint})
 	return Reply{Response: wire.Response{Version: wire.Version, Attempt: req.Attempt,
-		Result: core.Result{Status: core.ExitUnavailable, Code: code, Data: data}}, OpKey: req.OpKey}, cause
+		Result: core.Result{Status: core.ExitUnavailable, Code: code, Data: data}}, OpKey: req.OpKey,
+		RequestMembership: req.Membership}, cause
 }

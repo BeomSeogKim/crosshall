@@ -277,6 +277,9 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 	if caller.BindingID != nil && *caller.BindingID != b.id {
 		return Refuse(core.CodeLeafMismatch, "binding does not match authenticated leaf", "re-enroll from the active session"), nil
 	}
+	if !b.acceptsHookAt(cmd.HookAtMS) {
+		return OK(out)
+	}
 	if b.ownerHookFence.Valid && cmd.HookAtMS <= b.ownerHookFence.Int64 {
 		return OK(out)
 	}
@@ -292,6 +295,12 @@ func (s *Service) hookRoute(ctx context.Context, tx store.Tx, caller core.Caller
 	}
 	if err != nil || latest != cmd.LaunchRef {
 		return OK(out)
+	}
+	if b.ownerHookFence.Valid {
+		fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
+		if err != nil || !fresh {
+			return okOrErr(out, err)
+		}
 	}
 	sessionRef := resolveSessionKey(ctx, tx, req.SessionKey, principal, cmd.Adapter)
 	if sessionRef == "" {

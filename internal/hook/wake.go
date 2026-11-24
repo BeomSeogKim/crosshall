@@ -56,11 +56,8 @@ const (
 	startFailedName = "hook-start-failed"
 )
 
-// wake starts a stopped dispatcher when the adapter policy is on. It
-// returns the entry time the callback continues from: a fresh one after an
-// enrolling callback's start succeeded, with the state root for its log
-// line, else the original. A failed start
-// is written to dispatcher.log and the callback goes on as before.
+// wake returns a fresh execution budget and the state root after a successful
+// enrolling start. The hook still dates its requests to when it entered.
 func wake(entry time.Time, args []string, locate func() (Paths, error)) (time.Time, string) {
 	m, ok := loadManifest(args[0])
 	spec, known := m.event(args[1])

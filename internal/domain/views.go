@@ -127,9 +127,8 @@ type LedgerRecipient struct {
 	LateByMS          *int64    `json:"late_by_ms"`
 	ReplyUnread       bool      `json:"reply_unread,omitempty"`
 	Receipts          []Receipt `json:"receipts"`
-	// Observed is the recipient's last adapter fact, for an open obligation
-	// only: what it was last seen doing, with no judgement attached. It is
-	// in absolute time, so the ledger does not change with the clock.
+	// Observed is the live recipient's last adapter fact for an open
+	// obligation, in absolute time so the ledger does not change with the clock.
 	Observed *ObservedFact `json:"observed,omitempty"`
 	// Notice is the publish notice that offered this request, if any, and
 	// ReplyNotice the one that offered the asker this recipient's reply.
@@ -412,7 +411,8 @@ func (s *Service) channelLedger(ctx context.Context, tx store.Tx, ch channelRow,
         (SELECT at_ms FROM event WHERE kind = ?3 AND subject = stopped.subject ORDER BY seq DESC LIMIT 1)
     FROM stopped JOIN event e ON e.seq = (
         SELECT MAX(seq) FROM event WHERE kind = ?2 AND subject = stopped.subject)
-    ORDER BY e.seq`, ch.id, guardStopped, guardResetKind)
+    WHERE stopped.exchange_id <> 0 OR json_extract(e.detail, '$.channel') = ?4
+    ORDER BY e.seq`, ch.id, guardStopped, guardResetKind, ch.name)
 	if err != nil {
 		return out, err
 	}
@@ -546,8 +546,10 @@ func (s *Service) ledgerRequests(ctx context.Context, tx store.Tx, channel, wait
 					}
 				}
 			}
-			if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
-				return nil, err
+			if bindingState == "live" {
+				if r.Observed, err = latestFact(ctx, tx, r.PrincipalID); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if len(out) == 0 || out[len(out)-1].ID != m.ID {
@@ -615,6 +617,10 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	case HookEnroll, HookEvent:
 		return result, nil // a hook prints only its own presentation
 	}
+	if joined && result.Membership != nil {
+		caller.BindingID = &result.Membership.BindingID
+		caller.Membership = result.Membership
+	}
 	member, ok, err := lookupLedgerMember(ctx, tx, caller)
 	if err != nil {
 		return core.Result{}, err
@@ -623,12 +629,20 @@ func withMemberOutput(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err := json.Unmarshal(result.Data, &fields); err != nil {
 		return core.Result{}, err
 	}
+	var joinedChannel string
+	if joined {
+		if err := json.Unmarshal(fields["channel"], &joinedChannel); err != nil {
+			return core.Result{}, err
+		}
+		ok = ok && member.name == joinedChannel
+	}
 	if joined && req.Vendor == "agy" && fields["hint"] != nil && caller.PrincipalID != nil {
 		// A keyed replay keeps its original hint even after the member leaves.
 		// Check the binding that survives both departure and leaf recreation.
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
-			SELECT 1 FROM binding WHERE principal_id = ? AND hint_acked = 1)`,
-			*caller.PrincipalID).Scan(&result.JoinHintAcked); err != nil {
+			SELECT 1 FROM binding b JOIN channel c ON c.id = b.channel_id
+			WHERE b.principal_id = ? AND c.name = ? AND b.hint_acked = 1)`,
+			*caller.PrincipalID, joinedChannel).Scan(&result.JoinHintAcked); err != nil {
 			return core.Result{}, err
 		}
 	}

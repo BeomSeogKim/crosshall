@@ -93,25 +93,37 @@ func policyOpen(ctx context.Context, tx store.Tx, adapter string, epoch uint64) 
 type hookBinding struct {
 	id, channel     int64
 	routeEpoch      int64
+	selectionGen    int64
+	selectedAtMS    int64
 	joinedAtMS      int64
 	alias, state    string
 	channelName     string
 	dnd             bool
 	byHook          bool // departed by a clean session end, so a start restores it
+	byOwner         bool
 	joinHintPending bool
 	ownerHookFence  sql.NullInt64
 }
 
 func bindingOf(ctx context.Context, tx store.Tx, principal int64) (hookBinding, bool, error) {
 	var b hookBinding
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, b.joined_at_ms, b.alias, b.state, c.name, b.dnd, b.departed_by_hook, b.owner_hook_fence_ms,
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, b.route_epoch, s.generation, s.selected_at_ms, b.joined_at_ms, b.alias, b.state, c.name, b.dnd,
+			b.departed_by_hook, b.departed_by_owner, b.owner_hook_fence_ms,
 			b.roster_baseline_seq IS NOT NULL AND b.hint_acked = 0 AND b.start_line_seen = 0
-		FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.principal_id = ? ORDER BY b.id LIMIT 1`, principal).
-		Scan(&b.id, &b.channel, &b.routeEpoch, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd, &b.byHook, &b.ownerHookFence, &b.joinHintPending)
+		FROM member_selection s JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		WHERE s.principal_id = ?`, principal).
+		Scan(&b.id, &b.channel, &b.routeEpoch, &b.selectionGen, &b.selectedAtMS, &b.joinedAtMS, &b.alias, &b.state, &b.channelName, &b.dnd,
+			&b.byHook, &b.byOwner, &b.ownerHookFence, &b.joinHintPending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, false, nil
 	}
 	return b, err == nil, err
+}
+
+// A callback can read the current membership after capturing its timestamp.
+// Millisecond equality does not establish which side of the move captured it.
+func (b hookBinding) acceptsHookAt(hookAtMS int64) bool {
+	return b.selectionGen <= 1 || hookAtMS > b.selectedAtMS
 }
 
 func hookLaunchAfterFence(ctx context.Context, tx store.Tx, principal int64, launch string, fence, at int64) (bool, error) {
@@ -164,6 +176,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {
 		return core.Result{}, err
+	}
+	if !b.acceptsHookAt(cmd.HookAtMS) {
+		return OK(out)
 	}
 	if found && b.ownerHookFence.Valid {
 		if !b.byHook && b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
@@ -548,7 +563,8 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 	out := wire.HookResult{Epoch: cmd.Epoch}
 	recoverEnrollment := caller.Role == core.RoleUnenrolled && caller.PrincipalID == nil &&
 		cmd.CanRecoverEnrollment() && cmd.HookAtMS <= ms(now)+futureSlackMS
-	if !recoverEnrollment && (caller.Role != core.RoleMember || caller.PrincipalID == nil) {
+	departedReceipt := caller.Role == core.RoleUnenrolled && caller.PrincipalID != nil && cmd.Fact == FactPromptSubmitted && cmd.Receipt != ""
+	if !recoverEnrollment && !departedReceipt && (caller.Role != core.RoleMember || caller.PrincipalID == nil) {
 		return OK(out)
 	}
 	if open, err := policyOpen(ctx, tx, cmd.Profile.Adapter, cmd.Epoch); err != nil || !open {
@@ -559,7 +575,7 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 		// joins nobody until an explicit join, also after a /clear.
 		if cmd.LaunchVerified && cmd.LaunchRef != SessionLaunch {
 			launch, found, err := s.processLaunchAt(ctx, tx, cmd.Profile.Adapter, cmd.LaunchRef, cmd.HookAtMS)
-			if err != nil || (found && launch.away) {
+			if err != nil || (found && (launch.away || launch.stale)) {
 				return okOrErr(out, err)
 			}
 		}
@@ -593,14 +609,26 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	if err != nil {
 		return core.Result{}, err
 	}
+	if !b.acceptsHookAt(cmd.HookAtMS) {
+		return OK(out)
+	}
+	departedReceipt := found && b.state == "departed" && !b.byHook && !b.byOwner && cmd.Fact == FactPromptSubmitted && cmd.Receipt != ""
 	if found && b.ownerHookFence.Valid {
-		if b.state != "live" || cmd.HookAtMS <= b.ownerHookFence.Int64 {
+		if b.state != "live" && !departedReceipt || cmd.HookAtMS <= b.ownerHookFence.Int64 {
 			return OK(out)
 		}
 		fresh, err := hookLaunchAfterFence(ctx, tx, principal, cmd.LaunchRef, b.ownerHookFence.Int64, cmd.HookAtMS)
 		if err != nil || !fresh {
 			return okOrErr(out, err)
 		}
+	}
+	if departedReceipt {
+		// The notice can settle its old transport lane, but departure ended its turn privileges.
+		_, err := observePublishReceipt(ctx, tx, b, principal, req.SessionKey, cmd, now)
+		return okOrErr(out, err)
+	}
+	if caller.Role != core.RoleMember {
+		return OK(out)
 	}
 	origin := "unknown"
 	if cmd.Receipt != "" && found && b.state == "live" && (caller.BindingID == nil || *caller.BindingID == b.id) {

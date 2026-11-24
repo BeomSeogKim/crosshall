@@ -64,9 +64,23 @@ func TestOfferReceiptAfterFinalOutput(t *testing.T) {
 			}
 			defer leaf.Close()
 			hookFile(t, leaf, "stamp", "fixture-host fixture-gen 2 9\n")
+			var membership *core.Membership
+			if tc.name == "offer alone" {
+				membership = &core.Membership{BindingID: 5, Generation: 2}
+				if err := ident.RepublishMembership(leaf, *membership); err != nil {
+					t.Fatal(err)
+				}
+				hookFile(t, leaf, "seen-notice", "fixture-host fixture-gen 2\n")
+				if hasSeenNotice(leaf, "fixture-gen") {
+					t.Fatal("a legacy stamp supplied prior membership history")
+				}
+			}
 			result := wire.HookResult{
 				Epoch: 7, PendingLine: line, OfferID: descriptor.OfferID, OfferReceipt: &descriptor,
 				Ack: &wire.HookAck{Kind: "notice", Instance: "fixture-host", Generation: "fixture-gen", Seq: 2},
+			}
+			if membership != nil {
+				result.Ack.Membership = *membership
 			}
 			event := "UserPromptSubmit"
 			switch tc.name {
@@ -119,9 +133,12 @@ func TestOfferReceiptAfterFinalOutput(t *testing.T) {
 						t.Fatalf("callback capability must be in the request envelope: %+v", req)
 					}
 					raw, _ := json.Marshal(result)
-					return spool.Reply{Response: wire.Response{Result: core.Result{Data: raw}}}, nil
+					return spool.Reply{Response: wire.Response{Result: core.Result{Data: raw, Membership: membership}}}, nil
 				}
 				acks++
+				if membership != nil && (req.Membership == nil || *req.Membership != *membership) {
+					t.Fatalf("acknowledgement membership = %+v, want %+v", req.Membership, membership)
+				}
 				var ack wire.HookOutputAckArgs
 				if err := json.Unmarshal(req.Args, &ack); err != nil || ack.Offer == nil || *ack.Offer != descriptor || !oneWay ||
 					!strings.Contains(stdout.String(), line) || ack.WrittenAtMS < wroteAt || ack.WrittenAtMS > time.Now().UnixMilli() {
@@ -146,6 +163,9 @@ func TestOfferReceiptAfterFinalOutput(t *testing.T) {
 			}
 			if acks != tc.acks || stampClean(rv, leaf, "fixture-gen", "notice", "") != tc.clean {
 				t.Fatalf("acks=%d clean=%t, want %d/%t; outcome=%s stdout=%q", acks, stampClean(rv, leaf, "fixture-gen", "notice", ""), tc.acks, tc.clean, outcome, stdout.String())
+			}
+			if membership != nil && !hasSeenNotice(leaf, "fixture-gen") {
+				t.Fatal("receipt stamp lost the current membership history")
 			}
 		})
 	}

@@ -58,6 +58,7 @@ type readSnapshot struct {
 
 type memberView struct {
 	binding, principal, channel int64
+	generation                  int64
 	name                        string
 	cursor                      uint64
 	hintAcked                   bool
@@ -70,14 +71,17 @@ func lookupLedgerMember(ctx context.Context, tx store.Tx, caller core.Caller) (m
 	}
 	m.principal = *caller.PrincipalID
 	// A newly rejoined member can be looked up using its existing principal.
-	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, c.name, b.roster_ack_seq, b.hint_acked
-		FROM binding b JOIN channel c ON c.id = b.channel_id
-		WHERE b.principal_id = ? AND b.state = 'live'`, m.principal).
-		Scan(&m.binding, &m.channel, &m.name, &m.cursor, &m.hintAcked)
+	err := tx.QueryRowContext(ctx, `SELECT b.id, b.channel_id, c.name, b.roster_ack_seq, b.hint_acked, s.generation
+		FROM member_selection s JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		WHERE s.principal_id = ? AND b.state = 'live'`, m.principal).
+		Scan(&m.binding, &m.channel, &m.name, &m.cursor, &m.hintAcked, &m.generation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, false, nil
 	}
 	if err == nil && caller.BindingID != nil && *caller.BindingID != m.binding {
+		return m, false, nil
+	}
+	if err == nil && caller.Membership != nil && (caller.Membership.BindingID != m.binding || caller.Membership.Generation != m.generation) {
 		return m, false, nil
 	}
 	return m, err == nil, err

@@ -69,12 +69,20 @@ func (claude) Notice(ids []int64) (string, bool) {
 	return notice.PendingPrefix + notice.IDList(ids) + claudeSuffix, true
 }
 
+var claudeResume = notice.ResumeHead("Claude")
+
+// ResumeNotice names requests the member still owes after a restart.
+func (claude) ResumeNotice(ids []int64) (string, bool) { return notice.Resume(claudeResume, ids), true }
+
 func (claude) Echo(prompt string) (string, bool) {
 	body, ok := strings.CutPrefix(prompt, notice.PendingPrefix)
 	if !ok {
 		return "", false
 	}
 	if ids, ok := strings.CutSuffix(body, claudeSuffix); ok {
+		return ids, true
+	}
+	if ids, ok := notice.CutResume(claudeResume, body); ok {
 		return ids, true
 	}
 	return strings.CutSuffix(body, claudeSuffixRC4)

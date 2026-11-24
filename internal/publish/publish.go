@@ -123,6 +123,10 @@ type Adapter interface {
 	// Notice renders the notice for message IDs; ok is false while the
 	// adapter has no notice format.
 	Notice(ids []int64) (line string, ok bool)
+	// ResumeNotice renders the notice that names requests a member still
+	// owes after the hall restarted, which it read before; Echo recognizes
+	// it too.
+	ResumeNotice(ids []int64) (line string, ok bool)
 	// Echo recognizes the adapter's own notice in a submitted prompt and
 	// returns the ID list it carries; the shared grammar in internal/notice
 	// validates that list and writes the receipt.

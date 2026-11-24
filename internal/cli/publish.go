@@ -135,6 +135,8 @@ func whyText(w domain.Wake, note bool) string {
 		return "notices suspended" + until
 	case domain.WhyOff:
 		return "notices off"
+	case domain.WhyEnded:
+		return "its session ended (it may be closed)"
 	case domain.WhyCapped:
 		return "notice limit" + until
 	case domain.WhyHeld:

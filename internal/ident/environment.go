@@ -26,20 +26,47 @@ type Identity struct {
 	Version string
 }
 
-type vendorVariable struct {
-	name       string
-	vendor     string
+//go:generate go test -run ^TestIdentityIndexMatchesManifests$ . -update-index
+
+// identityRow is one adapter's identity declaration in its hook manifest,
+// compiled into identityIndex (identity_index.go) so that resolving an
+// identity, which every hook does, decodes no manifest.
+type identityRow struct {
+	adapter    string
+	sessionEnv string
 	evidence   string
 	verifiedOn []string
+	// markers are variables the vendor's agents set besides the session
+	// variable: an agent context crosshall cannot identify.
+	markers []string
+	cliName string
+	version versionSource
 }
 
-var vendorVariables = []vendorVariable{
-	{"CLAUDE_CODE_SESSION_ID", "claude", "documented", []string{"2.1.327"}},
-	{"CODEX_THREAD_ID", "codex", "observed", []string{"0.170.0"}},
-	{"ANTIGRAVITY_CONVERSATION_ID", "agy", "observed", []string{"1.5.11"}},
+// versionSource reads the vendor's version from env: after prefix, up to
+// until, '-' read as '.' when dashesToDots. An indirect source is another
+// component's build, recorded as "<indirect>:<prefix><version>" and never
+// taken for the CLI's own version; indirectName names that component.
+type versionSource struct {
+	env          string
+	prefix       string
+	until        string
+	dashesToDots bool
+	indirect     string
+	indirectName string
 }
 
-var otherAgentMarkers = []string{"CLAUDECODE", "AI_AGENT", "CODEX_SESSION_ID", "ANTIGRAVITY_AGENT"}
+// genericAgentMarkers are set by agents of any vendor.
+var genericAgentMarkers = []string{"AI_AGENT"}
+
+func indexRow(vendor string) (identityRow, bool) {
+	for _, row := range identityIndex {
+		if row.adapter == vendor {
+			return row, true
+		}
+	}
+	return identityRow{}, false
+}
 
 // EnvironmentError describes a local resolution failure. It includes variable
 // names when useful but never the values of identity variables.
@@ -55,10 +82,10 @@ func (e *EnvironmentError) Error() string { return e.Message }
 func ResolveEnvironment(lookup func(string) (string, bool)) (Identity, error) {
 	var found []string
 	var caller Identity
-	for _, row := range vendorVariables {
-		if value, ok := lookup(row.name); ok {
-			found = append(found, row.name)
-			caller = Identity{Vendor: row.vendor, Key: value}
+	for _, row := range identityIndex {
+		if value, ok := lookup(row.sessionEnv); ok {
+			found = append(found, row.sessionEnv)
+			caller = Identity{Vendor: row.adapter, Key: value}
 		}
 	}
 	switch len(found) {
@@ -99,12 +126,14 @@ func AllowOwner(lookup func(string) (string, bool), ownerPrefix bool) bool {
 	if _, present := lookup(RouteVariable); present {
 		return false
 	}
-	for _, row := range vendorVariables {
-		if _, present := lookup(row.name); present {
-			return false
+	for _, row := range identityIndex {
+		for _, name := range append([]string{row.sessionEnv}, row.markers...) {
+			if _, present := lookup(name); present {
+				return false
+			}
 		}
 	}
-	for _, marker := range otherAgentMarkers {
+	for _, marker := range genericAgentMarkers {
 		if _, present := lookup(marker); present {
 			return false
 		}
@@ -115,17 +144,43 @@ func AllowOwner(lookup func(string) (string, bool), ownerPrefix bool) bool {
 // Evidence reports the source of the identity variable and whether it was
 // checked with this vendor CLI version.
 func (id Identity) Evidence() (source string, verified bool) {
-	for _, row := range vendorVariables {
-		if id.Vendor == row.vendor {
-			return row.evidence, slices.Contains(row.verifiedOn, id.Version)
-		}
+	row, ok := indexRow(id.Vendor)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return row.evidence, slices.Contains(row.verifiedOn, id.Version)
 }
 
-// UnknownAntigravityCLI distinguishes language-server evidence from a CLI version.
-func (id Identity) UnknownAntigravityCLI() bool {
-	return id.Vendor == "agy" && (id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, "ls:"))
+// IndirectVersion reports that the vendor names its version only through
+// another component's build, so no session can show its CLI version.
+func (id Identity) IndirectVersion() bool {
+	row, ok := indexRow(id.Vendor)
+	return ok && row.version.indirect != ""
+}
+
+// UnknownCLI distinguishes an indirect build, or none, from a CLI version.
+func (id Identity) UnknownCLI() bool {
+	row, _ := indexRow(id.Vendor)
+	return id.IndirectVersion() &&
+		(id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, row.version.indirect+":"))
+}
+
+// CLIName names the vendor's CLI in user-facing text.
+func (id Identity) CLIName() string {
+	row, _ := indexRow(id.Vendor)
+	return row.cliName
+}
+
+// IndirectVersionVendors lists the vendors whose sessions record only an
+// indirect build (IndirectVersion).
+func IndirectVersionVendors() []string {
+	var vendors []string
+	for _, row := range identityIndex {
+		if row.version.indirect != "" {
+			vendors = append(vendors, row.adapter)
+		}
+	}
+	return vendors
 }
 
 // Warning is shared by member views and owner diagnostics.
@@ -135,10 +190,11 @@ func (id Identity) Warning() string {
 		return ""
 	}
 	version := id.Version
-	if id.UnknownAntigravityCLI() {
-		msg := "identity variable unverified on agy: CLI version unknown"
-		if number, ok := strings.CutPrefix(version, "ls:cli-"); ok && validVersion(number) {
-			return fmt.Sprintf("%s (language server cli-%s)", msg, number)
+	if id.UnknownCLI() {
+		row, _ := indexRow(id.Vendor)
+		msg := "identity variable unverified on " + id.Vendor + ": CLI version unknown"
+		if number, ok := strings.CutPrefix(version, row.version.indirect+":"+row.version.prefix); ok && validVersion(number) {
+			return fmt.Sprintf("%s (%s %s%s)", msg, row.version.indirectName, row.version.prefix, number)
 		}
 		return msg
 	}
@@ -149,28 +205,30 @@ func (id Identity) Warning() string {
 }
 
 func runtimeVersion(vendor string, lookup func(string) (string, bool)) string {
-	var version string
-	var prefix string
-	switch vendor {
-	case "codex":
-		version, _ = lookup("CODEX_VERSION")
-	case "claude":
-		agent, _ := lookup("AI_AGENT")
-		if encoded, ok := strings.CutPrefix(agent, "claude-code_"); ok {
-			encoded, _, _ = strings.Cut(encoded, "_")
-			version = strings.ReplaceAll(encoded, "-", ".")
+	row, ok := indexRow(vendor)
+	if !ok || row.version.env == "" {
+		return "unknown"
+	}
+	source := row.version
+	version, _ := lookup(source.env)
+	if source.prefix != "" {
+		if version, ok = strings.CutPrefix(version, source.prefix); !ok {
+			return "unknown"
 		}
-	case "agy":
-		// The language server and the CLI can have different build numbers.
-		build, _ := lookup("ANTIGRAVITY_LS_VERSION")
-		if number, ok := strings.CutPrefix(build, "cli-"); ok {
-			version, prefix = number, "ls:cli-"
-		}
+	}
+	if source.until != "" {
+		version, _, _ = strings.Cut(version, source.until)
+	}
+	if source.dashesToDots {
+		version = strings.ReplaceAll(version, "-", ".")
 	}
 	if !validVersion(version) {
 		return "unknown"
 	}
-	return prefix + version
+	if source.indirect != "" {
+		return source.indirect + ":" + source.prefix + version
+	}
+	return version
 }
 
 func validVersion(version string) bool {

@@ -136,12 +136,8 @@ func parseVendorKey(vendor, key string) (Identity, error) {
 	if vendor == "route" {
 		variable = RouteVariable
 	} else {
-		for _, row := range vendorVariables {
-			if vendor == row.vendor {
-				variable = row.name
-				break
-			}
-		}
+		row, _ := indexRow(vendor)
+		variable = row.sessionEnv
 	}
 	if variable == "" {
 		return Identity{}, &EnvironmentError{core.CodeNotEnrolled, "unknown identity source"}

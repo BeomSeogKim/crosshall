@@ -79,8 +79,8 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		snapshot, err := doctorStoreInfo(ctx, state, adapters, now)
 		version.record(fmt.Sprintf("schema version %d", snapshot.SchemaVersion), err)
 		for _, v := range snapshot.IdentityVersions {
-			id := ident.Identity{Vendor: "agy", Version: v}
-			if id.UnknownAntigravityCLI() {
+			id := ident.Identity{Vendor: v.Vendor, Version: v.Version}
+			if id.UnknownCLI() {
 				msg := id.Warning()
 				if !slices.Contains(warnings, msg) {
 					warnings = append(warnings, msg)
@@ -152,7 +152,7 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 	for _, adapter := range adapters {
 		names = append(names, adapter.Adapter)
 	}
-	snapshot, err := store.InspectDoctorStoreAt(ctx, spool.ServerFiles{Root: state}, names, "agy", now)
+	snapshot, err := store.InspectDoctorStoreAt(ctx, spool.ServerFiles{Root: state}, names, ident.IndirectVersionVendors(), now)
 	for i := range adapters {
 		adapter := &adapters[i]
 		if state, ok := snapshot.Adapters[adapter.Adapter]; ok {

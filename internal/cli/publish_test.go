@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,5 +335,37 @@ func TestWaitingSaysWhenAnUnreadRequestWasShown(t *testing.T) {
 	want := "@sol stored -> not woken: no notice route for codex; shown " + clock(shown) + ", not read\n"
 	if !strings.Contains(waiting, want) {
 		t.Errorf("waiting lacks %q:\n%s", want, waiting)
+	}
+}
+
+func TestEndedMembersReachTheOwnerAndDepartEndedSaysWhatItDid(t *testing.T) {
+	at := time.Date(2026, 11, 24, 23, 52, 0, 0, time.Local).UnixMilli()
+	ended := []domain.EndedMember{
+		{BindingID: 36, Channel: "dev", Alias: "astra", EndedAtMS: at},
+		{BindingID: 39, Channel: "dev", Alias: "sol", EndedAtMS: at, OpenRequests: []int64{7, 9}},
+		{BindingID: 41, Channel: "dev", Alias: "vega", EndedAtMS: at},
+	}
+	want := []string{
+		"Sessions ended over 12 hours ago, no open requests: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.",
+		"@sol in #dev: session ended " + clock(at) + ", over 12 hours ago; open requests: #7 #9.",
+	}
+	if got := endedLines(ended); !slices.Equal(got, want) {
+		t.Fatalf("owner who lines %q, want %q", got, want)
+	}
+
+	ft := &fakeTransport{result: okResult(t, domain.OwnerDepartEndedResult{
+		Departed: []domain.EndedMember{ended[0], ended[2]}, Owing: []domain.EndedMember{ended[1]}})}
+	stdout, _, _ := run(t, Env{Transport: ft}, "--key", "k", "owner", "depart", "--ended")
+	wantOut := "@astra in #dev departed (binding 36, session ended " + clock(at) + ").\n" +
+		"@vega in #dev departed (binding 41, session ended " + clock(at) + ").\n" +
+		"@sol in #dev kept (binding 39): open requests #7 #9.\n"
+	if stdout != wantOut {
+		t.Fatalf("stdout %q, want %q", stdout, wantOut)
+	}
+	if len(ft.calls) != 1 || ft.calls[0].OpKey == "" {
+		t.Fatalf("calls %+v", ft.calls)
+	}
+	if _, ok := ft.calls[0].Command.(domain.OwnerDepartEnded); !ok {
+		t.Fatalf("sent %T", ft.calls[0].Command)
 	}
 }

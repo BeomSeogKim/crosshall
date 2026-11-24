@@ -27,8 +27,12 @@ func TestRestoreRotatesTheNamedBinding(t *testing.T) {
 	wantCode(t, f.owner(Restore{BindingID: binding, Vendor: b.vendor, Key: b.key}, "busy"), core.ExitRefused, core.CodeKeyInUse)
 	wantCode(t, f.owner(Restore{BindingID: binding, Vendor: "unknown", Key: "bad"}, "invalid"), core.ExitUsage, "")
 	wantCode(t, f.owner(Restore{BindingID: binding + 100, Vendor: "codex", Key: "unused"}, "missing"), core.ExitRefused, core.CodeNotFound)
+	executeGuardFixture(t, f, `INSERT INTO member_host (principal_id, pid, start_identity, pid_namespace, seen_at_ms) VALUES (?, 4242, 1, '', 1)`, aid)
 	r := f.owner(cmd, "rotate")
 	wantOK(t, r)
+	if f.count(`SELECT COUNT(*) FROM member_host WHERE principal_id = ?`, aid) != 0 {
+		t.Fatal("a restored member still names the old process as its host")
+	}
 	if got := decode[RestoreResult](t, r); got.BindingID != binding {
 		t.Fatalf("restored binding %d, want %d", got.BindingID, binding)
 	}

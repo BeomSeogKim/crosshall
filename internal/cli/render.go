@@ -21,6 +21,11 @@ func render(opts options, cmd domain.Command, result core.Result, stdout, stderr
 		if refusal.Message == "" {
 			refusal.Message = string(result.Code)
 		}
+		// An older dispatcher refuses the field it does not know.
+		if j, ok := cmd.(domain.Join); ok && j.Takeover && result.Status == core.ExitUsage && refusal.Message == "invalid command arguments" {
+			refusal.Message = "this dispatcher does not take takeover requests yet"
+			refusal.Hint = "ask the owner to upgrade crosshall, or to run crosshall owner restore"
+		}
 		if opts.json {
 			// Keep any structured detail the refusal carries (for example
 			// invalid_targets), then set the common fields.
@@ -100,12 +105,41 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(w, "Restored binding %d.\n", r.BindingID)
+	case domain.OwnerTakeover:
+		var r domain.OwnerTakeoverResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if r.Completed {
+			fmt.Fprintf(w, "@%s in #%s is now session sha256:%s (takeover %d, binding %d).\n", r.Alias, r.Channel, r.Session, r.ID, r.BindingID)
+		} else {
+			fmt.Fprintf(w, "Granted takeover %d: session sha256:%s becomes @%s in #%s when it runs crosshall join %s --as %s --takeover again, before %s.\n",
+				r.ID, r.Session, r.Alias, r.Channel, r.Channel, r.Alias, clock(r.ExpiresMS))
+		}
 	case domain.OwnerDepart:
 		var r domain.OwnerDepartResult
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "@%s in #%s departed (binding %d).\n", r.Alias, r.Channel, r.BindingID)
+	case domain.OwnerDepartEnded:
+		var r domain.OwnerDepartEndedResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if len(r.Departed) == 0 {
+			fmt.Fprintln(w, "No member's session ended over 12 hours ago with nothing owed.")
+		}
+		for _, m := range r.Departed {
+			fmt.Fprintf(w, "@%s in #%s departed (binding %d, session ended %s).\n", m.Alias, m.Channel, m.BindingID, clock(m.EndedAtMS))
+		}
+		for _, m := range r.Owing {
+			line := fmt.Sprintf("@%s in #%s kept (binding %d): open requests", m.Alias, m.Channel, m.BindingID)
+			for _, id := range m.OpenRequests {
+				line += fmt.Sprintf(" #%d", id)
+			}
+			fmt.Fprintln(w, line+".")
+		}
 	case domain.CreateChannel:
 		var r domain.ChannelResult
 		if err := json.Unmarshal(data, &r); err != nil {
@@ -116,6 +150,17 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 		var r domain.JoinResult
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
+		}
+		if t := r.Takeover; t != nil {
+			fmt.Fprintf(w, "[crosshall] Asked the owner to give @%s in #%s to this session, sha256:%s (takeover %d).\n", t.Alias, t.Channel, t.Session, t.ID)
+			switch {
+			case t.AtGrant:
+				fmt.Fprintf(w, "When the owner runs crosshall owner takeover %d, this session becomes @%s; its current membership closes.\n", t.ID, t.Alias)
+			default:
+				fmt.Fprintf(w, "After the owner runs crosshall owner takeover %d, run crosshall join %s --as %s --takeover again within an hour to become @%s.\n",
+					t.ID, t.Channel, t.Alias, t.Alias)
+			}
+			return nil
 		}
 		if r.Move != nil {
 			fmt.Fprintf(w, "[crosshall] Work stays in #%s (%d unread, %d owed, %d waiting).\n",

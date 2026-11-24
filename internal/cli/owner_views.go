@@ -112,6 +112,12 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		for _, line := range approvalLines(r) {
 			fmt.Fprintln(w, line)
 		}
+		for _, line := range takeoverLines(r.Takeovers) {
+			fmt.Fprintln(w, line)
+		}
+		for _, line := range endedLines(r.Ended) {
+			fmt.Fprintln(w, line)
+		}
 		hasToken := false
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s", ch.Name)
@@ -547,4 +553,111 @@ func unknownCauseWords(c store.DoctorUnknownCauses) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// takeoverLines reports each open takeover request with the command that
+// grants it, or, once granted, how long it waits for the session.
+func takeoverLines(takeovers []domain.OwnerTakeoverLine) []string {
+	var lines []string
+	for _, t := range takeovers {
+		end := "session ended " + clock(t.EndedAtMS)
+		if !t.Verified {
+			end += " (unverified)"
+		}
+		if t.LastSeenMS != 0 {
+			end += ", last seen " + clock(t.LastSeenMS)
+		}
+		owes := ""
+		if len(t.Owes) > 0 {
+			owes = "; owes"
+			for _, id := range t.Owes {
+				owes += fmt.Sprintf(" #%d", id)
+			}
+		}
+		line := fmt.Sprintf("takeover %d: #%s/@%s (binding %d), %s%s. Asked by %s session sha256:%s at %s.",
+			t.ID, t.Channel, t.Alias, t.BindingID, end, owes, t.Vendor, t.Session, clock(t.AskedAtMS))
+		if t.Granted {
+			line += fmt.Sprintf(" Granted; it completes when that session runs crosshall join %s --as %s --takeover again before %s.",
+				t.Channel, t.Alias, clock(t.ExpiresAtMS))
+		} else {
+			line += fmt.Sprintf(" crosshall owner takeover %d", t.ID)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// endedLines reports the live members whose session ended over 12 hours
+// ago: one line for those with no open request, with the command that
+// departs them, and one per member that still has some.
+func endedLines(ended []domain.EndedMember) []string {
+	var free []string
+	var lines []string
+	for _, m := range ended {
+		if len(m.OpenRequests) == 0 {
+			free = append(free, fmt.Sprintf("@%s in #%s", m.Alias, m.Channel))
+			continue
+		}
+		line := fmt.Sprintf("@%s in #%s: session ended %s, over 12 hours ago; open requests:", m.Alias, m.Channel, clock(m.EndedAtMS))
+		for _, id := range m.OpenRequests {
+			line += fmt.Sprintf(" #%d", id)
+		}
+		lines = append(lines, line+".")
+	}
+	if len(free) > 0 {
+		lines = append([]string{fmt.Sprintf("Sessions ended over 12 hours ago, no open requests: %s. crosshall owner depart --ended departs them.",
+			strings.Join(free, ", "))}, lines...)
+	}
+	return lines
+}
+
+// startOwedLine asks the started dispatcher who owes replies, for the one
+// line owner start prints. An older dispatcher, or any failure, prints none.
+func startOwedLine(ctx context.Context, env Env) string {
+	if env.Transport == nil {
+		return ""
+	}
+	result, err := env.Transport.Do(ctx, Call{Owner: true, Command: domain.OwnerOwed{}})
+	if err != nil || result.Status != core.ExitOK {
+		return ""
+	}
+	var r domain.OwnerOwedResult
+	if json.Unmarshal(result.Data, &r) != nil {
+		return ""
+	}
+	return owedLine(r.Members)
+}
+
+// owedLine sums up the members that owe replies at a start: how many get
+// a resume notice when their turn is free, and who nothing can wake.
+func owedLine(members []domain.OwingMember) string {
+	if len(members) == 0 {
+		return ""
+	}
+	owed, woken := 0, 0
+	var cannot []string
+	for _, m := range members {
+		owed += m.Owed
+		if m.CanResume() {
+			woken++
+		} else {
+			cannot = append(cannot, fmt.Sprintf("@%s in #%s: %s", m.Alias, m.Channel, whyText(m.Wake, false)))
+		}
+	}
+	who, what := "members owe", "requests"
+	if len(members) == 1 {
+		who = "member owes"
+	}
+	if owed == 1 {
+		what = "request"
+	}
+	line := fmt.Sprintf("%d %s %d open %s", len(members), who, owed, what)
+	var parts []string
+	if woken > 0 {
+		parts = append(parts, fmt.Sprintf("%d can be woken and get one resume notice when their turn is free", woken))
+	}
+	if len(cannot) > 0 {
+		parts = append(parts, fmt.Sprintf("%d cannot be woken (%s)", len(cannot), strings.Join(cannot, ", ")))
+	}
+	return line + ": " + strings.Join(parts, "; ") + "."
 }

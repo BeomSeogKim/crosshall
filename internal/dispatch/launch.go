@@ -35,10 +35,10 @@ type LaunchConfig struct {
 // It reports whether this call launched a child, even if readiness fails.
 // Owner must come from the explicit CLI owner gate, independent of startup.
 func (cfg LaunchConfig) Start(ctx context.Context) (bool, error) {
-	return cfg.start(ctx, syscall.Kill)
+	return cfg.start(ctx, syscall.Kill, startupTimeout)
 }
 
-func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signal) error) (bool, error) {
+func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signal) error, readyTimeout time.Duration) (bool, error) {
 	state, err := cfg.openStartState(ctx)
 	if err != nil {
 		return false, err
@@ -67,7 +67,7 @@ func (cfg LaunchConfig) start(ctx context.Context, probe func(int, syscall.Signa
 		close(exited)
 	}()
 
-	wait, cancel := context.WithTimeout(ctx, startupTimeout)
+	wait, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()

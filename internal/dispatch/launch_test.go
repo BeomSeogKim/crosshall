@@ -36,7 +36,7 @@ func TestPermissionDeniedProbeRecognizesRunningDispatcher(t *testing.T) {
 			if running, err := marker.liveness(state, probe); !running || err != nil {
 				t.Errorf("liveness: running=%t, err=%v", running, err)
 			}
-			if spawned, err := cfg.start(t.Context(), probe); spawned || err != nil {
+			if spawned, err := cfg.start(t.Context(), probe, startupTimeout); spawned || err != nil {
 				t.Errorf("owner start: spawned=%t, err=%v", spawned, err)
 			}
 		})
@@ -96,7 +96,7 @@ func TestMemberStartWithRestrictedLiveness(t *testing.T) {
 					t.Fatalf("unexpected liveness probe: %d, %d", pid, signal)
 				}
 				return tc.probeErr
-			})
+			}, startupTimeout)
 			startAttempted := err != nil && strings.Contains(err.Error(), "dispatcher.log")
 			if spawned || startAttempted != tc.wantStart || (!tc.wantStart && err != nil) {
 				t.Fatalf("spawned=%t, start attempt wanted=%t, error=%v", spawned, tc.wantStart, err)

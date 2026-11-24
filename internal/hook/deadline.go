@@ -151,7 +151,8 @@ func hookExpired(ctx context.Context) bool {
 type extensionKey struct{}
 
 // extendBudget gives the callback its full budget instead of its base: it
-// recovers or repairs its session's enrolment. A callback whose base
+// recovers or repairs its session's enrolment or binds a launch whose start
+// was missed. A callback whose base
 // deadline already passed has returned; extending it changes nothing.
 func extendBudget(ctx context.Context) {
 	if extended, ok := ctx.Value(extensionKey{}).(*atomic.Bool); ok {

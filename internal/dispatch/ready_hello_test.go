@@ -2,11 +2,13 @@ package dispatch
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
-// A dispatcher's ready marker tells a hook it accepts the start intent.
-func TestTheReadyMarkerOffersTheStartIntent(t *testing.T) {
+// A dispatcher's ready marker tells a hook it accepts the start intent and
+// a prompt's launch proof.
+func TestTheReadyMarkerOffersWhatTheDispatcherAccepts(t *testing.T) {
 	raw, err := json.Marshal(newReadyMarker("instance"))
 	if err != nil {
 		t.Fatal(err)
@@ -14,7 +16,7 @@ func TestTheReadyMarkerOffersTheStartIntent(t *testing.T) {
 	var marker struct {
 		Hello []string `json:"hello"`
 	}
-	if err := json.Unmarshal(raw, &marker); err != nil || len(marker.Hello) != 1 || marker.Hello[0] != "start" {
+	if err := json.Unmarshal(raw, &marker); err != nil || !slices.Equal(marker.Hello, []string{"start", "launch_proof"}) {
 		t.Fatalf("ready marker %s", raw)
 	}
 }

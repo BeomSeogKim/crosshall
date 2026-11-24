@@ -216,3 +216,24 @@ func TestOwnerWhoNamesRequestsNothingWillTell(t *testing.T) {
 		t.Fatalf("a banner without stuck requests:\n%s", out)
 	}
 }
+
+// The owner sees each member whose turn waits on its approval, first,
+// with the requests that wait behind it, and the member's row says so.
+func TestOwnerWhoNamesMembersThatWaitOnTheOwnersApproval(t *testing.T) {
+	blocked := domain.OwnerMember{Member: domain.Member{BindingID: 1, Alias: "codex1", Vendor: "codex", Route: "pull",
+		Observed: &domain.Observed{Fact: domain.FactApprovalRequested, Source: "codex", AgeS: 40 * 60, ApprovalOpen: true}},
+		Reach: "prompt", BindingState: "live", OpenRequests: []int64{7}}
+	idle := domain.OwnerMember{Member: domain.Member{BindingID: 2, Alias: "opus", Vendor: "claude", Route: "pull",
+		Observed: &domain.Observed{Fact: domain.FactApprovalRequested, Source: "claude", AgeS: 40 * 60}},
+		Reach: "pull", BindingState: "live"}
+	result := domain.OwnerWhoResult{Channels: []domain.OwnerWhoChannel{{Name: "dev", Members: []domain.OwnerMember{blocked, idle}}}}
+	out, stderr, code := run(t, Env{Transport: &fakeTransport{result: okResult(t, result)}}, "owner", "who", "--all")
+	lines := strings.Split(out, "\n")
+	if code != core.ExitOK || lines[0] != "@codex1 in #dev waits on your approval (requested 40m ago); open requests: #7." || lines[1] != "#dev" {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s", code, stderr, out)
+	}
+	if !strings.Contains(out, "last observed: approval requested 40m ago, waits on its owner") ||
+		!strings.Contains(out, "last observed: unknown (last: approval requested 40m ago, unverified)") {
+		t.Fatalf("member rows:\n%s", out)
+	}
+}

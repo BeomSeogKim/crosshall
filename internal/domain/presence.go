@@ -11,7 +11,7 @@ import (
 
 // futureSlackMS bounds how far ahead of the dispatcher a hook's clock may be
 // before its fact is stored but not projected.
-const futureSlackMS = 5_000
+const futureSlackMS = store.FactFutureSlackMS
 
 // Observed is the latest literal fact an adapter reported for a member, with
 // its age. Current is false once the fact's cap has passed: the state is then
@@ -37,9 +37,13 @@ type ObservedFact struct {
 	AtMS         int64  `json:"at_ms"`
 	FreshUntilMS *int64 `json:"fresh_until_ms,omitempty"`
 	Verified     bool   `json:"verified"`
-	// ApprovalOpen: the fact is an approval request and its launch is not
-	// known to have ended. Only the member's owner can answer it, so it does
-	// not age out: it ends with a later fact or with its launch.
+	// ApprovalOpen: the fact is a shown permission dialog (Claude Code; a
+	// Codex request may have been approved on its own), its launch is not
+	// known to have ended, and the member has run no crosshall command
+	// since. Only the member's owner can answer it, so it does not age out:
+	// it ends with a later fact, a later command, or its launch. No hook
+	// reports an answered dialog, so a turn that goes on without a crosshall
+	// command shows it until its Stop.
 	ApprovalOpen bool `json:"approval_open,omitempty"`
 }
 
@@ -65,8 +69,13 @@ func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time
 // unfinished turn row, so the observation's freshness still matters.
 func inReportedTurn(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
 	fact, err := latestFact(ctx, tx, principal)
-	return fact != nil && fact.At(ms(now)).Current &&
-		(fact.Fact == FactPromptSubmitted || fact.Fact == FactApprovalRequested), err
+	return reportedTurn(fact, now), err
+}
+
+// reportedTurn: an open approval holds its turn whatever its age.
+func reportedTurn(fact *ObservedFact, now time.Time) bool {
+	return fact != nil && (fact.ApprovalOpen || fact.At(ms(now)).Current &&
+		(fact.Fact == FactPromptSubmitted || fact.Fact == FactApprovalRequested))
 }
 
 // latestFact is the principal's effective fact: the latest, in causal
@@ -77,7 +86,7 @@ func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFac
 		return nil, err
 	}
 	o := ObservedFact{Fact: f.Fact, Source: adapterOf(f.Profile), AtMS: f.AtMS,
-		ApprovalOpen: f.Fact == FactApprovalRequested && f.LaunchLive}
+		ApprovalOpen: f.ApprovalOpen()}
 	if f.FreshUntilMS.Valid {
 		o.FreshUntilMS = &f.FreshUntilMS.Int64
 	}

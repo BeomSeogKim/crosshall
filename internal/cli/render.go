@@ -221,8 +221,13 @@ var factWords = map[string]string{
 }
 
 // observedText is "<fact> <age> ago", or "unknown (last: ...)" past its cap,
-// labelled when the launch's version and mode were not established.
+// labelled when the launch's version and mode were not established. An open
+// approval says that it waits on the member's owner.
 func observedText(o *domain.Observed) string {
+	if o.ApprovalOpen {
+		// An open approval does not age out: only the owner can answer it.
+		return "approval requested " + age(o.AgeS) + " ago, waits on its owner"
+	}
 	words := factWords[o.Fact]
 	if words == "" {
 		words = o.Fact

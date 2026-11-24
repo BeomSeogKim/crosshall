@@ -108,6 +108,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		if banner := notWokenBanner(r); banner != "" {
 			fmt.Fprintln(w, banner)
 		}
+		for _, line := range approvalLines(r) {
+			fmt.Fprintln(w, line)
+		}
 		hasToken := false
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s", ch.Name)
@@ -473,6 +476,28 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 // notWokenBanner names, above the channels, the members holding unread
 // requests that nothing will tell them about, so the owner finds stuck
 // work without reading each member's line.
+// approvalLines names each member whose turn waits on the owner's own
+// approval: no message to the member can move it.
+func approvalLines(r domain.OwnerWhoResult) []string {
+	var lines []string
+	for _, ch := range r.Channels {
+		for _, m := range ch.Members {
+			if m.Observed == nil || !m.Observed.ApprovalOpen {
+				continue
+			}
+			line := fmt.Sprintf("@%s in #%s waits on your approval (requested %s ago)", m.Alias, ch.Name, age(m.Observed.AgeS))
+			if len(m.OpenRequests) > 0 {
+				line += "; open requests:"
+				for _, id := range m.OpenRequests {
+					line += fmt.Sprintf(" #%d", id)
+				}
+			}
+			lines = append(lines, line+".")
+		}
+	}
+	return lines
+}
+
 func notWokenBanner(r domain.OwnerWhoResult) string {
 	total := 0
 	var members []string

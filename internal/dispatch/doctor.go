@@ -83,6 +83,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 				}
 			}
 		}
+		warnings = append(warnings, approvalWarnings(snapshot.Approvals)...)
 		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
 	} else {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
@@ -107,6 +108,16 @@ func (check *doctorCheck) record(detail string, err error) {
 		detail = err.Error()
 	}
 	check.Detail = detail
+}
+
+// approvalWarnings names each member whose turn waits on the owner's approval.
+func approvalWarnings(approvals []store.DoctorApproval) []string {
+	var out []string
+	for _, a := range approvals {
+		out = append(out, fmt.Sprintf("@%s in #%s waits on your approval since %s: only you can answer it, at its session",
+			a.Alias, a.Channel, time.UnixMilli(a.AtMS).Format("15:04")))
+	}
+	return out
 }
 
 func (cfg LaunchConfig) doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {

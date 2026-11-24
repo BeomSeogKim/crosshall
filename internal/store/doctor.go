@@ -105,6 +105,8 @@ type DoctorSnapshot struct {
 	SchemaVersion    int
 	Adapters         map[string]DoctorAdapterState
 	IdentityVersions []string
+	// Approvals are live members whose turn waits on the owner's approval.
+	Approvals []DoctorApproval
 }
 
 // InspectDoctorStore reads an existing store without creating or modifying
@@ -180,6 +182,11 @@ func readDoctorSnapshot(ctx context.Context, tx Tx, snapshot *DoctorSnapshot, ad
 			snapshot.Adapters[name] = state
 		}
 	}
+	approvals, err := readDoctorApprovals(ctx, tx)
+	if err != nil {
+		return err
+	}
+	snapshot.Approvals = approvals
 	if identityVendor != "" {
 		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(vendor_version, ''), 'unknown') AS version
 			FROM principal WHERE kind = 'session' AND vendor = ? ORDER BY version`, identityVendor)

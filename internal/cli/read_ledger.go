@@ -489,7 +489,9 @@ func printLedgerRequest(w io.Writer, r domain.LedgerRequest, full bool, nowMS in
 		if n := recipient.ReplyNotice; n != nil {
 			fmt.Fprintf(w, "; %s", noticeText("reply notice", *n))
 		}
-		if o := recipient.Observed; o != nil && nowMS != 0 {
+		if o := recipient.Observed; o != nil && o.ApprovalOpen {
+			fmt.Fprintf(w, "; waits on its owner's approval since %s", ledgerTime(o.AtMS))
+		} else if o != nil && nowMS != 0 {
 			seen := o.At(nowMS)
 			fmt.Fprintf(w, "; last observed: %s", observedText(&seen))
 		}

@@ -24,14 +24,15 @@ const (
 // who and in waiting; binding IDs, owner commands and reason details stay in
 // the owner's views.
 const (
-	WhyNoRoute   = "no_route"  // no notice route, or none for its adapter
-	WhyUnproven  = "unproven"  // notices not proven for its build
-	WhySuspended = "suspended" // notices suspended, until UntilMS when timed
-	WhyOff       = "off"       // switched off, do not disturb included
-	WhyCapped    = "capped"    // the hourly limit, until UntilMS
-	WhyHeld      = "held"      // an earlier notice is unobserved
-	WhyTurnOpen  = "turn_open" // the member already has a running turn
-	WhyKind      = "kind"      // this message starts no turn
+	WhyNoRoute   = "no_route"          // no notice route, or none for its adapter
+	WhyUnproven  = "unproven"          // notices not proven for its build
+	WhySuspended = "suspended"         // notices suspended, until UntilMS when timed
+	WhyOff       = "off"               // switched off, do not disturb included
+	WhyCapped    = "capped"            // the hourly limit, until UntilMS
+	WhyHeld      = "held"              // an earlier notice is unobserved
+	WhyTurnOpen  = "turn_open"         // the member already has a running turn
+	WhyKind      = "kind"              // this message starts no turn
+	WhyApproval  = "awaiting_approval" // its turn waits on its owner's approval
 )
 
 // Where a member that is not woken sees the work.
@@ -54,7 +55,7 @@ type Wake struct {
 // NeedsManualWake reports that neither a current delivery path nor a deferred
 // notice can tell this recipient about the message.
 func (w Wake) NeedsManualWake() bool {
-	return w.Wake == WakeNone && w.SeenAt != SeenAtTurnEnd && w.Why != WhyTurnOpen
+	return w.Wake == WakeNone && w.SeenAt != SeenAtTurnEnd && w.Why != WhyTurnOpen && w.Why != WhyApproval
 }
 
 // reachWake is what a member's publish state says about any new work.
@@ -109,6 +110,23 @@ func memberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) 
 // accepts the message, else nothing, with the reason and where the member
 // sees it.
 func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, principal, msg int64, now time.Time) (Wake, error) {
+	w, submitted, err := s.messageWakeOf(ctx, tx, binding, principal, msg, now)
+	if err != nil || submitted {
+		return w, err
+	}
+	// A turn blocked on an approval moves only when its owner answers: no
+	// notice, wait or second request can move it. Where the member sees the
+	// message once it does still holds.
+	fact, err := latestFact(ctx, tx, principal)
+	if err != nil || fact == nil || !fact.ApprovalOpen {
+		return w, err
+	}
+	return Wake{Wake: WakeNone, Why: WhyApproval, SeenAt: w.SeenAt}, nil
+}
+
+// messageWakeOf is messageWake before an open approval; submitted says a
+// notice already passed the submission fence.
+func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, principal, msg int64, now time.Time) (Wake, bool, error) {
 	var (
 		attempt, kind string
 		endsWait      bool
@@ -122,10 +140,10 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 		ORDER BY a.id DESC LIMIT 1), ''), m.kind, `+notMoreTime+`, m.channel_id
 		FROM message m JOIN recipient x ON x.message_id = m.id WHERE x.principal_id = ? AND m.id = ?`,
 		principal, msg).Scan(&attempt, &kind, &endsWait, &channel); err != nil {
-		return Wake{}, err
+		return Wake{}, false, err
 	}
 	if attempt != "" && attempt != "reserved" {
-		return Wake{Wake: WakeNotice}, nil // already passed the submission fence
+		return Wake{Wake: WakeNotice}, true, nil // already passed the submission fence
 	}
 	eligible := attempt == "reserved"
 	var w Wake
@@ -133,12 +151,12 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 		var err error
 		w, err = memberWake(ctx, tx, binding, now)
 		if err != nil {
-			return Wake{}, err
+			return Wake{}, false, err
 		}
 		if w.Wake == WakeNotice {
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
 				` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, msg).Scan(&eligible); err != nil {
-				return Wake{}, err
+				return Wake{}, false, err
 			}
 			w = Wake{Wake: WakeNone, Why: WhyKind}
 		}
@@ -148,12 +166,12 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	if eligible || kind == "ask" {
 		running, err = inReportedTurn(ctx, tx, principal, now)
 		if err != nil {
-			return Wake{}, err
+			return Wake{}, false, err
 		}
 	}
 	if eligible {
 		if !running {
-			return Wake{Wake: WakeNotice}, nil
+			return Wake{Wake: WakeNotice}, false, nil
 		}
 		w = Wake{Wake: WakeNone, Why: WhyTurnOpen}
 	}
@@ -161,31 +179,31 @@ func (s *Service) messageWake(ctx context.Context, tx store.Tx, binding, princip
 	if endsWait {
 		accepts, err := s.waits.accepts(ctx, tx, binding, kind, msg, now)
 		if err != nil {
-			return Wake{}, err
+			return Wake{}, false, err
 		}
 		if accepts {
-			return Wake{Wake: WakeWait}, nil
+			return Wake{Wake: WakeWait}, false, nil
 		}
 	}
 	if kind == "ask" && running {
 		turnEnd, err := turnEndCovered(ctx, tx, principal)
 		if err != nil {
-			return Wake{}, err
+			return Wake{}, false, err
 		}
 		// The turn end offers only the first OfferCap requests.
 		if turnEnd {
 			offer, err := turnEndOffer(ctx, tx, principal, channel)
 			if err != nil || slices.Contains(offer, msg) {
 				w.SeenAt = SeenAtTurnEnd
-				return w, err
+				return w, false, err
 			}
 		}
 	}
 	if w.Why == WhyTurnOpen {
-		return w, nil // the publisher will check again when the turn ends
+		return w, false, nil // the publisher will check again when the turn ends
 	}
 	w.SeenAt, err = s.seenAt(ctx, tx, binding)
-	return w, err
+	return w, false, err
 }
 
 // turnEndCovered reports whether the current launch can run the turn-end check.

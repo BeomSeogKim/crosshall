@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A turn that waits on its owner's approval says so:** when a Claude Code member's latest fact is a shown permission dialog, a send says `not woken: its turn waits on its owner's approval (asking again cannot help)` (`why=awaiting_approval`), `waiting` says `waits on its owner's approval since <time>`, `owner who` starts with an owner line per such member and `owner doctor` warns of it, and no notice goes into that turn. It does not age out at the 30-minute cap; it ends with the member's next fact, its next crosshall command, its launch's end or its departure. A Codex approval request is unchanged: Codex also reports escalations it approves on its own.
+
 ## v0.2.0-rc.5 (2026-11-24)
 
 - **A prompt absorbed into a running Claude Code turn no longer blocks notices:** Claude Code 2.1.330 takes a prompt typed while a tool runs into the running turn, so the hall's turn for it never ended and every later notice was `unknown`. Manifest `claude-3` also installs the Notification hook for `idle_prompt`; the session's idle report closes such turns and ends an unknown suspension recorded before it, timed or lasting, with a `publish_suspension_lifted` event. The binary ships tested notice and turn-end evidence for Claude Code 2.1.331 on macOS arm64 with `claude-3`. Rerun `crosshall setup claude` (#236).

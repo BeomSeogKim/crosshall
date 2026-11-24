@@ -22,6 +22,8 @@ func TestWaitingAndStatusShowPickupAgeAndLastObservedFact(t *testing.T) {
 			{Alias: "astra", State: "open",
 				Observed: &domain.ObservedFact{Fact: domain.FactPromptSubmitted, Source: "codex", AtMS: generated - 60_000}},
 			{Alias: "agy", State: "open"},
+			{Alias: "lyra", State: "open", PickedUpAtMS: &picked,
+				Observed: &domain.ObservedFact{Fact: domain.FactApprovalRequested, Source: "codex", AtMS: picked, FreshUntilMS: &fresh, ApprovalOpen: true}},
 		}}
 	for name, tc := range map[string]struct {
 		result any
@@ -36,6 +38,8 @@ func TestWaitingAndStatusShowPickupAgeAndLastObservedFact(t *testing.T) {
 			"  @sol picked up 13:36 (2h ago); last observed: unknown (last: turn finished 2h ago, unverified)\n",
 			"  @astra stored; last observed: prompt submitted 1m ago (unverified)\n",
 			"  @agy stored\n",
+			// An open approval does not age out to "unknown".
+			"  @lyra picked up 13:36 (2h ago); waits on its owner's approval since 13:36\n",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: missing %q in\n%s%s", name, want, out, stderr)

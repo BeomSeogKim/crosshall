@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 )
 
 const (
@@ -85,10 +87,17 @@ type HookEventArgs struct {
 	PIDNamespace string `json:"pid_namespace,omitempty"`
 }
 
+// CanRecoverEnrollment: a prompt callback may enroll a session that missed
+// its start when the exact revision of its profile declares recovery and
+// the callback is that revision's recovering event. A revision this build
+// does not know recovers nothing.
 func (a HookEventArgs) CanRecoverEnrollment() bool {
-	return a.EnrollRepoRoot != "" && a.WantOutput && a.Fact == HookPromptSubmitted && a.TurnRef != "" &&
-		(a.EventRef == a.TurnRef+":UserPromptSubmit" || a.EventRef == PromptEventRef(a.TurnRef+":UserPromptSubmit", a.HookAtMS)) &&
-		(a.Profile.Adapter == "claude" || a.Profile.Adapter == "codex")
+	if a.EnrollRepoRoot == "" || !a.WantOutput || a.Fact != HookPromptSubmitted || a.TurnRef == "" {
+		return false
+	}
+	caps, _ := manifests.CapabilitiesAt(a.Profile.Adapter, a.Profile.ManifestRev)
+	ref := a.TurnRef + ":" + caps.RecoverEvent
+	return caps.RecoverEnroll && (a.EventRef == ref || a.EventRef == PromptEventRef(ref, a.HookAtMS))
 }
 
 // PromptEventRef is the reference of a prompt callback: its event's

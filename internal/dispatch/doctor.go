@@ -42,7 +42,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if stateErr == nil {
 		adapters = localDoctorAdapters(cfg.StateRoot)
 		for _, adapter := range adapters {
-			if warning := codexHookRoutingWarning(adapter.CodexHookStateRouting); warning != "" {
+			if warning := hookRoutingWarning(adapter.Adapter, adapter.CodexHookStateRouting); warning != "" {
 				warnings = append(warnings, warning)
 			}
 			if warning := adapter.OutdatedHooks(); warning != "" {

@@ -197,7 +197,7 @@ func Serve(ctx context.Context, cfg Config) error {
 			return nil
 		case result := <-launches.pending:
 			if err := launches.apply(ctx, &s, result); err != nil && !errors.Is(err, context.Canceled) {
-				s.logFailure(fmt.Errorf("reconcile Claude launches: %w", err))
+				s.logFailure(fmt.Errorf("reconcile process launches: %w", err))
 			}
 			continue
 		case <-tick.C:

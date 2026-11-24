@@ -86,6 +86,29 @@ func CapabilitiesAt(adapter, revision string) (caps Capabilities, ok bool) {
 	return caps, ok
 }
 
+// Revision is one manifest revision of an adapter.
+type Revision struct{ Adapter, Revision string }
+
+// RevisionsWith lists, sorted, every revision a manifest declares (shipped
+// or prior) whose capabilities satisfy has.
+func RevisionsWith(has func(Capabilities) bool) []Revision {
+	var out []Revision
+	for adapter, r := range records() {
+		if has(r.caps) {
+			out = append(out, Revision{adapter, r.revision})
+		}
+		for revision, caps := range r.prior {
+			if has(caps) {
+				out = append(out, Revision{adapter, revision})
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b Revision) int {
+		return cmp.Or(cmp.Compare(a.Adapter, b.Adapter), cmp.Compare(a.Revision, b.Revision))
+	})
+	return out
+}
+
 // DisplayName is the adapter's name for people, or the adapter ID when its
 // manifest gives none.
 func DisplayName(adapter string) string {

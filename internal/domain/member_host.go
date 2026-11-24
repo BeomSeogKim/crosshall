@@ -139,15 +139,15 @@ func HostedMembers(ctx context.Context, tx store.Tx, afterPrincipal int64, limit
 }
 
 // governingLaunch is true when the principal has an open launch the process
-// sweep checks: a verified Claude Code launch, whatever the adapter switch.
+// sweep checks (ProcessLaunch), whatever the adapter switch.
 // Only such a launch keeps a member from its host. Any other open launch is
 // ended by nothing certain: a session launch (Antigravity's, Codex's, or
 // Claude Code's without a launch ID) ends by no hook, and an end hook does
 // not fire on a kill, a crash or a closed terminal. Its member's host
 // governs.
-const governingLaunch = `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = h.principal_id
+var governingLaunch = `EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = h.principal_id
 	AND l.ended_hook_at_ms IS NULL AND l.fenced = 0 AND l.verified = 1
-	AND json_extract(l.profile, '$.adapter') = 'claude' AND l.launch_ref GLOB 'pid-*')`
+	AND ` + processLaunchProfile("l.profile") + ` AND l.launch_ref GLOB 'pid-*')`
 
 // DepartGoneHosts departs each member whose probed host was proven gone,
 // if nothing changed since the probe: the binding is the same live one, the

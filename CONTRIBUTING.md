@@ -28,6 +28,12 @@ The repository is trunk-based.
   To reproduce a tag build locally, check out the tag and run
   `bash scripts/release.sh <tag> <output-directory>` with the Go version
   in `go.mod`.
+- Before a tag, `bash scripts/release-gate.sh --version <tag>` runs the
+  recurring gate checks on the candidate commit (reproducible build, release
+  dating, migrations, install, setup and uninstall, upgrade and rollback of a
+  copy of your store, hook cost against the previous tag and one locked full
+  run) and prints a summary table. Checks for the release's new features
+  stay manual.
 
 ## Pull requests
 

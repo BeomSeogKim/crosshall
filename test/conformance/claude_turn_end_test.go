@@ -70,7 +70,7 @@ func (c *conformance) writerSends(verb, body string) int64 {
 // storeCount runs one count against the disposable store.
 func (c *conformance) storeCount(query string, args ...any) int {
 	c.t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(c.state, "store.sqlite3")+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(c.state, "store.sqlite3")+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		c.t.Fatal(err)
 	}

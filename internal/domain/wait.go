@@ -211,6 +211,10 @@ const HallDelivers = "The hall brings new work to this session: no wait is neede
 // wait costs a model request at each poll.
 const AtNextPrompt = "Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do."
 
+// AtNextPromptJoin tells such a member its rule 4 case where it reads the
+// rules, so its first turn does not run a wait only to learn it.
+const AtNextPromptJoin = "[crosshall] In this session new work shows at your next prompt: under rule 4, do not run `wait`; end the turn when you have nothing else to do."
+
 // standby says how an idle member stands by: the hall delivers new work to
 // it (delivers), or its next prompt shows new work and its agent does not
 // start a turn when a background command exits, so it ends its turn

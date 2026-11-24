@@ -22,6 +22,10 @@ import (
 // interactiveWait bounds ordinary waits for an interactive session. Waits end on the observed event, not on this time.
 const interactiveWait = 30 * time.Second
 
+// publishHold is how long a turn is kept with the model while the test checks
+// that no notice for a request stored in it enters submission.
+const publishHold = 5 * time.Second
+
 // hookEvent is one hook callback of the session as Claude Code sent it.
 type hookEvent struct {
 	Name       string `json:"hook_event_name"`
@@ -564,20 +568,21 @@ func (c *conformance) allowScratchPublish() {
 	c.owner("owner", "adapter", "evidence", file)
 }
 
-// A publish notice that crosshall submits while a turn is with the model does
-// not take the typed-ahead shape: Claude Code runs it after that turn's Stop
-// as a turn of its own, with a prompt ID of its own, and the hall observes it
-// as its own turn. So does a notice to an idle session. The scratch hall
-// lists this build for publish only so that the sender runs; the run records
-// facts and writes no evidence, which for publish takes a run
-// a person watches (CONFORMANCE.md).
+// A request stored while a turn is with the model is held until that turn's
+// Stop: the hall does not submit a notice into a turn it sees open. After the
+// Stop the notice runs as a turn of its own, and the hall observes it as its
+// own turn, as it does a notice to an idle session. The turn-end check is off
+// here, because it would otherwise hand the held request to the ending turn
+// and no notice would follow. The scratch hall lists this build for publish
+// only so that the sender runs; the run records facts and writes no evidence,
+// which for publish takes a run a person watches (CONFORMANCE.md).
 func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	c := newConformance(t)
 	c.requireClaude()
 	c.owner("owner", "start")
 	c.owner("owner", "channel", "create", "checkout")
 	c.owner("owner", "channel", "default", "checkout", "--repo", c.repo)
-	c.owner("owner", "adapter", "set", "claude", "--enabled", "on")
+	c.owner("owner", "adapter", "set", "claude", "--enabled", "on", "--turn-end", "off")
 	c.writer("join", "checkout", "--as", "writer")
 	c.installInteractive()
 	c.allowScratchPublish()
@@ -589,23 +594,26 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	idle := c.writerSends("ask", "synthetic request while idle")
 	term.await("the Stop of the idle notice's turn", func() bool { return c.count(named("Stop")) > stops })
 
-	// While a turn is with the model: the model's answer waits until the
-	// hall is submitting the notice that carries this request.
+	// While a turn is with the model: the model's answer waits while the
+	// hall has the request, and no notice for it may enter submission.
 	var during int64
-	var submittedInTurn bool
+	submittedInTurn := false
+	attempted := func() bool {
+		return c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
+			WHERE i.message_id = ? AND a.submitting_at_ms IS NOT NULL`, during) > 0
+	}
 	c.model.during[c.model.count()+1] = func() {
 		during = c.writerSends("ask", "synthetic request during the turn")
-		for deadline := time.Now().Add(interactiveWait); !submittedInTurn && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-			submittedInTurn = c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
-				WHERE i.message_id = ? AND a.submitting_at_ms IS NOT NULL`, during) == 1
+		for deadline := time.Now().Add(publishHold); !submittedInTurn && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			submittedInTurn = attempted()
 		}
 	}
 	term.idle()
 	stops = c.count(named("Stop"))
 	term.keys("second synthetic prompt\r")
 	term.await("the Stop of the typed turn", func() bool { return c.count(named("Stop")) > stops })
-	if !submittedInTurn {
-		t.Fatalf("the hall did not submit the notice for request %d while the turn was with the model", during)
+	if submittedInTurn {
+		t.Fatalf("the hall submitted a notice for request %d while the turn was with the model", during)
 	}
 	term.await("the Stop of the notice's turn", func() bool { return c.count(named("Stop")) >= stops+2 })
 	term.idle()

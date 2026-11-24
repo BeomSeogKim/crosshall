@@ -43,8 +43,21 @@ func (p *publisher) recover(ctx context.Context, now time.Time) error {
 		if err := domain.SeedBuiltinEvidence(ctx, tx, p.evidence); err != nil {
 			return err
 		}
-		return domain.RecoverPublish(ctx, tx, now)
+		if err := domain.RecoverPublish(ctx, tx, now); err != nil {
+			return err
+		}
+		return p.applyStamps(ctx, tx)
 	})
+}
+
+// applyStamps publishes what a transaction that may end an attempt
+// invalidated: a notice that was not submitted gives its asks back to the
+// turn-end line (#261).
+func (p *publisher) applyStamps(ctx context.Context, tx store.Tx) error {
+	if p.stamps == nil {
+		return nil
+	}
+	return p.stamps(ctx, tx)
 }
 
 func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error {
@@ -93,10 +106,8 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if _, err := domain.MarkReachChanges(ctx, tx, now); err != nil {
 			return err
 		}
-		if p.stamps != nil {
-			if err := p.stamps(ctx, tx); err != nil {
-				return err
-			}
+		if err := p.applyStamps(ctx, tx); err != nil {
+			return err
 		}
 		attempts, err = domain.ReservedPublishAttempts(ctx, tx)
 		if err == nil {
@@ -162,8 +173,10 @@ func (p *publisher) submit(ctx context.Context, id int64) {
 	var ids []int64
 	err := p.db.Update(ctx, func(tx store.Tx) error {
 		var err error
-		target, ids, err = domain.BeginPublish(ctx, tx, id, time.Now())
-		return err
+		if target, ids, err = domain.BeginPublish(ctx, tx, id, time.Now()); err != nil {
+			return err
+		}
+		return p.applyStamps(ctx, tx)
 	})
 	if err != nil || len(ids) == 0 {
 		logPublishFailure(err)
@@ -184,7 +197,10 @@ func (p *publisher) record(ctx context.Context, id int64, outcome domain.Publish
 		shutdown := ctx.Err() != nil
 		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 		err := p.db.Update(record, func(tx store.Tx) error {
-			return domain.ResolvePublish(record, tx, id, outcome, at)
+			if err := domain.ResolvePublish(record, tx, id, outcome, at); err != nil {
+				return err
+			}
+			return p.applyStamps(record, tx)
 		})
 		cancel()
 		if err == nil {
@@ -276,7 +292,10 @@ func (p *publisher) retire(ctx context.Context, queue domain.PublishQueue, retir
 	gone, ok := bounded(probe, cmp.Or(p.abandon, publishTimeout), func() bool { return retired(probe, queue) }, release)
 	if ok && gone && probe.Err() == nil {
 		logPublishFailure(p.db.Update(probe, func(tx store.Tx) error {
-			return domain.RetirePublishQueue(probe, tx, queue, time.Now())
+			if err := domain.RetirePublishQueue(probe, tx, queue, time.Now()); err != nil {
+				return err
+			}
+			return p.applyStamps(probe, tx)
 		}))
 	}
 }

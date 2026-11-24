@@ -234,7 +234,10 @@ type InstallStatus struct {
 	Installed             int            `json:"installed"`
 	Drifted               int            `json:"drifted"`
 	CodexHookStateRouting string         `json:"codex_hook_state_routing,omitempty"`
+	InstalledRev          string         `json:"installed_rev,omitempty"` // the revision setup recorded for its hooks on disk
 	Reminder              reminderStatus `json:"reminder"`
 	platform              string
 	revision              string
+	recorded              int    // setup's hook entries still on disk
+	outdated              string // see markOutdated
 }

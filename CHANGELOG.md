@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Hooks older than the binary are named:** a crosshall binary replaced without rerunning setup kept the earlier revision's hooks, and the only signs were `hooks drift` in `setup status` and `partial` in doctor. `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now add one sentence with both revisions and the command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`; no existing word or field changes, and `owner start --json` is unchanged.
 - **A turn that waits on its owner's approval says so:** when a Claude Code member's latest fact is a shown permission dialog, a send says `not woken: its turn waits on its owner's approval (asking again cannot help)` (`why=awaiting_approval`), `waiting` says `waits on its owner's approval since <time>`, `owner who` starts with an owner line per such member and `owner doctor` warns of it, and no notice goes into that turn. It does not age out at the 30-minute cap; it ends with the member's next fact, its next crosshall command, its launch's end or its departure. A Codex approval request is unchanged: Codex also reports escalations it approves on its own.
 
 ## v0.2.0-rc.5 (2026-11-24)

@@ -6,6 +6,8 @@ Adapters are optional hooks. crosshall works without them: a member that runs th
 
 In your own terminal, run `crosshall setup status` to check whether Claude Code, Codex or Antigravity CLI is on PATH. It shows each adapter's configuration path, hook installation state and policy, and reports any drift or pending recovery. Add `--json` before `setup` for machine-readable status.
 
+A crosshall binary replaced without running setup again leaves the hooks of the earlier manifest revision on disk. `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` then say so in one sentence that names both revisions and the command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` It appears only while setup's own hook entries are on disk, its record names another revision, and a hook this binary installs is missing. In JSON, the adapter's `installed_rev` in doctor and in `setup status` is the revision setup recorded, and doctor's `warnings` carry the sentence.
+
 `crosshall setup codex` pins the selected crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
 
 `crosshall setup` shows the detected vendors, absolute settings paths, and exact command rules. One approval installs the listed hooks and rules. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup preserves existing command approvals. In Codex, review and trust the installed hooks with `/hooks`.

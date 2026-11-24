@@ -59,10 +59,11 @@ func TestSendSaysWhatWillTellEachRecipient(t *testing.T) {
 		t.Fatalf("ask JSON: %v\n%s", err, sent.stdout)
 	}
 	// The fake Claude Code session has no message socket, so its route is
-	// off, and Codex CLI has no sender; both offer pending work at a prompt.
+	// invalidated, and Codex CLI has no sender: neither has a notice route,
+	// and both offer pending work at a prompt.
 	const pull = "waits for its next crosshall command"
 	want := map[string]wake{
-		"claude1": {Alias: "claude1", State: "stored", Next: pull, Wake: "none", Why: "off", SeenAt: "prompt"},
+		"claude1": {Alias: "claude1", State: "stored", Next: pull, Wake: "none", Why: "no_route", SeenAt: "prompt"},
 		"codex1":  {Alias: "codex1", State: "stored", Next: pull, Wake: "none", Why: "no_route", Adapter: "codex", SeenAt: "prompt"},
 		"agy":     {Alias: "agy", State: "stored", Next: pull, Wake: "none", Why: "no_route", SeenAt: "command"},
 		"peer":    {Alias: "peer", State: "stored", Next: pull, Wake: "none", Why: "no_route", SeenAt: "command"},
@@ -91,9 +92,16 @@ func TestSendSaysWhatWillTellEachRecipient(t *testing.T) {
 		t.Errorf("waiting:\n%s", waiting)
 	}
 	who := sender.mustPlain("who")
-	for _, row := range []string{"not woken: notices off\n", "not woken: no notice route for codex\n"} {
-		if !strings.Contains(who, row) {
-			t.Errorf("who lacks %q:\n%s", row, who)
+	if !strings.Contains(who, "not woken: no notice route for codex\n") {
+		t.Errorf("who lacks the Codex row:\n%s", who)
+	}
+	var claudeRow string
+	for line := range strings.Lines(who) {
+		if strings.Contains(line, "@claude1 ") {
+			claudeRow = line
 		}
+	}
+	if !strings.HasSuffix(claudeRow, "not woken: no notice route\n") {
+		t.Errorf("who's @claude1 row %q, want no notice route:\n%s", claudeRow, who)
 	}
 }

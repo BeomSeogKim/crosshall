@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -97,11 +98,12 @@ func runSetup(ctx context.Context, env Env, opts options, action string, args []
 	}
 	if err := env.Setup(ctx, req); err != nil {
 		var result interface{ Reported() bool }
-		if errors.As(err, &result) && result.Reported() {
-			return core.ExitError
-		}
-		if cause := context.Cause(ctx); cause != nil {
-			err = cause
+		if errors.As(err, &result) {
+			if result.Reported() {
+				return core.ExitError
+			}
+		} else if cause := context.Cause(ctx); cause != nil && !errors.Is(err, cause) {
+			err = fmt.Errorf("%w. %w", err, cause)
 		}
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}

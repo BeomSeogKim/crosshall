@@ -130,6 +130,9 @@ type PublishState struct {
 	Lift         string              `json:"lift,omitempty"`
 	Generation   int64               `json:"generation,omitempty"`
 	RecoveryHint PublishRecoveryHint `json:"-"`
+	// Invalidated marks an off state that is the route's own: it cannot
+	// carry a notice, and no switch turned it off.
+	Invalidated bool `json:"-"`
 }
 
 // ReadPublishState reports the publish state of a binding's route. A
@@ -192,6 +195,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	case dnd:
 		return off("do not disturb")
 	case routeState != "active":
+		state.Invalidated = routeState == "invalidated"
 		return off(routeReason)
 	case !afterOwnerFence:
 		state.State, state.Reason = "candidate", "launch predates owner departure"

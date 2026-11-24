@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BeomSeogKim/crosshall/internal/cli"
 	"github.com/BeomSeogKim/crosshall/internal/core"
 )
 
@@ -45,38 +44,5 @@ func TestEachApplyNamesItsOwnRetry(t *testing.T) {
 	if !strings.HasPrefix(setup, "setup apply timed out.") || !strings.HasPrefix(uninstall, "uninstall timed out.") ||
 		!strings.Contains(uninstall, "crosshall uninstall") {
 		t.Fatalf("timeout messages: %q, %q", setup, uninstall)
-	}
-}
-
-func TestAPolicyCallCutByTheDeadlineStillNamesIt(t *testing.T) {
-	unsent := core.Result{Status: core.ExitUnavailable, Code: core.CodeUnsent}
-	for _, tc := range []struct {
-		name    string
-		enabled bool
-		results []core.Result
-	}{
-		{"policy update", false, []core.Result{unsent}},
-		{"automatic joining", true, []core.Result{{Status: core.ExitOK}, unsent}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, expired := range []bool{true, false} {
-				ctx, cancel := context.WithCancel(t.Context())
-				if expired {
-					cancel()
-				}
-				calls := 0
-				// The transport reports an unsent call as unavailable and drops its error.
-				do := func(context.Context, cli.Call) (core.Result, error) {
-					calls++
-					return tc.results[calls-1], nil
-				}
-				var ready bool
-				err := policySetter(func(context.Context) error { return nil }, do, &ready)(ctx, "codex", tc.enabled)
-				cancel()
-				if err == nil || calls != len(tc.results) || errors.Is(err, context.Canceled) != expired {
-					t.Fatalf("expired %v: %d calls, error %v", expired, calls, err)
-				}
-			}
-		})
 	}
 }

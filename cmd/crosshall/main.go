@@ -127,7 +127,11 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			}
 			dispatcherReady := false
 			service := setup.Service{StateRoot: paths.state, Executable: executable,
-				SetPolicy: policySetter(env.Start, transport.Do, &dispatcherReady)}
+				SetPolicy: func(ctx context.Context, adapter string, enabled bool) error {
+					confirmed, err := setSetupPolicy(ctx, env.Start, transport.Do, adapter, enabled)
+					dispatcherReady = dispatcherReady || confirmed
+					return err
+				}}
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
 				req.PathConsent = writeInstallerPathConsent
 			}
@@ -157,42 +161,47 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 	return cli.RunEnv(context.Background(), env, args, os.Stdout, os.Stderr)
 }
 
-// policySetter sets an adapter policy through the dispatcher and, when it
-// enables one, turns automatic joining on once. An unconfirmed result keeps
-// the context's error, so a cut by the apply deadline still names it.
-func policySetter(start func(context.Context) error, do func(context.Context, cli.Call) (core.Result, error), ready *bool) func(context.Context, string, bool) error {
-	return func(ctx context.Context, adapter string, enabled bool) error {
-		// Give each policy update its own budget after the interactive plan.
-		ctx, cancel := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
-		defer cancel()
-		if err := start(ctx); err != nil {
-			return err
-		}
-		cmd := domain.AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: adapter, Enabled: &enabled}}
-		result, err := do(ctx, cli.Call{Owner: true, Command: cmd, OpKey: wire.NewID()})
-		if err != nil {
-			return err
-		}
-		if result.Status != core.ExitOK {
-			var detail struct{ Message string }
-			_ = json.Unmarshal(result.Data, &detail)
-			return errors.Join(fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message), ctx.Err())
-		}
-		*ready = true
-		if !enabled {
-			return nil
-		}
-		// The plan said so: installing turns automatic joining on, once.
-		auto := domain.ChannelAuto{On: true, Initial: true}
-		result, err = do(ctx, cli.Call{Owner: true, Command: auto, OpKey: wire.NewID()})
-		if err != nil {
-			return err
-		}
-		if result.Status != core.ExitOK {
-			return errors.Join(fmt.Errorf("dispatcher did not confirm automatic joining (%s)", result.Code), ctx.Err())
-		}
-		return nil
+func setSetupPolicy(ctx context.Context, start func(context.Context) error,
+	send func(context.Context, cli.Call) (core.Result, error), adapter string, enabled bool) (bool, error) {
+	startCtx, cancelStart := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
+	err := start(startCtx)
+	cancelStart()
+	if err != nil {
+		return false, err
 	}
+	// A cold start can spend nearly all of its budget. Each confirmation
+	// gets its own deadline within the overall setup deadline.
+	confirm := func(cmd domain.Command) (core.Result, error) {
+		if err := ctx.Err(); err != nil {
+			return core.Result{}, err
+		}
+		stepCtx, cancel := context.WithDeadline(ctx, spool.Deadline(time.Now(), true))
+		defer cancel()
+		return send(stepCtx, cli.Call{Owner: true, Command: cmd, OpKey: wire.NewID()})
+	}
+	cmd := domain.AdapterSet{AdapterPolicyArgs: wire.AdapterPolicyArgs{Adapter: adapter, Enabled: &enabled}}
+	result, err := confirm(cmd)
+	if err != nil {
+		return false, err
+	}
+	if result.Status != core.ExitOK {
+		var detail struct{ Message string }
+		_ = json.Unmarshal(result.Data, &detail)
+		return false, fmt.Errorf("dispatcher did not confirm the policy update (%s): %s", result.Code, detail.Message)
+	}
+	if !enabled {
+		return true, nil
+	}
+	// The plan said so: installing turns automatic joining on, once.
+	auto := domain.ChannelAuto{On: true, Initial: true}
+	result, err = confirm(auto)
+	if err != nil {
+		return true, fmt.Errorf("adapter policy was applied. Could not confirm automatic joining (%w)", err)
+	}
+	if result.Status != core.ExitOK {
+		return true, fmt.Errorf("adapter policy was applied. Dispatcher did not confirm automatic joining (%s)", result.Code)
+	}
+	return true, nil
 }
 
 func applyTimeoutMessage(action string) string {

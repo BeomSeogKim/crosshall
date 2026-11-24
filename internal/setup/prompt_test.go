@@ -105,6 +105,26 @@ func TestSetupApplyDeadlineKeepsCompletedVendorAndStopsTheNext(t *testing.T) {
 	}
 }
 
+func TestSetupApplyDeadlineReportsConfirmedVendorStage(t *testing.T) {
+	deadline := errors.New("setup apply timed out. Run setup status, then retry with the same adapters")
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	ops := expiringInstall{newFakeOps(), func() { cancel(deadline) }}
+	ops.failing["claude"] = errors.New("adapter policy was applied. Dispatcher did not confirm automatic joining (outcome_unknown)")
+	var out bytes.Buffer
+	err := (Service{}).prompts(ctx, Request{Action: "setup", Apply: true, JSON: true,
+		Adapters: []string{"claude"}, Input: strings.NewReader(""), Output: &out}, ops)
+	var result promptResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil || result.OK || err == nil || len(result.Vendors) != 1 {
+		t.Fatalf("result %q, decode error %v, setup error %v", out.String(), decodeErr, err)
+	}
+	got := result.Vendors[0]
+	if got.Outcome != "failed" || !strings.Contains(got.Error, ops.failing["claude"].Error()) ||
+		!strings.Contains(got.Error, deadline.Error()) || got.Retry == "" {
+		t.Fatalf("vendor outcome %+v", got)
+	}
+}
+
 func (f *fakeOps) PlanUninstall(_ context.Context, names []string) ([]VendorPlan, error) {
 	var plans []VendorPlan
 	for _, n := range names {
@@ -655,12 +675,13 @@ func TestAnApplyPastItsDeadlineKeepsAConcurrentRealError(t *testing.T) {
 	deadline := errors.New("setup apply timed out")
 	changed := errors.New("configuration changed")
 	for _, tc := range []struct {
-		name           string
-		returned, want error
+		name     string
+		returned error
+		want     string
 	}{
-		{"real error", changed, changed},
-		{"context error", context.Canceled, deadline},
-		{"wrapped context error", fmt.Errorf("claude adapter policy: %w", context.Canceled), deadline},
+		{"real error", changed, "configuration changed. setup apply timed out"},
+		{"bare context error", context.Canceled, "setup apply timed out"},
+		{"wrapped context error", fmt.Errorf("claude adapter policy: %w", context.Canceled), "claude adapter policy: context canceled. setup apply timed out"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
@@ -675,7 +696,7 @@ func TestAnApplyPastItsDeadlineKeepsAConcurrentRealError(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &result); err != nil || len(result.Vendors) != 1 {
 				t.Fatalf("result %q, decode error %v", out.String(), err)
 			}
-			if v := result.Vendors[0]; v.Outcome != "failed" || v.Error != tc.want.Error() {
+			if v := result.Vendors[0]; v.Outcome != "failed" || v.Error != tc.want {
 				t.Fatalf("vendor outcome %+v, want error %q", v, tc.want)
 			}
 		})

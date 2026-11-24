@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -158,6 +160,41 @@ func TestAReportedSetupFailureWritesOneJSONObject(t *testing.T) {
 	out, stderr, code := run(t, env, "--json", "setup", "codex", "--apply")
 	if code != core.ExitError || out != `{"v":1,"ok":false}`+"\n" || stderr != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, stderr)
+	}
+}
+
+func TestSetupApplyDeadlineRendersConfirmedPolicyAndRetry(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			deadline := errors.New("setup apply timed out. Run setup status, then retry with the same adapters")
+			env := setupEnv(false, new([]SetupRequest))
+			var expire context.CancelCauseFunc
+			env.BeginSetupApply = func(ctx context.Context) (context.Context, func()) {
+				ctx, expire = context.WithCancelCause(ctx)
+				return ctx, func() { expire(nil) }
+			}
+			env.Setup = func(context.Context, SetupRequest) error {
+				expire(deadline)
+				return errors.New("adapter policy was applied. Dispatcher did not confirm automatic joining (outcome_unknown)")
+			}
+			args := []string{"setup", "codex", "--apply"}
+			if format == "json" {
+				args = append([]string{"--json"}, args...)
+			}
+			out, stderr, code := run(t, env, args...)
+			text := out + stderr
+			if format == "json" {
+				var result struct{ Message string }
+				if err := json.Unmarshal([]byte(out), &result); err != nil {
+					t.Fatalf("setup result %q: %v", out, err)
+				}
+				text = result.Message
+			}
+			if code != core.ExitError || !strings.Contains(text, "adapter policy was applied") ||
+				!strings.Contains(text, "automatic joining (outcome_unknown)") || !strings.Contains(text, deadline.Error()) {
+				t.Fatalf("exit %d, rendered setup error %q", code, text)
+			}
+		})
 	}
 }
 

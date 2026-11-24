@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-A script that reads a send result's `next:` line should match `next: nothing will wake`; it said `next: nothing will tell`. The line is text only and names the same recipients; JSON has no such field and is unchanged.
+A script that reads the `next:` line under a send result's recipients should match `next: nothing will wake`; it said `next: nothing will tell`. That line is text only and names the same recipients. JSON has no such line and is unchanged: each recipient of an ask or a note (`recipients[]`) and the delivery of a reply (`delivery`) still carry `next` with its earlier sentence (such as `waits for its next crosshall command`), and `wake`, `why`, `seen_at` and `until_ms`, which say whether nothing will wake that recipient.
 
 ## To v0.2.0-rc.4
 

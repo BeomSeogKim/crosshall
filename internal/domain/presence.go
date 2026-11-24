@@ -2,9 +2,7 @@ package domain
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -28,6 +26,8 @@ type Observed struct {
 	// adapter fact is labelled unverified; launch_verified is a different
 	// property (a bound launch reference) and does not set it.
 	Verified bool `json:"verified"`
+	// ApprovalOpen: see ObservedFact.
+	ApprovalOpen bool `json:"approval_open,omitempty"`
 }
 
 // ObservedFact is a member's effective adapter fact in absolute time.
@@ -37,12 +37,16 @@ type ObservedFact struct {
 	AtMS         int64  `json:"at_ms"`
 	FreshUntilMS *int64 `json:"fresh_until_ms,omitempty"`
 	Verified     bool   `json:"verified"`
+	// ApprovalOpen: the fact is an approval request and its launch is not
+	// known to have ended. Only the member's owner can answer it, so it does
+	// not age out: it ends with a later fact or with its launch.
+	ApprovalOpen bool `json:"approval_open,omitempty"`
 }
 
 // At is the fact as seen at nowMS: its age, and whether its cap has passed.
 func (f ObservedFact) At(nowMS int64) Observed {
 	return Observed{Fact: f.Fact, Source: f.Source, AgeS: max((nowMS-f.AtMS)/1000, 0),
-		Current: f.FreshUntilMS == nil || nowMS < *f.FreshUntilMS, Verified: f.Verified}
+		Current: f.FreshUntilMS == nil || nowMS < *f.FreshUntilMS, Verified: f.Verified, ApprovalOpen: f.ApprovalOpen}
 }
 
 // presenceOf projects the principal's effective fact as of now. Nil means
@@ -68,47 +72,14 @@ func inReportedTurn(ctx context.Context, tx store.Tx, principal int64, now time.
 // latestFact is the principal's effective fact: the latest, in causal
 // order, among the observations of its latest launch. Nil means no adapter fact.
 func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFact, error) {
-	var (
-		o       ObservedFact
-		fresh   sql.NullInt64
-		adapter string
-	)
-	// Facts count only from the latest start of the latest launch (a reused
-	// session-scoped reference starts over at a resume), only when the hook's
-	// clock was within the skew allowance of the dispatcher's when stored, and
-	// in causal order: a later turn outranks an earlier one whatever the
-	// clocks say, and within a turn the later stage wins.
-	err := tx.QueryRowContext(ctx, `
-		WITH latest AS (SELECT launch_ref, started_hook_at_ms FROM adapter_launch WHERE principal_id = ?1
-		                ORDER BY ended_hook_at_ms IS NOT NULL, started_hook_at_ms DESC, rowid DESC LIMIT 1),
-		candidate AS (
-			SELECT o.seq, o.kind, o.profile, o.hook_at_ms, o.fresh_until_ms, o.turn_ref, o.launch_ref,
-			       CASE o.kind WHEN 'session_ended' THEN 4 WHEN 'turn_finishing' THEN 3
-			                   WHEN 'approval_requested' THEN 2 ELSE 1 END AS stage,
-			       COALESCE((SELECT t.opened_hook_at_ms FROM turn t WHERE t.principal_id = o.principal_id
-			                 AND t.launch_ref = o.launch_ref AND t.turn_ref = o.turn_ref), o.hook_at_ms) AS position
-			FROM observation o JOIN latest ON o.launch_ref = latest.launch_ref
-			WHERE o.principal_id = ?1 AND o.kind NOT IN ('command', 'idle_prompt')
-			  AND o.hook_at_ms <= o.observed_at_ms + ?2),
-		staged AS (
-			SELECT c.*, MAX(c.stage) OVER (PARTITION BY c.turn_ref) AS top FROM candidate c)
-		SELECT c.kind, c.profile, c.hook_at_ms, c.fresh_until_ms FROM staged c
-		-- A turn-bound fact belongs to the start its turn opened after, whatever
-		-- its own clock says; any other fact is placed by its own time. Within
-		-- a turn only its latest stage counts.
-		WHERE c.position >= (SELECT started_hook_at_ms FROM latest) AND (c.turn_ref IS NULL OR c.stage = c.top)
-		ORDER BY c.position DESC, c.stage DESC, c.hook_at_ms DESC, c.seq DESC
-		LIMIT 1`, principal, futureSlackMS).
-		Scan(&o.Fact, &adapter, &o.AtMS, &fresh)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
+	f, found, err := store.ReadLatestFact(ctx, tx, principal, futureSlackMS)
+	if !found || err != nil {
 		return nil, err
 	}
-	o.Source = adapterOf(adapter)
-	if fresh.Valid {
-		o.FreshUntilMS = &fresh.Int64
+	o := ObservedFact{Fact: f.Fact, Source: adapterOf(f.Profile), AtMS: f.AtMS,
+		ApprovalOpen: f.Fact == FactApprovalRequested && f.LaunchLive}
+	if f.FreshUntilMS.Valid {
+		o.FreshUntilMS = &f.FreshUntilMS.Int64
 	}
 	return &o, nil
 }

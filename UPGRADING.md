@@ -6,7 +6,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 Upgrading from v0.2.0-rc.4 to v0.2.0-rc.5 keeps the database at schema 28: there is no new migration, and the upgrade makes no migration backup. Stop running crosshall commands, including background waits, run `crosshall owner stop`, and keep a private copy of the stopped store. Install rc.5 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command), then run `crosshall owner start` and `crosshall owner doctor`. Sessions keep their membership, and the installed hooks need no reinstall while the executable path stays the same. To roll back, stop rc.5, put the rc.4 binary back and start it on the same store. Coming from v0.2.0-rc.3 or earlier, follow the sections below as well.
 
-`owner start` now waits up to five seconds for a dispatcher that already holds its lock; with no lock holder it still gives up after about three seconds. `setup --apply` and `uninstall --apply` each stop after 30 seconds; after a timeout, run `crosshall setup status` and retry with the same adapters.
+When a dispatcher holds its lock, `owner start` now waits up to five seconds from the command's start for it to confirm readiness; with no lock holder it still gives up after about three seconds. `setup --apply` and `uninstall --apply` each stop after 30 seconds; after a timeout, run `crosshall setup status` and retry with the same adapters.
 
 Rule 4 and the notice text change:
 
@@ -15,6 +15,8 @@ Rule 4 and the notice text change:
 - For a hook-joined Codex session whose next prompt shows new work, an empty `crosshall inbox` prints `Inbox is empty. Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.`, and a wait that times out with nothing unread names that step instead of the wait command. `crosshall inbox --json` and an arriving wait's JSON gain `at_next_prompt`. Other sessions see no change.
 
 A script that reads the `next:` line under a send result's recipients should match `next: nothing will wake`; it said `next: nothing will tell`. That line is text only and names the same recipients. JSON has no such line and is unchanged: each recipient of an ask or a note (`recipients[]`) and the delivery of a reply (`delivery`) still carry `next` with its earlier sentence (such as `waits for its next crosshall command`), and `wake`, `why`, `seen_at` and `until_ms`, which say whether nothing will wake that recipient.
+
+A notice is now held while the recipient's turn is running. A script that reads `send` or `waiting` JSON sees `why=turn_open` for such a recipient; its `next` describes the check at the end of the turn, and `seen_at` is left out unless that check offers the request.
 
 A script that reads a send result's, `who`'s or `waiting`'s `why` gets `no_route` instead of `off` for a member whose notice route the hall invalidated, such as a Claude session whose socket no hook has reported yet. `off` now means only a switch, do not disturb, or a route that ended.
 

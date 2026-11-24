@@ -26,6 +26,41 @@ import (
 // Budget bounds callback work. An enrolling hook can wait for dispatcher startup first.
 const Budget = 150 * time.Millisecond
 
+// StartBudget is the deadline of a callback that may enroll its session: a
+// start, which takes three round trips to the dispatcher, and a prompt,
+// which enrolls a session whose start was missed or repairs it. A busy disk
+// can hold each round trip; the vendor's own timeout is 1 s.
+const StartBudget = 400 * time.Millisecond
+
+// CallbackBudget is the deadline of adapter's callback for event. A prompt
+// gets the start budget only until it finds it enrolls nothing (dispatchCallback).
+func CallbackBudget(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known {
+		return Budget
+	}
+	return spec.budget()
+}
+
+// CallbackBase is the deadline adapter's callback for event runs on until
+// it extends to CallbackBudget: a prompt starts on the ordinary budget.
+func CallbackBase(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known || (spec.RecoverEnroll && !spec.Enroll) {
+		return Budget
+	}
+	return spec.budget()
+}
+
+func (s eventSpec) budget() time.Duration {
+	if s.Enroll || s.RecoverEnroll {
+		return StartBudget
+	}
+	return Budget
+}
+
 type hookTransport interface {
 	HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error)
 	HookCall(context.Context, ident.Identity, string, wire.Request, bool) (spool.Reply, error)
@@ -42,7 +77,14 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		defer lifecycle.cancel()
 	}
 	budgetStart, startedState := wake(captured, args, locate)
-	end := budgetStart.Add(Budget)
+	budget := CallbackBudget(args[0], args[1])
+	if startedState != "" {
+		budget = afterStart(captured, budgetStart, budget)
+	}
+	// A prompt runs on the ordinary budget until it finds that it recovers
+	// or repairs its session (extendBudget).
+	base := min(budget, CallbackBase(args[0], args[1]))
+	end := budgetStart.Add(base)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -57,13 +99,13 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
 	var outcome atomic.Value
-	wrote := runTimed(budgetStart, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(budgetStart, base, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
 		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
@@ -175,6 +217,16 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
+	}
+	if spec.RecoverEnroll && !spec.Enroll && !repo.none() {
+		extendBudget(ctx) // this prompt repairs its session's enrolment
+	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll &&
+		end.After(entry.Add(Budget-counterAllowance)) {
+		// This prompt enrolls and repairs nothing: no request after the
+		// ordinary budget.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
+		defer cancel()
 	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
@@ -394,6 +446,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		if repo.none() {
 			return nil, "", enrolment{}, "unmatched"
 		}
+		extendBudget(ctx) // this prompt recovers a missed start
 		intent = "join"
 	}
 	gen, resp, err := client.HookLookup(ctx, e.Identity, intent)

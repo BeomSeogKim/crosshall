@@ -348,7 +348,8 @@ func openHookCounter(rv *os.Root, adapter, event string, entry time.Time) *hookC
 	if _, ok := m.event(event); !ok {
 		event = "unknown"
 	}
-	if !time.Now().Before(entry.Add(Budget)) {
+	end := entry.Add(CallbackBudget(adapter, event))
+	if !time.Now().Before(end) {
 		return nil
 	}
 	dir, err := spool.OpenServerChild(rv, "hooks", true)
@@ -356,7 +357,7 @@ func openHookCounter(rv *os.Root, adapter, event string, entry time.Time) *hookC
 		return nil
 	}
 	defer dir.Close()
-	if !time.Now().Before(entry.Add(Budget)) {
+	if !time.Now().Before(end) {
 		return nil
 	}
 	f, err := spool.OpenServerFile(dir, entry.UTC().Format("20060102"), os.O_WRONLY|os.O_CREATE|os.O_APPEND)

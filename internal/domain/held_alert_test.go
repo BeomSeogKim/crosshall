@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,4 +131,55 @@ func TestResumeLeavesANoticeBeingSubmitted(t *testing.T) {
 		t.Fatalf("resume released notice %d while it was submitted", r.ReleasedNotice)
 	}
 	p.state(id, "submitting")
+}
+
+// The held-notice query runs every publisher tick inside the dispatcher's
+// write transaction: it must search the open-lane index and drive its
+// dedup from owner_alert, never scan publish_attempt or event, which are
+// not pruned.
+func TestLongHeldNoticesQueryStaysASearch(t *testing.T) {
+	p := newPublishFixture(t)
+	rows, err := p.db.Query("EXPLAIN QUERY PLAN "+longHeldNotices, 0, publishHeldEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	joined := strings.Join(plan, " | ")
+	for _, step := range plan {
+		if strings.HasPrefix(step, "SCAN a") || strings.HasPrefix(step, "SCAN e") {
+			t.Fatalf("plan scans a growing table: %s", joined)
+		}
+	}
+	for _, want := range []string{"SEARCH a USING INDEX publish_attempt_binding", "SEARCH e USING INTEGER PRIMARY KEY"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("plan lacks %q: %s", want, joined)
+		}
+	}
+}
+
+// A notice the transport has not answered yet is not alerted: a resume
+// would not release it.
+func TestANoticeStillBeingSubmittedIsNotAlerted(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	ask := p.turnEndAsk(p.writer, "reader", "in-flight")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.now = p.now.Add(publishHeldAlertAfter)
+	p.alertLongHolds()
+	if n := p.count(`SELECT COUNT(*) FROM event WHERE kind = ?`, publishHeldEvent); n != 0 {
+		t.Fatalf("%d held events for a notice still being submitted", n)
+	}
 }

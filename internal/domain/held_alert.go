@@ -25,17 +25,26 @@ type publishHeld struct {
 	SinceMS   int64  `json:"since_ms"`
 }
 
+// longHeldNotices lists the notices to alert: each live member's notice
+// whose transport answered (the ones a resume releases) at or before ?1,
+// still unobserved and unreleased, with no publish_held alert yet. It runs
+// on every publisher tick inside the dispatcher's write transaction, so it
+// must stay a search: the open-lane predicate is the partial index's own
+// text, and the dedup is driven from the small owner_alert table.
+const longHeldNotices = `SELECT a.id, a.binding_id, a.principal_id, COALESCE(a.submitting_at_ms, a.reserved_at_ms), b.alias, c.name
+	FROM publish_attempt a JOIN binding b ON b.id = a.binding_id JOIN channel c ON c.id = b.channel_id
+	WHERE a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state <> 'not_submitted'
+		AND a.state IN ('submitted', 'uncertain') AND b.state = 'live'
+		AND COALESCE(a.submitting_at_ms, a.reserved_at_ms) <= ?1
+		AND NOT EXISTS (SELECT 1 FROM owner_alert o CROSS JOIN event e ON e.seq = o.event_seq
+			WHERE e.kind = ?2 AND e.subject = 'binding:' || a.binding_id AND json_extract(e.detail, '$.notice') = a.id)
+	ORDER BY a.id`
+
 // AlertLongHolds writes one publish_held event and owner alert for each
 // live member's notice submitted at least publishHeldAlertAfter ago that
-// is still neither observed nor released.
+// is still neither observed nor released, and that a resume can release.
 func AlertLongHolds(ctx context.Context, tx store.Tx, now time.Time) error {
-	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.binding_id, a.principal_id, COALESCE(a.submitting_at_ms, a.reserved_at_ms), b.alias, c.name
-		FROM publish_attempt a JOIN binding b ON b.id = a.binding_id JOIN channel c ON c.id = b.channel_id
-		WHERE a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state IN ('submitting', 'submitted', 'uncertain') AND b.state = 'live'
-			AND COALESCE(a.submitting_at_ms, a.reserved_at_ms) <= ?
-			AND NOT EXISTS (SELECT 1 FROM owner_alert o JOIN event e ON e.seq = o.event_seq
-				WHERE e.kind = ? AND e.subject = 'binding:' || a.binding_id AND json_extract(e.detail, '$.notice') = a.id)
-		ORDER BY a.id`, ms(now.Add(-publishHeldAlertAfter)), publishHeldEvent)
+	rows, err := tx.QueryContext(ctx, longHeldNotices, ms(now.Add(-publishHeldAlertAfter)), publishHeldEvent)
 	if err != nil {
 		return err
 	}

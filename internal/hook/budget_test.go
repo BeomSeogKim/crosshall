@@ -57,7 +57,7 @@ func TestAStartAnsweredInsideTheStartBudgetIsNotADeadline(t *testing.T) {
 		prepare := func() (*os.Root, *hookCounter) {
 			return rv, openHookCounter(rv, "codex", "SessionStart", entry)
 		}
-		wrote := runTimed(entry, StartBudget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+		wrote := runTimed(entry, StartBudget, StartBudget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
 			time.Sleep(250 * time.Millisecond) // a dispatcher slowed by disk flushes
 			if hookExpired(ctx) {
 				return "deadline"
@@ -232,13 +232,61 @@ func TestAPromptThatRecoversOrRepairsAStartKeepsTheStartBudget(t *testing.T) {
 			stdin := fmt.Sprintf(`{"session_id":"fixture-thread","hook_event_name":"UserPromptSubmit","turn_id":"t1","prompt":"p","cwd":%q}`, repo)
 			synctest.Test(t, func(t *testing.T) {
 				entry := time.Now()
-				ctx, cancel := context.WithDeadline(t.Context(), entry.Add(StartBudget-counterAllowance))
-				defer cancel()
 				var out strings.Builder
-				outcome := dispatchCallback(ctx, entry, rv, transport, []string{"codex", "UserPromptSubmit"}, strings.NewReader(stdin), &out,
-					func(string) (string, bool) { return "", false }, callbackState{root: state})
-				if outcome != "rpc" || events != 1 {
-					t.Fatalf("outcome %q with %d events after %v", outcome, events, time.Since(entry))
+				prepare := func() (*os.Root, *hookCounter) {
+					return rv, openHookCounter(rv, "codex", "UserPromptSubmit", entry)
+				}
+				runTimed(entry, Budget, StartBudget, &out, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+					return dispatchCallback(ctx, entry, rv, transport, []string{"codex", "UserPromptSubmit"}, strings.NewReader(stdin), w,
+						func(string) (string, bool) { return "", false }, callbackState{root: state})
+				})
+				time.Sleep(time.Second) // let a dispatch the deadline left behind finish
+				raw, err := os.ReadFile(filepath.Join(dir, "hooks", entry.UTC().Format("20060102")))
+				if err != nil || string(raw) != "codex UserPromptSubmit rpc 200\n" || events != 1 {
+					t.Fatalf("counter %q (%v) with %d events", raw, err, events)
+				}
+			})
+		})
+	}
+}
+
+// A prompt starts on the ordinary budget: one that stalls before it knows
+// it enrolls anything (stdin, its leaf) gives up at that deadline. One
+// that extends its budget, because it recovers or repairs its session,
+// keeps the start budget.
+func TestAPromptRunsOnTheOrdinaryBudgetUntilItExtends(t *testing.T) {
+	for _, extends := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extends %t", extends), func(t *testing.T) {
+			_, dir, _ := runFixture(t)
+			synctest.Test(t, func(t *testing.T) {
+				entry := time.Now()
+				rv, err := os.OpenRoot(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var output bytes.Buffer
+				prepare := func() (*os.Root, *hookCounter) {
+					return rv, openHookCounter(rv, "codex", "UserPromptSubmit", entry)
+				}
+				runTimed(entry, Budget, StartBudget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+					if extends {
+						extendBudget(ctx)
+					}
+					time.Sleep(250 * time.Millisecond) // a stall, or a slow join
+					if hookExpired(ctx) {
+						return "deadline"
+					}
+					return "rpc"
+				})
+				took := time.Since(entry)
+				time.Sleep(time.Second) // let a dispatch the deadline left behind finish
+				raw, err := os.ReadFile(filepath.Join(dir, "hooks", entry.UTC().Format("20060102")))
+				want, within := "codex UserPromptSubmit deadline 145\n", Budget
+				if extends {
+					want, within = "codex UserPromptSubmit rpc 250\n", StartBudget
+				}
+				if err != nil || string(raw) != want || took > within {
+					t.Fatalf("returned after %v; counter %q, %v; want %q within %v", took, raw, err, want, within)
 				}
 			})
 		})

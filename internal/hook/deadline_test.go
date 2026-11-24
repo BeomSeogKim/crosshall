@@ -34,7 +34,7 @@ func TestHookDeadlineWithSlowCounterOpen(t *testing.T) {
 			time.Sleep(30 * time.Millisecond) // virtual filesystem latency
 			return rv, openHookCounter(rv, "codex", "UserPromptSubmit", entry)
 		}
-		runTimed(entry, Budget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+		runTimed(entry, Budget, Budget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
 			return dispatchEvent(ctx, entry, rv, recordedTransport{}, []string{"codex", "UserPromptSubmit"}, reader, w, nil)
 		})
 		if elapsed := time.Since(entry); elapsed > Budget || output.Len() != 0 {
@@ -115,7 +115,7 @@ func TestStalledPreparationDoesNotGetAccountingAllowance(t *testing.T) {
 		entry := time.Now()
 		release := make(chan struct{})
 		var rows bytes.Buffer
-		runTimed(entry, Budget, io.Discard, func() (*os.Root, *hookCounter) {
+		runTimed(entry, Budget, Budget, io.Discard, func() (*os.Root, *hookCounter) {
 			<-release
 			return rv, &hookCounter{file: counterWrite(rows.Write)}
 		}, func(context.Context, *os.Root, io.Writer) string {

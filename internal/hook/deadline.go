@@ -35,11 +35,14 @@ func (o *hookOutput) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func runTimed(entry time.Time, budget time.Duration, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
+// runTimed serves a callback within base, or within budget once dispatch
+// extends it (extendBudget); preparation always fits in base.
+func runTimed(entry time.Time, base, budget time.Duration, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
 	output := &hookOutput{dst: stdout}
-	end := entry.Add(budget)
-	workEnd := end.Add(-counterAllowance)
-	ctx, cancel := context.WithDeadline(context.Background(), workEnd)
+	end := entry.Add(base)
+	workEnd := entry.Add(budget - counterAllowance)
+	var extended atomic.Bool
+	ctx, cancel := context.WithDeadline(context.WithValue(context.Background(), extensionKey{}, &extended), workEnd)
 	defer cancel()
 	ready := make(chan *hookCounter, 1)
 	done := make(chan string, 1)
@@ -80,13 +83,25 @@ func runTimed(entry time.Time, budget time.Duration, stdout io.Writer, prepare f
 		}
 	}
 	outcome := "deadline"
-	if time.Now().Before(workEnd) {
+	baseEnd := time.NewTimer(time.Until(end.Add(-counterAllowance)))
+	defer baseEnd.Stop()
+wait:
+	for time.Now().Before(workEnd) {
 		select {
 		case outcome = <-done:
+			break wait
 		case <-ctx.Done():
+			break wait
+		case <-baseEnd.C:
+			if !extended.Load() {
+				break wait
+			}
 		}
 	}
 	cancel()
+	if !extended.Load() {
+		budget = base
+	}
 	return finishCounter(entry, budget, outcome, counter, output)
 }
 
@@ -131,4 +146,15 @@ func finishCounter(entry time.Time, budget time.Duration, outcome string, counte
 func hookExpired(ctx context.Context) bool {
 	end, ok := ctx.Deadline()
 	return ctx.Err() != nil || (ok && !time.Now().Before(end))
+}
+
+type extensionKey struct{}
+
+// extendBudget gives the callback its full budget instead of its base: it
+// recovers or repairs its session's enrolment. A callback whose base
+// deadline already passed has returned; extending it changes nothing.
+func extendBudget(ctx context.Context) {
+	if extended, ok := ctx.Value(extensionKey{}).(*atomic.Bool); ok {
+		extended.Store(true)
+	}
 }

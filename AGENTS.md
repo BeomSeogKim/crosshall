@@ -41,7 +41,6 @@ name.
 ## Checks
 
 `bash scripts/ci-checks.sh` runs what CI runs. Before proposing a change,
-run the tests of the packages you changed, then either run the full script
-or push the branch and let the pull request's CI run it. Do not queue a
-local full run behind another one; the pull request's CI runs in parallel.
-A release candidate gets one local full run before it is tagged.
+run the tests of the packages you changed. The pull request's CI is the full
+run; do not run the full script locally for an ordinary pull request. A
+release candidate gets one local full run before it is tagged.

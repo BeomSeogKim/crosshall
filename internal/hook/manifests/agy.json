@@ -15,6 +15,11 @@
     "version": {"env": "ANTIGRAVITY_LS_VERSION", "prefix": "cli-", "indirect": "ls", "indirect_name": "language server"}
   },
   "host_names": ["agy"],
+  "event_field_optional": true,
+  "cwd_field": "workspacePaths",
+  "cwd_list": true,
+  "identity_proof": "antigravity_transcript",
+  "empty_output": "{}",
   "install": {
     "file": "hooks.json",
     "encoding": "shell",
@@ -22,6 +27,6 @@
     "events": ["SessionStart"]
   },
   "events": {
-    "SessionStart": {"enroll": true, "output": "inject_steps"}
+    "SessionStart": {"enroll": true, "source": "startup", "output": "inject_steps"}
   }
 }

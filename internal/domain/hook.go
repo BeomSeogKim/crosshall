@@ -772,7 +772,7 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	case FactSessionEnded:
 		if live {
 			sessionRef := resolveSessionKey(ctx, tx, req.SessionKey, principal, cmd.Profile.Adapter)
-			if err := endPublishRoute(ctx, tx, b.id, b.routeEpoch, cmd.LaunchRef, sessionRef, cmd.Epoch, cmd.HookAtMS, "session ended", now); err != nil {
+			if err := endPublishRoute(ctx, tx, b.id, b.routeEpoch, cmd.LaunchRef, sessionRef, cmd.Epoch, cmd.HookAtMS, routeSessionEnded, now); err != nil {
 				return core.Result{}, err
 			}
 		}

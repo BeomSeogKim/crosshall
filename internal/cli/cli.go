@@ -86,6 +86,7 @@ Owner commands (from a separate owner terminal):
                                                     switch beats the adapter switch, which
                                                     beats the hall switch
   owner publish resume <binding-id>                 Lift a member's automatic publish suspension
+                                                    and release a notice that has no receipt
   owner adapter evidence <file>                     Record a conformance run's results
 `
 

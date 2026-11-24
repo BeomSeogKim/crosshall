@@ -81,7 +81,7 @@ func TestQuietHookCostBreakdown(t *testing.T) {
 		timed("full_in_process_prompt", func() {
 			// Match the host's payload-only identity regardless of the
 			// ambient agent used to start this benchmark.
-			runTimed(time.Now(), io.Discard, func() (*os.Root, *hookCounter) {
+			runTimed(time.Now(), Budget, io.Discard, func() (*os.Root, *hookCounter) {
 				r, err := ident.OpenPrivateDir(dir)
 				if err != nil {
 					return nil, nil

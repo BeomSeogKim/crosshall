@@ -4,6 +4,8 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Session starts get more time under load:** a session start, and a prompt that enrolls or repairs its session, now answers within 400 ms instead of 150 ms; every other hook keeps 150 ms. A start makes three round trips to the dispatcher, and when other processes flush the disk each of them slows, so starts missed the 150 ms deadline and left the session unbound. A hook also picks up the dispatcher's reply every 1 ms instead of every 4 ms. `owner doctor` counts a missed deadline against the callback's own budget.
+
 - **The owner hears of a lasting notice suspension:** a third suspension of a launch, which lasts until that launch ends, gets the round stop's desktop notification and a line on the next owner command, naming `crosshall owner publish resume <binding-id>`, while it still keeps the member's notices off. Every suspension, timed or lasting, now records a `publish_suspended` event. No schema change.
 - **Dispatcher startup:** a new dispatcher retries when a status check briefly holds the state lock for reading. Concurrent starts still share one dispatcher (#102).
 - **Owner start timeout:** `crosshall owner start` reports the last startup stage it observed and the state of the dispatcher lock and readiness marker when it times out (#102).

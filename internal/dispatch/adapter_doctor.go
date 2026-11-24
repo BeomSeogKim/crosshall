@@ -78,6 +78,7 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 	}
 	counts := make(map[string]map[string]int, len(adapters))
 	times := make(map[string][]int, len(adapters))
+	missed := make(map[string]int, len(adapters))
 	for _, adapter := range adapters {
 		counts[adapter.Adapter] = make(map[string]int)
 	}
@@ -102,6 +103,9 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		adapter := fields[0]
 		counts[adapter][fields[2]]++
 		times[adapter] = append(times[adapter], ms)
+		if ms >= int(hook.CallbackBudget(adapter, fields[1]).Milliseconds()) {
+			missed[adapter]++
+		}
 	}
 	for i := range adapters {
 		adapter := &adapters[i]
@@ -111,11 +115,10 @@ func attachDoctorHooks(adapters []doctorAdapter, rv *os.Root, now time.Time) {
 		}
 		slices.Sort(latencies)
 		p95 := latencies[(95*len(latencies)+99)/100-1]
-		beforeDeadline, _ := slices.BinarySearch(latencies, int(hook.Budget.Milliseconds()))
 		adapter.Hooks = &doctorHookActivity{
 			Date: date, Counts: counts[adapter.Adapter], P95MS: p95,
 			RecordedStarts: len(latencies), HelperTimeouts: counts[adapter.Adapter]["deadline"],
-			MissedDeadlines: len(latencies) - beforeDeadline,
+			MissedDeadlines: missed[adapter.Adapter],
 		}
 	}
 }

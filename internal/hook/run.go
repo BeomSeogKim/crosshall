@@ -26,6 +26,30 @@ import (
 // Budget is the absolute callback deadline from command entry.
 const Budget = 150 * time.Millisecond
 
+// StartBudget is the deadline of a callback that may enroll its session: a
+// start, which takes three round trips to the dispatcher, and a prompt,
+// which enrolls a session whose start was missed or repairs it. A busy disk
+// can hold each round trip; the vendor's own timeout is 1 s.
+const StartBudget = 400 * time.Millisecond
+
+// CallbackBudget is the deadline of adapter's callback for event. A prompt
+// gets the start budget only until it finds it enrolls nothing (dispatchCallback).
+func CallbackBudget(adapter, event string) time.Duration {
+	m, ok := loadManifest(adapter)
+	spec, known := m.event(event)
+	if !ok || !known {
+		return Budget
+	}
+	return spec.budget()
+}
+
+func (s eventSpec) budget() time.Duration {
+	if s.Enroll || s.RecoverEnroll {
+		return StartBudget
+	}
+	return Budget
+}
+
 type hookTransport interface {
 	HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error)
 	HookCall(context.Context, ident.Identity, string, wire.Request, bool) (spool.Reply, error)
@@ -43,7 +67,11 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		defer lifecycle.cancel()
 	}
 	entry, startedState := wake(entry, args, locate)
-	end := entry.Add(Budget)
+	budget := CallbackBudget(args[0], args[1])
+	if startedState != "" {
+		budget = afterStart(began, entry, budget)
+	}
+	end := entry.Add(budget)
 	var stateRoot string
 	prepare := func() (*os.Root, *hookCounter) {
 		paths, err := locate()
@@ -58,13 +86,13 @@ func Run(entry time.Time, args []string, stdin io.Reader, stdout io.Writer, loca
 		return rv, openHookCounter(rv, args[0], args[1], entry)
 	}
 	var outcome atomic.Value
-	wrote := runTimed(entry, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote := runTimed(entry, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
 		o := dispatchCallback(ctx, entry, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
 		return o
 	})
-	if lifecycle != nil && !lifecycle.waitUntil(began.Add(Budget)) && args[1] == "SessionStart" && startedState == "" {
+	if lifecycle != nil && !lifecycle.waitUntil(began.Add(budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
 	if startedState != "" {
@@ -170,6 +198,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
+	}
+	if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll && repo.none() &&
+		end.After(entry.Add(Budget-counterAllowance)) {
+		// This prompt enrolls and repairs nothing: the ordinary budget.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
+		defer cancel()
 	}
 	want := turnEnd || (notice && !clean)
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)

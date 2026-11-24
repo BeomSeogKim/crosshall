@@ -17,7 +17,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-const pollInterval = 4 * time.Millisecond
+const pollInterval = 1 * time.Millisecond
 
 // Deadline counts startup and enrollment against the command's total allowance.
 func Deadline(entry time.Time, spawned bool) time.Time {

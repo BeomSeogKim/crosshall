@@ -35,9 +35,9 @@ func (o *hookOutput) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
+func runTimed(entry time.Time, budget time.Duration, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
 	output := &hookOutput{dst: stdout}
-	end := entry.Add(Budget)
+	end := entry.Add(budget)
 	workEnd := end.Add(-counterAllowance)
 	ctx, cancel := context.WithDeadline(context.Background(), workEnd)
 	defer cancel()
@@ -87,12 +87,12 @@ func runTimed(entry time.Time, stdout io.Writer, prepare func() (*os.Root, *hook
 		}
 	}
 	cancel()
-	return finishCounter(entry, outcome, counter, output)
+	return finishCounter(entry, budget, outcome, counter, output)
 }
 
 // A late wake can report the missed deadline only on a pre-opened file.
 // An append started on time still shares the original absolute deadline.
-func finishCounter(entry time.Time, outcome string, counter *hookCounter, output *hookOutput) bool {
+func finishCounter(entry time.Time, budget time.Duration, outcome string, counter *hookCounter, output *hookOutput) bool {
 	state := output.state.Swap(outputSealed)
 	if counter == nil {
 		return state != outputIdle
@@ -104,7 +104,7 @@ func finishCounter(entry time.Time, outcome string, counter *hookCounter, output
 		return true
 	}
 	now := time.Now()
-	end := entry.Add(Budget)
+	end := entry.Add(budget)
 	if !now.Before(end.Add(-counterAllowance)) {
 		outcome = "deadline"
 	}

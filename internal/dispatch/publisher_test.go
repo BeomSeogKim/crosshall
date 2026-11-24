@@ -944,3 +944,33 @@ func TestAListenerIsProvenOnlyForItsOwnLaunch(t *testing.T) {
 		t.Fatalf("proven bindings %v, want only the listener's own launch", proven)
 	}
 }
+
+// #261 review: the transaction that records a non-submission publishes the
+// stamps it marked, so the member's turn-end record is raised at once.
+func TestPublisherAppliesTheStampsOfANoticeNotSubmitted(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	id := f.reserve(t, false)
+	useTransport(t, publish.Transport{Send: func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+		return domain.PublishNotSubmitted
+	}})
+	var applied int
+	p := &publisher{db: f.db, stamps: func(ctx context.Context, tx store.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM adapter_dirty WHERE notice = 1`).Scan(&n); err != nil {
+			return err
+		}
+		applied += n
+		_, err := tx.ExecContext(ctx, `DELETE FROM adapter_dirty`)
+		return err
+	}}
+	f.update(t, func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `DELETE FROM adapter_dirty`)
+		return err
+	})
+	p.submit(t.Context(), id)
+	f.requireAttempt(t, id, domain.PublishNotSubmitted)
+	if applied == 0 {
+		t.Fatal("the non-submission's stamps were left for a later transaction")
+	}
+}

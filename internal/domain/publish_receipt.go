@@ -34,20 +34,28 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 			return false, nil
 		}
 	}
+	// The receipt is fenced by the attempt's lane, not the route's
+	// generation: a start of the same session (compact, resume) gives the
+	// route a new generation, but the notice echoed is still the one queued
+	// on that lane. The receipt comes from the attempt's lane when it comes
+	// from the attempt's launch (a process lane) or from the thread and home
+	// the attempt was queued to (a thread lane). It is current when the
+	// route still is that lane, on the attempt's binding and policy epochs.
+	sameLane := `CASE WHEN ` + store.ThreadRoutedAdapter("a.adapter") + ` THEN a.lane = ` + store.PublishThreadLane() + `
+		ELSE a.launch_ref = ?1 END`
 	var id, fenceAt int64
-	var current bool
-	err := tx.QueryRowContext(ctx, `SELECT a.id, a.submitting_at_ms,
-		((r.state = 'active' AND r.generation = a.generation OR
-			r.state = 'ended' AND r.reason = 'left channel' AND r.generation = a.generation + 1
+	var fromLane, current bool
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.submitting_at_ms, COALESCE(`+sameLane+`, 0), COALESCE(`+sameLane+`
+			AND (r.state = 'active' OR r.state = 'ended' AND r.reason = 'left channel'
 				AND b.state = 'departed' AND b.departed_by_owner = 0 AND b.departed_by_hook = 0)
 			AND r.binding_epoch = a.binding_epoch AND b.route_epoch = a.binding_epoch
-			AND r.adapter = a.adapter AND r.session_ref = a.session_ref AND r.launch_ref = a.launch_ref
-			AND r.policy_epoch = a.policy_epoch AND a.launch_ref = ?)
+			AND r.adapter = a.adapter AND r.policy_epoch = a.policy_epoch
+			AND (`+store.ThreadRoutedAdapter("r.adapter")+` OR r.session_ref = a.session_ref AND r.launch_ref = a.launch_ref), 0)
 		FROM publish_attempt a JOIN publish_route r ON r.binding_id = a.binding_id JOIN binding b ON b.id = a.binding_id
-		WHERE a.binding_id = ? AND a.principal_id = ? AND a.adapter = ? AND a.session_ref = ?
-			AND (? = '' OR r.thread_id = ?)
+		WHERE a.binding_id = ?2 AND a.principal_id = ?3 AND a.adapter = ?4 AND a.session_ref = ?5
+			AND (?6 = '' OR r.thread_id = ?6)
 			AND a.observed_at_ms IS NULL AND a.retired_at_ms IS NULL AND a.state IN ('submitting', 'submitted', 'uncertain')`,
-		cmd.LaunchRef, b.id, principal, cmd.Profile.Adapter, sessionKey, thread, thread).Scan(&id, &fenceAt, &current)
+		cmd.LaunchRef, b.id, principal, cmd.Profile.Adapter, sessionKey, thread).Scan(&id, &fenceAt, &fromLane, &current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -59,7 +67,13 @@ func observePublishReceipt(ctx context.Context, tx store.Tx, b hookBinding, prin
 		return false, err
 	}
 	if !current || cmd.HookAtMS < fenceAt {
-		return false, rejectPublishReceipt(ctx, tx, b.id, principal, "stale", now)
+		if err := rejectPublishReceipt(ctx, tx, b.id, principal, "stale", now); err != nil || !fromLane || cmd.HookAtMS < fenceAt {
+			return false, err
+		}
+		// The attempt's own lane echoed exactly its notice, so the notice
+		// no longer waits there and the lane frees. Its turn is not judged
+		// across the change and feeds no build evidence.
+		return false, settlePublishAttempt(ctx, tx, id, "stale receipt", now)
 	}
 	var observation string
 	if err := tx.QueryRowContext(ctx, `WITH previous AS (
@@ -180,4 +194,22 @@ const duplicatePrompt = `(o.kind = 'prompt_submitted' AND NOT EXISTS (SELECT 1 F
 func rejectPublishReceipt(ctx context.Context, tx store.Tx, binding, principal int64, reason string, now time.Time) error {
 	return audit(ctx, tx, "publish_receipt_rejected", "binding:"+strconv.FormatInt(binding, 10), principal,
 		map[string]string{"reason": reason}, now)
+}
+
+// settlePublishAttempt frees the lane of open attempt id without a receipt
+// that could be judged: no observation, no pickup and no build evidence.
+// Its event, on the attempt's binding and member, records the reason, so a
+// caller without a member request (the publisher) can settle too.
+func settlePublishAttempt(ctx context.Context, tx store.Tx, id int64, reason string, now time.Time) error {
+	var binding, principal int64
+	err := tx.QueryRowContext(ctx, `UPDATE publish_attempt SET retired_at_ms = ? WHERE id = ? AND `+openPublishLane+`
+		RETURNING binding_id, principal_id`, ms(now), id).Scan(&binding, &principal)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return audit(ctx, tx, "publish_attempt_settled", "binding:"+strconv.FormatInt(binding, 10), principal,
+		map[string]string{"attempt": strconv.FormatInt(id, 10), "reason": reason}, now)
 }

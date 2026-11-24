@@ -104,6 +104,28 @@ A run in print mode with a stand-in model shows only that the message line still
 
 For a version covered by another version's evidence, the first three publish notices observed as their own turns confirm that build on the machine. An absorbed or unknown notice during that period stops publish for the build. Later failures suspend the current launch. The owner can lift a build stop with `crosshall owner publish resume <binding-id>` or with newer tested evidence for that exact version. `crosshall owner doctor` reports this state, and uncovered sessions show `publish: candidate` in `crosshall who`.
 
+## Claude Code ↔ Codex round trip
+
+With both real CLIs on `PATH`, run this release-gate check from the checkout:
+
+```sh
+go test -tags conformance -count=1 -timeout 3m -run '^TestCrossVendorRoundTrip$' -v ./test/conformance/
+```
+
+The check uses separate temporary vendor homes, one disposable dispatcher and
+loopback model endpoints. It requires macOS with `sandbox-exec` or a disposable
+Linux account in a network namespace with only `lo` and no real vendor homes.
+To check an already-built release candidate, set
+`CROSSHALL_CONFORMANCE_CROSSHALL` to its absolute path outside vendor homes.
+
+Claude Code print mode asks first. A neutral prompt in the open Codex app-server
+thread must receive the request ID in developer context before Codex reads and
+answers. Codex then asks while Claude Code has a running member wait. In each direction the asker reads
+the correlated answer, and the ledger verifies native session identity, pickup
+and settlement. The `claude_to_codex_next_prompt` case provides the read and
+reply sequence for a future Codex notice case that starts the receiver turn
+without a harness prompt.
+
 ## Hall-level checks
 
 The following tests use disposable state to exercise hall behavior that applies across Readers. The member table reports the observed member scenario only.

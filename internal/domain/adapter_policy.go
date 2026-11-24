@@ -7,6 +7,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -34,11 +35,11 @@ func (s *Service) adapterSet(ctx context.Context, tx store.Tx, caller core.Calle
 		!validTriSwitch(cmd.Publish) || !validTriSwitch(cmd.TurnEnd) {
 		return Fail(core.ExitUsage, "", "choose a supported adapter and at least one valid policy switch", "crosshall owner adapter set claude --enabled on"), nil
 	}
-	if cmd.Adapter == "agy" && cmd.Publish != nil && *cmd.Publish == "on" {
-		return Fail(core.ExitUsage, "", "Antigravity has no publish adapter", "crosshall setup status"), nil
+	if _, sends := publish.Lookup(cmd.Adapter); !sends && cmd.Publish != nil && *cmd.Publish == "on" {
+		return Fail(core.ExitUsage, "", manifests.DisplayName(cmd.Adapter)+" has no publish adapter", "crosshall setup status"), nil
 	}
-	if cmd.Adapter == "agy" && cmd.TurnEnd != nil && *cmd.TurnEnd == "on" {
-		return Fail(core.ExitUsage, "", "Antigravity has no turn-end check", "crosshall setup status"), nil
+	if caps, _ := manifests.CapabilitiesOf(cmd.Adapter); !caps.TurnEnd && cmd.TurnEnd != nil && *cmd.TurnEnd == "on" {
+		return Fail(core.ExitUsage, "", manifests.DisplayName(cmd.Adapter)+" has no turn-end check", "crosshall setup status"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {

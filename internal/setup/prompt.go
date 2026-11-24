@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"io"
 	"slices"
 	"strings"
@@ -545,10 +546,11 @@ func retry(plan VendorPlan) string {
 
 func pathSource(plan VendorPlan) string {
 	if plan.PathSource == "override" {
-		if plan.Adapter == "codex" {
-			return "from CODEX_HOME"
+		for _, spec := range hook.InstallSpecs() {
+			if spec.Adapter == plan.Adapter {
+				return "from " + spec.HomeEnv
+			}
 		}
-		return "from CLAUDE_CONFIG_DIR"
 	}
 	source := "default under HOME"
 	if plan.RecordedPath != "" && plan.RecordedPath != plan.Path {

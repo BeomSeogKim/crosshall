@@ -1,6 +1,13 @@
 {
+  "schema": 1,
   "adapter": "claude",
+  "display_name": "Claude Code",
+  "setup_order": 1,
   "revision": "claude-3",
+  "prior_revisions": {
+    "claude-1": ["process_launch", "turn_end", "recover_enroll", "prompt_line", "approval_dialog"],
+    "claude-2": ["process_launch", "turn_end", "recover_enroll", "prompt_line", "session_end", "approval_dialog"]
+  },
   "event_field": "hook_event_name",
   "session_field": "session_id",
   "session_env": "CLAUDE_CODE_SESSION_ID",
@@ -27,7 +34,7 @@
     "UserPromptSubmit": {"fact": "prompt_submitted", "turn_required": true, "notice": true, "output": "context", "recover_enroll": true},
     "Stop": {"fact": "turn_finishing", "turn_required": true, "stop": true, "output": "context"},
     "StopFailure": {"fact": "turn_finishing", "turn_required": true},
-    "Notification": {"match_field": "notification_type", "facts_by_match": {"permission_prompt": "approval_requested", "idle_prompt": "idle_prompt"}},
+    "Notification": {"match_field": "notification_type", "facts_by_match": {"permission_prompt": "approval_requested", "idle_prompt": "idle_prompt"}, "approval": "dialog"},
     "SessionEnd": {"fact": "session_ended", "reason_field": "reason"}
   }
 }

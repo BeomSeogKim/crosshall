@@ -2,9 +2,17 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.2.0
 
-No schema change. When the hooks on disk were installed for an older revision than the binary installs, `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now say so and name the setup command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`.
+Upgrading from v0.2.0-rc.5 keeps the database at schema 29. No migration runs.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. Install v0.2.0 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command).
+3. Run `crosshall owner start`, then `crosshall owner doctor`.
+
+When setup's hook entries are still on disk, their recorded revision differs from the one this binary installs and a hook of the current revision is missing, `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now say so and name the setup command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` Run the command it names. The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`, which can name an older revision even when no hook is missing and no sentence is shown.
+
+To go back to v0.2.0-rc.5, stop the dispatcher and running commands, put the rc.5 binary back at the same path and start it on the same schema 29 store. Coming from v0.2.0-rc.4 or earlier, follow the sections below as well.
 
 ## To v0.2.0-rc.5
 

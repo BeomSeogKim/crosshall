@@ -47,6 +47,7 @@ type PublishSwitchResult struct {
 	Switch          string         `json:"switch"`
 	Changed         bool           `json:"changed"`
 	BuildStopLifted bool           `json:"build_stop_lifted,omitempty"`
+	ReleasedNotice  int64          `json:"released_notice,omitempty"`
 	Publish         *PublishStatus `json:"publish,omitempty"`
 }
 
@@ -159,8 +160,11 @@ func (s *Service) ownerPublish(ctx context.Context, tx store.Tx, caller core.Cal
 		if out.BuildStopLifted, err = liftPublishBuildForBinding(ctx, tx, cmd.BindingID, now); err != nil {
 			return core.Result{}, err
 		}
+		if out.ReleasedNotice, err = releaseHeldNotice(ctx, tx, cmd.BindingID, now); err != nil {
+			return core.Result{}, err
+		}
 	}
-	if out.Changed || out.BuildStopLifted {
+	if out.Changed || out.BuildStopLifted || out.ReleasedNotice != 0 {
 		if err := audit(ctx, tx, "publish_switch", scope, owner, map[string]string{"by": "owner", "switch": cmd.Switch}, now); err != nil {
 			return core.Result{}, err
 		}
@@ -191,4 +195,20 @@ func publishStatusOf(ctx context.Context, tx store.Tx, binding int64, now time.T
 func changedOne(res sql.Result) (bool, error) {
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// releaseHeldNotice settles the member's notice whose transport has
+// answered but whose receipt never came, so the owner's resume frees the
+// lane it holds. A notice still being submitted is left to its transport.
+func releaseHeldNotice(ctx context.Context, tx store.Tx, binding int64, now time.Time) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM publish_attempt WHERE binding_id = ?
+		AND observed_at_ms IS NULL AND retired_at_ms IS NULL AND state IN ('submitted', 'uncertain')`, binding).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return id, settlePublishAttempt(ctx, tx, id, "owner resume", now)
 }

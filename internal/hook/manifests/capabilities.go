@@ -33,16 +33,22 @@ type Capabilities struct {
 	PromptLine bool
 	// SessionEnd: an installed event reports the end of a session.
 	SessionEnd bool
+	// ApprovalDialog: the revision's approval_requested fact means a
+	// permission dialog is on screen ("approval": "dialog"). Otherwise it is
+	// a request the vendor may also approve on its own ("request"), or the
+	// revision reports none.
+	ApprovalDialog bool
 }
 
 // capabilityNames are the names a manifest's prior_revisions may list.
 var capabilityNames = map[string]func(*Capabilities){
-	"process_launch": func(c *Capabilities) { c.ProcessLaunch = true },
-	"turn_end":       func(c *Capabilities) { c.TurnEnd = true },
-	"recover_enroll": func(c *Capabilities) { c.RecoverEnroll = true },
-	"shared_daemon":  func(c *Capabilities) { c.SharedDaemon = true },
-	"prompt_line":    func(c *Capabilities) { c.PromptLine = true },
-	"session_end":    func(c *Capabilities) { c.SessionEnd = true },
+	"process_launch":  func(c *Capabilities) { c.ProcessLaunch = true },
+	"turn_end":        func(c *Capabilities) { c.TurnEnd = true },
+	"recover_enroll":  func(c *Capabilities) { c.RecoverEnroll = true },
+	"shared_daemon":   func(c *Capabilities) { c.SharedDaemon = true },
+	"prompt_line":     func(c *Capabilities) { c.PromptLine = true },
+	"session_end":     func(c *Capabilities) { c.SessionEnd = true },
+	"approval_dialog": func(c *Capabilities) { c.ApprovalDialog = true },
 }
 
 type record struct {
@@ -172,11 +178,13 @@ func decodeAll() map[string]record {
 				Matchers map[string]string `json:"matchers"`
 			} `json:"install"`
 			Events map[string]struct {
-				Fact          string `json:"fact"`
-				Output        string `json:"output"`
-				Notice        bool   `json:"notice"`
-				Stop          bool   `json:"stop"`
-				RecoverEnroll bool   `json:"recover_enroll"`
+				Fact          string            `json:"fact"`
+				FactsByMatch  map[string]string `json:"facts_by_match"`
+				Approval      string            `json:"approval"`
+				Output        string            `json:"output"`
+				Notice        bool              `json:"notice"`
+				Stop          bool              `json:"stop"`
+				RecoverEnroll bool              `json:"recover_enroll"`
 			} `json:"events"`
 		}
 		if json.Unmarshal(raw, &m) != nil || m.Adapter != adapter || m.Revision == "" {
@@ -189,6 +197,7 @@ func decodeAll() map[string]record {
 		}
 		r.caps.ProcessLaunch = m.LaunchEnv != ""
 		r.caps.SharedDaemon = len(m.Daemon) > 0 && string(m.Daemon) != "null"
+		approvalKind := ""
 		for _, name := range m.Install.Events {
 			event, known := m.Events[name]
 			if !known {
@@ -204,7 +213,22 @@ func decodeAll() map[string]record {
 			r.caps.PromptLine = r.caps.PromptLine || event.Fact == "prompt_submitted" && event.Notice &&
 				(event.Output == "context" || event.Output == "inject_steps")
 			r.caps.SessionEnd = r.caps.SessionEnd || event.Fact == "session_ended"
+			approval := event.Fact == "approval_requested"
+			for _, fact := range event.FactsByMatch {
+				approval = approval || fact == "approval_requested"
+			}
+			switch {
+			case approval && event.Approval != "dialog" && event.Approval != "request":
+				r.invalid = append(r.invalid, "event "+name+" reports an approval without approval dialog or request")
+			case !approval && event.Approval != "":
+				r.invalid = append(r.invalid, "event "+name+" declares an approval kind but reports no approval")
+			case approval && approvalKind != "" && approvalKind != event.Approval:
+				r.invalid = append(r.invalid, "the revision maps both approval meanings")
+			case approval:
+				approvalKind = event.Approval
+			}
 		}
+		r.caps.ApprovalDialog = approvalKind == "dialog"
 		for event := range m.Install.Matchers {
 			if !slices.Contains(m.Install.Events, event) {
 				r.invalid = append(r.invalid, "matcher for "+event+", which is not installed")

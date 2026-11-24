@@ -8,16 +8,17 @@ import (
 // Every revision the core can meet in a stored profile resolves to the
 // capabilities the core derived for it before the catalog: by adapter name
 // (process launch, turn end, recovery) and by the claude-1/claude-2
-// exceptions of hook.HasPromptLine and hook.HasSessionEnd.
+// exceptions of hook.HasPromptLine and hook.HasSessionEnd. Every Claude Code
+// revision reports a shown permission dialog; Codex reports requests.
 func TestRevisionCapabilitiesKeepTheirShippedMeaning(t *testing.T) {
 	for _, c := range []struct {
 		adapter, revision string
 		want              Capabilities
 		ok                bool
 	}{
-		{"claude", "claude-1", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true}, true},
-		{"claude", "claude-2", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true}, true},
-		{"claude", "claude-3", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true}, true},
+		{"claude", "claude-1", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, ApprovalDialog: true}, true},
+		{"claude", "claude-2", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true, ApprovalDialog: true}, true},
+		{"claude", "claude-3", Capabilities{ProcessLaunch: true, TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", PromptLine: true, SessionEnd: true, ApprovalDialog: true}, true},
 		{"codex", "codex-1", Capabilities{TurnEnd: true, RecoverEnroll: true, RecoverEvent: "UserPromptSubmit", SharedDaemon: true, PromptLine: true, SessionEnd: true}, true},
 		{"agy", "agy-1", Capabilities{}, true},
 		{"claude", "claude-0", Capabilities{}, false},

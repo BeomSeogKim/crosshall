@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 )
 
@@ -129,14 +130,13 @@ func family(adapter, version string) string {
 		return "unknown"
 	}
 	prefix := ""
-	if adapter == "agy" {
-		// Antigravity's runtime version is its language server's build,
-		// which identity resolution records as "ls:cli-<n>".
-		rest, ok := strings.CutPrefix(version, "ls:cli-")
+	// A version of another component's build (ident's indirect source, such
+	// as Antigravity's language server "ls:cli-<n>") is keyed "<label>_".
+	if label, number, indirect, ok := (ident.Identity{Vendor: adapter, Version: version}).IndirectBuild(); indirect {
 		if !ok {
 			return "other"
 		}
-		prefix, version = "ls_", rest
+		prefix, version = label+"_", number
 	}
 	if m := familyPattern.FindStringSubmatch(version); m != nil {
 		if f := prefix + m[1] + "_" + m[2]; registry.has("snap.live_launch." + adapter + "." + f) {

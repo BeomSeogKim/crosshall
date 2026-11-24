@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"slices"
 	"testing"
@@ -131,9 +132,11 @@ func TestIdlePromptLiftsOnlyAnUnknownSuspensionOlderThanIt(t *testing.T) {
 	for _, s := range []struct {
 		reason string
 		at     int64
-	}{{"unknown", t0}, {"unknown", t0 + 20_000}, {"absorbed", t0}, {"not_submitted", t0}} {
+		until  any
+	}{{"unknown", t0, until}, {"unknown", t0 + 20_000, until}, {"absorbed", t0, until}, {"not_submitted", t0, until},
+		{"unknown", t0 + 1, nil}} {
 		p.mutate(`INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
-			VALUES (?, ?, ?, 0, ?, ?)`, p.binding.ID, publishTestLaunch, s.reason, s.at, until)
+			VALUES (?, ?, ?, 0, ?, ?)`, p.binding.ID, publishTestLaunch, s.reason, s.at, s.until)
 	}
 	p.now = p.now.Add(30 * time.Second)
 	p.hook(p.reader, idlePrompt(publishTestLaunch, t0+10_000))
@@ -145,15 +148,35 @@ func TestIdlePromptLiftsOnlyAnUnknownSuspensionOlderThanIt(t *testing.T) {
 	var got []string
 	for rows.Next() {
 		var reason string
-		var at, end int64
+		var at int64
+		var end sql.NullInt64
 		if err := rows.Scan(&reason, &at, &end); err != nil {
 			t.Fatal(err)
 		}
-		got = append(got, fmt.Sprintf("%s+%d:%t", reason, at-t0, end == p.now.UnixMilli()))
+		got = append(got, fmt.Sprintf("%s+%d:%t", reason, at-t0, end.Int64 == p.now.UnixMilli()))
 	}
-	want := []string{"unknown+0:true", "unknown+20000:false", "absorbed+0:false", "not_submitted+0:false"}
+	want := []string{"unknown+0:true", "unknown+20000:false", "absorbed+0:false", "not_submitted+0:false", "unknown+1:true"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("suspensions after the idle fact %v, want %v (reason+at:lifted)", got, want)
+	}
+	var events []string
+	erows, err := p.db.Query(`SELECT subject, json_extract(detail, '$.suspension'), json_extract(detail, '$.lasting'),
+		json_extract(detail, '$.by') FROM event WHERE kind = 'publish_suspension_lifted' ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer erows.Close()
+	for erows.Next() {
+		var subject, by string
+		var suspension, lasting int64
+		if err := erows.Scan(&subject, &suspension, &lasting, &by); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, fmt.Sprintf("%s %d %d %s", subject, suspension, lasting, by))
+	}
+	binding := fmt.Sprintf("binding:%d", p.binding.ID)
+	if want := []string{binding + " 1 0 idle_prompt", binding + " 5 1 idle_prompt"}; !slices.Equal(events, want) {
+		t.Fatalf("lift events %v, want %v", events, want)
 	}
 }
 

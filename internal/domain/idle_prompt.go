@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -23,6 +25,15 @@ func currentIdlePrompt(ctx context.Context, tx store.Tx, principal int64, cmd Ho
 	return current, err
 }
 
+// suspensionLifted is the detail of a publish_suspension_lifted event.
+type suspensionLifted struct {
+	BindingID  int64  `json:"binding_id"`
+	Suspension int64  `json:"suspension"`
+	Reason     string `json:"reason"`
+	Lasting    bool   `json:"lasting"`
+	By         string `json:"by"`
+}
+
 // applyIdlePrompt applies the vendor's report that the session waits for
 // input: no turn runs, so the ledger closes the launch's open typed-ahead
 // placeholders (a prompt absorbed into a running turn gets no Stop of its
@@ -32,17 +43,35 @@ func applyIdlePrompt(ctx context.Context, tx store.Tx, principal int64, cmd Hook
 	if _, _, err := reconcileTurns(ctx, tx, principal, cmd.LaunchRef, cmd.EventRef, ms(now)); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE publish_suspension SET until_ms = ?
+	rows, err := tx.QueryContext(ctx, `SELECT id, binding_id, until_ms IS NULL FROM publish_suspension
 		WHERE binding_id IN (SELECT id FROM binding WHERE principal_id = ?)
 			AND launch_ref = ? AND reason = 'unknown' AND at_ms < ?
 			AND (until_ms IS NULL OR until_ms > ?)`,
-		ms(now), principal, cmd.LaunchRef, cmd.HookAtMS, ms(now))
+		principal, cmd.LaunchRef, cmd.HookAtMS, ms(now))
 	if err != nil {
 		return err
 	}
-	changed, err := res.RowsAffected()
-	if err != nil || changed == 0 {
+	var lifted []suspensionLifted
+	for rows.Next() {
+		var l suspensionLifted
+		if err := rows.Scan(&l.Suspension, &l.BindingID, &l.Lasting); err != nil {
+			rows.Close()
+			return err
+		}
+		l.Reason, l.By = "unknown", "idle_prompt"
+		lifted = append(lifted, l)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(lifted) == 0 {
 		return err
+	}
+	for _, l := range lifted {
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_suspension SET until_ms = ? WHERE id = ?`, ms(now), l.Suspension); err != nil {
+			return err
+		}
+		// #257 audits every suspension; its early end is audited too.
+		if err := audit(ctx, tx, "publish_suspension_lifted", "binding:"+strconv.FormatInt(l.BindingID, 10), principal, l, now); err != nil {
+			return err
+		}
 	}
 	_, err = MarkReachChanges(ctx, tx, now)
 	return err

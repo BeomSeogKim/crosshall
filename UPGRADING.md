@@ -8,7 +8,7 @@ No schema change. Rule 4 and the notice text change:
 
 - A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`.
 - A notice now ends `Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say.` A notice sent with the v0.2.0-rc.4 text before the upgrade still counts as a notice when the session receives it.
-- For a hook-joined Codex session, an empty `crosshall inbox` prints `Inbox is empty. Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.`, and `crosshall wait` ends at its first check with exit 6, the message `this session does not wait` and that step as its next step, or `crosshall read` when something is unread. `crosshall inbox --json` and an arriving wait's JSON gain `at_next_prompt`. Other sessions see no change.
+- For a hook-joined Codex session, an empty `crosshall inbox` prints `Inbox is empty. Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.`, and a wait that times out with nothing unread names that step instead of the wait command. `crosshall inbox --json` and an arriving wait's JSON gain `at_next_prompt`. Other sessions see no change.
 
 ## To v0.2.0-rc.4
 

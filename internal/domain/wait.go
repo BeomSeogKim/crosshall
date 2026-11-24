@@ -238,18 +238,6 @@ func standby(ctx context.Context, tx store.Tx, principal, binding int64, now tim
 // for one the hall delivers to, which Delivers marks, and the end of the
 // turn for one whose agent cannot stand by on a background wait.
 func WaitTimeout(summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
-	return waitEnd("no new messages before the wait timeout", summary, delivers, atPrompt)
-}
-
-// WaitNotNeeded ends a wait at its first hall snapshot in a session whose
-// agent does not start a turn when a background command exits and whose
-// next prompt shows new work: polling would hold its turn, one model
-// request per poll. Like a timeout, it names the next step.
-func WaitNotNeeded(summary *MemberInboxSummary) (core.Result, error) {
-	return waitEnd("this session does not wait", summary, false, true)
-}
-
-func waitEnd(message string, summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
 	next := "crosshall wait --existing --work-only --timeout 9m"
 	switch {
 	case summary != nil && len(summary.Pending) > 0:
@@ -263,7 +251,7 @@ func waitEnd(message string, summary *MemberInboxSummary, delivers, atPrompt boo
 		Refusal
 		*MemberInboxSummary
 		Delivers bool `json:"delivers,omitempty"`
-	}{Refusal{Message: message, Hint: next}, summary, delivers})
+	}{Refusal{Message: "no new messages before the wait timeout", Hint: next}, summary, delivers})
 	result.Status, result.Code = core.ExitWaitTimeout, core.CodeWaitTimeout
 	return result, err
 }

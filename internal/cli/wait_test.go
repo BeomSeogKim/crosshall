@@ -129,6 +129,12 @@ func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 		"an unread note, the hall delivers": {domain.WaitSnapshot{InboxResult: domain.InboxResult{Delivers: true},
 			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}}},
 			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
+		"clear, ends the turn": {domain.WaitSnapshot{InboxResult: domain.InboxResult{AtNextPrompt: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{}}},
+			"crosshall: no new messages before the wait timeout\nnext: Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.\n[crosshall] 0 unread, 0 owed.\n"},
+		"an unread note, ends the turn": {domain.WaitSnapshot{InboxResult: domain.InboxResult{AtNextPrompt: true},
+			MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}}},
+			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
 		"an unread note": {domain.WaitSnapshot{MemberInboxSummary: &domain.MemberInboxSummary{Pending: []int64{8}, OwedCount: 1}},
 			"crosshall: no new messages before the wait timeout\n[crosshall] 1 unread, 1 owed. Run crosshall read.\n"},
 	} {
@@ -138,31 +144,6 @@ func TestWaitTimeoutNamesTheNextStep(t *testing.T) {
 			_, stderr, code := run(t, Env{Transport: transport}, "wait", "--existing", "--work-only", "--timeout", "3s")
 			if code != core.ExitWaitTimeout || !strings.HasSuffix(stderr, c.want) || strings.Contains(stderr, "crosshall inbox") {
 				t.Errorf("%s: exit %d, stderr %q", name, code, stderr)
-			}
-		})
-	}
-}
-
-// #288: a session whose next prompt shows new work and whose agent does not
-// wake on a background command never polls: the wait ends at its first
-// check with the next step instead of holding the turn until the timeout.
-func TestWaitEndsAtOnceWhereTheNextPromptShowsWork(t *testing.T) {
-	for name, c := range map[string]struct {
-		pending []int64
-		want    string
-	}{
-		"clear":          {[]int64{}, "crosshall: this session does not wait\nnext: Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.\n[crosshall] 0 unread, 0 owed.\n"},
-		"an unread note": {[]int64{8}, "crosshall: this session does not wait\n[crosshall] 1 unread, 0 owed. Run crosshall read.\n"},
-	} {
-		synctest.Test(t, func(t *testing.T) {
-			snapshot := domain.WaitSnapshot{Cursor: domain.WaitCursor{BindingID: 1, MessageID: 3},
-				InboxResult: domain.InboxResult{AtNextPrompt: true}, MemberInboxSummary: &domain.MemberInboxSummary{Pending: c.pending}}
-			polls := 0
-			transport := waitTestTransport(func(Call) (core.Result, error) { polls++; return domain.OK(snapshot) })
-			start := time.Now()
-			_, stderr, code := run(t, Env{Transport: transport}, "wait", "--existing", "--work-only", "--timeout", "9m")
-			if code != core.ExitWaitTimeout || stderr != c.want || polls != 1 || time.Since(start) != 0 {
-				t.Errorf("%s: exit %d after %d polls and %v, stderr %q", name, code, polls, time.Since(start), stderr)
 			}
 		})
 	}

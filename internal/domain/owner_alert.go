@@ -26,8 +26,10 @@ type DesktopAlert struct {
 	Body  string
 }
 
-// alertedStop is an alerted event: a round stop, or with kind
-// publish_suspended a lasting notice suspension, whose detail is suspension.
+// alertedStop is an alerted event: a round stop, with kind
+// publish_suspended a lasting notice suspension, whose detail is
+// suspension, or with kind publish_held a notice long without a receipt,
+// whose detail is held.
 type alertedStop struct {
 	seq        int64
 	kind       string
@@ -36,6 +38,7 @@ type alertedStop struct {
 	open       bool
 	detail     guardStop
 	suspension publishSuspended
+	held       publishHeld
 }
 
 // A stop is open while its flag is set and no later stop replaced it.
@@ -50,10 +53,14 @@ func alertedStops(ctx context.Context, tx store.Tx, where string, now time.Time)
 		return nil, err
 	}
 	for i := range out {
-		if out[i].kind == publishSuspendedEvent {
-			if out[i].open, err = out[i].suspension.open(ctx, tx, now); err != nil {
-				return nil, err
-			}
+		switch out[i].kind {
+		case publishSuspendedEvent:
+			out[i].open, err = out[i].suspension.open(ctx, tx, now)
+		case publishHeldEvent:
+			out[i].open, err = out[i].held.open(ctx, tx)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -75,8 +82,11 @@ func scanAlertedStops(ctx context.Context, tx store.Tx, where string) ([]alerted
 			return nil, err
 		}
 		into := any(&stop.detail)
-		if stop.kind == publishSuspendedEvent {
+		switch stop.kind {
+		case publishSuspendedEvent:
 			into = &stop.suspension
+		case publishHeldEvent:
+			into = &stop.held
 		}
 		if err := json.Unmarshal([]byte(detail), into); err != nil {
 			return nil, err
@@ -148,8 +158,11 @@ func FailUnfinishedDesktopAlerts(ctx context.Context, tx store.Tx) error {
 }
 
 func (s alertedStop) desktopAlert() DesktopAlert {
-	if s.kind == publishSuspendedEvent {
+	switch s.kind {
+	case publishSuspendedEvent:
 		return s.suspension.desktopAlert(s.seq)
+	case publishHeldEvent:
+		return s.held.desktopAlert(s.seq)
 	}
 	d := s.detail
 	opening := fmt.Sprintf("@%s's new threads stopped. ", d.Sender)
@@ -201,7 +214,7 @@ func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string,
 			continue
 		}
 		if open++; open > ownerLineStops {
-			if stop.kind == publishSuspendedEvent {
+			if stop.kind == publishSuspendedEvent || stop.kind == publishHeldEvent {
 				moreSuspensions++
 			} else {
 				moreStops++
@@ -222,7 +235,7 @@ func ownerAlertLines(ctx context.Context, tx store.Tx, now time.Time) ([]string,
 
 // moreAlertsLine counts the open alerts past the first three and names the
 // views that show them: owner status lists round stops, owner who --all a
-// member's notice suspension.
+// member's notice suspension or held notice.
 func moreAlertsLine(stops, suspensions int) string {
 	var views []string
 	if stops > 0 {
@@ -235,8 +248,11 @@ func moreAlertsLine(stops, suspensions int) string {
 }
 
 func (s alertedStop) ownerLines(ctx context.Context, tx store.Tx) ([]string, error) {
-	if s.kind == publishSuspendedEvent {
+	switch s.kind {
+	case publishSuspendedEvent:
 		return s.suspension.ownerLines(s.atMS), nil
+	case publishHeldEvent:
+		return s.held.ownerLines(), nil
 	}
 	d := s.detail
 	at := time.UnixMilli(s.atMS).Format("15:04")

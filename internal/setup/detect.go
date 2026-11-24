@@ -4,7 +4,6 @@ package setup
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -162,7 +161,8 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 	if !filepath.IsAbs(executable) || strings.ContainsAny(executable, "\r\n\x00") || spec.Timeout <= 0 {
 		return nil, errors.New("invalid hook executable or timeout")
 	}
-	pinState := spec.Adapter == "codex" || spec.Adapter == "agy"
+	i := installerFor(spec.Adapter)
+	pinState := i.statePinned()
 	if pinState && !validHookStateRoot(stateRoot) {
 		return nil, fmt.Errorf("the %s hook state root must be an absolute path", manifests.DisplayName(spec.Adapter))
 	}
@@ -173,14 +173,8 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 			return nil, errors.New("invalid or duplicate install event")
 		}
 		seen[event] = true
-		type handler struct {
-			Type    string   `json:"type"`
-			Command string   `json:"command"`
-			Args    []string `json:"args,omitempty"`
-			Timeout int      `json:"timeout"`
-		}
 		args := []string{"hook", spec.Adapter, event}
-		h := handler{Type: "command", Timeout: spec.Timeout}
+		h := hookHandler{Type: "command", Timeout: spec.Timeout}
 		switch spec.Encoding {
 		case "argv":
 			h.Command, h.Args = executable, args
@@ -192,22 +186,11 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 		default:
 			return nil, fmt.Errorf("unsupported install encoding %q", spec.Encoding)
 		}
-		if spec.Adapter == "agy" {
-			raw, err := json.Marshal(map[string][]handler{event: {h}})
-			if err != nil {
-				return nil, err
-			}
-			entries = append(entries, Entry{Event: event, Group: agyHookGroup, Value: raw})
-			continue
-		}
-		raw, err := json.Marshal(struct {
-			Matcher string    `json:"matcher,omitempty"`
-			Hooks   []handler `json:"hooks"`
-		}{spec.Matchers[event], []handler{h}})
+		entry, err := layoutHookEntry(i, event, spec.Matchers[event], h)
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, Entry{Event: event, Value: raw})
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }

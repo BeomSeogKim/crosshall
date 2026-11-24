@@ -9,10 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
@@ -94,13 +94,13 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 	if err != nil {
 		return target, fmt.Errorf("%s configuration: %w", spec.Adapter, err)
 	}
-	if spec.Adapter == "agy" {
+	if i := installerFor(spec.Adapter); i.hookGroup() != "" {
 		doc, err := configDocument(current.Bytes)
 		if err != nil {
 			return target, err
 		}
-		if count := recognizableAgyHooks(doc, spec); count > matches[0] {
-			return target, errors.New("Antigravity configuration has an existing crosshall hook group or conflicting hook; inspect it before setup")
+		if count := i.recognizeHooks(doc, spec); count > matches[0] {
+			return target, fmt.Errorf("%s configuration has an existing crosshall hook group or conflicting hook; inspect it before setup", manifests.DisplayName(spec.Adapter))
 		}
 	}
 	target.Current, target.Build, target.Wanted = current, b, wanted
@@ -218,32 +218,19 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 	wanted := target.Wanted
 	var restore [][]span
 	var remove []Entry
-	if known && adapter == "claude" && !rules {
+	i := installerFor(adapter)
+	if !rules {
+		var keep []Entry
 		var err error
-		base, restore, remove, err = claudeNotificationUpgrade(target, record)
+		base, restore, remove, keep, err = i.upgrade(target, record, known)
 		if err != nil {
 			return edit{}, err
 		}
-		if len(restore) > 0 {
-			if index := slices.IndexFunc(record.Entries, isClaudeAutoModeDefaults); index >= 0 {
-				wanted = append([]Entry{record.Entries[index]}, wanted...)
-			}
-		}
-	}
-	if adapter == "codex" && !rules {
-		var migrate bool
-		var err error
-		base, migrate, err = codexInstallBase(target, record)
-		if err != nil {
-			return edit{}, err
-		}
-		if migrate {
-			restore, remove = record.Undo, record.Entries
-		}
+		wanted = append(keep, wanted...)
 	}
 	if len(restore) > 0 {
 		record.Undo, record.Entries = nil, nil
-	} else if known && adapter != "agy" && !rules {
+	} else if known && i.checksRelocation() && !rules {
 		entries, err := checkHookRelocation(target, record.Entries)
 		if err != nil {
 			return edit{}, err
@@ -346,12 +333,7 @@ func checkHookRelocation(target installTarget, owned []Entry) ([]Entry, error) {
 			}
 			for _, handler := range handlers {
 				command, _ := handler.field("command").stringValue()
-				if spec.Adapter == "codex" {
-					_, command, _ = splitHookStatePin(strings.TrimSpace(command))
-					if strings.HasPrefix(command, shellQuote(old)) {
-						return nil, errors.New("hooks still use a previous Crosshall executable; run crosshall uninstall and resolve any retained hooks before setup")
-					}
-				} else if command == old || (spec.Encoding == "shell" && strings.HasPrefix(strings.TrimSpace(command), old)) {
+				if installerFor(spec.Adapter).runsExecutable(command, old, spec) {
 					return nil, errors.New("hooks still use a previous Crosshall executable; run crosshall uninstall and resolve any retained hooks before setup")
 				}
 			}
@@ -361,23 +343,7 @@ func checkHookRelocation(target installTarget, owned []Entry) ([]Entry, error) {
 }
 
 func recordedHookExecutable(spec hook.InstallSpec, entry Entry) (string, error) {
-	if spec.Adapter == "codex" {
-		route, err := recordedCodexRoute(entry)
-		return route.executable, err
-	}
-	parsed, err := parseConfigEntry(entry)
-	if err != nil || parsed.handler == nil {
-		return "", errInvalidEntry
-	}
-	command, _ := parsed.handler.field("command").stringValue()
-	if spec.Encoding == "shell" {
-		executable, ok := strings.CutSuffix(command, " hook "+spec.Adapter+" "+entry.Event)
-		if !ok || executable == "" {
-			return "", errInvalidEntry
-		}
-		return executable, nil
-	}
-	return command, nil
+	return installerFor(spec.Adapter).recordedExecutable(entry, spec)
 }
 
 func makeUninstall(j journal) operation {

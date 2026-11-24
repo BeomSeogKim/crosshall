@@ -4,6 +4,8 @@ package conformance
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,8 +38,7 @@ func startTypedAheadDispatcher(c *conformance) {
 	cmd.Dir, cmd.Env = c.state, c.base()
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = time.Second
-	logPath := filepath.Join(c.state, "dispatcher.log")
-	log, err := os.Create(logPath)
+	log, err := os.Create(filepath.Join(c.state, "dispatcher.log"))
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -67,14 +68,29 @@ func startTypedAheadDispatcher(c *conformance) {
 		}
 		select {
 		case <-done:
-			out, _ := os.ReadFile(logPath)
-			c.t.Fatalf("fixture dispatcher exited before publishing its ready marker: %v\n%s", childErr, out)
+			c.t.Fatalf("fixture dispatcher exited before publishing its ready marker: %v\n%s", childErr, dispatcherLogTail(log))
 		case <-timeout.C:
-			out, _ := os.ReadFile(logPath)
-			c.t.Fatalf("fixture dispatcher did not publish its ready marker within 10s\n%s", out)
+			c.t.Fatalf("fixture dispatcher did not publish its ready marker within 10s\n%s", dispatcherLogTail(log))
 		case <-poll.C:
 		}
 	}
+}
+
+func dispatcherLogTail(log *os.File) string {
+	info, err := log.Stat()
+	if err != nil {
+		return fmt.Sprintf("cannot stat dispatcher log: %v", err)
+	}
+	const maxLogBytes = 4 << 10
+	start := max(0, info.Size()-maxLogBytes)
+	tail, err := io.ReadAll(io.NewSectionReader(log, start, info.Size()-start))
+	if err != nil {
+		return fmt.Sprintf("cannot read dispatcher log: %v", err)
+	}
+	if start > 0 {
+		return fmt.Sprintf("[dispatcher log truncated, %d bytes omitted]\n%s", start, tail)
+	}
+	return string(tail)
 }
 
 type promptBlock struct {

@@ -386,9 +386,9 @@ func TestScopedPlanEvidenceMatchesVendorBuildAndMode(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	plans, err := scopedService(f).PlanInstall(ctx, []string{"claude"})
-	if err != nil || len(plans) != 1 || plans[0].Err != nil || len(plans[0].Files) != 1 {
-		t.Fatalf("scoped preview: %+v, %v", plans, err)
+	plans := knownBuildPlans(t, scopedService(f), "claude")
+	if len(plans) != 1 || plans[0].Err != nil || len(plans[0].Files) != 1 {
+		t.Fatalf("scoped preview: %+v", plans)
 	}
 	file := plans[0].Files[0]
 	if len(file.Evidence) != 1 || file.Evidence[0].Mode != "print" || file.Evidence[0].Level != "candidate" ||

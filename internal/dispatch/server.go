@@ -80,6 +80,7 @@ type server struct {
 	readyLease      *os.File
 	cancel          context.CancelFunc
 	nextReap        time.Time
+	retention       retention
 	lastLogged      string
 	adapterSequence uint64
 }
@@ -218,6 +219,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		}
 		if publishTick {
 			now := time.Now()
+			s.retentionTick(ctx, now)
 			launches.start(ctx, db, now)
 			if !now.Before(nextUsage) {
 				usage.Tick(ctx, now)
@@ -618,6 +620,9 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 	var enrolledSession ident.Identity
 	var channelCreated bool
 	var afterCommit func() (string, error)
+	// lowered says this request's transaction wrote a "0" turn-end record:
+	// if the transaction does not commit, the record goes, and the Stop waits.
+	var lowered bool
 	err := s.db.Update(ctx, func(tx store.Tx) error {
 		resolved, err := s.cfg.Resolve(ctx, tx, arrival, req)
 		if err != nil {
@@ -742,11 +747,21 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 				return err
 			}
 		}
+		if isHook && !arrival.Owner && resolved.Caller.Role == core.RoleMember && resolved.Caller.PrincipalID != nil {
+			if lowered, err = s.publishTurnEndAsk(ctx, tx, arrival.Dir, req.Generation, *resolved.Caller.PrincipalID, true); err != nil {
+				return err
+			}
+		}
 		if isHook && !oneWayHook {
 			return s.addHookAck(ctx, tx, arrival, req, &result)
 		}
 		return nil
 	})
+	if err != nil && lowered {
+		if removeErr := arrival.Dir.Remove(hook.TurnEndAskFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			s.logFailure(removeErr)
+		}
+	}
 	if errors.Is(err, errRefusalRollback) {
 		return result, nil
 	}

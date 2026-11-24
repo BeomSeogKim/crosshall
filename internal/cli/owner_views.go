@@ -105,6 +105,9 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 		if len(r.Channels) == 0 {
 			fmt.Fprintln(w, "No channels.")
 		}
+		if banner := notWokenBanner(r); banner != "" {
+			fmt.Fprintln(w, banner)
+		}
 		hasToken := false
 		for _, ch := range r.Channels {
 			fmt.Fprintf(w, "#%s", ch.Name)
@@ -147,6 +150,13 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 					fmt.Fprint(w, "; open requests:")
 					for _, id := range member.OpenRequests {
 						fmt.Fprintf(w, " #%d", id)
+					}
+				}
+				if stuck := member.UnreadNotWoken; stuck != nil {
+					if stuck.Requests == 1 {
+						fmt.Fprintf(w, "; 1 unread request, %s old", age(stuck.OldestAgeS))
+					} else {
+						fmt.Fprintf(w, "; %d unread requests, oldest %s", stuck.Requests, age(stuck.OldestAgeS))
 					}
 				}
 				if member.DepartToken != "" {
@@ -452,6 +462,35 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 	}
 	_, err := io.WriteString(w, output.String())
 	return err
+}
+
+// notWokenBanner names, above the channels, the members holding unread
+// requests that nothing will tell them about, so the owner finds stuck
+// work without reading each member's line.
+func notWokenBanner(r domain.OwnerWhoResult) string {
+	total := 0
+	var members []string
+	for _, ch := range r.Channels {
+		for _, m := range ch.Members {
+			stuck := m.UnreadNotWoken
+			if stuck == nil {
+				continue
+			}
+			total += stuck.Requests
+			name := fmt.Sprintf("@%s %d", m.Alias, stuck.Requests)
+			if stuck.Requests > 1 {
+				name += " (oldest " + age(stuck.OldestAgeS) + ")"
+			}
+			members = append(members, name)
+		}
+	}
+	switch total {
+	case 0:
+		return ""
+	case 1:
+		return "1 request waits on a member the hall cannot wake: " + members[0] + "."
+	}
+	return fmt.Sprintf("%d requests wait on members the hall cannot wake: %s.", total, strings.Join(members, ", "))
 }
 
 // unknownCauseWords lists the causes of the day's unknown receipts that

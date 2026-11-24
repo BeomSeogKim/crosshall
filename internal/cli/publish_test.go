@@ -226,6 +226,8 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 		{"lyra", none(domain.WhyOff, domain.SeenAtCommand), "not woken: notices off; it sees this at its next crosshall command"},
 		{"recv", capped, "not woken: notice limit until " + clock(until) + "; it sees this at its next prompt"},
 		{"fable", none(domain.WhyHeld, domain.SeenAtPrompt), "not woken: an earlier notice is unobserved; it sees this at its next prompt"},
+		{"later", none(domain.WhyTurnOpen, ""), "not woken: a turn is running; the hall checks again after its turn"},
+		{"busy", none(domain.WhyTurnOpen, domain.SeenAtTurnEnd), "not woken: a turn is running; it sees this when its turn ends"},
 		{"orion", none(domain.WhyKind, domain.SeenAtPrompt), "not woken: this message starts no turn; it sees this at its next prompt"},
 	}
 	var recipients []domain.Delivery

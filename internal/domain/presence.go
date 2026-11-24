@@ -56,6 +56,15 @@ func presenceOf(ctx context.Context, tx store.Tx, principal int64, now time.Time
 	return &o, nil
 }
 
+// inReportedTurn follows the current prompt or permission request. A denied
+// dialog can lose its Stop and an absorbed typed-ahead prompt can leave an
+// unfinished turn row, so the observation's freshness still matters.
+func inReportedTurn(ctx context.Context, tx store.Tx, principal int64, now time.Time) (bool, error) {
+	fact, err := latestFact(ctx, tx, principal)
+	return fact != nil && fact.At(ms(now)).Current &&
+		(fact.Fact == FactPromptSubmitted || fact.Fact == FactApprovalRequested), err
+}
+
 // latestFact is the principal's effective fact: the latest, in causal
 // order, among the observations of its latest launch. Nil means no adapter fact.
 func latestFact(ctx context.Context, tx store.Tx, principal int64) (*ObservedFact, error) {

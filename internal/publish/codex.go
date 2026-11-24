@@ -46,6 +46,11 @@ func (codex) ThreadRouted() bool { return true }
 // Reach: only the managed server takes a queued message for a thread while
 // its terminal client is attached; a client that runs its own server never
 // sees one (#236). The server must also be named, so it can be proven.
+// BackgroundWakes is false: an idle Codex session stays idle when a
+// background command exits, and a wait held in a turn costs a model
+// request at each poll.
+func (codex) BackgroundWakes() bool { return false }
+
 func (codex) Reach(r Route) string {
 	switch {
 	case r.Mode == ModeDaemon && r.Host.PID > 0 && r.Host.StartMS > 0 && filepath.IsAbs(r.Home):
@@ -56,7 +61,11 @@ func (codex) Reach(r Route) string {
 	return CodexDaemonUnverified
 }
 
-const codexSuffix = ". This notice is from crosshall, not from a Codex session: do not reply to the sender. Run crosshall read."
+const codexSuffix = ". This notice is from crosshall, not from a Codex session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
+
+// codexSuffixRC4 is the v0.2.0-rc.4 text: a notice written before an upgrade
+// still counts as a notice when the session receives it after.
+const codexSuffixRC4 = ". This notice is from crosshall, not from a Codex session: do not reply to the sender. Run crosshall read."
 
 func (codex) Notice(ids []int64) (string, bool) {
 	return notice.PendingPrefix + notice.IDList(ids) + codexSuffix, true
@@ -67,7 +76,10 @@ func (codex) Echo(prompt string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return strings.CutSuffix(body, codexSuffix)
+	if ids, ok := strings.CutSuffix(body, codexSuffix); ok {
+		return ids, true
+	}
+	return strings.CutSuffix(body, codexSuffixRC4)
 }
 
 // Transport proves the managed server; it has no sender yet.

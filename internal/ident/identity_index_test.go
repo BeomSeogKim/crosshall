@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/format"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -62,7 +63,9 @@ func renderIdentityIndex(t *testing.T) []byte {
 			t.Fatal(err)
 		}
 		id, v := m.Identity, m.Identity.Version
-		if m.SessionEnv == "" || id.Evidence == "" || v.Env == "" || (v.Indirect == "") != (v.IndirectName == "") {
+		// A vendor may name no version: its sessions record "unknown".
+		noVersion := v.Env == "" && (v.Prefix != "" || v.Until != "" || v.DashesToDots || v.Indirect != "")
+		if m.SessionEnv == "" || id.Evidence == "" || noVersion || (v.Indirect == "") != (v.IndirectName == "") {
 			t.Fatalf("%s: incomplete identity declaration", adapter)
 		}
 		if m.CLIName == "" {
@@ -79,4 +82,51 @@ func renderIdentityIndex(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// A manifest may declare no version source (a vendor that names no version
+// in its sessions' environment, as a new adapter may at first). The index
+// still renders, and such a session's version is "unknown".
+func TestAnIdentityWithoutAVersionSource(t *testing.T) {
+	shipped := map[string][]byte{}
+	for _, adapter := range manifests.Names() {
+		raw, err := manifests.Read(adapter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shipped[adapter] = raw
+	}
+	var codex map[string]any
+	if err := json.Unmarshal(shipped["codex"], &codex); err != nil {
+		t.Fatal(err)
+	}
+	delete(codex["identity"].(map[string]any), "version")
+	edited, err := json.Marshal(codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped["codex"] = edited
+	restore := manifests.SwapReader(func(adapter string) ([]byte, error) { return shipped[adapter], nil })
+	defer restore()
+	if index := renderIdentityIndex(t); !bytes.Contains(index, []byte(`{adapter: "codex", sessionEnv: "CODEX_THREAD_ID"`)) ||
+		!bytes.Contains(index, []byte(`version: versionSource{env: "", prefix: "", until: "", dashesToDots: false, indirect: "", indirectName: ""}`)) {
+		t.Fatalf("index without codex's version source:\n%s", index)
+	}
+
+	saved := identityIndex
+	defer func() { identityIndex = saved }()
+	identityIndex = slices.Clone(saved)
+	for i := range identityIndex {
+		if identityIndex[i].adapter == "codex" {
+			identityIndex[i].version = versionSource{}
+		}
+	}
+	lookup := func(k string) (string, bool) {
+		return map[string]string{"CODEX_THREAD_ID": "t", "CODEX_VERSION": "0.170.0"}[k], k == "CODEX_THREAD_ID" || k == "CODEX_VERSION"
+	}
+	id, err := ResolveEnvironment(lookup)
+	if err != nil || id.Vendor != "codex" || id.Version != "unknown" || id.UnknownCLI() ||
+		id.Warning() != "identity variable unverified on codex unknown" {
+		t.Fatalf("%+v %q %v", id, id.Warning(), err)
+	}
 }

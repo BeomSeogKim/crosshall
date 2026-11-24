@@ -39,7 +39,10 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 		return reg, err
 	}
 	// A conversation a /clear retired may register its directory for a join;
-	// the join itself releases the key, in its own transaction.
+	// the join itself releases the key, in its own transaction. A start
+	// registers an unknown key as a join does, but refuses a retired one as
+	// a lookup does: a resumed conversation that a /clear retired does not
+	// join again at its start.
 	clearedJoin := false
 	if keyState == "retired" {
 		cleared, err := isCleared(ctx, tx, id)
@@ -51,7 +54,7 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 		}
 		clearedJoin = true
 	}
-	if !principal.Valid && hello.Intent != "join" {
+	if !principal.Valid && hello.Intent != "join" && hello.Intent != wire.HelloStart {
 		return reg, &EnvironmentError{core.CodeNotEnrolled, "this session is not in a channel"}
 	}
 
@@ -116,7 +119,7 @@ func RegisterHello(ctx context.Context, tx store.Tx, rendezvous string, hello wi
 }
 
 func helloIdentity(h wire.Hello) (Identity, error) {
-	if h.Version != wire.Version || !validRoute(h.Attempt) || (h.Intent != "join" && h.Intent != "lookup") {
+	if h.Version != wire.Version || !validRoute(h.Attempt) || (h.Intent != "join" && h.Intent != "lookup" && h.Intent != wire.HelloStart) {
 		return Identity{}, fmt.Errorf("invalid first-contact envelope")
 	}
 	id, err := parseVendorKey(h.Vendor, h.Key)

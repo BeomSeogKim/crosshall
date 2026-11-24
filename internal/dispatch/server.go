@@ -142,7 +142,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	var instance [16]byte
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
-		ready: readyMarker{Instance: hex.EncodeToString(instance[:]), Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true}}
+		ready: newReadyMarker(hex.EncodeToString(instance[:]))}
 	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence, stamps: s.applyAdapterStamps,
 		homes: func(adapter string) string { return setup.InstalledConfigDir(cfg.StateRoot, adapter) }}
 	sends := len(publish.Adapters().Senders()) > 0
@@ -400,7 +400,7 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 		atPath, pathErr := root.Lstat(spool.ReadyLeaseFile)
 		sameLease = statErr == nil && pathErr == nil && atPath.Mode() == 0600 && os.SameFile(held, atPath)
 	}
-	if sameLease && readReadyAt(root) == s.ready {
+	if sameLease && readReadyAt(root).same(s.ready) {
 		return nil
 	}
 	if err := root.Remove("ready"); err != nil && !errors.Is(err, os.ErrNotExist) {

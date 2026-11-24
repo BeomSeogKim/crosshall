@@ -56,7 +56,7 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 					if err != nil {
 						return err
 					}
-					if held && cfg.readinessCandidate() == marker && wait.Err() == nil {
+					if held && cfg.readinessCandidate().same(marker) && wait.Err() == nil {
 						return nil
 					}
 				}

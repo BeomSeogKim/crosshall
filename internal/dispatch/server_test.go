@@ -153,7 +153,7 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 		}
 	})
 	first := readReady(cfg.Rendezvous)
-	if spawned, err := cfg.Start(ctx); err != nil || spawned || readReady(cfg.Rendezvous) != first {
+	if spawned, err := cfg.Start(ctx); err != nil || spawned || !readReady(cfg.Rendezvous).same(first) {
 		t.Fatalf("second start must retain the dispatcher: spawned=%t err=%v", spawned, err)
 	}
 	owner := filepath.Join(cfg.StateRoot, "owner")

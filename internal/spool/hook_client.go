@@ -31,7 +31,7 @@ func (c Client) hookRoot(ctx context.Context, id ident.Identity) (*os.Root, erro
 // HookLookup performs exactly one first contact. Only a dispatcher refusal
 // carrying not_enrolled authorizes a subsequent repository default check.
 func (c Client) HookLookup(ctx context.Context, id ident.Identity, intent string) (string, wire.Response, error) {
-	if intent != "lookup" && intent != "join" {
+	if intent != "lookup" && intent != "join" && intent != wire.HelloStart {
 		return "", wire.Response{}, errors.New("invalid hook hello intent")
 	}
 	rv, err := c.hookRoot(ctx, id)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -205,6 +206,19 @@ type readyMarker struct {
 	PID      int    `json:"pid"`
 	Lease    bool   `json:"lease,omitempty"`
 	Probe    bool   `json:"probe,omitempty"`
+	// Hello lists the first-contact intents beyond lookup and join that
+	// this dispatcher accepts. A hook sends one only if it is listed here.
+	Hello []string `json:"hello,omitempty"`
+}
+
+func (r readyMarker) same(o readyMarker) bool {
+	return r.Instance == o.Instance && r.Version == o.Version && r.PID == o.PID &&
+		r.Lease == o.Lease && r.Probe == o.Probe && slices.Equal(r.Hello, o.Hello)
+}
+
+func newReadyMarker(instance string) readyMarker {
+	return readyMarker{Instance: instance, Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true,
+		Hello: []string{wire.HelloStart}}
 }
 
 func (r readyMarker) live(state *os.Root) bool {

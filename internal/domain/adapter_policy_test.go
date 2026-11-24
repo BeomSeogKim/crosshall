@@ -68,9 +68,20 @@ func TestAdapterPolicyRefusesNonOwnerAndInvalidRequests(t *testing.T) {
 	wantCode(t, f.owner(set, ""), core.ExitUsage, "")
 	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "unknown", Enabled: &on}}, "unknown-adapter"),
 		core.ExitUsage, "")
-	publish := "on"
-	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", Publish: &publish}}, "agy-publish"),
-		core.ExitUsage, "")
+	switchOn := "on"
+	for _, c := range []struct {
+		args wire.AdapterPolicyArgs
+		want string
+	}{
+		{wire.AdapterPolicyArgs{Adapter: "agy", Publish: &switchOn}, "Antigravity has no publish adapter"},
+		{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &switchOn}, "Antigravity has no turn-end check"},
+	} {
+		r := f.owner(AdapterSet{c.args}, c.want)
+		wantCode(t, r, core.ExitUsage, "")
+		if got := decode[Refusal](t, r).Message; got != c.want {
+			t.Errorf("refusal %q, want %q", got, c.want)
+		}
+	}
 	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude"}}, "no-options"), core.ExitUsage, "")
 	if n := f.count(`SELECT count(*) FROM adapter_policy`); n != 0 {
 		t.Fatalf("refusals left %d policy rows", n)

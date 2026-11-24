@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Adapter policy reads the manifest:** `crosshall owner adapter set` refuses `--publish on` for an adapter with no publish adapter and `--turn-end on` for one whose manifest installs no turn-end event, instead of testing the name `agy`; the refusal takes the adapter's display name from its manifest. Each manifest now declares a display name and, for Claude Code, the prior revisions `claude-1` and `claude-2` with what the core derives for them. Output and behavior are unchanged.
 - **Cross-vendor conformance:** real Claude Code and Codex CLI sessions each ask and answer across one disposable hall using loopback models. The check exercises Codex's next-prompt line and a running Claude Code wait.
 
 ## v0.2.0 (2026-11-24)

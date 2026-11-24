@@ -1,5 +1,6 @@
 {
   "adapter": "codex",
+  "display_name": "Codex",
   "revision": "codex-1",
   "event_field": "hook_event_name",
   "session_field": "session_id",

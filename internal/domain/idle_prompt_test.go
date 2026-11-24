@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -122,8 +123,9 @@ func TestIdlePromptEndsThePlaceholderSoTheNextTurnIsItsOwn(t *testing.T) {
 	}
 }
 
-// Only an unknown suspension committed before the idle fact ends at it: a
-// later one, and an absorbed or not-submitted one, keep their terms.
+// Only an unknown suspension of the idle fact's launch committed before the
+// fact ends at it: a later one, an absorbed or not-submitted one, and one
+// of another launch keep their terms.
 func TestIdlePromptLiftsOnlyAnUnknownSuspensionOlderThanIt(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
@@ -133,10 +135,12 @@ func TestIdlePromptLiftsOnlyAnUnknownSuspensionOlderThanIt(t *testing.T) {
 		reason string
 		at     int64
 		until  any
-	}{{"unknown", t0, until}, {"unknown", t0 + 20_000, until}, {"absorbed", t0, until}, {"not_submitted", t0, until},
-		{"unknown", t0 + 1, nil}} {
+		launch string
+	}{{"unknown", t0, until, publishTestLaunch}, {"unknown", t0 + 20_000, until, publishTestLaunch},
+		{"absorbed", t0, until, publishTestLaunch}, {"not_submitted", t0, until, publishTestLaunch},
+		{"unknown", t0 + 1, nil, publishTestLaunch}, {"unknown", t0 + 2, until, "an-older-launch"}} {
 		p.mutate(`INSERT INTO publish_suspension (binding_id, launch_ref, reason, notice, at_ms, until_ms)
-			VALUES (?, ?, ?, 0, ?, ?)`, p.binding.ID, publishTestLaunch, s.reason, s.at, s.until)
+			VALUES (?, ?, ?, 0, ?, ?)`, p.binding.ID, s.launch, s.reason, s.at, s.until)
 	}
 	p.now = p.now.Add(30 * time.Second)
 	p.hook(p.reader, idlePrompt(publishTestLaunch, t0+10_000))
@@ -155,7 +159,8 @@ func TestIdlePromptLiftsOnlyAnUnknownSuspensionOlderThanIt(t *testing.T) {
 		}
 		got = append(got, fmt.Sprintf("%s+%d:%t", reason, at-t0, end.Int64 == p.now.UnixMilli()))
 	}
-	want := []string{"unknown+0:true", "unknown+20000:false", "absorbed+0:false", "not_submitted+0:false", "unknown+1:true"}
+	want := []string{"unknown+0:true", "unknown+20000:false", "absorbed+0:false", "not_submitted+0:false", "unknown+1:true",
+		"unknown+2:false"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("suspensions after the idle fact %v, want %v (reason+at:lifted)", got, want)
 	}
@@ -234,5 +239,126 @@ func TestIdlePromptLeavesPresenceAsItWas(t *testing.T) {
 	}
 	if n := f.count(`SELECT COUNT(*) FROM roster_change`); n != changes {
 		t.Fatalf("the idle fact recorded %d roster changes", n-changes)
+	}
+}
+
+// The idle rule counts a notice as the session's own turn only while
+// nothing but commands and idle reports came after the last idle report:
+// a turn and activity after its Stop leave the notice unknown, as without
+// an idle report.
+func TestIdlePromptCountsOnlyUntilTheNextActivity(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.finishPreviousTurn()
+	at := p.now.UnixMilli()
+	p.hook(p.reader, idlePrompt(publishTestLaunch, at+30))
+	ask := p.turnEndAsk(p.writer, "reader", "after a turn that followed the idle report")
+	id := p.reserve()
+	if id == 0 || !slices.Equal(p.begin(id), []int64{ask}) {
+		t.Fatal("reservation did not start")
+	}
+	p.resolve(id, PublishSubmitted)
+	p.hook(p.reader, prompt(publishTestLaunch, "user", at+40))
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+50))
+	p.hook(p.reader, event(publishTestLaunch, FactApprovalRequested, "other:approval", "other", at+60, false))
+	p.hook(p.reader, p.promptReceipt("notice", publishTestLaunch, at+100, []int64{ask}))
+	p.unknownCause(id, "activity_since_stop")
+}
+
+func execArgs(f *fixture, statement string, args ...any) {
+	f.t.Helper()
+	if _, err := f.db.Exec(statement, args...); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// An idle report is accepted only from a live member's current launch that
+// is verified, not fenced, started by the report's time, and not ahead of
+// the dispatcher's clock. Anything else is dropped and closes nothing.
+func TestIdlePromptIsDroppedUnlessItsLaunchIsCurrent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		before func(f *fixture, principal int64)
+		at     func(t0 int64) int64
+	}{
+		{"unverified launch", func(f *fixture, principal int64) {
+			execArgs(f, `UPDATE adapter_launch SET verified = 0 WHERE principal_id = ?`, principal)
+		}, nil},
+		{"fenced launch", func(f *fixture, principal int64) {
+			execArgs(f, `UPDATE adapter_launch SET fenced = 1 WHERE principal_id = ?`, principal)
+		}, nil},
+		{"member not live", func(f *fixture, principal int64) {
+			execArgs(f, `UPDATE binding SET state = 'departed', departed_at_ms = ? WHERE principal_id = ?`, f.now.UnixMilli(), principal)
+		}, nil},
+		{"before the launch started", nil, func(t0 int64) int64 { return t0 - 1 }},
+		{"ahead of the clock", nil, func(int64) int64 { return 0 }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, _ := adapterChannel(t)
+			member := f.newSession("claude")
+			t0 := f.now.UnixMilli()
+			f.hook(member, start("pid-1", "startup", t0))
+			principal := *f.caller(member).PrincipalID
+			f.absorbTypedPrompt(member, "pid-1", "tool", t0+1)
+			f.now = time.UnixMilli(t0 + 60_000)
+			at := t0 + 60_000
+			if c.at != nil {
+				at = c.at(t0)
+			}
+			if at == 0 {
+				at = f.now.UnixMilli() + 60_000 // past futureSlackMS; the fixture's clock stays
+			}
+			if c.before != nil {
+				c.before(f, principal)
+			}
+			f.hook(member, idlePrompt("pid-1", at))
+			if n := f.count(`SELECT COUNT(*) FROM observation WHERE kind = 'idle_prompt'`); n != 0 {
+				t.Fatalf("%d idle reports stored", n)
+			}
+			if n := f.openPlaceholders(principal, "pid-1"); n != 1 {
+				t.Fatalf("%d open placeholders, want the absorbed prompt's one", n)
+			}
+		})
+	}
+}
+
+// An idle report closes typed-ahead placeholders only: a real turn whose
+// Stop was lost stays open.
+func TestIdlePromptLeavesARealTurnOpen(t *testing.T) {
+	f, _ := adapterChannel(t)
+	member := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(member, start("pid-1", "startup", t0))
+	principal := *f.caller(member).PrincipalID
+	f.hook(member, prompt("pid-1", "lost-stop", t0+1))
+	f.now = time.UnixMilli(t0 + 60_000)
+	f.hook(member, idlePrompt("pid-1", t0+60_000))
+	if f.count(`SELECT COUNT(*) FROM observation WHERE kind = 'idle_prompt'`) != 1 {
+		t.Fatal("the idle report was not stored")
+	}
+	if n := f.count(`SELECT COUNT(*) FROM turn WHERE principal_id = ? AND turn_ref = 'lost-stop'
+		AND finishing_hook_at_ms IS NULL`, principal); n != 1 {
+		t.Fatal("the idle report closed a real turn")
+	}
+}
+
+// An idle report names no turn and carries no notice receipt; one that
+// does is refused and stores nothing.
+func TestIdlePromptWithATurnOrAReceiptIsRefused(t *testing.T) {
+	f, _ := adapterChannel(t)
+	member := f.newSession("claude")
+	t0 := f.now.UnixMilli()
+	f.hook(member, start("pid-1", "startup", t0))
+	withTurn := idlePrompt("pid-1", t0+1)
+	withTurn.TurnRef = "turn"
+	withReceipt := idlePrompt("pid-1", t0+2)
+	withReceipt.Receipt = "receipt"
+	for _, cmd := range []HookEvent{withTurn, withReceipt} {
+		if r := f.hookResult(member, cmd); r.Status != core.ExitUsage {
+			t.Fatalf("%+v: status %d, want usage", cmd.HookEventArgs, r.Status)
+		}
+	}
+	if n := f.count(`SELECT COUNT(*) FROM observation WHERE kind = 'idle_prompt'`); n != 0 {
+		t.Fatalf("%d idle reports stored", n)
 	}
 }

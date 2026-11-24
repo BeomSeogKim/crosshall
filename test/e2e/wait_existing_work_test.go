@@ -38,8 +38,10 @@ func awaitWorkWait(t *testing.T, child <-chan waitExit, reason string) waitMail 
 	}
 }
 
-// Watch a private fixture's mail leaf for the first query response. A change
-// persists even after the wait process reads and removes the response file.
+// Watch a private fixture's mail leaf until the wait has read its first query
+// response. The dispatcher stages a response inside out before renaming it,
+// so a change alone can precede the response; the wait removes the file it
+// read, which leaves out changed and empty.
 func startWaitAfterInitialQuery(t *testing.T, member *participant, args ...string) <-chan waitExit {
 	t.Helper()
 	_, child := startWaitProcessAfterInitialQuery(t, member, args...)
@@ -63,13 +65,20 @@ func startWaitProcessAfterInitialQuery(t *testing.T, member *participant, args .
 		case result := <-child:
 			t.Fatalf("wait exited before its first empty snapshot: %v, stdout %q, stderr %q", result.err, result.stdout, result.stderr)
 		case <-timer.C:
-			t.Fatalf("wait never published its first query response in %s", path)
+			t.Fatalf("wait never read its first query response in %s", path)
 		case <-tick.C:
 			after, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !after.ModTime().Equal(before.ModTime()) {
+			if after.ModTime().Equal(before.ModTime()) {
+				continue
+			}
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) == 0 {
 				return process, child
 			}
 		}

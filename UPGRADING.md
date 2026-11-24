@@ -9,10 +9,14 @@ Upgrading from v0.2.0-rc.3 moves the database from schema 22 to schema 26. Migra
 1. Stop your agents' crosshall commands, including any background `crosshall wait`.
 2. Run `crosshall owner stop`.
 3. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v22-*.sqlite3` backup beside the database.
-4. Install the new release using the [README](README.md#quick-start) clone command.
+4. Install the new release using the [README](README.md#quick-start) clone command. On a machine without Go, see the installer instructions in step 3 of the v0.2.0-rc.1 upgrade below.
 5. Run `crosshall owner start`. Set `CROSSHALL_NOTIFY=off` in its environment if you want no desktop notifications.
 
 To roll back, stop the new dispatcher, restore the schema 22 database from your pre-upgrade copy and restart the v0.2.0-rc.3 binary. Restoring the copy discards messages and other changes made since the upgrade.
+
+Sessions need no new start, and the hooks need not be installed again. A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`. The usage statistics question is not asked again: your answer stays, and reports now use registry 2, which adds the `send.wake` counts. See [telemetry](docs/telemetry.md).
+
+Some output that a script may read has changed. For each recipient, a send result now says `stored -> notice queued`, `stored -> its wait is running` or `stored -> not woken: <reason>` and where the recipient sees the message; it used to say `notice queued` or `waits for its next crosshall command`. `crosshall who` ends a member's line with `woken by a notice`, `woken by its wait` or `not woken: <reason>`, where it said `pull` or the route's state. In JSON nothing is removed: each delivery of a send result gains `wake`, `why`, `seen_at` and `until_ms`, and its `next` can be `its wait is running`. `crosshall wait` can end with exit code 1 and the error code `wait_host_gone` when the agent process it names has ended. A failed `crosshall owner start` now begins `owner start failed:`.
 
 An unknown notice receipt suspends its session's notices for 30 minutes. If an older dispatcher made an unknown suspension last until the session ended, the new dispatcher treats it as expiring 30 minutes after it was recorded. A session that already received the old reach-loss line gets the owner resume command at its next prompt while the suspension is in effect.
 

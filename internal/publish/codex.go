@@ -96,7 +96,9 @@ func (codex) Echo(prompt string) (string, bool) {
 // Transport proves the managed server and queues notices on it. Retired
 // stays nil: the server's exit does not retire a queued notice, which
 // survives in the home and runs when the thread is next loaded (C10).
-func (codex) Transport() Transport { return Transport{Prove: proveCodexServer, Send: sendCodex} }
+func (codex) Transport() Transport {
+	return Transport{Prove: proveCodexServer, Send: sendCodex, Withdraw: withdrawCodex}
+}
 
 // codexControlSocket is the managed server's control socket in its home.
 var codexControlSocket = filepath.Join("app-server-control", "app-server-control.sock")
@@ -158,29 +160,44 @@ func proveCodexServer(_ context.Context, probe Probe) (Proven, bool) {
 	if probe.Route.Home != home {
 		return Proven{}, false
 	}
+	startedAt, ok := codexServer(home, host)
+	if !ok {
+		return Proven{}, false
+	}
+	return Proven{Queue: host, StartedAtMS: startedAt}, true
+}
+
+// codexServer reports whether host runs as the managed server of home
+// (with links resolved), and its wall-clock start: the same process by PID
+// and start identity, run from the home's release tree with the managed
+// server's arguments. A variable so tests can stand in a server.
+var codexServer = func(home string, host Queue) (startedAtMS int64, ok bool) {
+	if host.PID <= 1 || host.PID > math.MaxInt32 || host.StartMS <= 0 {
+		return 0, false
+	}
 	start, err := proc.StartOf(int(host.PID))
 	if err != nil || start.AtMS <= 0 {
-		return Proven{}, false
+		return 0, false
 	}
 	exe, args, err := proc.Command(int(host.PID))
 	if err != nil || len(args) == 0 {
-		return Proven{}, false
+		return 0, false
 	}
 	rel, err := filepath.Rel(filepath.Join(home, codexReleases), realPath(exe))
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
-		return Proven{}, false
+		return 0, false
 	}
 	for _, want := range codexServerArgs {
 		if !slices.Contains(args[1:], want) {
-			return Proven{}, false
+			return 0, false
 		}
 	}
 	// Start and command were read by PID: after both, the process must
 	// still be the one the start named.
 	if !proc.ProcessAlive(host.PID, host.StartMS) {
-		return Proven{}, false
+		return 0, false
 	}
-	return Proven{Queue: host, StartedAtMS: start.AtMS}, true
+	return start.AtMS, true
 }
 
 // realPath resolves symbolic links where it can, as the hook does: a home
@@ -190,4 +207,79 @@ func realPath(p string) string {
 		return real
 	}
 	return filepath.Clean(p)
+}
+
+// codexListPages bounds the queue pages one withdrawal reads.
+const codexListPages = 8
+
+// withdrawCodex takes a queued notice back. The server it was written to
+// may be gone (its queue survives in the home), so it proves whichever
+// process listens on the home's control socket as that home's managed
+// server, lists the thread's queue, and deletes each item tagged with the
+// attempt's identity.
+func withdrawCodex(ctx context.Context, target Target) Withdrawal {
+	if !filepath.IsAbs(target.Home) || target.Address == "" || target.Attempt == "" {
+		return Unreachable
+	}
+	home := realPath(target.Home)
+	socket, err := filepath.EvalSymlinks(filepath.Join(home, codexControlSocket))
+	if err != nil {
+		return Unreachable
+	}
+	conn, peer, err := proc.DialSocketPeer(ctx, socket)
+	if err != nil {
+		return Unreachable
+	}
+	conn.Close()
+	server := Queue{PID: peer.PID, StartMS: peer.Identity}
+	if _, ok := codexServer(home, server); !ok {
+		return Unreachable
+	}
+	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: server.PID, Start: server.StartMS})
+	if err != nil {
+		return Unreachable
+	}
+	defer c.Close()
+	var tagged []string
+	cursor := ""
+	for range codexListPages {
+		params := map[string]any{"threadId": target.Address}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		var page struct {
+			Data []struct {
+				ID                  string `json:"id"`
+				ClientUserMessageID string `json:"clientUserMessageId"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := c.Call("thread/queue/list", params, &page); err != nil {
+			return Unreachable
+		}
+		for _, item := range page.Data {
+			if item.ClientUserMessageID == target.Attempt && item.ID != "" {
+				tagged = append(tagged, item.ID)
+			}
+		}
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if cursor != "" {
+		return Unreachable // the queue is longer than a withdrawal reads
+	}
+	result := NotPending
+	for _, id := range tagged {
+		var res struct {
+			Deleted bool `json:"deleted"`
+		}
+		if err := c.Call("thread/queue/delete", map[string]any{"threadId": target.Address, "queuedSubmissionId": id}, &res); err != nil {
+			return Unreachable
+		}
+		if res.Deleted {
+			result = Deleted
+		}
+	}
+	return result
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -35,6 +36,10 @@ type publisher struct {
 	due              map[domain.PublishBinding]time.Time
 	working          sync.Map
 	retiring         sync.Map
+	// withdrawing guards one withdrawal per attempt: zero while one runs,
+	// then the time it may be tried again; a notice found not pending is
+	// left to its receipt for the rest of this start.
+	withdrawing sync.Map
 	// proving guards one proof per route: zero while one runs, then the
 	// time a failed proof may be retried (publishProveRetry).
 	proving sync.Map
@@ -124,6 +129,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	next := make(map[domain.PublishBinding]time.Time)
 	var attempts []int64
 	var queues []domain.HeldPublishQueue
+	var withdrawals []domain.WithdrawCandidate
 	var proofs []domain.PublishProof
 	// What the tick's resume pass found, applied only once it commits: a
 	// rolled-back attempt ID may be given to another attempt.
@@ -209,6 +215,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if err == nil {
 			queues, err = domain.HeldPublishQueues(ctx, tx)
 		}
+		if err == nil {
+			withdrawals, err = domain.WithdrawCandidates(ctx, tx)
+		}
 		return err
 	})
 	if err != nil {
@@ -283,8 +292,84 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		// the callback itself returns, so a stuck probe is never doubled.
 		p.workers.Go(func() { p.retire(ctx, held.Queue, retired, func() { p.retiring.Delete(held.Queue) }) })
 	}
+	// Forget the attempts that are no longer candidates (settled by a
+	// receipt or a withdrawal); a running withdrawal keeps its guard.
+	candidate := make(map[int64]bool, len(withdrawals))
+	for _, c := range withdrawals {
+		candidate[c.ID] = true
+	}
+	p.withdrawing.Range(func(key, value any) bool {
+		if !candidate[key.(int64)] && !value.(time.Time).IsZero() {
+			p.withdrawing.CompareAndDelete(key, value)
+		}
+		return true
+	})
+	for _, c := range withdrawals {
+		withdraw := p.transport(c.Target.Adapter).Withdraw
+		if withdraw == nil || p.homes == nil {
+			continue
+		}
+		// Only through the home setup installed the hooks into, and only
+		// the one the notice's lane names.
+		c.Target.Home = p.homes(c.Target.Adapter)
+		if home, err := filepath.EvalSymlinks(c.Target.Home); err != nil || home != c.LaneHome {
+			continue
+		}
+		if after, seen := p.withdrawing.LoadOrStore(c.ID, time.Time{}); seen {
+			if retry := after.(time.Time); retry.IsZero() || now.Before(retry) {
+				continue // a withdrawal runs, waits to retry, or found it not pending
+			}
+		}
+		p.withdrawing.Store(c.ID, time.Time{})
+		p.workers.Go(func() { p.withdraw(ctx, c, withdraw, now) })
+	}
 	return nil
 }
+
+// withdraw takes back a notice that should not run, and settles it only
+// when the transport proves it deleted. Not pending, it is left to its
+// receipt, and the held-notice backstop, for the rest of this start;
+// unreachable, it is tried again after publishProveRetry.
+func (p *publisher) withdraw(ctx context.Context, c domain.WithdrawCandidate,
+	withdraw func(context.Context, domain.PublishTarget) publish.Withdrawal, at time.Time) {
+	retry := at.Add(publishProveRetry)
+	release := func() { p.withdrawing.Store(c.ID, retry) }
+	call, cancel := context.WithTimeout(ctx, cmp.Or(p.timeout, publishTimeout))
+	defer cancel()
+	if call.Err() != nil {
+		release()
+		return
+	}
+	got, ok := bounded(call, cmp.Or(p.abandon, publishTimeout), func() publish.Withdrawal {
+		return withdraw(call, c.Target)
+	}, nil)
+	switch {
+	case !ok || call.Err() != nil || got == publish.Unreachable:
+		release()
+	case got == publish.NotPending:
+		p.withdrawing.Store(c.ID, maxTime)
+	case got == publish.Deleted:
+		record, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
+		defer cancelRecord()
+		err := p.db.Update(record, func(tx store.Tx) error {
+			if err := domain.WithdrawPublishAttempt(record, tx, c.ID, c.Reason, time.Now()); err != nil {
+				return err
+			}
+			return p.applyStamps(record, tx)
+		})
+		logPublishFailure(err)
+		if err != nil {
+			release()
+		} else {
+			p.withdrawing.Delete(c.ID)
+		}
+	default:
+		release()
+	}
+}
+
+// maxTime is a retry time no tick reaches.
+var maxTime = time.Unix(1<<62, 0)
 
 func (p *publisher) submit(ctx context.Context, id int64) {
 	var target domain.PublishTarget

@@ -70,7 +70,8 @@ func rosterOf(t *testing.T, r wire.HookResult) []Member {
 
 func (f *fixture) hookResult(s session, cmd Command) core.Result {
 	c := f.caller(s)
-	req := Request{Command: cmd, Vendor: s.vendor, OpKey: hookKey(cmd)}
+	req := Request{Command: cmd, Vendor: s.vendor, OpKey: hookKey(cmd),
+		Adapter: &AdapterContext{Generation: "g1", OfferReceipts: f.offerReceipts}}
 	if c.Role == core.RoleUnenrolled {
 		req.Enroll = enroll(s)
 	}

@@ -20,6 +20,16 @@ type Caller struct {
 	Role        Role
 	PrincipalID *int64
 	BindingID   *int64
+	Membership  *Membership
+}
+
+type Membership struct {
+	BindingID  int64 `json:"binding_id"`
+	Generation int64 `json:"generation"`
+}
+
+func (m Membership) Valid() bool {
+	return m.BindingID == 0 && m.Generation == 0 || m.BindingID > 0 && m.Generation > 0
 }
 
 // Clock supplies the current time to a command handler.
@@ -42,25 +52,26 @@ const (
 type Code string
 
 const (
-	CodeUnknownAlias     Code = "unknown_alias"
-	CodeDeparted         Code = "departed"
-	CodeNotFound         Code = "not_found"
-	CodeArchived         Code = "archived"
-	CodeEachRequired     Code = "each_required"
-	CodeRoundLimit       Code = "round_limit"
-	CodeTooManyRequests  Code = "too_many_requests"
-	CodeAudienceTooLarge Code = "audience_too_large"
-	CodeRetired          Code = "retired"
-	CodeBadRoot          Code = "bad_root"
-	CodeNotObligated     Code = "not_obligated"
-	CodeAlreadySettled   Code = "already_settled"
-	CodeCancelled        Code = "cancelled"
-	CodeKeyConflict      Code = "key_conflict"
-	CodeKeyInUse         Code = "key_in_use"
-	CodeAliasTaken       Code = "alias_taken"
-	CodeOneChannel       Code = "one_channel"
-	CodeOwnerOnly        Code = "owner_only"
-	CodeChannelExists    Code = "channel_exists"
+	CodeUnknownAlias      Code = "unknown_alias"
+	CodeDeparted          Code = "departed"
+	CodeNotFound          Code = "not_found"
+	CodeArchived          Code = "archived"
+	CodeEachRequired      Code = "each_required"
+	CodeRoundLimit        Code = "round_limit"
+	CodeTooManyRequests   Code = "too_many_requests"
+	CodeAudienceTooLarge  Code = "audience_too_large"
+	CodeRetired           Code = "retired"
+	CodeBadRoot           Code = "bad_root"
+	CodeNotObligated      Code = "not_obligated"
+	CodeAlreadySettled    Code = "already_settled"
+	CodeCancelled         Code = "cancelled"
+	CodeKeyConflict       Code = "key_conflict"
+	CodeKeyInUse          Code = "key_in_use"
+	CodeAliasTaken        Code = "alias_taken"
+	CodeOneChannel        Code = "one_channel"
+	CodeMoveNoticePending Code = "move_notice_pending"
+	CodeOwnerOnly         Code = "owner_only"
+	CodeChannelExists     Code = "channel_exists"
 
 	CodeNotEnrolled      Code = "not_enrolled"
 	CodeBindingAmbiguous Code = "binding_ambiguous"
@@ -78,9 +89,10 @@ const (
 // Result is the command outcome shared by the handler, dispatcher and CLI.
 // Data is the command-specific JSON, which the CLI renders for either output mode.
 type Result struct {
-	Status ExitCode        `json:"status"`
-	Code   Code            `json:"code"`
-	Data   json.RawMessage `json:"data"`
+	Status     ExitCode        `json:"status"`
+	Code       Code            `json:"code"`
+	Data       json.RawMessage `json:"data"`
+	Membership *Membership     `json:"membership,omitempty"`
 	// JoinHintAcked is current delivery metadata, populated after operation replay.
 	JoinHintAcked bool `json:"join_hint_acked,omitempty"`
 	// OwnerAlerts are the lines about round stops an owner command shows

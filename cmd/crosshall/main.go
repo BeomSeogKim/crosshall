@@ -243,8 +243,8 @@ func serve(paths statePaths, pathErr error) int {
 			Handle: &domain.Service{Clock: clock, RestoreKey: ident.RestoreKey, LaunchAlive: ident.LaunchAlive,
 				LaunchProcess: ident.LaunchProcess, LaunchPIDNamespace: proc.PIDNamespace, ProcessGone: proc.ProcessGone, ProcessAlive: proc.ProcessAlive,
 				HasPromptLine: hook.HasPromptLine, HasSessionEnd: hook.HasSessionEnd,
-				LeafReceipts: func(vendor, key, fileID, generation string) (uint64, uint64) {
-					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation)
+				LeafReceipts: func(vendor, key, fileID, generation string, membership ...core.Membership) (uint64, uint64) {
+					return ident.LeafReceipts(paths.rendezvous, ident.Identity{Vendor: vendor, Key: key}, fileID, generation, membership...)
 				}},
 			Hello: func(ctx context.Context, tx store.Tx, raw []byte) (core.Result, func() error, error) {
 				var hello wire.Hello

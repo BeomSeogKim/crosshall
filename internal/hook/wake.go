@@ -26,11 +26,19 @@ const StatePolicyName = "hook-policy"
 
 // startDeadline bounds an enrolling callback that found the dispatcher
 // stopped, from its entry to its return: it waits for the start so the
-// session joins in this callback, keeping a full Budget for the enrolment
-// itself. It stays inside the 1 s timeout the manifests install.
+// session joins in this callback, keeping at least the ordinary Budget for
+// the enrolment itself (afterStart). It stays inside the 1 s timeout the
+// manifests install.
 const startDeadline = 800 * time.Millisecond
 
 const startWait = startDeadline - Budget - 2*logAllowance
+
+// afterStart is the budget of a callback that started the dispatcher at
+// entry, having entered at began: what is left of startDeadline, at most
+// budget.
+func afterStart(began, entry time.Time, budget time.Duration) time.Duration {
+	return min(budget, began.Add(startDeadline-2*logAllowance).Sub(entry))
+}
 
 // spawnWait is what any other callback gives a start: enough to launch the
 // process, which goes on starting by itself.
@@ -48,11 +56,8 @@ const (
 	startFailedName = "hook-start-failed"
 )
 
-// wake starts a stopped dispatcher when the adapter policy is on. It
-// returns the entry time the callback continues from: a fresh one after an
-// enrolling callback's start succeeded, with the state root for its log
-// line, else the original. A failed start
-// is written to dispatcher.log and the callback goes on as before.
+// wake returns a fresh execution budget and the state root after a successful
+// enrolling start. The hook still dates its requests to when it entered.
 func wake(entry time.Time, args []string, locate func() (Paths, error)) (time.Time, string) {
 	m, ok := loadManifest(args[0])
 	spec, known := m.event(args[1])

@@ -246,6 +246,9 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	}
 	// The clean stamp and the quiet Stop both publish without a round trip.
 	c.fireAndRecord("UserPromptSubmit", wire.HookPromptSubmitted, map[string]any{"prompt_id": "p5"})
+	if got := c.lastCounter(); got != "UserPromptSubmit clean" {
+		t.Fatalf("prompt after eleventh ID used %q, want the clean path", got)
+	}
 	c.fireAndRecord("Stop", wire.HookTurnFinishing, map[string]any{"prompt_id": "p5", "stop_hook_active": false})
 	// A second replay of every callback that carries a native reference
 	// prints nothing and changes nothing but the record of the replayed

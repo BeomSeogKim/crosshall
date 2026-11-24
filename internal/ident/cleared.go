@@ -22,8 +22,9 @@ import (
 func retiredKey(ctx context.Context, tx store.Tx, id Identity, retired string) error {
 	var alias, channel string
 	err := tx.QueryRowContext(ctx, `SELECT b.alias, c.name FROM principal_key k
-		JOIN binding b ON b.principal_id = k.principal_id JOIN channel c ON c.id = b.channel_id
-		WHERE k.vendor = ? AND k.key = ? AND k.retired_by = 'clear' ORDER BY b.id LIMIT 1`,
+		JOIN member_selection s ON s.principal_id = k.principal_id
+		JOIN binding b ON b.id = s.binding_id JOIN channel c ON c.id = b.channel_id
+		WHERE k.vendor = ? AND k.key = ? AND k.retired_by = 'clear'`,
 		id.Vendor, id.Key).Scan(&alias, &channel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &EnvironmentError{core.CodeKeyRetired, retired}
@@ -49,6 +50,10 @@ func isCleared(ctx context.Context, tx store.Tx, id Identity) (bool, error) {
 // over.
 func (r SQLResolver) clearedJoin(ctx context.Context, tx store.Tx, rendezvous string, id Identity, proof Proof, fileID string, old int64) (Resolution, bool, error) {
 	if cleared, err := isCleared(ctx, tx, id); err != nil || !cleared {
+		return Resolution{}, false, err
+	}
+	selected, err := SelectedMembership(ctx, tx, old)
+	if err != nil {
 		return Resolution{}, false, err
 	}
 	clock := r.Clock
@@ -105,7 +110,7 @@ func (r SQLResolver) clearedJoin(ctx context.Context, tx store.Tx, rendezvous st
 		}
 		return generation, nil
 	}
-	return Resolution{Caller: core.Caller{Role: core.RoleUnenrolled}, Vendor: id.Vendor, Key: id.Key,
+	return Resolution{Caller: core.Caller{Role: core.RoleUnenrolled, Membership: &selected}, Vendor: id.Vendor, Key: id.Key,
 		Enroll: enroll, AfterCommit: after}, true, nil
 }
 
@@ -160,7 +165,7 @@ func publishGeneration(leaf *os.Root, generation string, wait bool) error {
 	}
 	// Both receipts hold roster cursors of the old membership: the
 	// acknowledged one and the one with the rules (spool.RulesReceipt).
-	for _, receipt := range []string{"ack", "rules"} {
+	for _, receipt := range []string{"ack", "rules", "ack-move", "rules-move"} {
 		if err := leaf.Remove(receipt); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -176,7 +181,7 @@ func publishGeneration(leaf *os.Root, generation string, wait bool) error {
 // It reads them only from the registered directory (fileID) carrying the
 // committed generation; otherwise, and for a missing or unreadable receipt,
 // it reads 0.
-func LeafReceipts(rendezvous string, id Identity, fileID, generation string) (cursor, rules uint64) {
+func LeafReceipts(rendezvous string, id Identity, fileID, generation string, memberships ...core.Membership) (cursor, rules uint64) {
 	members, err := openMembers(rendezvous)
 	if err != nil {
 		return 0, 0
@@ -193,31 +198,32 @@ func LeafReceipts(rendezvous string, id Identity, fileID, generation string) (cu
 	if gen, err := ReadPrivateFile(leaf, "gen", 4096); err != nil || strings.TrimSpace(string(gen)) != generation {
 		return 0, 0
 	}
-	read := func(name string) uint64 {
-		data, err := ReadPrivateFile(leaf, name, 32)
-		if err != nil {
-			return 0
-		}
-		n, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-		return n
-	}
-	pendingCursor, pendingRules := PendingReceipt(leaf, generation)
-	return max(read("ack"), pendingCursor), max(read("rules"), pendingRules)
+	membership := receiptMembership(memberships)
+	cursor, _ = ReadRosterReceipt(leaf, "ack", membership)
+	rules, _ = ReadRosterReceipt(leaf, "rules", membership)
+	pendingCursor, pendingRules := PendingReceipt(leaf, generation, membership)
+	return max(cursor, pendingCursor), max(rules, pendingRules)
 }
 
 // pendingReceipt names the file holding receipts a renderer could not record
 // under the directory lock in time, for the generation it names; the lock
 // does not guard it, and the dispatcher applies it with the next request.
-func pendingReceipt(generation string) string { return "pending-" + generation }
+func pendingReceipt(generation string, memberships ...core.Membership) string {
+	membership := receiptMembership(memberships)
+	if membership.Generation > 1 {
+		return fmt.Sprintf("pending-%s-%d-%d", generation, membership.BindingID, membership.Generation)
+	}
+	return "pending-" + generation
+}
 
 // PendingReceipt reads the receipts left pending for generation: the roster
 // cursor and the cursor with the rules. A missing or unreadable record reads
 // as 0.
-func PendingReceipt(leaf *os.Root, generation string) (cursor, rules uint64) {
+func PendingReceipt(leaf *os.Root, generation string, memberships ...core.Membership) (cursor, rules uint64) {
 	if !validRoute(generation) {
 		return 0, 0
 	}
-	data, err := ReadPrivateFile(leaf, pendingReceipt(generation), 64)
+	data, err := ReadPrivateFile(leaf, pendingReceipt(generation, memberships...), 64)
 	if err != nil {
 		return 0, 0
 	}
@@ -229,13 +235,13 @@ func PendingReceipt(leaf *os.Root, generation string) (cursor, rules uint64) {
 
 // LeavePendingReceipt records receipts for generation without the directory
 // lock, keeping the larger of what is there and what is given.
-func LeavePendingReceipt(leaf *os.Root, generation string, cursor, rules uint64) error {
+func LeavePendingReceipt(leaf *os.Root, generation string, cursor, rules uint64, memberships ...core.Membership) error {
 	if !validRoute(generation) {
 		return fmt.Errorf("invalid generation")
 	}
-	c, r := PendingReceipt(leaf, generation)
+	c, r := PendingReceipt(leaf, generation, memberships...)
 	cursor, rules = max(cursor, c), max(rules, r)
-	return publishMetadata(leaf, pendingReceipt(generation), strconv.FormatUint(cursor, 10)+" "+strconv.FormatUint(rules, 10)+"\n")
+	return publishMetadata(leaf, pendingReceipt(generation, memberships...), strconv.FormatUint(cursor, 10)+" "+strconv.FormatUint(rules, 10)+"\n")
 }
 
 // dropPendingReceipts removes the pending receipts of every generation other
@@ -251,7 +257,7 @@ func dropPendingReceipts(leaf *os.Root, generation string) error {
 		return err
 	}
 	for _, name := range names {
-		if strings.HasPrefix(name, "pending-") && name != pendingReceipt(generation) {
+		if strings.HasPrefix(name, "pending-") && name != pendingReceipt(generation) && !strings.HasPrefix(name, pendingReceipt(generation)+"-") {
 			if err := leaf.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}

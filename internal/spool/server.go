@@ -210,8 +210,8 @@ func DrainServerSpool(root *os.Root, handle func(string, []byte) (core.Result, e
 }
 
 // DrainMemberSpool orders authenticated-leaf hook packets before processing
-// dependent events. The handle receives whether a one-way hook was admitted
-// before expiry, including when recovering a claim from an earlier sweep.
+// dependent events. The handle receives whether this is an admitted one-way hook,
+// including a recovered claim or a delayed output acknowledgement.
 func DrainMemberSpool(root *os.Root, handle func(string, []byte, bool) (core.Result, error)) error {
 	return drainServerSpool(root, true, handle)
 }
@@ -330,7 +330,7 @@ func claimServerPacket(root, in, work *os.Root, packet serverPacket, member bool
 		data, err := readServerPacket(in, packet.name)
 		if err == nil {
 			req, oneWay := oneWayHookPacket(data, packet.id)
-			if oneWay && req.ExpiresAtMS <= time.Now().UnixMilli() {
+			if oneWay && req.Verb != wire.VerbHookJoinHintAck && req.ExpiresAtMS <= time.Now().UnixMilli() {
 				err := in.Remove(packet.name)
 				if errors.Is(err, os.ErrNotExist) {
 					err = nil
@@ -383,13 +383,13 @@ func answerClaim(work, out *os.Root, packet serverPacket, member bool, handle fu
 }
 
 // ReapServerSpool expires abandoned packets and staged files from this spool.
-func ReapServerSpool(root *os.Root, before time.Time) error {
+func ReapServerSpool(root *os.Root, before time.Time, member bool) error {
 	for _, section := range []string{"in", "work", "out"} {
 		dir, err := OpenServerChild(root, section, false)
 		if err != nil {
 			return err
 		}
-		err = reapServerDir(dir, before)
+		err = reapServerDir(dir, before, member && section != "out")
 		dir.Close()
 		if err != nil {
 			return err
@@ -398,7 +398,7 @@ func ReapServerSpool(root *os.Root, before time.Time) error {
 	return nil
 }
 
-func reapServerDir(dir *os.Root, before time.Time) error {
+func reapServerDir(dir *os.Root, before time.Time, memberInput bool) error {
 	entries, err := fs.ReadDir(dir.FS(), ".")
 	if err != nil {
 		return err
@@ -409,14 +409,25 @@ func reapServerDir(dir *os.Root, before time.Time) error {
 		if final != name {
 			final += ".json"
 		}
-		if _, ok := serverAttempt(final); !ok || entry.IsDir() {
+		id, ok := serverAttempt(final)
+		if !ok || entry.IsDir() {
 			continue
 		}
 		info, err := entry.Info()
-		if err == nil && privateMode(info, 0600) && info.ModTime().Before(before) {
-			if err := dir.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
+		if err != nil || !privateMode(info, 0600) || !info.ModTime().Before(before) {
+			continue
+		}
+		if memberInput && name == final {
+			data, err := readServerPacket(dir, name)
+			if err == nil {
+				req, oneWay := oneWayHookPacket(data, id)
+				if oneWay && req.Verb == wire.VerbHookJoinHintAck {
+					continue // The dispatcher still owes the member this acknowledgement.
+				}
 			}
+		}
+		if err := dir.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 	}
 	return nil

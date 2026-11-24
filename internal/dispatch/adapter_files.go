@@ -78,6 +78,7 @@ func (s *server) publishAdapterStamp(dir *os.Root, generation string, notice, re
 }
 
 type adapterInvalidation struct {
+	principal                    int64
 	digest, identity, generation string
 	notice, reminder             bool
 	departed                     bool
@@ -85,7 +86,7 @@ type adapterInvalidation struct {
 
 func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidation, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT COALESCE(l.digest, ''), COALESCE(l.file_identity, ''),
+		SELECT d.principal_id, COALESCE(l.digest, ''), COALESCE(l.file_identity, ''),
 		       COALESCE(l.generation, ''), d.notice, d.reminder, NOT EXISTS (
 		           SELECT 1 FROM binding b WHERE b.principal_id = d.principal_id AND b.state = 'live')
 		FROM adapter_dirty d LEFT JOIN leaf l ON l.principal_id = d.principal_id
@@ -100,7 +101,7 @@ func adapterInvalidations(ctx context.Context, tx store.Tx) ([]adapterInvalidati
 	var changes []adapterInvalidation
 	for rows.Next() {
 		var change adapterInvalidation
-		if err := rows.Scan(&change.digest, &change.identity, &change.generation, &change.notice, &change.reminder, &change.departed); err != nil {
+		if err := rows.Scan(&change.principal, &change.digest, &change.identity, &change.generation, &change.notice, &change.reminder, &change.departed); err != nil {
 			return nil, err
 		}
 		changes = append(changes, change)
@@ -137,7 +138,7 @@ func (s *server) applyAdapterStamps(ctx context.Context, tx store.Tx) error {
 			}
 			defer members.Close()
 		}
-		if err := s.invalidateAdapterLeaf(members, change); err != nil {
+		if err := s.invalidateAdapterLeaf(ctx, tx, members, change); err != nil {
 			return err
 		}
 	}
@@ -145,7 +146,7 @@ func (s *server) applyAdapterStamps(ctx context.Context, tx store.Tx) error {
 	return err
 }
 
-func (s *server) invalidateAdapterLeaf(members *os.Root, change adapterInvalidation) error {
+func (s *server) invalidateAdapterLeaf(ctx context.Context, tx store.Tx, members *os.Root, change adapterInvalidation) error {
 	dir, err := spool.OpenServerChild(members, change.digest[:16], false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // Restoring the leaf requires a new generation.
@@ -173,7 +174,51 @@ func (s *server) invalidateAdapterLeaf(members *os.Root, change adapterInvalidat
 			return errors.Join(err, removeErr)
 		}
 	}
-	return nil
+	_, err = s.publishTurnEndAsk(ctx, tx, dir, change.generation, change.principal, false)
+	return err
+}
+
+// publishTurnEndAsk records, before the caller commits, whether a Stop of
+// the member may have an ask to announce. Anything that can give a member
+// an ask marks it dirty (a new message, a notice that was not submitted),
+// and every dirty member's record is raised, so a "0" is never older than
+// the asks it covers. Only the member's own hook request may lower the
+// record (lower): it reports a lowered record, which the caller removes if
+// its transaction does not commit. A record that cannot be written is
+// removed: the Stop then waits.
+func (s *server) publishTurnEndAsk(ctx context.Context, tx store.Tx, dir *os.Root, generation string, principal int64, lower bool) (bool, error) {
+	if dir == nil || generation == "" || s.ready.Instance == "" {
+		return false, nil
+	}
+	waiting, err := domain.TurnEndAskWaiting(ctx, tx, principal)
+	if err != nil || !waiting && !lower {
+		return false, err
+	}
+	flag := "0"
+	if waiting {
+		flag = "1"
+	}
+	record := s.ready.Instance + " " + generation + " " + flag + "\n"
+	if current, err := readAdapterText(dir, hook.TurnEndAskFile); err == nil && current == record {
+		return false, nil
+	}
+	if err := publishAdapterText(dir, hook.TurnEndAskFile, record); err != nil {
+		if removeErr := dir.Remove(hook.TurnEndAskFile); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return false, errors.Join(err, removeErr)
+		}
+		return false, nil
+	}
+	return !waiting, nil
+}
+
+func readAdapterText(dir *os.Root, name string) (string, error) {
+	file, err := spool.OpenServerFile(dir, name, os.O_RDONLY)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 256))
+	return string(raw), err
 }
 
 // addHookAck attaches the stamp the completed transaction evaluated.
@@ -194,12 +239,18 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 		if arrival.Dir == nil || req.Generation == "" {
 			return errors.New("hook acknowledgement has no authenticated generation")
 		}
+		var membership core.Membership
+		if result.Membership != nil {
+			membership = *result.Membership
+		}
 		if output.JoinHintAck != nil {
 			output.JoinHintAck.Generation = req.Generation
+			output.JoinHintAck.MembershipGeneration = membership.Generation
 			s.logFailure(publishJoinHintOffer(arrival.Dir, output.JoinHintAck))
 		}
 		if output.ReachAck != nil {
 			output.ReachAck.Generation = req.Generation
+			output.ReachAck.MembershipGeneration = membership.Generation
 			s.logFailure(publishReachOffer(arrival.Dir, output.ReachAck))
 		}
 		if ack := output.Ack; ack != nil {
@@ -212,6 +263,7 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 				}
 			}
 			ack.Instance, ack.Generation = s.ready.Instance, req.Generation
+			ack.Membership = membership
 			switch ack.Kind {
 			case "notice":
 				ack.Seq = stamp.NoticeSeq
@@ -234,7 +286,7 @@ func (s *server) addHookAck(_ context.Context, _ store.Tx, arrival Arrival, req 
 
 func publishJoinHintOffer(leaf *os.Root, ack *wire.HookJoinHintAck) error {
 	if prior, ok := hook.ReadJoinHintOffer(leaf, ack.Generation); ok &&
-		prior.BindingID == ack.BindingID && prior.RouteEpoch == ack.RouteEpoch {
+		prior.BindingID == ack.BindingID && prior.RouteEpoch == ack.RouteEpoch && prior.MembershipGeneration == ack.MembershipGeneration {
 		ack.Offer = prior.Offer
 		return nil
 	}
@@ -250,7 +302,8 @@ func publishJoinHintOffer(leaf *os.Root, ack *wire.HookJoinHintAck) error {
 // once is stored even if a later output offered it again.
 func publishReachOffer(leaf *os.Root, ack *wire.HookReachAck) error {
 	if prior, ok := hook.ReadReachOffer(leaf, ack.Generation); ok && prior.BindingID == ack.BindingID &&
-		prior.RouteEpoch == ack.RouteEpoch && prior.Told == ack.Told && prior.SuspensionID == ack.SuspensionID {
+		prior.RouteEpoch == ack.RouteEpoch && prior.Told == ack.Told && prior.SuspensionID == ack.SuspensionID &&
+		prior.MembershipGeneration == ack.MembershipGeneration {
 		ack.Offer = prior.Offer
 		return nil
 	}
@@ -269,7 +322,8 @@ func acknowledgeHookReach(ctx context.Context, tx store.Tx, arrival Arrival, req
 		return nil
 	}
 	ack, ok := hook.ReadReachAck(arrival.Dir, req.Generation)
-	if !ok || ack.BindingID != *caller.BindingID || !hook.CurrentReachOffer(arrival.Dir, ack) {
+	if !ok || ack.BindingID != *caller.BindingID || !matchesReceiptMembership(ack.MembershipGeneration, caller) ||
+		!hook.CurrentReachOffer(arrival.Dir, ack) {
 		return nil
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE binding SET reach_told = ?
@@ -282,8 +336,8 @@ func acknowledgeHookReach(ctx context.Context, tx store.Tx, arrival Arrival, req
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE publish_suspension SET recovery_hint = ?
-		WHERE id = ? AND binding_id = ? AND recovery_hint <> ?`,
-		store.RecoveryHintAcknowledged, ack.SuspensionID, ack.BindingID, store.RecoveryHintAcknowledged)
+		WHERE id = ? AND binding_id IN (SELECT id FROM binding WHERE principal_id = ?) AND recovery_hint <> ?`,
+		store.RecoveryHintAcknowledged, ack.SuspensionID, *caller.PrincipalID, store.RecoveryHintAcknowledged)
 	return err
 }
 
@@ -292,7 +346,8 @@ func acknowledgeHookJoinHint(ctx context.Context, tx store.Tx, arrival Arrival, 
 		return nil
 	}
 	ack, ok := hook.ReadJoinHintAck(arrival.Dir, req.Generation)
-	if !ok || ack.BindingID != *caller.BindingID || !hook.CurrentJoinHintOffer(arrival.Dir, ack) {
+	if !ok || ack.BindingID != *caller.BindingID || !matchesReceiptMembership(ack.MembershipGeneration, caller) ||
+		!hook.CurrentJoinHintOffer(arrival.Dir, ack) {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE binding
@@ -362,6 +417,10 @@ func (s *server) publishAdapterFiles(ctx context.Context) error {
 
 func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error {
 	return s.db.Update(ctx, func(tx store.Tx) error {
+		// An upgrade may invalidate a clean prompt before this instance publishes readiness.
+		if err := s.applyAdapterStamps(ctx, tx); err != nil {
+			return err
+		}
 		policy, err := adapterPolicyText(ctx, tx)
 		if err != nil {
 			return err

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -456,8 +457,12 @@ func TestAClearKeepsTheReceiptsTheReplacedConversationRecorded(t *testing.T) {
 			if err := f.db.QueryRow(`SELECT file_identity, generation FROM leaf WHERE vendor = ? AND key = ?`, old.vendor, old.key).Scan(&fileID, &generation); err != nil {
 				t.Fatal(err)
 			}
-			f.svc.LeafReceipts = func(vendor, key, gotFile, gotGen string) (uint64, uint64) {
+			bindingID := int64(f.count(`SELECT id FROM binding WHERE alias = 'claude1'`))
+			f.svc.LeafReceipts = func(vendor, key, gotFile, gotGen string, membership ...core.Membership) (uint64, uint64) {
 				if vendor == old.vendor && key == old.key && gotFile == fileID && gotGen == generation {
+					if len(membership) != 1 || membership[0].BindingID != bindingID || membership[0].Generation != 1 {
+						t.Fatalf("the clear read receipts for the wrong membership: %+v", membership)
+					}
 					return latest, latest
 				}
 				return 0, 0

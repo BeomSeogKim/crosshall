@@ -83,6 +83,15 @@ func (c Client) HookCall(ctx context.Context, id ident.Identity, generation stri
 	if generation != current {
 		return Reply{}, errors.New("member generation changed before hook publication")
 	}
+	if req.Membership != nil {
+		current, err := ident.LookupMembership(leaf)
+		if err != nil {
+			return Reply{}, err
+		}
+		if current == nil || *current != *req.Membership {
+			return Reply{}, errors.New("membership changed before hook publication")
+		}
+	}
 	req = prepare(ctx, req)
 	req.KeyDigest, req.Generation, req.VendorVersion = id.Digest(), generation, id.Version
 	req.Ack = 0
@@ -96,10 +105,10 @@ func (c Client) HookCall(ctx context.Context, id ident.Identity, generation stri
 		wantsReply := false
 		req.Reply = &wantsReply
 		err = publishHookRequest(ctx, leaf, in, req)
-		return Reply{OpKey: req.OpKey}, err
+		return Reply{OpKey: req.OpKey, RequestMembership: req.Membership}, err
 	}
 	resp, _, err := exchangeWithPublisher(ctx, leaf, req.Attempt, func(in *os.Root) error {
 		return publishHookRequest(ctx, leaf, in, req)
 	})
-	return Reply{Response: resp, OpKey: req.OpKey}, err
+	return Reply{Response: resp, OpKey: req.OpKey, RequestMembership: req.Membership}, err
 }

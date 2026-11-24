@@ -123,13 +123,19 @@ func (s *Service) ownerPublish(ctx context.Context, tx store.Tx, caller core.Cal
 			ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, changed_at_ms = excluded.changed_at_ms
 			WHERE hall_publish.enabled <> excluded.enabled`, cmd.Switch == "on", ms(now))
 	default:
-		err = tx.QueryRowContext(ctx, `SELECT c.name, b.alias FROM binding b JOIN channel c ON c.id = b.channel_id WHERE b.id = ?`,
-			cmd.BindingID).Scan(&out.Channel, &out.Alias)
+		var selected int64
+		err = tx.QueryRowContext(ctx, `SELECT c.name, b.alias, COALESCE(s.binding_id, 0)
+			FROM binding b JOIN channel c ON c.id = b.channel_id
+			LEFT JOIN member_selection s ON s.principal_id = b.principal_id WHERE b.id = ?`,
+			cmd.BindingID).Scan(&out.Channel, &out.Alias, &selected)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Fail(core.ExitUsage, "", "no such binding", "crosshall owner who --all lists the bindings"), nil
 		}
 		if err != nil {
 			return core.Result{}, err
+		}
+		if selected != cmd.BindingID {
+			return Refuse(core.CodeBindingChanged, "the binding is historical", "find the selected binding with crosshall owner who --all"), nil
 		}
 		switch cmd.Switch {
 		case "resume":

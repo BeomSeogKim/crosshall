@@ -34,7 +34,7 @@ func TestHookDeadlineWithSlowCounterOpen(t *testing.T) {
 			time.Sleep(30 * time.Millisecond) // virtual filesystem latency
 			return rv, openHookCounter(rv, "codex", "UserPromptSubmit", entry)
 		}
-		runTimed(entry, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+		runTimed(entry, Budget, Budget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
 			return dispatchEvent(ctx, entry, rv, recordedTransport{}, []string{"codex", "UserPromptSubmit"}, reader, w, nil)
 		})
 		if elapsed := time.Since(entry); elapsed > Budget || output.Len() != 0 {
@@ -60,7 +60,7 @@ func TestHookCounterAfterSuspension(t *testing.T) {
 		// Resume at the accounting boundary with both timers already overdue.
 		time.Sleep(200 * time.Millisecond)
 		output := &hookOutput{dst: io.Discard}
-		finishCounter(entry, "rpc", counter, output)
+		finishCounter(entry, Budget, "rpc", counter, output)
 		if n, err := output.Write([]byte("late")); n != 0 || err == nil {
 			t.Fatalf("sealed stdout accepted %d bytes, err %v", n, err)
 		}
@@ -96,7 +96,7 @@ func TestStalledCounterAppendIsBounded(t *testing.T) {
 				entry := time.Now()
 				time.Sleep(tc.at)
 				start := time.Now()
-				finishCounter(entry, "deadline", counter, &hookOutput{dst: io.Discard})
+				finishCounter(entry, Budget, "deadline", counter, &hookOutput{dst: io.Discard})
 				synctest.Wait()
 				if waited := time.Since(start); waited != tc.want || attempts != 1 {
 					t.Fatalf("waited %v for %d append attempts", waited, attempts)
@@ -115,7 +115,7 @@ func TestStalledPreparationDoesNotGetAccountingAllowance(t *testing.T) {
 		entry := time.Now()
 		release := make(chan struct{})
 		var rows bytes.Buffer
-		runTimed(entry, io.Discard, func() (*os.Root, *hookCounter) {
+		runTimed(entry, Budget, Budget, io.Discard, func() (*os.Root, *hookCounter) {
 			<-release
 			return rv, &hookCounter{file: counterWrite(rows.Write)}
 		}, func(context.Context, *os.Root, io.Writer) string {
@@ -200,7 +200,7 @@ func TestLateHookReplyProducesNoVendorOutput(t *testing.T) {
 					return rows.Write(p)
 				})}
 				start := time.Now()
-				finishCounter(entry, "deadline", counter, output)
+				finishCounter(entry, Budget, "deadline", counter, output)
 				if waited := time.Since(start); waited != 0 {
 					t.Fatalf("waited %v with a vendor write in flight", waited)
 				}

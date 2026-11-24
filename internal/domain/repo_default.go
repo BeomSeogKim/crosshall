@@ -114,10 +114,10 @@ func replayRepoJoin(ctx context.Context, tx store.Tx, principal int64, key, scop
 		return core.Result{}, false, err
 	}
 	if !exists {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel #%s", original.Channel), "the owner can list the channels (crosshall owner status --all); a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>"), true, nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no channel #%s", original.Channel), "the owner can list the channels with crosshall owner status --all; choose an active channel with crosshall join <channel> --move"), true, nil
 	}
 	if ch.state != "active" {
-		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "the owner can list the active channels (crosshall owner status --all); a new session (for a shell, crosshall run -- sh) can join an active channel: crosshall join <channel> --as <alias>"), true, nil
+		return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "the owner can list the active channels with crosshall owner status --all; choose an active channel with crosshall join <channel> --move"), true, nil
 	}
 	return r, true, nil
 }

@@ -61,33 +61,32 @@ func TestOwnerIsToldWhenInstalledHooksAreOlderThanTheBinary(t *testing.T) {
 	}
 	sentence := "The Claude Code hooks on disk were installed for claude-2; this crosshall installs " + current +
 		". Run crosshall setup claude."
-	installedRevs := func() (doctor, status string, warnings []string) {
+	// Each command's JSON is decoded into its own value: a shared slice
+	// would let the second answer stand in for the first.
+	installedRev := func(args ...string) (rev string, warnings []string) {
 		t.Helper()
-		var d struct {
+		var data struct {
 			Adapters []struct {
 				Adapter      string `json:"adapter"`
 				InstalledRev string `json:"installed_rev"`
 			} `json:"adapters"`
 			Warnings []string `json:"warnings"`
 		}
-		if err := json.Unmarshal([]byte(f.apply("", "owner", "doctor").stdout), &d); err != nil {
+		if err := json.Unmarshal([]byte(f.apply("", args...).stdout), &data); err != nil {
 			t.Fatal(err)
 		}
-		s := d
-		if err := json.Unmarshal([]byte(f.apply("", "setup", "status").stdout), &s); err != nil {
-			t.Fatal(err)
-		}
-		for _, a := range d.Adapters {
+		for _, a := range data.Adapters {
 			if a.Adapter == "claude" {
-				doctor = a.InstalledRev
+				rev = a.InstalledRev
 			}
 		}
-		for _, a := range s.Adapters {
-			if a.Adapter == "claude" {
-				status = a.InstalledRev
-			}
-		}
-		return doctor, status, d.Warnings
+		return rev, data.Warnings
+	}
+	installedRevs := func() (doctor, status string, warnings []string) {
+		t.Helper()
+		doctor, warnings = installedRev("owner", "doctor")
+		status, _ = installedRev("setup", "status")
+		return doctor, status, warnings
 	}
 
 	if got := text("owner", "start"); got != "dispatcher running\n"+sentence+"\n" {

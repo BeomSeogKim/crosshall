@@ -95,6 +95,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.ownerDepart(ctx, tx, caller, req, cmd, now)
 	case OwnerDepartEnded:
 		return s.ownerDepartEnded(ctx, tx, caller, req, cmd, now)
+	case OwnerTakeover:
+		return s.ownerTakeover(ctx, tx, caller, req, cmd, now)
 	case OwnerLog:
 		return s.ownerLog(ctx, tx, caller, cmd)
 	case ChannelDefault:
@@ -357,6 +359,26 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if r, found, err := ReplayMembershipChange(ctx, tx, principal, req.OpKey, cmd); found || err != nil {
 		return r, err
 	}
+	if cmd.Takeover {
+		if cmd.Channel == "" || cmd.Move {
+			return Fail(core.ExitUsage, "", "--takeover needs a channel and an alias, without --move", "crosshall join <channel> --as <alias> --takeover"), nil
+		}
+		ch, ok, err := channelByName(ctx, tx, cmd.Channel)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if !ok {
+			return s.unknownChannel(ctx, tx, cmd.Channel)
+		}
+		if ch.state != "active" {
+			return Refuse(core.CodeArchived, fmt.Sprintf("#%s is archived", ch.name), "crosshall join <channel> with an active channel"), nil
+		}
+		r, joinAs, err := s.requestTakeover(ctx, tx, caller, req, ch, cmd, now)
+		if err != nil || joinAs == 0 {
+			return r, err
+		}
+		principal = joinAs
+	}
 	source, err := selectedMembership(ctx, tx, principal)
 	if err != nil {
 		return core.Result{}, err
@@ -454,8 +476,12 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 				if crossing && source.state == "live" {
 					command += " --move"
 				}
+				offer, err := takeoverOffer(ctx, tx, ch, alias, req.Vendor)
+				if err != nil {
+					return core.Result{}, err
+				}
 				return Refuse(core.CodeAliasTaken, taken,
-					fmt.Sprintf("Choose an unused alias, then rerun %s with --as set to that alias.", command)), nil
+					fmt.Sprintf("Choose an unused alias, then rerun %s with --as set to that alias.", command)+offer), nil
 			}
 			// A key that has joined can no longer be restored, so a session
 			// that lost its identity must not take the retry first.
@@ -463,7 +489,11 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 			recover := "To recover the old membership, run crosshall whoami --full in this session and privately give its first vendor:key token only to the owner. " +
 				"The owner runs crosshall owner who --all to find the old binding ID, then runs crosshall owner restore with that ID as its first argument and --new-key set to the token. " +
 				"Joining under another alias makes this session's key ineligible for owner restore."
-			return Refuse(core.CodeAliasTaken, taken, newMember+recover), nil
+			offer, err := takeoverOffer(ctx, tx, ch, alias, req.Vendor)
+			if err != nil {
+				return core.Result{}, err
+			}
+			return Refuse(core.CodeAliasTaken, taken, newMember+recover+offer), nil
 		}
 	}
 	var move *JoinMoveReceipt

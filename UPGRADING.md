@@ -4,6 +4,12 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
+No schema change. Rule 4 and the notice text change:
+
+- A session that joined before the upgrade keeps the old text of rule 4 until it runs `crosshall join <channel> --rules`.
+- A notice now ends `Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say.` A notice sent with the v0.2.0-rc.4 text before the upgrade still counts as a notice when the session receives it.
+- For a hook-joined Codex session whose next prompt shows new work, an empty `crosshall inbox` prints `Inbox is empty. Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do.`, and a wait that times out with nothing unread names that step instead of the wait command. `crosshall inbox --json` and an arriving wait's JSON gain `at_next_prompt`. Other sessions see no change.
+
 A script that reads the `next:` line under a send result's recipients should match `next: nothing will wake`; it said `next: nothing will tell`. That line is text only and names the same recipients. JSON has no such line and is unchanged: each recipient of an ask or a note (`recipients[]`) and the delivery of a reply (`delivery`) still carry `next` with its earlier sentence (such as `waits for its next crosshall command`), and `wake`, `why`, `seen_at` and `until_ms`, which say whether nothing will wake that recipient.
 
 ## To v0.2.0-rc.4

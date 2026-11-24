@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -46,14 +47,14 @@ type WaitSnapshot struct {
 
 // waitSnapshot also records in waits whether the caller's wait keeps
 // running: it does unless the snapshot holds something that ends it.
-func waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, waits *waitPresence, now time.Time) (core.Result, error) {
-	result, poll, err := waitSnapshotOf(ctx, tx, caller, cmd, now)
+func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, error) {
+	result, poll, err := s.waitSnapshotOf(ctx, tx, caller, cmd, now)
 	switch {
 	case err != nil || poll.cursor.BindingID == 0:
 	case poll.ends:
-		waits.forget(poll.cursor.BindingID)
+		s.waits.forget(poll.cursor.BindingID)
 	default:
-		waits.saw(poll.cursor, cmd.WorkOnly, now)
+		s.waits.saw(poll.cursor, cmd.WorkOnly, now)
 	}
 	return result, err
 }
@@ -65,7 +66,7 @@ type snapshotPoll struct {
 	ends   bool
 }
 
-func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
+func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
 	if caller.Role != core.RoleMember {
 		return notEnrolled(), snapshotPoll{}, nil
 	}
@@ -91,14 +92,14 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 		return noPoll(waitFailure(core.ExitUsage, "", "invalid wait cursor", "run crosshall wait again", &summary))
 	}
 
-	// Delivers lets a timeout say that this session needs no wait.
-	delivers, err := publishDelivers(ctx, tx, member.binding, now)
+	// Delivers and AtNextPrompt let a timeout say that this session needs no wait.
+	delivers, atPrompt, err := s.standby(ctx, tx, member.binding, now)
 	if err != nil {
 		return core.Result{}, snapshotPoll{}, err
 	}
 	out := WaitSnapshot{
 		Cursor:             WaitCursor{BindingID: member.binding, Generation: member.generation},
-		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers},
+		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers, AtNextPrompt: atPrompt},
 		MemberInboxSummary: &summary,
 	}
 	// Message IDs increase across channels. Use the indexed high-water mark
@@ -119,7 +120,7 @@ func waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wa
 			if err != nil {
 				return core.Result{}, snapshotPoll{}, err
 			}
-			out.Delivers = delivers
+			out.Delivers, out.AtNextPrompt = delivers, atPrompt
 			out.Cancelled = nil // a cancellation is not work: it never ends or rides on a wait
 		}
 		return out.polled()
@@ -205,17 +206,41 @@ func WaitCursorInvalidated(summary *MemberInboxSummary) (core.Result, error) {
 // timeout with nothing unread.
 const HallDelivers = "The hall brings new work to this session: no wait is needed."
 
+// AtNextPrompt is what a member whose agent does not start a turn when a
+// background command exits is told instead of a wait: holding a turn on a
+// wait costs a model request at each poll.
+const AtNextPrompt = "Do not wait: new work shows at your next prompt. End the turn when you have nothing else to do."
+
+// standby says how an idle member stands by: the hall delivers new work to
+// it (delivers), or its next prompt shows new work and its agent does not
+// start a turn when a background command exits, so it ends its turn
+// instead of waiting (atPrompt). Neither means it waits.
+func (s *Service) standby(ctx context.Context, tx store.Tx, binding int64, now time.Time) (delivers, atPrompt bool, err error) {
+	if delivers, err = publishDelivers(ctx, tx, binding, now); err != nil || delivers {
+		return delivers, false, err
+	}
+	adapter, err := s.promptLineAdapter(ctx, tx, binding)
+	if err != nil || adapter == "" {
+		return false, false, err
+	}
+	a, ok := publish.Lookup(adapter)
+	return false, ok && !a.BackgroundWakes(), nil
+}
+
 // WaitTimeout adds the latest successful hall snapshot to a local timeout.
 // The snapshot is an inbox check, so the next step is the pickup when
-// something is unread, another wait for a member that has to poll, and
-// none for one the hall delivers to, which Delivers marks.
-func WaitTimeout(summary *MemberInboxSummary, delivers bool) (core.Result, error) {
+// something is unread, another wait for a member that has to poll, none
+// for one the hall delivers to, which Delivers marks, and the end of the
+// turn for one whose agent cannot stand by on a background wait.
+func WaitTimeout(summary *MemberInboxSummary, delivers, atPrompt bool) (core.Result, error) {
 	next := "crosshall wait --existing --work-only --timeout 9m"
 	switch {
 	case summary != nil && len(summary.Pending) > 0:
 		next, delivers = "crosshall read", false
 	case delivers:
 		next = ""
+	case atPrompt:
+		next = AtNextPrompt
 	}
 	result, err := OK(struct {
 		Refusal

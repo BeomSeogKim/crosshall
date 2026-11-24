@@ -208,6 +208,16 @@ const promptAdapter = `LEFT JOIN ` + currentBindingLaunch + `
 
 // seenAt says where a member that is not woken sees new work.
 func (s *Service) seenAt(ctx context.Context, tx store.Tx, binding int64) (string, error) {
+	adapter, err := s.promptLineAdapter(ctx, tx, binding)
+	if err != nil || adapter == "" {
+		return SeenAtCommand, err
+	}
+	return SeenAtPrompt, nil
+}
+
+// promptLineAdapter names the adapter whose prompt line shows the member
+// new work at its next prompt, or "" when its next prompt does not.
+func (s *Service) promptLineAdapter(ctx context.Context, tx store.Tx, binding int64) (string, error) {
 	var adapter, rev sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT ap.adapter, json_extract(l.profile, '$.manifest_rev')
 		FROM binding b `+promptAdapter+` WHERE b.id = ?`, binding).Scan(&adapter, &rev)
@@ -215,9 +225,9 @@ func (s *Service) seenAt(ctx context.Context, tx store.Tx, binding int64) (strin
 		return "", err
 	}
 	if adapter.Valid && rev.Valid && s.HasPromptLine != nil && s.HasPromptLine(adapter.String, rev.String) {
-		return SeenAtPrompt, nil
+		return adapter.String, nil
 	}
-	return SeenAtCommand, nil
+	return "", nil
 }
 
 // sendWakeEvent records, for the daily report, what will tell one recipient

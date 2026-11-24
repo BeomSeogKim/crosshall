@@ -43,6 +43,20 @@ type manifest struct {
 	// (#163), so the id alone does not tell the two callbacks apart.
 	PromptEntryRef bool                 `json:"prompt_entry_ref"`
 	Events         map[string]eventSpec `json:"events"`
+	// EventFieldOptional lets a callback omit its event name: the command's
+	// configured event names it.
+	EventFieldOptional bool `json:"event_field_optional"`
+	// CWDField names the field an enrolling callback reports its workspace
+	// in, "cwd" when empty; CWDList says it is a JSON list of exactly one
+	// absolute path. A declared CWDField is required.
+	CWDField string `json:"cwd_field"`
+	CWDList  bool   `json:"cwd_list"`
+	// IdentityProof names the native check (identityProofs) that a
+	// callback's session key really is this vendor's session.
+	IdentityProof string `json:"identity_proof"`
+	// EmptyOutput is what a callback prints when crosshall has nothing to
+	// say, for a vendor that needs a reply on stdout.
+	EmptyOutput string `json:"empty_output"`
 	// The launch's own vendor build and mode, when the running agent names
 	// them in its hooks' environment: VersionEnv must match VersionPattern
 	// (the observed label grammar), whose first group is the version with
@@ -70,10 +84,13 @@ type daemonSpec struct {
 }
 
 type eventSpec struct {
-	Name          string            `json:"-"`
-	Fact          string            `json:"fact"`
-	Output        string            `json:"output"`
-	Enroll        bool              `json:"enroll"`
+	Name   string `json:"-"`
+	Fact   string `json:"fact"`
+	Output string `json:"output"`
+	Enroll bool   `json:"enroll"`
+	// Source is the start source of an enrolling callback whose input
+	// names none (SourceField empty).
+	Source        string            `json:"source"`
 	RecoverEnroll bool              `json:"recover_enroll"`
 	Notice        bool              `json:"notice"`
 	Stop          bool              `json:"stop"`
@@ -130,10 +147,37 @@ type event struct {
 }
 
 const stopActiveField = "stop_hook_active"
-const agyWorkspacePathsField = "workspacePaths"
-const agyTranscriptField = "transcriptPath"
 
-var agyConversationID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+// identityProof is a vendor's native check that a callback's session key
+// names one of its own sessions: the input fields it reads, and the check.
+type identityProof struct {
+	fields []string
+	check  func(key string, fields map[string]string, lookup func(string) (string, bool)) bool
+}
+
+var identityProofs = map[string]identityProof{
+	// Antigravity names its transcript under the conversation's brain
+	// directory; the key must be a conversation ID and the transcript its own.
+	"antigravity_transcript": {
+		fields: []string{"transcriptPath"},
+		check: func(key string, fields map[string]string, lookup func(string) (string, bool)) bool {
+			home, _ := lookup("HOME")
+			logDir := filepath.Join(home, ".gemini", "antigravity-cli", "brain", key, ".system_generated", "logs")
+			transcript := fields["transcriptPath"]
+			return antigravityConversationID.MatchString(key) && filepath.IsAbs(home) &&
+				(transcript == filepath.Join(logDir, "transcript.jsonl") || transcript == filepath.Join(logDir, "transcript_full.jsonl"))
+		},
+	},
+}
+
+var antigravityConversationID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+func (m manifest) cwdField() string {
+	if m.CWDField != "" {
+		return m.CWDField
+	}
+	return "cwd"
+}
 
 // Turn callbacks keep their native identity across re-delivery. Lifecycle
 // callbacks have no native event ID, so also carry the publication time.
@@ -159,7 +203,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		return event{}, err
 	}
 	callback, named := fields[m.EventField]
-	if callback != spec.Name && (m.Adapter != "agy" || named) {
+	if callback != spec.Name && (!m.EventFieldOptional || named) {
 		return event{}, errHookInput
 	}
 	fact := spec.Fact
@@ -203,18 +247,16 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		receipt:    receipt,
 		stopActive: fields[stopActiveField],
 	}
-	if m.Adapter == "agy" {
-		home, _ := lookup("HOME")
-		logDir := filepath.Join(home, ".gemini", "antigravity-cli", "brain", id.Key, ".system_generated", "logs")
-		transcript := fields[agyTranscriptField]
-		if !agyConversationID.MatchString(id.Key) || !filepath.IsAbs(home) ||
-			(transcript != filepath.Join(logDir, "transcript.jsonl") && transcript != filepath.Join(logDir, "transcript_full.jsonl")) {
+	if m.IdentityProof != "" {
+		if proof, known := identityProofs[m.IdentityProof]; !known || !proof.check(id.Key, fields, lookup) {
 			return event{}, errHookIdentity
 		}
-		if fields[agyWorkspacePathsField] == "" {
-			return event{}, errHookInput
-		}
-		e.Source = "startup"
+	}
+	if spec.Enroll && m.CWDField != "" && fields[m.CWDField] == "" {
+		return event{}, errHookInput
+	}
+	if spec.Source != "" {
+		e.Source = spec.Source
 	}
 	if (spec.TurnRequired && e.TurnRef == "") || (spec.Enroll && e.Source == "") {
 		return event{}, errHookInput
@@ -225,10 +267,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		}
 	}
 	if spec.Enroll {
-		e.CWD = fields["cwd"]
-		if m.Adapter == "agy" {
-			e.CWD = fields[agyWorkspacePathsField]
-		}
+		e.CWD = fields[m.cwdField()]
 		if e.CWD != "" && (!filepath.IsAbs(e.CWD) || strings.IndexByte(e.CWD, 0) >= 0) {
 			return event{}, errHookInput
 		}
@@ -283,11 +322,10 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		selected = append(selected, m.ModeField)
 	}
 	if spec.Enroll {
-		if m.Adapter == "agy" {
-			selected = append(selected, agyWorkspacePathsField, agyTranscriptField)
-		} else {
-			selected = append(selected, "cwd")
-		}
+		selected = append(selected, m.cwdField())
+	}
+	if proof, known := identityProofs[m.IdentityProof]; known {
+		selected = append(selected, proof.fields...)
 	}
 	if spec.RecoverEnroll {
 		selected = append(selected, "cwd")
@@ -347,7 +385,7 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		if duplicated {
 			return nil, "", errHookInput
 		}
-		if key == agyWorkspacePathsField && m.Adapter == "agy" {
+		if key == m.CWDField && m.CWDList {
 			var paths []string
 			if err := json.Unmarshal(raw, &paths); err != nil || len(paths) != 1 || !filepath.IsAbs(paths[0]) {
 				return nil, "", errHookInput

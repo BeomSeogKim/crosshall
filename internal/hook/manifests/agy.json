@@ -9,6 +9,11 @@
   "session_field": "conversationId",
   "session_env": "ANTIGRAVITY_CONVERSATION_ID",
   "host_names": ["agy"],
+  "event_field_optional": true,
+  "cwd_field": "workspacePaths",
+  "cwd_list": true,
+  "identity_proof": "antigravity_transcript",
+  "empty_output": "{}",
   "install": {
     "file": "hooks.json",
     "encoding": "shell",
@@ -16,6 +21,6 @@
     "events": ["SessionStart"]
   },
   "events": {
-    "SessionStart": {"enroll": true, "output": "inject_steps"}
+    "SessionStart": {"enroll": true, "source": "startup", "output": "inject_steps"}
   }
 }

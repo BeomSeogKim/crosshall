@@ -21,8 +21,13 @@ func TestDispatcherRetiresKilledClaudeLaunch(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("requires kernel process identity")
 	}
-	t.Run("known identity", func(t *testing.T) { checkKilledClaudeLaunch(t, true) })
-	t.Run("died before identity was stored", func(t *testing.T) { checkKilledClaudeLaunch(t, false) })
+	t.Run("known identity", func(t *testing.T) { checkKilledClaudeLaunch(t, true, "") })
+	t.Run("died before identity was stored", func(t *testing.T) { checkKilledClaudeLaunch(t, false, "") })
+	// The stored launch's revision decides its exit authority (#326): a
+	// prior revision that declares process_launch ends by its process; one
+	// this build does not know does not, whatever its reference.
+	t.Run("prior revision", func(t *testing.T) { checkKilledClaudeLaunch(t, true, "claude-1") })
+	t.Run("unknown revision", func(t *testing.T) { checkKilledClaudeLaunch(t, true, "claude-9") })
 }
 
 func TestDispatcherRetiresKilledHandJoinedClaudeLaunchOnLinux(t *testing.T) {
@@ -101,7 +106,7 @@ exec /bin/sleep 60`, "sh", binary)
 	}
 }
 
-func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool) {
+func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool, revision string) {
 	t.Helper()
 	w, writer, c := m2World(t)
 	process := exec.CommandContext(t.Context(), "/bin/sleep", "60")
@@ -180,10 +185,28 @@ func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool) {
 	if runtime.GOOS == "linux" && before.pidNamespace == "" {
 		t.Fatal("Linux startup did not persist its PID namespace")
 	}
+	if revision != "" {
+		writable, err := sql.Open("sqlite", "file:"+filepath.Join(w.state, "store.sqlite3")+"?mode=rw&_pragma=busy_timeout(5000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writable.Close()
+		if _, err := writable.Exec(`UPDATE adapter_launch SET profile = json_set(profile, '$.manifest_rev', ?)
+			WHERE launch_ref GLOB 'pid-*' AND json_extract(profile, '$.adapter') = 'claude'`, revision); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var id int64
 	if knownIdentity {
 		id = num(t, writer.must("ask", "@claude1", "pending when the process exits"), "id")
 		kill()
+	}
+	if revision == "claude-9" {
+		time.Sleep(4 * launchSweepIntervalForTest)
+		if got := state(); got.endedByProcess || got.binding != "live" {
+			t.Fatalf("a launch of an unknown revision was ended by its process: %+v", got)
+		}
+		return
 	}
 	for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(25 * time.Millisecond) {
 		got := state()
@@ -214,3 +237,6 @@ func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool) {
 		t.Fatalf("publish attempts after retiring killed fixture: %d (%v)", attempts, err)
 	}
 }
+
+// launchSweepIntervalForTest is the dispatcher's launch sweep interval.
+const launchSweepIntervalForTest = time.Second

@@ -153,22 +153,27 @@ func TestGoneHostDepartsTheMemberAndKeepsItsWork(t *testing.T) {
 // judged by its host; any other is ended with the member.
 func TestOnlyAProcessLaunchKeepsTheHostFromJudging(t *testing.T) {
 	for _, c := range []struct {
-		name, adapter, ref string
-		verified, enabled  bool
-		governs            bool
+		name, adapter, revision, ref string
+		verified, enabled            bool
+		governs                      bool
 	}{
-		{"Claude process launch", "claude", "pid-100-1", true, true, true},
-		{"Claude process launch, adapter switched off", "claude", "pid-100-1", true, false, true},
-		{"Codex session launch with its end hook enabled", "codex", SessionLaunch, false, true, false},
-		{"Antigravity session launch", "agy", SessionLaunch, false, true, false},
-		{"Claude launch without a launch ID", "claude", SessionLaunch, false, true, false},
+		{"Claude process launch", "claude", "claude-3", "pid-100-1", true, true, true},
+		{"Claude process launch of a prior revision", "claude", "claude-1", "pid-100-1", true, true, true},
+		{"Claude process launch, adapter switched off", "claude", "claude-3", "pid-100-1", true, false, true},
+		{"Codex session launch with its end hook enabled", "codex", "codex-1", SessionLaunch, false, true, false},
+		{"Antigravity session launch", "agy", "agy-1", SessionLaunch, false, true, false},
+		{"Claude launch without a launch ID", "claude", "claude-3", SessionLaunch, false, true, false},
+		// A process reference alone gives no exit authority: the revision
+		// must declare process_launch.
+		{"Codex launch with a process reference", "codex", "codex-1", "pid-100-1", true, true, false},
+		{"Claude launch of a revision this build does not know", "claude", "claude-9", "pid-100-1", true, true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newHostFixture(t)
 			f.policy(c.adapter, c.enabled, 1)
 			worker := f.principal(f.worker)
 			if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-				VALUES (?, ?, json_object('adapter', ?), ?, 0)`, worker, c.ref, c.adapter, c.verified); err != nil {
+				VALUES (?, ?, json_object('adapter', ?, 'manifest_rev', ?), ?, 0)`, worker, c.ref, c.adapter, c.revision, c.verified); err != nil {
 				t.Fatal(err)
 			}
 			f.gone[100] = true
@@ -234,7 +239,7 @@ func TestAChangeAfterTheProbeDepartsNothing(t *testing.T) {
 		}},
 		{"a launch opened", func(f *hostFixture) {
 			f.exec1(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
-				VALUES (?, 'pid-100-1', '{"adapter":"claude"}', 1, 0)`, f.principal(f.worker))
+				VALUES (?, 'pid-100-1', '{"adapter":"claude","manifest_rev":"claude-3"}', 1, 0)`, f.principal(f.worker))
 		}},
 		{"the binding's route changed", func(f *hostFixture) {
 			f.exec1(`UPDATE binding SET route_epoch = route_epoch + 1 WHERE principal_id = ?`, f.principal(f.worker))

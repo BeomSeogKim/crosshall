@@ -89,10 +89,19 @@ func (c claudeSession) fireUntil(event string, fields map[string]any, expected s
 
 func (c claudeSession) startWithContext(source string) string {
 	c.w.t.Helper()
-	out := c.fireUntil("SessionStart", map[string]any{"source": source}, source+" context", func(out string) bool {
-		return out != ""
-	})
-	return hostContext(c.w.t, out)
+	deadline := time.Now().Add(fixtureEventTimeout)
+	fields := map[string]any{"source": source}
+	for attempt := 1; ; attempt++ {
+		out := c.fire("SessionStart", fields)
+		c.waitForConsumption(deadline)
+		if out != "" {
+			return hostContext(c.w.t, out)
+		}
+		counter := c.lastCounter()
+		if counter != "SessionStart deadline" || !time.Now().Before(deadline) {
+			c.w.t.Fatalf("%s SessionStart printed no context after %d callbacks, last counter %q", source, attempt, counter)
+		}
+	}
 }
 
 // fireAndRecord waits for a new committed observation. A one-way packet can
@@ -223,7 +232,7 @@ func tableCounts(t *testing.T, w *world) map[string]int {
 func TestM2SessionThroughTheHookBinary(t *testing.T) {
 	w, writer, c := m2World(t)
 
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude1") {
+	if got := c.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude1") {
 		t.Fatalf("auto-join context %q", got)
 	}
 	mail := notes(t, writer, "claude1", 2)
@@ -286,7 +295,7 @@ func TestM2SessionThroughTheHookBinary(t *testing.T) {
 
 func TestM2TypedPublishNoticeIsObservationOnly(t *testing.T) {
 	w, writer, c := m2World(t)
-	if got := hostContext(t, c.fire("SessionStart", map[string]any{"source": "startup"})); !strings.Contains(got, "Joined #checkout as @claude1") {
+	if got := c.startWithContext("startup"); !strings.Contains(got, "Joined #checkout as @claude1") {
 		t.Fatalf("auto-join context %q", got)
 	}
 	id := num(t, writer.must("ask", "@claude1", "a request stays unread"), "id")

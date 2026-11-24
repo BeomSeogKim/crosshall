@@ -1,12 +1,17 @@
 // Package testreap keeps fixture dispatchers from outliving the tests that
 // start them. Only tests import it.
+//
+// A dispatcher belongs to a test run when the ready marker of that run's own
+// rendezvous named it. testreap remembers each such dispatcher by pid and
+// start time, and signals a process only while both still match, so a
+// parallel run of the same binary and a reused pid are never touched.
 package testreap
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,44 +20,58 @@ import (
 	"time"
 )
 
+type dispatcher struct {
+	pid     int
+	started string // ps lstart
+}
+
 var (
-	mu      sync.Mutex
-	watched []string
+	mu    sync.Mutex
+	ready []string // the ready markers Arm watches
+	seen  = map[dispatcher]bool{}
+	// The watchdogs' pipes stay open, and reachable, until this process
+	// exits: a collected *os.File would close and set its watchdog off.
+	pipes []*os.File
 )
 
-// The watchdog reads its stdin until the test process exits, which closes
-// the pipe even when a timeout or a kill skips t.Cleanup. It then ends every
-// dispatcher run from the watched binary, for a while, because a vendor
-// session the test left can still start one from a hook.
-const watchdog = `read -r _
+// The watchdog collects "<pid>|<start time>" lines from its stdin, a pipe only
+// the test process holds, until that process exits, however it exits. It then
+// ends each collected dispatcher still running with that start time, and for
+// ten seconds also the one the ready marker ($1) names, because a vendor
+// session the test left can restart one from a hook.
+const watchdog = `seen=
+while IFS= read -r line; do seen="$seen $line"; done
+started() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' | tr ' ' '_'; }
+dispatching() {
+  case "$(ps -ww -p "$1" -o stat= -o args= 2>/dev/null)" in
+  Z*) return 1 ;;
+  *" __dispatch"|*" __test_dispatch_guardian") return 0 ;;
+  esac
+  return 1
+}
 i=0
 while [ "$i" -lt 10 ]; do
-  ps -e -ww -o pid=,args= | while read -r pid args; do
-    for exe in "$@"; do
-      case "$args" in
-      "$exe __dispatch"|"$exe __test_dispatch_guardian") kill -TERM "$pid" 2>/dev/null ;;
-      esac
-    done
+  for entry in $seen; do
+    pid=${entry%%|*}
+    if dispatching "$pid" && [ "$(started "$pid")" = "${entry#*|}" ]; then kill -TERM "$pid"; fi
   done
+  pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null)
+  if [ -n "$pid" ] && dispatching "$pid"; then kill -TERM "$pid"; fi
   i=$((i + 1))
   sleep 1
 done`
 
-// Arm watches the crosshall binary at exe: when this test process exits,
-// however it exits, the dispatchers it runs are ended, and Check reports any
-// still running after the tests. The test still stops its own on t.Cleanup.
-func Arm(t testing.TB, exe string) {
+// Arm watches the dispatcher ready marker at readyFile, in a rendezvous only
+// this test run uses: when this test process exits, however it exits, the
+// dispatchers that marker named are ended, and Check reports any still
+// running after the tests. The test still stops its own on t.Cleanup.
+func Arm(t testing.TB, readyFile string) {
 	t.Helper()
-	// A dispatcher may name the binary by its resolved path.
-	paths := []string{exe}
-	if resolved, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil && resolved != filepath.Dir(exe) {
-		paths = append(paths, filepath.Join(resolved, filepath.Base(exe)))
-	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	watch := exec.Command("/bin/sh", append([]string{"-c", watchdog, "testreap"}, paths...)...)
+	watch := exec.Command("/bin/sh", "-c", watchdog, "testreap", readyFile)
 	watch.Stdin = r
 	// Its own process group: an interrupt to the test's group must not end
 	// the watchdog before the dispatchers.
@@ -63,37 +82,75 @@ func Arm(t testing.TB, exe string) {
 		t.Fatal(err)
 	}
 	r.Close()
+	go watch.Wait()
 	mu.Lock()
-	watched = append(watched, paths...)
+	ready = append(ready, readyFile)
+	pipes = append(pipes, w)
 	mu.Unlock()
-	t.Cleanup(func() {
-		_ = watch.Process.Kill()
-		_ = watch.Wait()
-		w.Close()
-	})
+	// Learn each dispatcher the marker names while the test runs. The pipe
+	// stays open until this process exits, so the watchdog never stands
+	// down before a later abort.
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			if d, ok := named(readyFile); ok {
+				mu.Lock()
+				fresh := !seen[d]
+				seen[d] = true
+				mu.Unlock()
+				if fresh {
+					fmt.Fprintf(w, "%d|%s\n", d.pid, strings.ReplaceAll(d.started, " ", "_"))
+				}
+			}
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 }
 
-// Check returns code, or 1 when a dispatcher of a binary Arm watched, or of
-// this test binary, still runs after the tests. It names and ends each one.
+// Check returns code, or 1 when a dispatcher an armed marker named still
+// runs after the tests, or when it cannot tell. It names and ends each one.
 // Call it in TestMain with the result of m.Run.
 func Check(code int) int {
+	if _, err := exec.LookPath("ps"); err != nil {
+		fmt.Fprintln(os.Stderr, "testreap: cannot list processes:", err)
+		return 1
+	}
 	mu.Lock()
-	binaries := append([]string(nil), watched...)
+	candidates := make([]dispatcher, 0, len(seen))
+	for d := range seen {
+		candidates = append(candidates, d)
+	}
+	files := append([]string(nil), ready...)
 	mu.Unlock()
-	if exe, err := os.Executable(); err == nil {
-		binaries = append(binaries, exe)
+	for _, file := range files {
+		if d, ok := named(file); ok {
+			candidates = append(candidates, d)
+		}
 	}
 	// A dispatcher a cleanup just signalled may still be exiting.
-	var leaked map[int]string
+	var leaked []dispatcher
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		leaked = dispatchers(binaries)
+		leaked = leaked[:0]
+		for _, d := range candidates {
+			if running(d) && !contains(leaked, d) {
+				leaked = append(leaked, d)
+			}
+		}
 		if len(leaked) == 0 || !time.Now().Before(deadline) {
 			break
 		}
 	}
-	for pid, args := range leaked {
-		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d running: %s\n", pid, args)
-		end(pid)
+	for _, d := range leaked {
+		args, _ := exec.Command("ps", "-ww", "-p", strconv.Itoa(d.pid), "-o", "args=").Output()
+		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d running: %s", d.pid, args)
+		end(d)
 	}
 	if len(leaked) > 0 && code == 0 {
 		return 1
@@ -101,34 +158,58 @@ func Check(code int) int {
 	return code
 }
 
-// dispatchers maps the pid of each live dispatcher run from one of binaries
-// to its command line.
-func dispatchers(binaries []string) map[int]string {
-	out, _ := exec.Command("ps", "-e", "-ww", "-o", "pid=,stat=,args=").Output()
-	found := map[int]string{}
-	for _, line := range strings.Split(string(out), "\n") {
-		pidText, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
-		stat, args, _ := strings.Cut(strings.TrimSpace(rest), " ")
-		pid, err := strconv.Atoi(pidText)
-		if err != nil || pid == os.Getpid() || strings.HasPrefix(stat, "Z") {
-			continue
-		}
-		args = strings.TrimSpace(args)
-		for _, exe := range binaries {
-			if args == exe+" __dispatch" || args == exe+" __test_dispatch_guardian" {
-				found[pid] = args
-			}
-		}
+// named is the dispatcher the ready marker at file names, if it runs.
+func named(file string) (dispatcher, bool) {
+	raw, err := os.ReadFile(file)
+	var marker struct {
+		PID int `json:"pid"`
 	}
-	return found
+	if err != nil || json.Unmarshal(raw, &marker) != nil || marker.PID <= 0 {
+		return dispatcher{}, false
+	}
+	started, ok := startTime(marker.PID)
+	d := dispatcher{marker.PID, started}
+	return d, ok && running(d)
 }
 
-func end(pid int) {
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+// running reports whether d still runs as a dispatcher with its start time.
+// A zombie, which nothing may reap, has ended.
+func running(d dispatcher) bool {
+	out, err := exec.Command("ps", "-ww", "-p", strconv.Itoa(d.pid), "-o", "stat=", "-o", "args=").Output()
+	line := strings.TrimSpace(string(out))
+	if err != nil || strings.HasPrefix(line, "Z") ||
+		!(strings.HasSuffix(line, " __dispatch") || strings.HasSuffix(line, " __test_dispatch_guardian")) {
+		return false
+	}
+	started, ok := startTime(d.pid)
+	return ok && started == d.started
+}
+
+func startTime(pid int) (string, bool) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	started := strings.TrimSpace(string(out))
+	return started, err == nil && started != ""
+}
+
+func end(d dispatcher) {
+	if running(d) {
+		_ = syscall.Kill(d.pid, syscall.SIGTERM)
+	}
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if syscall.Kill(pid, 0) != nil {
+		if !running(d) {
 			return
 		}
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if running(d) {
+		_ = syscall.Kill(d.pid, syscall.SIGKILL)
+	}
+}
+
+func contains(list []dispatcher, d dispatcher) bool {
+	for _, e := range list {
+		if e == d {
+			return true
+		}
+	}
+	return false
 }

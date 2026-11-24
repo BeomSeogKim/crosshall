@@ -159,6 +159,7 @@ func startCodexDispatcher(t *testing.T, exe, state string, env []string) func() 
 	if _, err := os.Lstat(rv); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fixture rendezvous already occupied: %v", err)
 	}
+	testreap.Arm(t, filepath.Join(rv, "ready"))
 	cmd := exec.Command(exe, "__dispatch")
 	cmd.Env, cmd.Dir = env, state
 	codexMust(t, cmd.Start())
@@ -360,7 +361,6 @@ func codexBinary(t *testing.T, root string, buildFlags ...string) string {
 	dir := filepath.Join(root, "owner's fixture bin")
 	codexMust(t, os.Mkdir(dir, 0700))
 	exe := filepath.Join(dir, "crosshall")
-	testreap.Arm(t, exe)
 	if override := os.Getenv("CROSSHALL_CONFORMANCE_CROSSHALL"); override != "" && len(buildFlags) == 0 {
 		source, err := os.Open(codexOutsideVendorHomes(t, override))
 		codexMust(t, err)

@@ -28,10 +28,12 @@ type AdapterStatus struct {
 	RecordedPath string         `json:"recorded_path,omitempty"`
 	PathError    string         `json:"path_error,omitempty"`
 	Install      string         `json:"install"`
+	InstalledRev string         `json:"installed_rev,omitempty"`
 	Owned        bool           `json:"owned"`
 	Policy       string         `json:"policy"`
 	Footprint    string         `json:"footprint"`
 	Pending      *PendingStatus `json:"pending,omitempty"`
+	outdated     string
 }
 
 // PendingStatus describes the scope already approved in an interrupted plan.
@@ -102,7 +104,7 @@ func (s Service) Status(ctx context.Context) ([]AdapterStatus, error) {
 				}
 			}
 		}
-		inspectStatusInstall(&status, spec, executable, s.StateRoot, record)
+		inspectStatusInstall(&status, spec, executable, s.StateRoot, record, j.Builds[spec.Adapter].Revision)
 		if journalKnown && recorded != status.Path {
 			status.RecordedPath = recorded
 		}
@@ -196,7 +198,7 @@ func statusCLI(spec hook.InstallSpec) string {
 	return unknown
 }
 
-func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executable, stateRoot string, record ownedFile) {
+func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executable, stateRoot string, record ownedFile, installedRev string) {
 	target, err := resolveConfigPath(spec)
 	if err == nil {
 		status.Path, status.PathSource = target.Path, target.Source
@@ -229,6 +231,8 @@ func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executab
 		status.PathError = err.Error()
 		return
 	}
+	measured.markOutdated(spec, installedRev)
+	status.InstalledRev, status.outdated = measured.InstalledRev, measured.outdated
 	switch {
 	case measured.InstallState == "drifted" || recognizable > measured.Installed:
 		status.Install = "drift"
@@ -272,6 +276,9 @@ func RenderStatus(w io.Writer, statuses []AdapterStatus, jsonOutput bool) error 
 		}
 		if status.PathError != "" {
 			fmt.Fprintln(&text, "  "+status.PathError)
+		}
+		if status.outdated != "" {
+			fmt.Fprintln(&text, "  "+status.outdated)
 		}
 		if status.Pending != nil {
 			pending = status.Pending

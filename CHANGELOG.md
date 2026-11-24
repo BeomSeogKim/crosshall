@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Hooks older than the binary are named:** a crosshall binary replaced without rerunning setup kept the earlier revision's hooks, and the only signs were `hooks drift` in `setup status` and `partial` in doctor. `crosshall owner start`, `crosshall owner doctor` and `crosshall setup status` now add one sentence with both revisions and the command, for example `The Claude Code hooks on disk were installed for claude-2; this crosshall installs claude-3. Run crosshall setup claude.` The adapter object in `owner doctor --json` and `setup status --json` gains `installed_rev`; no existing word or field changes, and `owner start --json` is unchanged.
+
 ## v0.2.0-rc.5 (2026-11-24)
 
 - **A prompt absorbed into a running Claude Code turn no longer blocks notices:** Claude Code 2.1.330 takes a prompt typed while a tool runs into the running turn, so the hall's turn for it never ended and every later notice was `unknown`. Manifest `claude-3` also installs the Notification hook for `idle_prompt`; the session's idle report closes such turns and ends an unknown suspension recorded before it, timed or lasting, with a `publish_suspension_lifted` event. The binary ships tested notice and turn-end evidence for Claude Code 2.1.331 on macOS arm64 with `claude-3`. Rerun `crosshall setup claude` (#236).

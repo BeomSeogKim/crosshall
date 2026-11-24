@@ -45,6 +45,9 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 			if warning := codexHookRoutingWarning(adapter.CodexHookStateRouting); warning != "" {
 				warnings = append(warnings, warning)
 			}
+			if warning := adapter.OutdatedHooks(); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
 		rendezvous, err := spool.OpenServerRoot(cfg.Rendezvous)

@@ -1,17 +1,21 @@
 // Package testreap keeps fixture dispatchers from outliving the tests that
 // start them. Only tests import it.
 //
-// A dispatcher belongs to a test run when the ready marker of that run's own
-// rendezvous named it. testreap remembers each such dispatcher by pid and
-// start time, and signals a process only while both still match, so a
-// parallel run of the same binary and a reused pid are never touched.
+// A dispatcher belongs to a test when its environment, set when it was
+// launched, names that test's own state root in CROSSHALL_STATE_DIR. Every
+// launch path passes it, including a dispatcher a vendor hook restarts. A
+// parallel run of the same binary, or a process that later reuses the pid,
+// has another state root, and testreap reads the environment again before
+// each signal.
 package testreap
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,58 +24,71 @@ import (
 	"time"
 )
 
-type dispatcher struct {
-	pid     int
-	started string // ps lstart
-}
+const stateEnv = "CROSSHALL_STATE_DIR="
 
 var (
 	mu    sync.Mutex
-	ready []string // the ready markers Arm watches
-	seen  = map[dispatcher]bool{}
+	roots []string // every armed state root, as given and resolved
 	// The watchdogs' pipes stay open, and reachable, until this process
 	// exits: a collected *os.File would close and set its watchdog off.
 	pipes []*os.File
 )
 
-// The watchdog collects "<pid>|<start time>" lines from its stdin, a pipe only
-// the test process holds, until that process exits, however it exits. It then
-// ends each collected dispatcher still running with that start time, and for
-// ten seconds also the one the ready marker ($1) names, because a vendor
-// session the test left can restart one from a hook.
-const watchdog = `seen=
-while IFS= read -r line; do seen="$seen $line"; done
-started() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' | tr ' ' '_'; }
-dispatching() {
-  case "$(ps -ww -p "$1" -o stat= -o args= 2>/dev/null)" in
-  Z*) return 1 ;;
-  *" __dispatch"|*" __test_dispatch_guardian") return 0 ;;
-  esac
-  return 1
+// The watchdog waits for EOF on its stdin, a pipe only the test process
+// holds, so it wakes when that process exits, however it exits. For ten
+// seconds it then ends, once a second, each dispatcher whose environment
+// names one of its state roots ($@): a vendor session the test left can
+// restart one from a hook. Linux reads /proc; macOS reads ps -E.
+const watchdog = `cat > /dev/null
+owned() {
+  if [ -r /proc/self/environ ]; then
+    for d in /proc/[0-9]*; do
+      case "$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)" in
+      *" __dispatch " | *" __test_dispatch_guardian ") ;;
+      *) continue ;;
+      esac
+      for root in "$@"; do
+        if tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -Fxq "CROSSHALL_STATE_DIR=$root"; then
+          echo "${d#/proc/}"
+          break
+        fi
+      done
+    done
+  else
+    ps -E -ww -ax -o pid= -o stat= -o command= | while read -r pid stat rest; do
+      case "$stat" in Z*) continue ;; esac
+      case " $rest " in
+      *" __dispatch "* | *" __test_dispatch_guardian "*) ;;
+      *) continue ;;
+      esac
+      for root in "$@"; do
+        case " $rest " in *" CROSSHALL_STATE_DIR=$root "*) echo "$pid"; break ;; esac
+      done
+    done
+  fi
 }
 i=0
 while [ "$i" -lt 10 ]; do
-  for entry in $seen; do
-    pid=${entry%%|*}
-    if dispatching "$pid" && [ "$(started "$pid")" = "${entry#*|}" ]; then kill -TERM "$pid"; fi
-  done
-  pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null)
-  if [ -n "$pid" ] && dispatching "$pid"; then kill -TERM "$pid"; fi
+  for pid in $(owned "$@"); do kill -TERM "$pid" 2>/dev/null; done
   i=$((i + 1))
   sleep 1
 done`
 
-// Arm watches the dispatcher ready marker at readyFile, in a rendezvous only
-// this test run uses: when this test process exits, however it exits, the
-// dispatchers that marker named are ended, and Check reports any still
-// running after the tests. The test still stops its own on t.Cleanup.
-func Arm(t testing.TB, readyFile string) {
+// Arm watches the dispatchers launched for stateRoot, a state root only this
+// test uses: when this test process exits, however it exits, they are ended,
+// and Check reports any still running after the tests. The test still stops
+// its own on t.Cleanup.
+func Arm(t testing.TB, stateRoot string) {
 	t.Helper()
+	armed := []string{stateRoot}
+	if resolved := resolve(stateRoot); resolved != stateRoot {
+		armed = append(armed, resolved)
+	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	watch := exec.Command("/bin/sh", "-c", watchdog, "testreap", readyFile)
+	watch := exec.Command("/bin/sh", append([]string{"-c", watchdog, "testreap"}, armed...)...)
 	watch.Stdin = r
 	// Its own process group: an interrupt to the test's group must not end
 	// the watchdog before the dispatchers.
@@ -84,73 +101,36 @@ func Arm(t testing.TB, readyFile string) {
 	r.Close()
 	go watch.Wait()
 	mu.Lock()
-	ready = append(ready, readyFile)
+	roots = append(roots, armed...)
 	pipes = append(pipes, w)
 	mu.Unlock()
-	// Learn each dispatcher the marker names while the test runs. The pipe
-	// stays open until this process exits, so the watchdog never stands
-	// down before a later abort.
-	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	go func() {
-		tick := time.NewTicker(100 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			if d, ok := named(readyFile); ok {
-				mu.Lock()
-				fresh := !seen[d]
-				seen[d] = true
-				mu.Unlock()
-				if fresh {
-					fmt.Fprintf(w, "%d|%s\n", d.pid, strings.ReplaceAll(d.started, " ", "_"))
-				}
-			}
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-			}
-		}
-	}()
 }
 
-// Check returns code, or 1 when a dispatcher an armed marker named still
-// runs after the tests, or when it cannot tell. It names and ends each one.
-// Call it in TestMain with the result of m.Run.
+// Check returns code, or 1 when a dispatcher of an armed state root still
+// runs after the tests, or when it cannot list processes. It names and ends
+// each one. Call it in TestMain with the result of m.Run.
 func Check(code int) int {
-	if _, err := exec.LookPath("ps"); err != nil {
-		fmt.Fprintln(os.Stderr, "testreap: cannot list processes:", err)
-		return 1
-	}
 	mu.Lock()
-	candidates := make([]dispatcher, 0, len(seen))
-	for d := range seen {
-		candidates = append(candidates, d)
-	}
-	files := append([]string(nil), ready...)
+	armed := append([]string(nil), roots...)
 	mu.Unlock()
-	for _, file := range files {
-		if d, ok := named(file); ok {
-			candidates = append(candidates, d)
-		}
+	if len(armed) == 0 {
+		return code
 	}
 	// A dispatcher a cleanup just signalled may still be exiting.
-	var leaked []dispatcher
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		leaked = leaked[:0]
-		for _, d := range candidates {
-			if running(d) && !contains(leaked, d) {
-				leaked = append(leaked, d)
-			}
+	var leaked []proc
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var err error
+		if leaked, err = owned(armed); err != nil {
+			fmt.Fprintln(os.Stderr, "testreap: cannot list processes:", err)
+			return 1
 		}
 		if len(leaked) == 0 || !time.Now().Before(deadline) {
 			break
 		}
 	}
-	for _, d := range leaked {
-		args, _ := exec.Command("ps", "-ww", "-p", strconv.Itoa(d.pid), "-o", "args=").Output()
-		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d running: %s", d.pid, args)
-		end(d)
+	for _, p := range leaked {
+		fmt.Fprintf(os.Stderr, "testreap: a test left dispatcher %d of %s running\n", p.pid, p.root)
+		end(p.pid, armed)
 	}
 	if len(leaked) > 0 && code == 0 {
 		return 1
@@ -158,58 +138,119 @@ func Check(code int) int {
 	return code
 }
 
-// named is the dispatcher the ready marker at file names, if it runs.
-func named(file string) (dispatcher, bool) {
-	raw, err := os.ReadFile(file)
-	var marker struct {
-		PID int `json:"pid"`
-	}
-	if err != nil || json.Unmarshal(raw, &marker) != nil || marker.PID <= 0 {
-		return dispatcher{}, false
-	}
-	started, ok := startTime(marker.PID)
-	d := dispatcher{marker.PID, started}
-	return d, ok && running(d)
+type proc struct {
+	pid  int
+	root string
 }
 
-// running reports whether d still runs as a dispatcher with its start time.
-// A zombie, which nothing may reap, has ended.
-func running(d dispatcher) bool {
-	out, err := exec.Command("ps", "-ww", "-p", strconv.Itoa(d.pid), "-o", "stat=", "-o", "args=").Output()
-	line := strings.TrimSpace(string(out))
-	if err != nil || strings.HasPrefix(line, "Z") ||
-		!(strings.HasSuffix(line, " __dispatch") || strings.HasSuffix(line, " __test_dispatch_guardian")) {
+// owned lists the running dispatchers whose environment names one of roots.
+func owned(roots []string) ([]proc, error) {
+	if runtime.GOOS == "linux" {
+		return ownedProc(roots)
+	}
+	out, err := exec.Command("ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "stat=", "-o", "command=").Output()
+	if err != nil {
+		return nil, err
+	}
+	var found []proc
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || strings.HasPrefix(fields[1], "Z") {
+			continue
+		}
+		rest := " " + strings.Join(fields[2:], " ") + " "
+		if !strings.Contains(rest, " __dispatch ") && !strings.Contains(rest, " __test_dispatch_guardian ") {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("ps printed %q", line)
+		}
+		for _, root := range roots {
+			if strings.Contains(rest, " "+stateEnv+root+" ") {
+				found = append(found, proc{pid, root})
+				break
+			}
+		}
+	}
+	return found, nil
+}
+
+func ownedProc(roots []string) ([]proc, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var found []proc
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		// A process that ended meanwhile, or a zombie, has no command line.
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		args := bytes.Split(bytes.TrimSuffix(cmdline, []byte{0}), []byte{0})
+		if err != nil || len(args) < 2 {
+			continue
+		}
+		if last := string(args[len(args)-1]); last != "__dispatch" && last != "__test_dispatch_guardian" {
+			continue
+		}
+		environ, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
+		if err != nil {
+			continue
+		}
+		for _, root := range roots {
+			if bytes.Contains(append([]byte{0}, environ...), []byte("\x00"+stateEnv+root+"\x00")) {
+				found = append(found, proc{pid, root})
+				break
+			}
+		}
+	}
+	return found, nil
+}
+
+// end signals pid while it is still a dispatcher of roots: TERM, then KILL
+// after five seconds.
+func end(pid int, roots []string) {
+	still := func() bool {
+		found, err := owned(roots)
+		if err != nil {
+			return false
+		}
+		for _, p := range found {
+			if p.pid == pid {
+				return true
+			}
+		}
 		return false
 	}
-	started, ok := startTime(d.pid)
-	return ok && started == d.started
-}
-
-func startTime(pid int) (string, bool) {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
-	started := strings.TrimSpace(string(out))
-	return started, err == nil && started != ""
-}
-
-func end(d dispatcher) {
-	if running(d) {
-		_ = syscall.Kill(d.pid, syscall.SIGTERM)
+	if !still() {
+		return
 	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if !running(d) {
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if !still() {
 			return
 		}
 	}
-	if running(d) {
-		_ = syscall.Kill(d.pid, syscall.SIGKILL)
+	if still() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
-func contains(list []dispatcher, d dispatcher) bool {
-	for _, e := range list {
-		if e == d {
-			return true
+// resolve is path with symlinks resolved in its longest existing prefix, as
+// a dispatcher that resolves its state root sees it.
+func resolve(path string) string {
+	dir, rest := path, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, rest)
 		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path
+		}
+		dir, rest = parent, filepath.Join(filepath.Base(dir), rest)
 	}
-	return false
 }

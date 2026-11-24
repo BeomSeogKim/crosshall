@@ -159,7 +159,7 @@ func startCodexDispatcher(t *testing.T, exe, state string, env []string) func() 
 	if _, err := os.Lstat(rv); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fixture rendezvous already occupied: %v", err)
 	}
-	testreap.Arm(t, filepath.Join(rv, "ready"))
+	testreap.Arm(t, state)
 	cmd := exec.Command(exe, "__dispatch")
 	cmd.Env, cmd.Dir = env, state
 	codexMust(t, cmd.Start())

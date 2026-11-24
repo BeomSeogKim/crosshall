@@ -62,7 +62,7 @@ func newConformance(t *testing.T) *conformance {
 		t.Fatal(err)
 	}
 	c.crosshall = filepath.Join(root, "bin", "crosshall")
-	testreap.Arm(t, filepath.Join(ident.Rendezvous(c.state, os.Geteuid()), "ready"))
+	testreap.Arm(t, c.state)
 	build := exec.Command("go", "build", "-o", c.crosshall, "./cmd/crosshall")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {

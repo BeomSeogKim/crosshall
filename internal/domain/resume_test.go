@@ -188,3 +188,31 @@ func TestResumeLookupStaysASearch(t *testing.T) {
 		t.Fatalf("plan does not start from the open obligations: %s", joined)
 	}
 }
+
+// An unread ask above the watermark that a prompt's pending line offered
+// is no notice's any more (Fable on #342): the resume carries it.
+func TestResumeCarriesAPromptOfferedAsk(t *testing.T) {
+	p := newPublishFixture(t)
+	p.offerReceipts = true
+	p.proveRoute()
+	p.finishPreviousTurn()
+	fresh := p.turnEndAsk(p.writer, "reader", "after-route")
+	at := p.now.UnixMilli()
+	got := p.hook(p.reader, prompt(publishTestLaunch, "user", at+1))
+	if got.OfferReceipt == nil {
+		t.Fatalf("no pending line offered: %+v", got)
+	}
+	p.confirmOffer(p.principalOf(p.reader), "g1", *got.OfferReceipt, at+2)
+	p.hook(p.reader, stop(publishTestLaunch, "user", at+3))
+	if id := p.reserve(); id != 0 {
+		t.Fatalf("a notice carried a request the prompt line offered: attempt %d", id)
+	}
+	id, _ := p.reserveResume()
+	items := inTx(t, p.fixture, func(ctx context.Context, tx store.Tx) ([]int64, error) { return publishAttemptIDs(ctx, tx, id) })
+	if !slices.Contains(items, fresh) {
+		t.Fatalf("resume items %v leave out %d, which the prompt line offered", items, fresh)
+	}
+	if ids := p.beginResume(id); !slices.Contains(ids, fresh) {
+		t.Fatalf("resume fence gave %v", ids)
+	}
+}

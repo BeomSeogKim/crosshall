@@ -137,6 +137,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 	// owner-views
 	case VerbOwnerWho:
 		return decodeLedgerCommand[OwnerWho](args)
+	case VerbOwnerOwed:
+		return decodeLedgerCommand[OwnerOwed](args)
 	case VerbOwnerDepart:
 		return decodeLedgerCommand[OwnerDepart](args)
 	case VerbOwnerDepartEnded:

@@ -14,6 +14,14 @@ import (
 )
 
 const publishCoalesce = time.Second
+
+// A member's resume notice is reserved at most resumeTries times per start,
+// resumeRetry apart: a transport that refuses, or a fence that releases it,
+// costs at most that many failures toward a suspension.
+const (
+	resumeTries = 2
+	resumeRetry = 5 * time.Minute
+)
 const publishTimeout = time.Second
 const publishRecordRetry = 250 * time.Millisecond
 const publishProveRetry = 10 * time.Second
@@ -36,6 +44,58 @@ type publisher struct {
 	homes func(adapter string) string
 	// stamps publishes the notice stamps a tick invalidated.
 	stamps func(context.Context, store.Tx) error
+	// resume holds, for this start only, the members still to get their
+	// resume notice (binding -> the end of the window) and the resume
+	// attempts in flight (attempt -> binding).
+	resumeMu       sync.Mutex
+	resume         map[int64]time.Time
+	resumeAttempts map[int64]int64
+	// resumeNext spaces the tries of a member: publishCoalesce while it
+	// cannot take its resume yet (a running turn, a held lane), resumeRetry
+	// after a reservation. resumeReserved counts its reservations.
+	resumeNext     map[int64]time.Time
+	resumeReserved map[int64]int
+}
+
+// resumeDue lists the members a tick tries to give their resume notice:
+// in the window and without one in flight. It drops those past the window.
+func (p *publisher) resumeDue(now time.Time) []int64 {
+	p.resumeMu.Lock()
+	defer p.resumeMu.Unlock()
+	busy := make(map[int64]bool, len(p.resumeAttempts))
+	for _, binding := range p.resumeAttempts {
+		busy[binding] = true
+	}
+	var due []int64
+	for binding, until := range p.resume {
+		switch {
+		case now.After(until):
+			delete(p.resume, binding)
+		case !busy[binding] && !now.Before(p.resumeNext[binding]):
+			due = append(due, binding)
+		}
+	}
+	return due
+}
+
+// resumeAttempt reports whether id is a resume attempt of this start.
+func (p *publisher) resumeAttempt(id int64) (int64, bool) {
+	p.resumeMu.Lock()
+	defer p.resumeMu.Unlock()
+	binding, ok := p.resumeAttempts[id]
+	return binding, ok
+}
+
+// resumeDone settles a resume attempt: once the transport took it (or may
+// have), the member has had its notice; released or not submitted, it
+// stays due until its last try.
+func (p *publisher) resumeDone(id, binding int64, submitted bool) {
+	p.resumeMu.Lock()
+	defer p.resumeMu.Unlock()
+	delete(p.resumeAttempts, id)
+	if submitted || p.resumeReserved[binding] >= resumeTries {
+		delete(p.resume, binding)
+	}
 }
 
 func (p *publisher) recover(ctx context.Context, now time.Time) error {
@@ -65,7 +125,13 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	var attempts []int64
 	var queues []domain.HeldPublishQueue
 	var proofs []domain.PublishProof
+	// What the tick's resume pass found, applied only once it commits: a
+	// rolled-back attempt ID may be given to another attempt.
+	var owing []domain.OwingMember
+	var resumed map[int64]int64
+	var settled, deferred []int64
 	err := p.db.Update(ctx, func(tx store.Tx) error {
+		owing, resumed, settled, deferred = nil, map[int64]int64{}, nil, nil
 		if err := domain.ActivatePublishRoutes(ctx, tx, now); err != nil {
 			return err
 		}
@@ -98,6 +164,33 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 				}
 			}
 		}
+		var due []int64
+		if startup {
+			if owing, err = domain.OwingMembers(ctx, tx, now); err != nil {
+				return err
+			}
+			for _, m := range owing {
+				if m.CanResume() {
+					due = append(due, m.BindingID)
+				}
+			}
+		} else {
+			due = p.resumeDue(now)
+		}
+		for _, binding := range due {
+			id, owes, err := domain.ReserveResume(ctx, tx, binding, now)
+			if err != nil {
+				return err
+			}
+			switch {
+			case !owes:
+				settled = append(settled, binding)
+			case id != 0:
+				resumed[id] = binding
+			default:
+				deferred = append(deferred, binding)
+			}
+		}
 		if proofs, err = domain.UnprovenPublishRoutes(ctx, tx, now); err != nil {
 			return err
 		}
@@ -122,6 +215,28 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		return err
 	}
 	p.due = next
+	p.resumeMu.Lock()
+	if startup {
+		p.resume, p.resumeAttempts = map[int64]time.Time{}, map[int64]int64{}
+		p.resumeNext, p.resumeReserved = map[int64]time.Time{}, map[int64]int{}
+		for _, m := range owing {
+			if m.CanResume() {
+				p.resume[m.BindingID] = now.Add(domain.ResumeWindow)
+			}
+		}
+	}
+	for _, binding := range settled {
+		delete(p.resume, binding)
+	}
+	for id, binding := range resumed {
+		p.resumeAttempts[id] = binding
+		p.resumeReserved[binding]++
+		p.resumeNext[binding] = now.Add(resumeRetry)
+	}
+	for _, binding := range deferred {
+		p.resumeNext[binding] = now.Add(publishCoalesce)
+	}
+	p.resumeMu.Unlock()
 	for _, id := range attempts {
 		if _, running := p.working.LoadOrStore(id, struct{}{}); running {
 			continue
@@ -174,22 +289,37 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 func (p *publisher) submit(ctx context.Context, id int64) {
 	var target domain.PublishTarget
 	var ids []int64
+	binding, resume := p.resumeAttempt(id)
+	begin := domain.BeginPublish
+	if resume {
+		begin = domain.BeginResume
+	}
 	err := p.db.Update(ctx, func(tx store.Tx) error {
 		var err error
-		if target, ids, err = domain.BeginPublish(ctx, tx, id, time.Now()); err != nil {
+		if target, ids, err = begin(ctx, tx, id, time.Now()); err != nil {
 			return err
 		}
 		return p.applyStamps(ctx, tx)
 	})
+	if resume && (err != nil || len(ids) == 0) {
+		p.resumeDone(id, binding, false)
+	}
 	if err != nil || len(ids) == 0 {
 		logPublishFailure(err)
 		return
 	}
 	outcome := domain.PublishNotSubmitted // an adapter without a sender sends nothing
 	if a, ok := publish.Lookup(target.Adapter); ok {
-		if line, ok := a.Notice(ids); ok && a.Transport().Send != nil {
+		line, ok := a.Notice(ids)
+		if resume {
+			line, ok = a.ResumeNotice(ids)
+		}
+		if ok && a.Transport().Send != nil {
 			outcome = p.send(ctx, a.Transport().Send, target, line)
 		}
+	}
+	if resume {
+		p.resumeDone(id, binding, outcome != domain.PublishNotSubmitted)
 	}
 	p.record(ctx, id, outcome, time.Now())
 }

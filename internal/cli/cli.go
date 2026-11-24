@@ -321,6 +321,9 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)
 		} else {
 			fmt.Fprintln(stdout, "dispatcher running")
+			if owed := startOwedLine(ctx, env); owed != "" {
+				fmt.Fprintln(stdout, owed)
+			}
 			if env.OutdatedHooks != nil {
 				for _, line := range env.OutdatedHooks() {
 					fmt.Fprintln(stdout, line)

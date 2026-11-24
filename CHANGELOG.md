@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **The store stops growing without bound:** once a UTC day the dispatcher deletes stored command results (`op`) and recorded commands and hook facts (`observation`) older than 7 days, keeping each session's latest hook result, newest record and newest command and every fact of a running session, and the turns of sessions whose facts are gone. It deletes at most 2,000 rows per transaction. A `--key` replays its stored result for 7 days (#256).
 - **The owner hears of a lasting notice suspension:** a third suspension of a launch, which lasts until that launch ends, gets the round stop's desktop notification and a line on the next owner command, naming `crosshall owner publish resume <binding-id>`, while it still keeps the member's notices off. Every suspension, timed or lasting, now records a `publish_suspended` event. No schema change.
 - **Dispatcher startup:** a new dispatcher retries when a status check briefly holds the state lock for reading. Concurrent starts still share one dispatcher (#102).
 - **Owner start timeout:** `crosshall owner start` reports the last startup stage it observed and the state of the dispatcher lock and readiness marker when it times out (#102).

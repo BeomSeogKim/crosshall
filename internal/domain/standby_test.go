@@ -93,7 +93,7 @@ func TestWaitTimeoutNamesTheStandbyForEachSession(t *testing.T) {
 
 // A hook-joined Codex session learns its rule 4 case where it reads the
 // rules: its start line and `join --rules`. A wait it would run only to
-// learn that cost a first turn about a minute (#2411, Lyra's R3).
+// learn that cost a first turn about a minute.
 func TestAHookJoinedSessionLearnsItsStandbyWhereItReadsTheRules(t *testing.T) {
 	f, writer := adapterChannel(t)
 	f.policy("codex", true, 1)

@@ -80,4 +80,21 @@ printf '{"Action":"output","Output":"build failed"}\n' | judge 1
   ev pass T
 } | judge 2
 
+# 3. The store row's helpers fail when sqlite3 fails, instead of comparing or
+#    copying nothing.
+functions=$(sed -n -e '/^schema_of() {/,/^}/p' -e '/^same_schema() {/,/^}/p' -e '/^copy_store() {/,/^}/p' \
+  "$here/release-gate.sh")
+[[ $(grep -c '() {' <<< "$functions") == 3 ]] || fail "the store row helpers were not found"
+eval "$functions"
+mkdir "$root/failing"
+printf '#!/bin/sh\nexit 7\n' > "$root/failing/sqlite3"
+chmod 700 "$root/failing/sqlite3"
+touch "$root/a.sqlite3" "$root/b.sqlite3"
+if PATH="$root/failing:$PATH" same_schema "$root/a.sqlite3" "$root/b.sqlite3"; then
+  fail "same_schema passed two schemas it could not read"
+fi
+if PATH="$root/failing:$PATH" copy_store "$root/a.sqlite3" "$root/copy.sqlite3"; then
+  fail "copy_store passed a copy sqlite3 did not make"
+fi
+
 echo "release gate checks passed"

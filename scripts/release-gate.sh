@@ -271,6 +271,13 @@ store_sound() { # store_sound <db> <schema>
 schema_of() { # schema_of <db>: every schema object, in a stable order
   sqlite3 "$1" "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
 }
+same_schema() { # same_schema <db> <db>: both schemas read, and equal
+  local a b
+  a=$(schema_of "$1") && b=$(schema_of "$2") && [[ -n $a && $a == "$b" ]]
+}
+copy_store() { # copy_store <db> <copy>: a consistent private copy
+  sqlite3 "$1" ".backup '$2'" && [[ -s $2 ]] && chmod 600 "$2"
+}
 row_counts() { # row_counts <db>: "<table> <rows>" per table
   local table
   sqlite3 "$1" "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name" |
@@ -299,8 +306,8 @@ row_store() {
   open_store "$head_tree" "$snap/up" || { detail "the candidate could not open the snapshot"; return 1; }
   store_sound "$snap/up/store.sqlite3" "$head_schema" || { detail "the upgraded store is not sound"; return 1; }
   open_store "$head_tree" "$snap/fresh" || { detail "the candidate could not create a fresh store"; return 1; }
-  [[ $(schema_of "$snap/up/store.sqlite3") == "$(schema_of "$snap/fresh/store.sqlite3")" ]] ||
-    { detail "the upgraded schema differs from a fresh store's"; return 1; }
+  same_schema "$snap/up/store.sqlite3" "$snap/fresh/store.sqlite3" ||
+    { detail "the upgraded schema differs from a fresh store's, or could not be read"; return 1; }
   backups=$(find "$snap/up" -name 'store-v*.sqlite3' | wc -l | tr -d ' ')
   if ((from < head_schema)); then
     [[ $backups == 1 ]] || { detail "$backups migration backups, want 1"; return 1; }
@@ -316,11 +323,10 @@ row_store() {
   # for byte as it was; without a migration it reopens the same store.
   rollback=$snap/rollback/store.sqlite3
   if ((from < head_schema)); then
-    cp -- "$backup" "$rollback"
+    cp -- "$backup" "$rollback" && chmod 600 "$rollback"
   else
-    sqlite3 "$snap/up/store.sqlite3" ".backup '$rollback'"
-  fi
-  chmod 600 "$rollback"
+    copy_store "$snap/up/store.sqlite3" "$rollback"
+  fi || { detail "could not copy the store to roll back"; return 1; }
   open_store "$base_tree" "$snap/rollback" || { detail "$base could not open the rollback store"; return 1; }
   store_sound "$rollback" "$((from < head_schema ? from : head_schema))" || { detail "the rollback store is not sound"; return 1; }
   if ((from < head_schema)); then

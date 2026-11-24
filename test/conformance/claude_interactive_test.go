@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -596,24 +597,31 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 
 	// While a turn is with the model: the model's answer waits while the
 	// hall has the request, and no notice for it may enter submission.
-	var during int64
-	submittedInTurn := false
-	attempted := func() bool {
-		return c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
-			WHERE i.message_id = ? AND a.submitting_at_ms IS NOT NULL`, during) > 0
-	}
+	var during atomic.Int64
+	var submittedInTurn atomic.Bool
 	c.model.during[c.model.count()+1] = func() {
-		during = c.writerSends("ask", "synthetic request during the turn")
-		for deadline := time.Now().Add(publishHold); !submittedInTurn && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-			submittedInTurn = attempted()
+		during.Store(c.writerSends("ask", "synthetic request during the turn"))
+		for deadline := time.Now().Add(publishHold); !submittedInTurn.Load() && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			submittedInTurn.Store(c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
+				WHERE i.message_id = ? AND a.submitting_at_ms IS NOT NULL`, during.Load()) > 0)
 		}
 	}
 	term.idle()
 	stops = c.count(named("Stop"))
 	term.keys("second synthetic prompt\r")
 	term.await("the Stop of the typed turn", func() bool { return c.count(named("Stop")) > stops })
-	if submittedInTurn {
-		t.Fatalf("the hall submitted a notice for request %d while the turn was with the model", during)
+	if submittedInTurn.Load() {
+		t.Fatalf("the hall submitted a notice for request %d while the turn was with the model", during.Load())
+	}
+	// The typed turn's Stop is the one after the stops counted before it.
+	var typed string
+	for seen, e := 0, c.events(); typed == "" && seen <= stops && len(e) > 0; e = e[1:] {
+		if e[0].Name == "Stop" {
+			if seen == stops {
+				typed = e[0].Prompt
+			}
+			seen++
+		}
 	}
 	term.await("the Stop of the notice's turn", func() bool { return c.count(named("Stop")) >= stops+2 })
 	term.idle()
@@ -627,10 +635,16 @@ func TestClaudeCodeInteractivePublishNoticeDuringATurn(t *testing.T) {
 	// The first such line of the doctor report is the Claude Code adapter's.
 	_, observed, _ := strings.Cut(c.owner("owner", "doctor"), "publish notices on")
 	observed, _, _ = strings.Cut(observed, "\n")
-	t.Logf("requests %d (idle) and %d (during a turn); callbacks: %s; %d model requests; publish notices%s", idle, during, got, c.model.count(), observed)
+	t.Logf("requests %d (idle) and %d (during a turn); callbacks: %s; %d model requests; publish notices%s", idle, during.Load(), got, c.model.count(), observed)
 	want := idleTurns(4)
 	if got != want || c.model.count() != 4 || !strings.Contains(observed, "2 submitted") || !strings.Contains(observed, "observed 2 own turn, 0 absorbed, 0 unknown") {
 		t.Fatalf("publish notices: callbacks %q, %d model requests, notices%s; want %q, 4 requests and both notices observed as their own turn", got, c.model.count(), observed, want)
+	}
+	// The held notice entered submission at or after the typed turn's Stop.
+	if n := c.storeCount(`SELECT COUNT(*) FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
+		WHERE i.message_id = ? AND a.submitting_at_ms >= (SELECT MAX(hook_at_ms) FROM observation
+			WHERE kind = 'turn_finishing' AND turn_ref = ?)`, during.Load(), typed); n != 1 {
+		t.Fatalf("%d notices for request %d entered submission after the Stop of the typed turn %q, want 1", n, during.Load(), typed)
 	}
 	term.exit()
 }

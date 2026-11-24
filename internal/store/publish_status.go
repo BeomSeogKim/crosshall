@@ -103,8 +103,13 @@ const PublishLaunchAfterOwnerFence = "(b.owner_hook_fence_ms IS NULL OR l.starte
 // a thread-routed route in its home, whose server hosts other threads too
 // and whose thread IDs are the home's own, else the proven process.
 func PublishLane() string {
-	return "CASE WHEN " + PublishThreadRouted() + ` THEN 'thread:' || r.adapter || ':' || r.thread_id || ':' || r.vendor_home
+	return "CASE WHEN " + PublishThreadRouted() + " THEN " + PublishThreadLane() + `
 		ELSE 'process:' || p.process_pid || ':' || p.process_start_ms END`
+}
+
+// PublishThreadLane is the lane of thread-routed route r: its thread in its home.
+func PublishThreadLane() string {
+	return `('thread:' || r.adapter || ':' || r.thread_id || ':' || r.vendor_home)`
 }
 
 // PublishNotSuspended holds when no suspension of the route's launch,

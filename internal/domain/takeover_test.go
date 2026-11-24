@@ -150,9 +150,19 @@ func TestTakeoverGrantExpires(t *testing.T) {
 	req := f.takeoverRequest(fresh, "vega", "ask")
 	wantOK(t, f.owner(OwnerTakeover{ID: req.ID}, "grant"))
 	f.now = f.now.Add(takeoverGrantLife + time.Second)
-	wantCode(t, f.takeoverJoin(fresh, "vega", "late"), core.ExitRefused, core.CodeBindingChanged)
-	if f.caller(fresh).Role != core.RoleUnenrolled || len(decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Takeovers) != 0 {
-		t.Fatal("an expired grant completed or is still listed")
+	if len(decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Takeovers) != 0 {
+		t.Fatal("an expired grant is still listed")
+	}
+	wantCode(t, f.owner(OwnerTakeover{ID: req.ID}, "grant-late"), core.ExitRefused, core.CodeBindingChanged)
+	// The session asks again: a new request, which the owner can grant.
+	again := f.takeoverRequest(fresh, "vega", "late")
+	if again.ID == req.ID || f.caller(fresh).Role != core.RoleUnenrolled {
+		t.Fatalf("asking after an expired grant gave %+v", again)
+	}
+	wantOK(t, f.owner(OwnerTakeover{ID: again.ID}, "grant-again"))
+	wantOK(t, f.takeoverJoin(fresh, "vega", "complete"))
+	if f.caller(fresh).Role != core.RoleMember {
+		t.Fatal("the second grant did not complete")
 	}
 }
 
@@ -168,6 +178,7 @@ func TestEnrolledSessionTakesOverAtGrant(t *testing.T) {
 	oldPrincipal := f.principalOf(old)
 	asker := f.newSession("codex")
 	wantOK(t, f.join(asker, Join{Channel: "other", Alias: "codex3"}, "asker-join"))
+	f.hook(asker, codexStart("startup", publish.ModeDaemon, f.now.UnixMilli()+1))
 	askerPrincipal := f.principalOf(asker)
 	askerBinding := bindingIDOf(t, f, askerPrincipal)
 
@@ -196,9 +207,11 @@ func TestEnrolledSessionTakesOverAtGrant(t *testing.T) {
 	}
 	wantCode(t, f.owner(OwnerTakeover{ID: req.ID}, "grant-again"), core.ExitRefused, core.CodeBindingChanged)
 
-	// The session's next hook arrives under the member: its prompt binds
-	// a route there, and a notice reaches it.
-	f.hook(asker, codexStart("resume", publish.ModeDaemon, f.now.UnixMilli()+1))
+	// The running session gets no new start: its launch and route came with
+	// it, so its next prompt runs under the member, and a notice reaches it.
+	if f.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND ended_hook_at_ms IS NULL`, askerPrincipal) != 0 {
+		t.Fatal("the session's launch stayed open under its old principal")
+	}
 	f.hook(asker, codexPrompt("t1", f.now.UnixMilli()+1))
 	if _, _, _, _, state, reason, _ := routeState(t, f, binding); state != "active" ||
 		f.count(`SELECT COUNT(*) FROM adapter_launch WHERE principal_id = ? AND ended_hook_at_ms IS NULL`, oldPrincipal) != 1 {

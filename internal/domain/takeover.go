@@ -159,8 +159,12 @@ func takeoverOffer(ctx context.Context, tx store.Tx, channel channelRow, alias, 
 	if err != nil || !ended {
 		return "", err
 	}
-	return fmt.Sprintf(" @%s's last session ended %s. To ask the owner to give @%s to this session, run crosshall join %s --as %s --takeover.",
-		alias, time.UnixMilli(end.atMS).Format("15:04"), alias, channel.name, alias), nil
+	word := "ended"
+	if !end.verified {
+		word = "was reported ended" // only by the session's own hook
+	}
+	return fmt.Sprintf(" @%s's last session %s %s. To ask the owner to give @%s to this session, run crosshall join %s --as %s --takeover.",
+		alias, word, time.UnixMilli(end.atMS).Format("15:04"), alias, channel.name, alias), nil
 }
 
 // takeoverEvent is one takeover event of a binding.
@@ -255,11 +259,9 @@ func (s *Service) requestTakeover(ctx context.Context, tx store.Tx, caller core.
 		return core.Result{}, 0, err
 	}
 	hash := takeoverKeyHash(req.Vendor, req.SessionKey)
+	// An expired grant closes its request: this run asks again.
+	st.closed = st.closed || st.grant != nil && ms(now) > st.grant.atMS+takeoverGrantLife.Milliseconds()
 	if principal == 0 && st.request != nil && !st.closed && st.request.ask.KeyHash == hash && st.grant != nil {
-		if ms(now) > st.grant.atMS+takeoverGrantLife.Milliseconds() {
-			return Refuse(core.CodeBindingChanged, fmt.Sprintf("the owner's grant of takeover %d expired", st.request.seq),
-				"run "+retry+" to ask again"), 0, nil
-		}
 		return s.completeTakeover(ctx, tx, req, b, st.request.seq, now)
 	}
 	_, ended, err := endedSession(ctx, tx, b.id, b.principal)
@@ -374,7 +376,7 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 		return Refuse(core.CodeOwnerOnly, "only the owner can give a member to another session", "run it from the owner's own shell, not an agent session"), nil
 	}
 	if cmd.ID <= 0 {
-		return Fail(core.ExitUsage, "", "owner takeover needs a positive request ID", "crosshall owner who"), nil
+		return Fail(core.ExitUsage, "", "owner takeover needs a positive request ID", "crosshall owner who --all"), nil
 	}
 	owner, err := ownerPrincipal(ctx, tx, now)
 	if err != nil {
@@ -387,7 +389,7 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 	var subject string
 	err = tx.QueryRowContext(ctx, `SELECT subject FROM event WHERE seq = ? AND kind = ?`, cmd.ID, eventTakeoverRequested).Scan(&subject)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Refuse(core.CodeNotFound, fmt.Sprintf("no takeover request %d", cmd.ID), "crosshall owner who"), nil
+		return Refuse(core.CodeNotFound, fmt.Sprintf("no takeover request %d", cmd.ID), "crosshall owner who --all"), nil
 	}
 	if err != nil {
 		return core.Result{}, err
@@ -406,7 +408,7 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 	}
 	ask := st.request.ask
 	if st.closed {
-		return Refuse(core.CodeBindingChanged, fmt.Sprintf("takeover %d is closed: @%s's binding was restored, departed or already given", cmd.ID, ask.Alias), "crosshall owner who"), nil
+		return Refuse(core.CodeBindingChanged, fmt.Sprintf("takeover %d is closed: @%s's binding was restored, departed or already given", cmd.ID, ask.Alias), "crosshall owner who --all"), nil
 	}
 	b := takenBinding{id: binding}
 	var state string
@@ -415,13 +417,13 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 		return core.Result{}, err
 	}
 	if state != "live" {
-		return Refuse(core.CodeBindingChanged, fmt.Sprintf("@%s in #%s is no longer a member", ask.Alias, ask.Channel), "crosshall owner who"), nil
+		return Refuse(core.CodeBindingChanged, fmt.Sprintf("@%s in #%s is no longer a member", ask.Alias, ask.Channel), "crosshall owner who --all"), nil
 	}
 	if _, ended, err := endedSession(ctx, tx, b.id, b.principal); err != nil || !ended {
 		if err != nil {
 			return core.Result{}, err
 		}
-		return Refuse(core.CodeBindingChanged, fmt.Sprintf("@%s's session in #%s is active again", ask.Alias, ask.Channel), "crosshall owner who"), nil
+		return Refuse(core.CodeBindingChanged, fmt.Sprintf("@%s's session in #%s is active again", ask.Alias, ask.Channel), "crosshall owner who --all"), nil
 	}
 	out := OwnerTakeoverResult{ID: cmd.ID, BindingID: binding, Channel: ask.Channel, Alias: ask.Alias, Session: ask.Session}
 	if st.grant != nil {
@@ -463,7 +465,7 @@ func (s *Service) moveSession(ctx context.Context, tx store.Tx, owner, request i
 		return nil, err
 	}
 	if live == 0 {
-		r := Refuse(core.CodeBindingChanged, fmt.Sprintf("the session that asked for @%s is gone", ask.Alias), "crosshall owner who")
+		r := Refuse(core.CodeBindingChanged, fmt.Sprintf("the session that asked for @%s is gone", ask.Alias), "crosshall owner who --all")
 		return &r, nil
 	}
 	open, err := memberOpenRequests(ctx, tx, from)
@@ -516,7 +518,44 @@ func (s *Service) moveSession(ctx context.Context, tx store.Tx, owner, request i
 		vendor_version = (SELECT vendor_version FROM principal WHERE id = ?1) WHERE id = ?2`, from, b.principal); err != nil {
 		return nil, err
 	}
-	return nil, handOverBinding(ctx, tx, b.id, b.principal, owner, handedOver{BindingID: b.id, Takeover: request}, now)
+	if err := handOverBinding(ctx, tx, b.id, b.principal, owner, handedOver{BindingID: b.id, Takeover: request}, now); err != nil {
+		return nil, err
+	}
+	// The asking session runs on and gets no new start: its open launches
+	// and its route go with it, as a channel move carries a route.
+	if err := carryLaunches(ctx, tx, from, b.principal, now); err != nil {
+		return nil, err
+	}
+	if own.BindingID == 0 {
+		return nil, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE publish_route_proof SET activated_at_ms = NULL WHERE binding_id = ?`, b.id); err != nil {
+		return nil, err
+	}
+	if err := registerMovedPublishRoute(ctx, tx, own.BindingID, b.id, now); err != nil {
+		return nil, err
+	}
+	_, err = MarkReachChanges(ctx, tx, now)
+	return nil, err
+}
+
+// carryLaunches gives principal to the open launches of principal from: a
+// launch of the same reference (a session-scoped one) is reopened with the
+// moving launch's values, and from's own launch ends.
+func carryLaunches(ctx context.Context, tx store.Tx, from, to int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms,
+			process_pid, process_start_identity, ended_by_process, pid_namespace)
+		SELECT ?1, launch_ref, profile, verified, started_hook_at_ms, process_pid, process_start_identity, ended_by_process, pid_namespace
+		FROM adapter_launch WHERE principal_id = ?2 AND ended_hook_at_ms IS NULL AND fenced = 0
+		ON CONFLICT(principal_id, launch_ref) DO UPDATE SET profile = excluded.profile, verified = excluded.verified,
+			started_hook_at_ms = excluded.started_hook_at_ms, ended_hook_at_ms = NULL, fenced = 0,
+			process_pid = excluded.process_pid, process_start_identity = excluded.process_start_identity,
+			ended_by_process = excluded.ended_by_process, pid_namespace = excluded.pid_namespace`, to, from); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET ended_hook_at_ms = MAX(started_hook_at_ms, ?)
+		WHERE principal_id = ? AND ended_hook_at_ms IS NULL AND fenced = 0`, ms(now), from)
+	return err
 }
 
 // openTakeovers lists the requests owner who shows: the newest open

@@ -396,6 +396,8 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 		Members  []vendor `json:"members"`
 		Vendors  []vendor `json:"vendors"`
 		Warnings []string `json:"warnings"`
+		// Takeover is set when a join --takeover only asked: nothing joined.
+		Takeover json.RawMessage `json:"takeover"`
 	}
 	if err := json.Unmarshal(data, &details); err != nil {
 		return nil, err
@@ -418,7 +420,10 @@ func withWarnings(data json.RawMessage, id ident.Identity, verb string, hintAcke
 				} else {
 					msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions.", name, identity.Version)
 				}
-				msg = "Join succeeded. " + msg + " No action is needed for this warning."
+				if details.Takeover == nil {
+					msg = "Join succeeded. " + msg
+				}
+				msg += " No action is needed for this warning."
 			case "agy":
 				if !identity.UnknownAntigravityCLI() {
 					msg = fmt.Sprintf("Crosshall has not verified how %s %s identifies sessions", identity.Vendor, identity.Version)

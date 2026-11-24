@@ -74,11 +74,11 @@ func ledgerOwnerCall(args []string) (Call, error) {
 		return restoreCall(args[1:])
 	case "takeover":
 		if len(args) != 2 {
-			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who lists the open requests)")
+			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who --all lists the open requests)")
 		}
 		id, err := parsePositive(args[1])
 		if err != nil {
-			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who lists the open requests)")
+			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who --all lists the open requests)")
 		}
 		call.Command = domain.OwnerTakeover{ID: id}
 		return call, nil

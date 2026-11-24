@@ -36,7 +36,7 @@ func (s *Service) exitTracking(ctx context.Context, tx store.Tx, principal int64
 		COALESCE(ap.enabled, 0), COALESCE(l.pid_namespace, ''),
 		COALESCE(l.verified = 1 AND l.launch_ref <> '`+SessionLaunch+`', 0),
 		COALESCE(l.verified = 1 AND l.launch_ref GLOB 'pid-*'
-			AND json_extract(l.profile, '$.adapter') = 'claude', 0),
+			AND `+processLaunchProfile("l.profile")+`, 0),
 		COALESCE(h.pid, 0), COALESCE(h.start_identity, 0), COALESCE(h.pid_namespace, '')
 		FROM principal p LEFT JOIN member_host h ON h.principal_id = p.id
 		LEFT JOIN adapter_launch l ON l.rowid = (

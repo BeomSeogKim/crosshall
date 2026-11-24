@@ -274,6 +274,12 @@ func serve(paths statePaths, pathErr error) int {
 					ident.Proof{Generation: req.Generation, KeyDigest: req.KeyDigest, VendorVersion: req.VendorVersion,
 						Join: req.Verb == domain.VerbJoin})
 				if refusal, ok := identityRefusal(err); ok {
+					refusal, err = nameTakeover(req, refusal, func(digest string) (string, error) {
+						return domain.TakeoverGivenAway(ctx, tx, digest)
+					})
+					if err != nil {
+						return dispatch.Resolution{}, err
+					}
 					return dispatch.Resolution{Refusal: &refusal}, nil
 				}
 				if err != nil {
@@ -317,6 +323,20 @@ func serve(paths statePaths, pathErr error) int {
 		return 1
 	}
 	return 0
+}
+
+// nameTakeover tells an explicit command from a conversation whose member
+// a takeover gave away who has it now. A hook keeps the retired-key
+// answer: given scans the event log.
+func nameTakeover(req wire.Request, refusal core.Result, given func(digest string) (string, error)) (core.Result, error) {
+	if refusal.Code != core.CodeKeyRetired || req.IsHook() {
+		return refusal, nil
+	}
+	message, err := given(req.KeyDigest)
+	if err != nil || message == "" {
+		return refusal, err
+	}
+	return domain.Fail(refusal.Status, refusal.Code, message, "this conversation is no longer a member; a new session can join"), nil
 }
 
 // identityRefusal maps an identity error to the result the caller sees.

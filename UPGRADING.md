@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+Known issue when going back to v0.2.0 or earlier: a hook of the older binary does not recognize a resume notice (`... The hall restarted and you still owe these requests ...`) that the session echoes, so its receipt never comes. A resume still being submitted when you switch back then holds that session's notices until that session ends or is restarted; v0.2.0 has no command that releases it.
+
 ## To v0.2.0
 
 Upgrading from v0.2.0-rc.5 keeps the database at schema 29. No migration runs.

@@ -72,8 +72,22 @@ func ledgerOwnerCall(args []string) (Call, error) {
 	switch args[0] {
 	case "restore":
 		return restoreCall(args[1:])
+	case "takeover":
+		if len(args) != 2 {
+			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who --all lists the open requests)")
+		}
+		id, err := parsePositive(args[1])
+		if err != nil {
+			return Call{}, fmt.Errorf("usage: crosshall owner takeover <id> (crosshall owner who --all lists the open requests)")
+		}
+		call.Command = domain.OwnerTakeover{ID: id}
+		return call, nil
 	case "depart":
-		usage := fmt.Errorf("usage: crosshall owner depart <binding-id> --seen <token> (get the binding ID and token from crosshall owner who --all)")
+		if len(args) == 2 && args[1] == "--ended" {
+			call.Command = domain.OwnerDepartEnded{}
+			return call, nil
+		}
+		usage := fmt.Errorf("usage: crosshall owner depart <binding-id> --seen <token> (get the binding ID and token from crosshall owner who --all), or crosshall owner depart --ended")
 		if len(args) < 3 {
 			return Call{}, usage
 		}

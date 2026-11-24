@@ -59,6 +59,9 @@ func renderPublishSwitch(data []byte, w io.Writer) error {
 	if r.BuildStopLifted {
 		fmt.Fprintln(w, "  lifted the publish stop for this build across all members")
 	}
+	if r.ReleasedNotice != 0 {
+		fmt.Fprintf(w, "  released notice %d, which had no receipt\n", r.ReleasedNotice)
+	}
 	if r.Publish != nil {
 		fmt.Fprintf(w, "  publish: %s\n", publishWords(*r.Publish))
 	}
@@ -132,6 +135,8 @@ func whyText(w domain.Wake, note bool) string {
 		return "notices suspended" + until
 	case domain.WhyOff:
 		return "notices off"
+	case domain.WhyEnded:
+		return "its session ended (it may be closed)"
 	case domain.WhyCapped:
 		return "notice limit" + until
 	case domain.WhyHeld:

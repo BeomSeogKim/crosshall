@@ -82,6 +82,7 @@ type server struct {
 	retention       retention
 	lastLogged      string
 	adapterSequence uint64
+	revisions       revisionNotes
 }
 
 // Serve runs in the dedicated dispatcher process until ctx is canceled.
@@ -197,7 +198,7 @@ func Serve(ctx context.Context, cfg Config) error {
 			return nil
 		case result := <-launches.pending:
 			if err := launches.apply(ctx, &s, result); err != nil && !errors.Is(err, context.Canceled) {
-				s.logFailure(fmt.Errorf("reconcile Claude launches: %w", err))
+				s.logFailure(fmt.Errorf("reconcile process launches: %w", err))
 			}
 			continue
 		case <-tick.C:
@@ -740,7 +741,7 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		}
 		switch request.Command.Verb() {
 		case domain.VerbCreateChannel, domain.VerbJoin, domain.VerbRead, domain.VerbCancel, domain.VerbBudgetGrant, domain.VerbRestore, "ask", "reply",
-			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbPublish, domain.VerbOwnerPublish:
+			domain.VerbNote, domain.VerbLeave, domain.VerbFocus, domain.VerbOwnerDepart, domain.VerbOwnerDepartEnded, domain.VerbPublish, domain.VerbOwnerPublish:
 			if req.OpKey == "" {
 				result = commandError(core.ExitUsage, "", "an operation key is required for this command")
 				return errRefusalRollback

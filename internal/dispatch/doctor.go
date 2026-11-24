@@ -42,7 +42,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if stateErr == nil {
 		adapters = localDoctorAdapters(cfg.StateRoot)
 		for _, adapter := range adapters {
-			if warning := codexHookRoutingWarning(adapter.CodexHookStateRouting); warning != "" {
+			if warning := hookRoutingWarning(adapter.Adapter, adapter.CodexHookStateRouting); warning != "" {
 				warnings = append(warnings, warning)
 			}
 			if warning := adapter.OutdatedHooks(); warning != "" {
@@ -72,14 +72,15 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		}
 		if marker := readReady(cfg.Rendezvous); marker.live(state) {
 			readiness.record(fmt.Sprintf("dispatcher PID %d is ready", marker.PID), nil)
+			warnings = append(warnings, unknownRevisionWarnings(state, marker.Instance)...)
 		} else {
 			readiness.record("", errors.New("no live dispatcher readiness marker"))
 		}
 		snapshot, err := doctorStoreInfo(ctx, state, adapters, now)
 		version.record(fmt.Sprintf("schema version %d", snapshot.SchemaVersion), err)
 		for _, v := range snapshot.IdentityVersions {
-			id := ident.Identity{Vendor: "agy", Version: v}
-			if id.UnknownAntigravityCLI() {
+			id := ident.Identity{Vendor: v.Vendor, Version: v.Version}
+			if id.UnknownCLI() {
 				msg := id.Warning()
 				if !slices.Contains(warnings, msg) {
 					warnings = append(warnings, msg)
@@ -151,7 +152,7 @@ func doctorStoreInfo(ctx context.Context, state *os.Root, adapters []doctorAdapt
 	for _, adapter := range adapters {
 		names = append(names, adapter.Adapter)
 	}
-	snapshot, err := store.InspectDoctorStoreAt(ctx, spool.ServerFiles{Root: state}, names, "agy", now)
+	snapshot, err := store.InspectDoctorStoreAt(ctx, spool.ServerFiles{Root: state}, names, ident.IndirectVersionVendors(), now)
 	for i := range adapters {
 		adapter := &adapters[i]
 		if state, ok := snapshot.Adapters[adapter.Adapter]; ok {

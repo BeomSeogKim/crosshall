@@ -7,6 +7,13 @@
   "event_field": "hook_event_name",
   "session_field": "session_id",
   "session_env": "CODEX_THREAD_ID",
+  "cli_name": "Codex CLI",
+  "identity": {
+    "evidence": "observed",
+    "verified_on": ["0.170.0"],
+    "agent_markers": ["CODEX_SESSION_ID"],
+    "version": {"env": "CODEX_VERSION"}
+  },
   "turn_field": "turn_id",
   "daemon": {
     "home_env": "CODEX_HOME",

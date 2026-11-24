@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
@@ -440,11 +441,14 @@ func printPlan(out io.Writer, p plan) error {
 	for _, item := range p.Retained {
 		fmt.Fprintf(&contents, "  retain %s %s (%s)\n", item.Adapter, item.Path, item.Reason)
 	}
-	commandRules, codexRules := false, false
+	commandRules := false
+	var sandboxNotes []string
 	for _, f := range p.Files {
 		if p.Kind == "setup" {
 			commandRules = commandRules || f.AddText != ""
-			codexRules = codexRules || (f.Adapter == "codex" && f.AddText != "")
+			if i, ok := installers[f.Adapter]; ok && f.AddText != "" && i.sandboxNote() != "" && !slices.Contains(sandboxNotes, i.sandboxNote()) {
+				sandboxNotes = append(sandboxNotes, i.sandboxNote())
+			}
 			for _, entry := range f.Add {
 				commandRules = commandRules || entry.Event == ""
 			}
@@ -506,13 +510,13 @@ func printPlan(out io.Writer, p plan) error {
 		if commandRules && !p.Resume {
 			fmt.Fprintln(&contents, "Rules for the bare command crosshall trust the agent's PATH to select the executable.")
 		}
-		if codexRules {
-			fmt.Fprintln(&contents, "Codex allow rules run matching commands outside its sandbox.")
+		for _, note := range sandboxNotes {
+			fmt.Fprintln(&contents, note)
 		}
 		for _, adapter := range p.Adapters {
 			fmt.Fprintf(&contents, "Enable %s adapter policy after installation.\n", adapter)
-			if adapter == "codex" {
-				fmt.Fprintln(&contents, "Review and trust these hooks with Codex /hooks.")
+			if i, ok := installers[adapter]; ok && i.trustHint() != "" {
+				fmt.Fprintln(&contents, i.trustHint())
 			}
 		}
 		if len(p.Adapters) > 0 && !p.quietConsent {

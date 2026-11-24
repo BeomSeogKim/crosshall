@@ -95,31 +95,7 @@ func (s *Service) ownerDepart(ctx context.Context, tx store.Tx, caller core.Call
 		return Refuse(core.CodeBindingChanged, "the binding changed since it was listed", list), nil
 	}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ?,
-		departed_by_hook = 0, departed_by_owner = 1, owner_hook_fence_ms = MAX(?, COALESCE(owner_hook_fence_ms, 0),
-			COALESCE((SELECT MAX(started_hook_at_ms) FROM adapter_launch WHERE principal_id = ?), 0))
-		WHERE id = ?`, ms(now), ms(now), principal, cmd.BindingID); err != nil {
-		return core.Result{}, err
-	}
-	if err := invalidatePublishRouteForLeave(ctx, tx, cmd.BindingID, now); err != nil {
-		return core.Result{}, err
-	}
-	if err := forgetHost(ctx, tx, principal); err != nil {
-		return core.Result{}, err
-	}
-	if err := rosterChange(ctx, tx, channel, principal, "departed"); err != nil {
-		return core.Result{}, err
-	}
-	if ValidAdapterName(vendor) {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_dirty(principal_id, notice, reminder) VALUES (?, 1, 1)
-			ON CONFLICT(principal_id) DO UPDATE SET notice = 1, reminder = 1`, principal); err != nil {
-			return core.Result{}, err
-		}
-		if err := refreshMemberAdapterCapabilities(ctx, tx, principal, vendor); err != nil {
-			return core.Result{}, err
-		}
-	}
-	if err := audit(ctx, tx, "binding_departed", scope, owner, out, now); err != nil {
+	if err := departByOwner(ctx, tx, owner, channel, principal, vendor, out, now); err != nil {
 		return core.Result{}, err
 	}
 	result, err := OK(out)
@@ -127,4 +103,38 @@ func (s *Service) ownerDepart(ctx context.Context, tx store.Tx, caller core.Call
 		return core.Result{}, err
 	}
 	return result, record(ctx, tx, owner, req.OpKey, scope, cmd, result, now)
+}
+
+// departByOwner departs live binding out.BindingID of principal in channel
+// on the owner's word: its route ends, its host is forgotten, the roster
+// changes, and the owner's departure is audited.
+func departByOwner(ctx context.Context, tx store.Tx, owner, channel, principal int64, vendor string, out OwnerDepartResult, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE binding SET state = 'departed', departed_at_ms = ?,
+		departed_by_hook = 0, departed_by_owner = 1, owner_hook_fence_ms = MAX(?, COALESCE(owner_hook_fence_ms, 0),
+			COALESCE((SELECT MAX(started_hook_at_ms) FROM adapter_launch WHERE principal_id = ?), 0))
+		WHERE id = ?`, ms(now), ms(now), principal, out.BindingID); err != nil {
+		return err
+	}
+	if err := invalidatePublishRouteForLeave(ctx, tx, out.BindingID, now); err != nil {
+		return err
+	}
+	if err := forgetHost(ctx, tx, principal); err != nil {
+		return err
+	}
+	if err := rosterChange(ctx, tx, channel, principal, "departed"); err != nil {
+		return err
+	}
+	if ValidAdapterName(vendor) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_dirty(principal_id, notice, reminder) VALUES (?, 1, 1)
+			ON CONFLICT(principal_id) DO UPDATE SET notice = 1, reminder = 1`, principal); err != nil {
+			return err
+		}
+		if err := refreshMemberAdapterCapabilities(ctx, tx, principal, vendor); err != nil {
+			return err
+		}
+	}
+	if err := audit(ctx, tx, "binding_departed", "binding:"+strconv.FormatInt(out.BindingID, 10), owner, out, now); err != nil {
+		return err
+	}
+	return nil
 }

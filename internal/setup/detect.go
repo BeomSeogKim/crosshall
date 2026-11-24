@@ -129,16 +129,11 @@ func resolveConfigPath(spec hook.InstallSpec) (configTarget, error) {
 		}
 	} else {
 		source = "default"
-		switch spec.Adapter {
-		case "claude":
-			config = filepath.Join(home, ".claude")
-		case "codex":
-			config = filepath.Join(home, ".codex")
-		case "agy":
-			config = filepath.Join(home, ".gemini", "config")
-		default:
+		i, ok := installerOf(spec)
+		if !ok {
 			return configTarget{}, fmt.Errorf("no default configuration home for adapter %s", spec.Adapter)
 		}
+		config = i.defaultHome(home)
 	}
 	if spec.File != filepath.Base(spec.File) || spec.File == "." || spec.File == ".." {
 		return configTarget{}, errors.New("invalid adapter install filename")
@@ -151,15 +146,11 @@ func resolveCommandRulePath(spec hook.InstallSpec) (configTarget, error) {
 	if err != nil {
 		return configTarget{}, err
 	}
-	switch spec.Adapter {
-	case "claude":
-	case "codex":
-		target.Path = filepath.Join(filepath.Dir(target.Path), "rules", "crosshall.rules")
-	case "agy":
-		target.Path = filepath.Join(target.Home, ".gemini", "antigravity-cli", "settings.json")
-	default:
+	i, ok := installerOf(spec)
+	if !ok {
 		return configTarget{}, fmt.Errorf("no command rule path for adapter %s", spec.Adapter)
 	}
+	target.Path = i.rulePath(target)
 	return target, nil
 }
 

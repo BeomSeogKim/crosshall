@@ -23,6 +23,8 @@ Member commands:
   join [<channel>] [--as <alias>] [--focus "..."]   Join a channel
                                                     --move moves to the named channel
                                                     --rules prints the member rules again
+                                                    --takeover asks the owner for the alias of
+                                                    a member whose session ended
   who                                               List the members of your channel
   read [<id>...]                                    Read the oldest unread messages, or the given ones
   inbox                                             List unread messages and open obligations
@@ -64,6 +66,8 @@ Owner commands (from a separate owner terminal):
   owner channel create <name> [--topic "..."]         Create a channel
   owner who --all                                   List all channel bindings
   owner depart <binding-id> --seen <token>           Mark a binding departed
+  owner depart --ended                              Depart members whose session ended over 12 hours
+                                                    ago and have no open request
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
   owner channel default <channel> [--repo <dir>]     Set a repository's default channel
   owner channel auto on|off                         Give each Git repository its own channel
@@ -78,6 +82,8 @@ Owner commands (from a separate owner terminal):
   owner budget grant <binding-id> [--rounds <n>]    Reset the new threads of a live or departed
                                                     member, by the binding owner status shows
   owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
+  owner takeover <id>                               Give a member whose session ended to the
+                                                    session that asked with join --takeover
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
   owner telemetry [on|off|show|sent]                 Manage usage statistics
@@ -86,6 +92,7 @@ Owner commands (from a separate owner terminal):
                                                     switch beats the adapter switch, which
                                                     beats the hall switch
   owner publish resume <binding-id>                 Lift a member's automatic publish suspension
+                                                    and release a notice that has no receipt
   owner adapter evidence <file>                     Record a conformance run's results
 `
 
@@ -279,7 +286,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 	}
 	deadline := env.CommandDeadline
 	switch args[0] {
-	case "start", "channel", "who", "log", "adapter", "publish", "status", "cancel", "budget", "restore", "depart":
+	case "start", "channel", "who", "log", "adapter", "publish", "status", "cancel", "budget", "restore", "depart", "takeover":
 		if env.Stdin != nil {
 			asked, err := offerTelemetry(env, opts, bufio.NewReader(env.Stdin), stdout, "owner-prompt")
 			if err != nil {
@@ -314,6 +321,9 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 			fmt.Fprintln(stdout, `{"v":1,"ok":true,"kind":"owner start"}`)
 		} else {
 			fmt.Fprintln(stdout, "dispatcher running")
+			if owed := startOwedLine(ctx, env); owed != "" {
+				fmt.Fprintln(stdout, owed)
+			}
 			if env.OutdatedHooks != nil {
 				for _, line := range env.OutdatedHooks() {
 					fmt.Fprintln(stdout, line)
@@ -364,7 +374,7 @@ func runOwner(ctx context.Context, env Env, opts options, args []string, stdout,
 		}
 		return send(ctx, env, opts, Call{Owner: true, Command: cmd, OpKey: opKey(env, opts)}, stdout, stderr)
 	// read-ledger
-	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore" || args[0] == "depart":
+	case args[0] == "status" || args[0] == "cancel" || args[0] == "budget" || args[0] == "restore" || args[0] == "depart" || args[0] == "takeover":
 		return readLedgerOwner(ctx, env, opts, args, stdout, stderr)
 		// end read-ledger
 	}
@@ -478,6 +488,10 @@ func parseJoin(args []string) (domain.Join, error) {
 			cmd.Move = true
 			continue
 		}
+		if args[i] == "--takeover" {
+			cmd.Takeover = true
+			continue
+		}
 		if strings.HasPrefix(args[i], "-") {
 			return cmd, fmt.Errorf("unknown option %q for join", args[i])
 		}
@@ -488,6 +502,9 @@ func parseJoin(args []string) (domain.Join, error) {
 		if !domain.ValidName(cmd.Channel) {
 			return cmd, fmt.Errorf("invalid channel name %q", args[i])
 		}
+	}
+	if cmd.Takeover && (cmd.Channel == "" || cmd.Alias == "" || cmd.Move) {
+		return cmd, fmt.Errorf("--takeover needs a channel and an alias: crosshall join <channel> --as <alias> --takeover")
 	}
 	if cmd.Channel == "" {
 		if cmd.Move {

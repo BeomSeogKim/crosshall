@@ -819,6 +819,7 @@ func (fixtureAdapter) BackgroundWakes() bool      { return true }
 func (fixtureAdapter) Notice(ids []int64) (string, bool) {
 	return "fixture " + notice.IDList(ids), true
 }
+func (fixtureAdapter) ResumeNotice(ids []int64) (string, bool) { return "", false }
 func (fixtureAdapter) Echo(prompt string) (string, bool) {
 	return strings.CutPrefix(prompt, "fixture ")
 }

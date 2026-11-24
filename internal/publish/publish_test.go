@@ -166,12 +166,13 @@ func (fixture) AcceptsSocket(string) bool        { return false }
 func (fixture) SessionRoute(ref string, launch Route) Route {
 	return Route{ThreadID: ref, Mode: launch.Mode}
 }
-func (fixture) ThreadRouted() bool                { return false }
-func (fixture) Reach(Route) string                { return "" }
-func (fixture) BackgroundWakes() bool             { return true }
-func (fixture) Notice(ids []int64) (string, bool) { return "fixture " + notice.IDList(ids), true }
-func (fixture) Echo(prompt string) (string, bool) { return strings.CutPrefix(prompt, "fixture ") }
-func (f fixture) Transport() Transport            { return f.transport }
+func (fixture) ThreadRouted() bool                  { return false }
+func (fixture) Reach(Route) string                  { return "" }
+func (fixture) BackgroundWakes() bool               { return true }
+func (fixture) Notice(ids []int64) (string, bool)   { return "fixture " + notice.IDList(ids), true }
+func (fixture) ResumeNotice([]int64) (string, bool) { return "", false }
+func (fixture) Echo(prompt string) (string, bool)   { return strings.CutPrefix(prompt, "fixture ") }
+func (f fixture) Transport() Transport              { return f.transport }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }
@@ -320,4 +321,38 @@ func TestCodexServerStandIn(t *testing.T) {
 		t.Skip("runs only as a stand-in server")
 	}
 	time.Sleep(30 * time.Second)
+}
+
+// A resume notice names the owed requests twice, the second time in the
+// command to read them again; each adapter echoes only its own, and only
+// when both lists agree.
+func TestResumeNoticeEchoesItsIDs(t *testing.T) {
+	claude, _ := Lookup("claude")
+	codex, _ := Lookup("codex")
+	line, ok := claude.ResumeNotice([]int64{2087, 2090})
+	want := "[crosshall] pending: 2087 2090. This notice is from crosshall, not from a Claude session. The hall restarted and you still owe these requests: " +
+		"run crosshall read 2087 2090 to see them again, carry on, and use crosshall reply to answer each, ask for more time or decline, as the member rules say."
+	if !ok || line != want {
+		t.Fatalf("resume notice = %q", line)
+	}
+	if ids, ok := claude.Echo(line); !ok || ids != "2087 2090" {
+		t.Fatalf("claude echo of its resume notice = %q, %v", ids, ok)
+	}
+	if _, ok := codex.Echo(line); ok {
+		t.Fatal("codex echoed a Claude resume notice")
+	}
+	codexLine, _ := codex.ResumeNotice([]int64{4})
+	if ids, ok := codex.Echo(codexLine); !ok || ids != "4" {
+		t.Fatalf("codex echo of its resume notice = %q, %v", ids, ok)
+	}
+	for _, bad := range []string{
+		strings.Replace(line, "read 2087 2090", "read 2087", 1),
+		strings.Replace(line, "pending: 2087 2090", "pending: 2087", 1),
+		strings.TrimSuffix(line, "."),
+		line + " extra",
+	} {
+		if ids, ok := claude.Echo(bad); ok {
+			t.Errorf("claude echoed %q as %q", bad, ids)
+		}
+	}
 }

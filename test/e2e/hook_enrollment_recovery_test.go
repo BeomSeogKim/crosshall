@@ -99,17 +99,32 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			}
 
 			db := f.db()
-			var bindings, launches, observations, turns, routes int
+			// #252: a Claude prompt binds its process launch late, with the
+			// time its record was written, its mode and a route. Codex has no
+			// process launch: a session launch with an unknown start, no route.
+			launchRows := `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'`
+			wantRoutes := 0
+			if test.adapter == "claude" {
+				launchRows = `launch_ref LIKE 'pid-' || ?4 || '-%' AND verified = 1
+					AND started_hook_at_ms > 0 AND json_extract(profile, '$.mode') = 'interactive'`
+				wantRoutes = 1
+			}
+			var bindings, launches, allLaunches, observations, turns, routes int
 			if err := db.QueryRow(`SELECT
 				(SELECT COUNT(*) FROM binding WHERE principal_id = k.principal_id AND state = 'live'),
-				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id AND launch_ref = 'session' AND verified = 0
-					AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'),
+				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id AND `+launchRows+`),
+				(SELECT COUNT(*) FROM adapter_launch WHERE principal_id = k.principal_id),
 				(SELECT COUNT(*) FROM observation WHERE principal_id = k.principal_id AND turn_ref = ?1),
 				(SELECT COUNT(*) FROM turn WHERE principal_id = k.principal_id AND turn_ref = ?1),
 				(SELECT COUNT(*) FROM publish_route WHERE principal_id = k.principal_id)
-				FROM principal_key k WHERE vendor = ?2 AND key = ?3`, recovered, test.adapter, key).Scan(&bindings, &launches, &observations, &turns, &routes); err != nil ||
-				bindings != 1 || launches != 1 || turns != 1 || routes != 0 {
-				t.Fatalf("recovery wrote bindings %d, launches %d, turns %d, routes %d (%v)", bindings, launches, turns, routes, err)
+				FROM principal_key k WHERE vendor = ?2 AND key = ?3`, recovered, test.adapter, key, pid).
+				Scan(&bindings, &launches, &allLaunches, &observations, &turns, &routes); err != nil ||
+				bindings != 1 || launches != 1 || allLaunches != 1 || turns != 1 || routes != wantRoutes {
+				t.Fatalf("recovery wrote bindings %d, launches %d of %d, turns %d, routes %d (%v)", bindings, launches, allLaunches, turns, routes, err)
+			}
+			var bound int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM event WHERE kind = 'launch_bound_late'`).Scan(&bound); err != nil || bound != wantRoutes {
+				t.Fatalf("%d launch_bound_late events, want %d (%v)", bound, wantRoutes, err)
 			}
 			// Claude's second callback is its own event unless both hooks
 			// entered in the same millisecond, which gives them one reference.
@@ -130,8 +145,9 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				c.fireAndRecord("SessionEnd", "session_ended", map[string]any{"reason": "other"})
 				var launch string
 				if err := db.QueryRow(`SELECT o.launch_ref FROM observation o JOIN principal_key k ON k.principal_id = o.principal_id
-					WHERE k.vendor = 'claude' AND k.key = ? AND o.kind = 'session_ended'`, key).Scan(&launch); err != nil || launch != "session" {
-					t.Fatalf("unverified end did not use the recovered launch: %q (%v)", launch, err)
+					WHERE k.vendor = 'claude' AND k.key = ? AND o.kind = 'session_ended'`, key).Scan(&launch); err != nil ||
+					!strings.HasPrefix(launch, "pid-"+pid+"-") {
+					t.Fatalf("the end did not use the launch bound late: %q (%v)", launch, err)
 				}
 				if test.provisional {
 					var count int

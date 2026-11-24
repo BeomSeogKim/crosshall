@@ -134,6 +134,8 @@ func renderOwnerViews(cmd domain.Command, data []byte, w io.Writer) error {
 				}
 				if member.Publish != nil {
 					route += "; publish: " + publishWords(*member.Publish)
+				} else if member.StartUnseen {
+					route += "; no notice route: its session start was not seen"
 				}
 				fmt.Fprintf(w, "  @%s [binding %d] %s, %s, %s; %s, %s",
 					member.Alias, member.BindingID, state, member.Vendor, focus, route, ownerEvidenceText(member))
@@ -320,6 +322,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			ManifestRev                                string `json:"manifest_rev"`
 		}
 		UnverifiedLaunches *int `json:"unverified_launches"`
+		UnseenStarts       *int `json:"unseen_starts"`
 		TurnEndNotice      *struct {
 			Available                         bool
 			Date                              string
@@ -431,6 +434,9 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 		}
 		if a.UnverifiedLaunches != nil {
 			fmt.Fprintf(&output, "  %d live launches with unverified version or mode\n", *a.UnverifiedLaunches)
+		}
+		if a.UnseenStarts != nil && *a.UnseenStarts > 0 {
+			fmt.Fprintf(&output, "  live members without a notice route because their session start was not seen: %d\n", *a.UnseenStarts)
 		}
 		if len(a.Evidence) == 0 {
 			fmt.Fprintln(&output, "  capability evidence unknown")

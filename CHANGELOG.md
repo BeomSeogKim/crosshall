@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **A missed Claude Code start no longer costs the session its notices:** when a session's start hook misses its deadline, its next prompt ties the session to its process under the checks of a hand join, registers its notice route and brings back a member whose resumed start was missed. When the checks fail, the session joins without a route as before, and `owner who --all` and `owner doctor` say that its start was not seen. Each late binding records a `launch_bound_late` event (#252).
 - **The owner hears of a lasting notice suspension:** a third suspension of a launch, which lasts until that launch ends, gets the round stop's desktop notification and a line on the next owner command, naming `crosshall owner publish resume <binding-id>`, while it still keeps the member's notices off. Every suspension, timed or lasting, now records a `publish_suspended` event. No schema change.
 - **Dispatcher startup:** a new dispatcher retries when a status check briefly holds the state lock for reading. Concurrent starts still share one dispatcher (#102).
 - **Owner start timeout:** `crosshall owner start` reports the last startup stage it observed and the state of the dispatcher lock and readiness marker when it times out (#102).

@@ -54,13 +54,14 @@ func (s *Service) takeOverCleared(ctx context.Context, tx store.Tx, req Request,
 
 // bindJoinLaunch binds the launch a hand join names, so that the session's
 // hooks and a later /clear can tell its process: the reference has a start
-// digest, its adapter is the session's, its time is the join's, its process
-// runs and started before it, and no present member of that adapter has a
-// launch open on the process (a start already bound one). It returns the bound
-// launch, or nil.
+// digest, its adapter is the session's, its time is not ahead of the
+// dispatcher's, its process runs and started before it, and no present
+// member of that adapter has a launch open on the process (a start already
+// bound one). The caller bounds how old the time may be. It returns the
+// bound launch, or nil.
 func (s *Service) bindJoinLaunch(ctx context.Context, tx store.Tx, principal int64, l JoinLaunch, now time.Time) (*JoinLaunch, error) {
 	if s.LaunchProcess == nil || s.LaunchAlive == nil || !validProfile(l.Profile) || !validRef(l.Ref) ||
-		l.AtMS > ms(now)+futureSlackMS || l.AtMS < ms(now)-joinLaunchAgeMS ||
+		l.AtMS > ms(now)+futureSlackMS ||
 		l.PIDNamespace != "" && (s.LaunchPIDNamespace == nil || l.PIDNamespace != s.LaunchPIDNamespace()) {
 		return nil, nil
 	}

@@ -19,6 +19,7 @@ type doctorAdapter struct {
 	Policy             *store.AdapterPolicy       `json:"policy,omitempty"`
 	Evidence           []store.DoctorEvidence     `json:"evidence,omitempty"`
 	UnverifiedLaunches *int                       `json:"unverified_launches,omitempty"`
+	UnseenStarts       *int                       `json:"unseen_starts,omitempty"`
 	Hooks              *doctorHookActivity        `json:"hooks,omitempty"`
 	TurnEndNotice      *store.DoctorTurnEndNotice `json:"turn_end_notice,omitempty"`
 	Publish            *store.DoctorPublishState  `json:"publish,omitempty"`

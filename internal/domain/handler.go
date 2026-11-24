@@ -533,7 +533,7 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	}
 
 	var bound *JoinLaunch
-	if cmd.Launch != nil {
+	if cmd.Launch != nil && cmd.Launch.AtMS >= ms(now)-joinLaunchAgeMS {
 		if bound, err = s.bindJoinLaunch(ctx, tx, principal, *cmd.Launch, now); err != nil {
 			return core.Result{}, err
 		}

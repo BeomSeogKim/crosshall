@@ -61,9 +61,12 @@ type OwnerMember struct {
 	LastEvidence  *OwnerEvidence `json:"last_evidence"`
 	EvidenceStale bool           `json:"evidence_stale"`
 	ExitTracking  ExitTracking   `json:"exit_tracking,omitempty"`
-	HostAlive     bool           `json:"host_alive,omitempty"`
-	OpenRequests  []int64        `json:"open_request_ids"`
-	DepartToken   string         `json:"depart_token,omitempty"`
+	// StartUnseen says a live member without a route was joined by a prompt
+	// whose launch could not be bound: its session start was not seen.
+	StartUnseen  bool    `json:"start_unseen,omitempty"`
+	HostAlive    bool    `json:"host_alive,omitempty"`
+	OpenRequests []int64 `json:"open_request_ids"`
+	DepartToken  string  `json:"depart_token,omitempty"`
 }
 
 type OwnerEvidence struct {
@@ -149,6 +152,11 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			m.Publish = publish
 			if m.BindingState == "live" && publish != nil && PublishReaches(*publish) {
 				m.Reach = "notice"
+			}
+			if m.BindingState == "live" && publish == nil {
+				if m.StartUnseen, err = startUnseen(ctx, tx, m.principal); err != nil {
+					return core.Result{}, err
+				}
 			}
 			fact, err := latestFact(ctx, tx, m.principal)
 			if err != nil {

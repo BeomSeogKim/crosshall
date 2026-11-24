@@ -79,8 +79,13 @@ func (s *codexSession) call(t *testing.T, method string, params any) sessionMess
 
 func startLatencySession(t *testing.T, w *measurementWorld) *codexSession {
 	t.Helper()
+	return startCodexAppServer(t, t.Context(), w)
+}
+
+func startCodexAppServer(t *testing.T, ctx context.Context, w *measurementWorld) *codexSession {
+	t.Helper()
 	args := append(slices.Clone(w.prefix[1:]), "-c", "bypass_hook_trust=true", "app-server")
-	cmd := exec.CommandContext(t.Context(), w.prefix[0], args...)
+	cmd := exec.CommandContext(ctx, w.prefix[0], args...)
 	cmd.Env, cmd.Dir = w.env, w.repo
 	in, err := cmd.StdinPipe()
 	codexMust(t, err)

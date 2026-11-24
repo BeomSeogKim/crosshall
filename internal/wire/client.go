@@ -22,3 +22,9 @@ func NewID() string {
 	rand.Read(id[:])
 	return hex.EncodeToString(id[:])
 }
+
+// HelloStart is the first-contact intent of a session start that will join
+// if its key is unknown: it registers an unknown key, as join does, and
+// refuses a retired key, as lookup does. A dispatcher lists it in its ready
+// marker's hello field when it accepts it.
+const HelloStart = "start"

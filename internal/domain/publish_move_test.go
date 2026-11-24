@@ -307,3 +307,20 @@ func TestPublishMoveKeepsSuspensionAndOptOuts(t *testing.T) {
 	p.turnEndAsk(p.writer, "reader", "after-resume")
 	p.requirePublish("resume lifts the carried suspension", "available", "")
 }
+
+// A route that cannot carry a notice is no notice route, not a switch
+// turned off (#290).
+func TestAnInvalidatedRouteIsNoNoticeRoute(t *testing.T) {
+	p := newPublishFixture(t)
+	p.proveRoute()
+	p.mutate(`UPDATE publish_route SET state = 'invalidated', reason = 'no socket' WHERE binding_id = ?`, p.binding.ID)
+	w := inTx(t, p.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+		return memberWake(ctx, tx, p.binding.ID, p.now)
+	})
+	if w.Wake != WakeNone || w.Why != WhyNoRoute || w.Adapter != "" {
+		t.Fatalf("an invalidated route: %+v", w)
+	}
+	if got := publishStateOf(t, p.fixture, p.binding.ID); got.State != "off" || got.Reason != "no socket" {
+		t.Fatalf("the owner's publish state changed: %+v", got)
+	}
+}

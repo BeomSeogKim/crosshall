@@ -12,6 +12,8 @@ No schema change. Rule 4 and the notice text change:
 
 A script that reads the `next:` line under a send result's recipients should match `next: nothing will wake`; it said `next: nothing will tell`. That line is text only and names the same recipients. JSON has no such line and is unchanged: each recipient of an ask or a note (`recipients[]`) and the delivery of a reply (`delivery`) still carry `next` with its earlier sentence (such as `waits for its next crosshall command`), and `wake`, `why`, `seen_at` and `until_ms`, which say whether nothing will wake that recipient.
 
+A script that reads a send result's, `who`'s or `waiting`'s `why` gets `no_route` instead of `off` for a member whose notice route the hall invalidated, such as a Claude session whose socket no hook has reported yet. `off` now means only a switch, do not disturb, or a route that ended.
+
 ## To v0.2.0-rc.4
 
 Upgrading from v0.2.0-rc.3 to v0.2.0-rc.4 moves the database from schema 22 to schema 28. The migrations run in this order:

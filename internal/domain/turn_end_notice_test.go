@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -318,5 +319,88 @@ func TestTurnEndNoticeFollowsTheOwnersSwitch(t *testing.T) {
 		if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &value}}, "agy-"+value); r.Status != core.ExitOK {
 			t.Fatalf("Antigravity --turn-end %s: %+v", value, r)
 		}
+	}
+}
+
+// #261: a Stop's hook skips its wait only while TurnEndAskWaiting is false,
+// so it must hold for every ask a turn-end notice could still announce.
+func TestTurnEndAskWaitingFollowsWhatANoticeCouldAnnounce(t *testing.T) {
+	f, reader, writer := turnEndFixture(t, "launch")
+	wantOK(t, f.owner(turnEndEvidence("tested"), "evidence"))
+	pid := f.principalOf(reader)
+	waiting := func(want bool, when string) {
+		t.Helper()
+		if got, err := TurnEndAskWaiting(t.Context(), f.db, pid); err != nil || got != want {
+			t.Fatalf("%s: waiting = %t (%v), want %t", when, got, err, want)
+		}
+	}
+	waiting(false, "no message")
+	f.turnEndAsk(reader, "writer", "outgoing")
+	waiting(false, "the member's own ask")
+	f.noteTo(writer, "reader", 1)
+	waiting(false, "a note")
+	read := f.turnEndAsk(writer, "reader", "to read")
+	waiting(true, "an unread ask")
+	wantOK(t, f.run(reader, Read{IDs: []int64{read}}, "read"))
+	waiting(false, "the ask read")
+	cancelled := f.turnEndAsk(writer, "reader", "to cancel")
+	waiting(true, "an ask before its cancel")
+	wantOK(t, f.owner(Cancel{Channel: "checkout", ID: cancelled}, "cancel"))
+	waiting(false, "the ask cancelled")
+	announced := f.turnEndAsk(writer, "reader", "to announce")
+	waiting(true, "an ask before its notice")
+	if r := f.hook(reader, stop("launch", "turn-1", f.now.UnixMilli()+1)); r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", announced) {
+		t.Fatalf("turn-end result = %+v", r)
+	}
+	waiting(false, "the ask announced")
+	f.turnEndAsk(writer, "reader", "before leaving")
+	waiting(true, "an ask before the member left")
+	if _, err := f.db.Exec(`UPDATE binding SET state = 'departed' WHERE principal_id = ?`, pid); err != nil {
+		t.Fatal(err)
+	}
+	waiting(false, "the member left")
+}
+
+// #261 review: a notice that was not submitted gives its ask back to the
+// turn-end line. The member is marked dirty, so the record a Stop reads is
+// raised again, also after a hook lowered it while the attempt was open.
+func TestANoticeNotSubmittedMarksItsMemberForTheTurnEndRecord(t *testing.T) {
+	for _, how := range []string{"transport", "retired queue"} {
+		t.Run(how, func(t *testing.T) {
+			p := newPublishFixture(t)
+			p.proveRoute()
+			wantOK(t, p.run(p.reader, Read{IDs: []int64{p.beforeID}}, "read-before-route"))
+			pid := p.principalOf(p.reader)
+			p.turnEndAsk(p.writer, "reader", "during the turn")
+			id := p.reserve()
+			if id == 0 {
+				t.Fatal("no notice reserved")
+			}
+			waiting := func() bool {
+				t.Helper()
+				got, err := TurnEndAskWaiting(t.Context(), p.db, pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			if waiting() {
+				t.Fatal("the reserved notice did not take the ask")
+			}
+			p.mutate(`DELETE FROM adapter_dirty`) // a hook of the member applied the stamps
+			if how == "transport" {
+				p.begin(id)
+				p.resolve(id, PublishNotSubmitted)
+			} else {
+				p.update(func(ctx context.Context, tx store.Tx) error { return RetirePublishQueue(ctx, tx, p.queue, p.now) })
+			}
+			p.state(id, string(PublishNotSubmitted))
+			if !waiting() {
+				t.Fatal("the ask did not come back to the turn-end line")
+			}
+			if n := p.count(`SELECT COUNT(*) FROM adapter_dirty WHERE principal_id = ? AND notice = 1`, pid); n != 1 {
+				t.Fatalf("the member is not marked dirty: %d rows", n)
+			}
+		})
 	}
 }

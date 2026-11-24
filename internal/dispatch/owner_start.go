@@ -13,6 +13,8 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
+const ownerReadinessTimeout = 5 * time.Second
+
 // Allow a dispatcher using the 250 ms fallback scan to answer a probe,
 // without letting one silent instance consume the startup deadline.
 const readinessProbeTimeout = 300 * time.Millisecond
@@ -23,9 +25,14 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 	if !cfg.Owner {
 		return errors.New("readiness confirmation requires owner startup")
 	}
-	wait, cancel := context.WithTimeout(ctx, startupTimeout)
+	started := time.Now()
+	wait, cancel := context.WithDeadline(ctx, started.Add(ownerReadinessTimeout))
 	defer cancel()
-	deadline, _ := wait.Deadline()
+	// The extra time is for confirmation after a dispatcher takes the lock.
+	lockDeadline := started.Add(startupTimeout)
+	if deadline, _ := wait.Deadline(); deadline.Before(lockDeadline) {
+		lockDeadline = deadline
+	}
 	state, err := cfg.openStartState(wait)
 	if err != nil {
 		return err
@@ -65,8 +72,12 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 			stage = "waiting for the dispatcher to hold its state lock"
 			if launchFailed {
 				stage = "waiting after the startup child exited unsuccessfully"
-			} else if exited == nil {
-				exited, err = cfg.startCandidate(state, deadline)
+			}
+			if !time.Now().Before(lockDeadline) {
+				break
+			}
+			if !launchFailed && exited == nil {
+				exited, err = cfg.startCandidate(state, lockDeadline)
 				if err != nil {
 					return err
 				}
@@ -93,8 +104,12 @@ func (cfg LaunchConfig) StartReady(ctx context.Context) error {
 	if candidate := cfg.readinessCandidate(); candidate.Instance != "" {
 		marker = fmt.Sprintf("a valid readiness marker named PID %d", candidate.PID)
 	}
+	failure := wait.Err()
+	if failure == nil {
+		failure = context.DeadlineExceeded
+	}
 	return fmt.Errorf("dispatcher readiness was not confirmed (%w). Last observed stage was %s. "+
-		"At the final check, %s and %s. See dispatcher.log.", wait.Err(), stage, lock, marker)
+		"At the final check, %s and %s. See dispatcher.log.", failure, stage, lock, marker)
 }
 
 func (cfg LaunchConfig) startCandidate(state *os.Root, deadline time.Time) (<-chan bool, error) {

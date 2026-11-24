@@ -323,8 +323,14 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 			err = p.ops.Install(ctx, c.plan)
 		}
 	}
+	// Past the deadline, keep an error of its own and name the deadline after
+	// it; a bare context error says nothing more than the deadline does.
 	if cause := context.Cause(ctx); err != nil && cause != nil && !errors.Is(err, cause) {
-		err = fmt.Errorf("%w. %w", err, cause)
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			err = cause
+		} else {
+			err = fmt.Errorf("%w. %w", err, cause)
+		}
 	}
 	switch {
 	case err != nil:

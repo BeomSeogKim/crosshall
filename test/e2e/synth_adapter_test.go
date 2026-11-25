@@ -5,7 +5,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -146,19 +145,8 @@ var synthFiles = map[string]string{
 func TestSynthBundleStaysInItsOwnFiles(t *testing.T) {
 	root := filepath.Join("..", "..")
 	names := regexp.MustCompile(`\bsynth\b|SYNTH_|Synth Fixture`)
-	// Source files only, as git sees them: tracked and new files, never
-	// ignored build output such as a binary built with the tag.
-	list := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-	list.Dir = root
-	out, err := list.Output()
-	if err != nil {
-		t.Fatalf("git ls-files: %v", err)
-	}
-	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+	for _, rel := range sourceFiles(t, root) {
 		data, err := os.ReadFile(filepath.Join(root, rel))
-		if errors.Is(err, os.ErrNotExist) {
-			continue // deleted in the work tree
-		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,4 +163,46 @@ func TestSynthBundleStaysInItsOwnFiles(t *testing.T) {
 			t.Errorf("bundle file %s: %v", file, err)
 		}
 	}
+}
+
+// sourceFiles lists the repository's source files, slash-separated from
+// root: in a Git checkout the files git lists, tracked and new but never
+// ignored (such as a binary built with a tag); without Git, the files of a
+// source archive by their source extensions. Nested checkouts and other
+// directories are not files.
+func sourceFiles(t *testing.T, root string) []string {
+	t.Helper()
+	regular := func(rel string) bool {
+		info, err := os.Lstat(filepath.Join(root, rel))
+		return err == nil && info.Mode().IsRegular()
+	}
+	var files []string
+	list := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	list.Dir = root
+	if out, err := list.Output(); err == nil {
+		for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+			if rel != "" && regular(rel) {
+				files = append(files, rel)
+			}
+		}
+		return files
+	}
+	source := map[string]bool{".go": true, ".json": true, ".sql": true, ".sh": true, ".py": true, ".md": true, ".yml": true, ".yaml": true}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() && rel != "." && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && source[filepath.Ext(rel)] && regular(rel) {
+			files = append(files, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }

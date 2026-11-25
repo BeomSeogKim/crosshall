@@ -1,15 +1,18 @@
 package domain
 
 import (
+	"context"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/publish"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
-// #252, Codex: a session whose start the dispatcher missed gets, from a
-// prompt that names its server, the route and mode that start would have
-// given. Nothing else registers a route from a prompt.
+// #252, Codex: a session whose start the dispatcher missed gets, from the
+// recovering prompt when it names its server, the launch start, mode and
+// route that start would have given. Nothing else registers a route from a
+// prompt.
 
 // codexServerPrompt is a Codex prompt in mode, naming the managed server when
 // server is set; recovering makes it the event that may enroll a session.
@@ -55,8 +58,8 @@ func TestARecoveringCodexPromptRegistersTheRouteItsStartWould(t *testing.T) {
 	if r := f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t1", at+10, true)); r.Enrollment != "joined" {
 		t.Fatalf("recovering prompt: %+v, want joined", r)
 	}
-	if got := f.launches(s); len(got) != 1 || got[0] != (launchRow{SessionLaunch, false, 0, publish.ModeDaemon}) {
-		t.Fatalf("launches %+v, want the session launch, start unknown, in the prompt's mode", got)
+	if got := f.launches(s); len(got) != 1 || got[0] != (launchRow{SessionLaunch, false, at + 10, publish.ModeDaemon}) {
+		t.Fatalf("launches %+v, want the session launch, started at the prompt, in the prompt's mode", got)
 	}
 	route, found := f.codexRoute(s)
 	if !found || route.mode != publish.ModeDaemon || route.state != "active" || route.hostPID != codexServer.PID ||
@@ -88,21 +91,66 @@ func TestARecoveringCodexPromptWithoutItsServerKeepsTodaysRows(t *testing.T) {
 	}
 }
 
-// A member recovered without its server, before prompts named it or by a
-// prompt that did not, gets the route from its next prompt that does.
-func TestARecoveredCodexMemberGetsItsRouteFromALaterPrompt(t *testing.T) {
+// The route a recovering prompt registers carries notices: it is proven on
+// the server the prompt named, which started before the prompt, activates
+// and reserves a notice like the route of a session whose start arrived.
+func TestARouteARecoveringCodexPromptRegisteredCarriesANotice(t *testing.T) {
+	useCodexSender(t)
+	f, writer := adapterChannel(t)
+	f.policy("codex", true, 1)
+	s := f.newSession("codex")
+	at := f.now.UnixMilli()
+	server := codexServer
+	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t1", at+10, true))
+	codexEvidence(t, f, "0.171.0")
+	binding := bindingIDOf(t, f, f.principalOf(s))
+	proofs := inTx(t, f, func(ctx context.Context, tx store.Tx) ([]PublishProof, error) {
+		return UnprovenPublishRoutes(ctx, tx, f.now)
+	})
+	if len(proofs) != 1 || proofs[0].Probe.StartedHookAtMS != at+10 {
+		t.Fatalf("unproven routes %+v, want this route judged against the prompt's time", proofs)
+	}
+	queue := publish.Queue{PID: codexServer.PID, StartMS: codexServer.Start}
+	if inTx(t, f, func(ctx context.Context, tx store.Tx) (bool, error) {
+		return ConfirmPublishProof(ctx, tx, proofs[0], publish.Proven{Queue: queue, StartedAtMS: at + 11})
+	}) {
+		t.Fatal("a server that started after the prompt was recorded")
+	}
+	proveCodexRoutes(t, f)
+	if got := publishStateOf(t, f, binding); got.State != "available" {
+		t.Fatalf("the proven route reads %s (%s)", got.State, got.Reason)
+	}
+	var alias string
+	if err := f.db.QueryRow(`SELECT alias FROM binding WHERE id = ?`, binding).Scan(&alias); err != nil {
+		t.Fatal(err)
+	}
+	// The recovering prompt's turn runs until its Stop; a notice waits for it.
+	finishing := codexServerPrompt(publish.ModeDaemon, nil, "t1", at+20, false)
+	finishing.Fact, finishing.EventRef = FactTurnFinishing, "t1:stop"
+	f.hookAs(s, finishing)
+	f.turnEndAsk(writer, alias, "to-recovered")
+	if !codexReserve(t, f, binding) {
+		t.Fatal("the recovered route reserved no notice")
+	}
+	if got := publishStateOf(t, f, binding); got.State != "held" {
+		t.Fatalf("after its notice the route reads %s", got.State)
+	}
+}
+
+// A member recovered without its server waits for its next start: a later
+// prompt that names the server registers nothing.
+func TestARecoveredCodexMemberWaitsForItsNextStart(t *testing.T) {
 	f, s := codexFixture(t)
 	at := f.now.UnixMilli()
 	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, nil, "t1", at+10, true))
-	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, nil, "t2", at+20, false))
-	if _, found := f.codexRoute(s); found {
-		t.Fatal("a prompt without its server registered a route")
-	}
 	server := codexServer
-	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t3", at+30, false))
-	route, found := f.codexRoute(s)
-	if !found || route.mode != publish.ModeDaemon || route.state != "active" || route.hostPID != codexServer.PID {
-		t.Fatalf("route %+v (found %t), want the daemon route", route, found)
+	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t2", at+20, false))
+	if route, found := f.codexRoute(s); found {
+		t.Fatalf("a later prompt registered %+v", route)
+	}
+	f.hook(s, codexStart("resume", publish.ModeDaemon, at+30))
+	if route, found := f.codexRoute(s); !found || route.state != "active" || route.hostPID != codexServer.PID {
+		t.Fatalf("after its next start the route is %+v (found %t)", route, found)
 	}
 }
 
@@ -143,31 +191,5 @@ func TestAClaudePromptRegistersNoRouteFromAServer(t *testing.T) {
 	}
 	if f.routeLaunch(s) != "" {
 		t.Fatal("a Claude prompt registered a route from a server")
-	}
-}
-
-// Only a prompt registers a route, and only for the binding its leaf
-// authenticated: a Stop that names a server, and a prompt from a leaf of
-// another binding, register nothing.
-func TestOnlyAnAuthenticatedPromptRegistersACodexRoute(t *testing.T) {
-	f, s := codexFixture(t)
-	other := f.newSession("codex")
-	at := f.now.UnixMilli()
-	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, nil, "t1", at+10, true))
-	f.hookAs(other, codexServerPrompt(publish.ModeDaemon, nil, "o1", at+15, true))
-	server := codexServer
-	finishing := codexServerPrompt(publish.ModeDaemon, &server, "t1", at+20, false)
-	finishing.Fact, finishing.EventRef = FactTurnFinishing, "t1:stop"
-	f.hookAs(s, finishing)
-	if _, found := f.codexRoute(s); found {
-		t.Fatal("a Stop registered a route")
-	}
-	caller := f.caller(s)
-	otherBinding := bindingIDOf(t, f, f.principalOf(other))
-	caller.BindingID = &otherBinding
-	cmd := codexServerPrompt(publish.ModeDaemon, &server, "t2", at+30, false)
-	f.exec(caller, Request{Command: cmd, Vendor: s.vendor, SessionKey: s.key, OpKey: hookKey(cmd)})
-	if _, found := f.codexRoute(s); found {
-		t.Fatal("a prompt from another binding's leaf registered a route")
 	}
 }

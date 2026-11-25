@@ -428,9 +428,13 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 			prompt.LaunchRef, prompt.LaunchVerified = SessionLaunch, false
 		}
 	}
+	// A recovering prompt that names its server stands in for the start
+	// it recovers (#252): the launch starts at the prompt, which the
+	// server's proof is judged against, and the route is registered.
+	server := prompt != nil && promptNamesServer(*prompt)
 	if !late {
 		started := cmd.HookAtMS
-		if prompt != nil {
+		if prompt != nil && !server {
 			started = 0 // No SessionStart committed for the recovered session.
 		}
 		if err := registerLaunch(ctx, tx, principal, cmd.Profile, cmd.LaunchRef, cmd.LaunchVerified, cmd.PIDNamespace, started); err != nil {
@@ -442,7 +446,7 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 		if _, _, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now); err != nil {
 			return core.Result{}, err
 		}
-		if prompt == nil {
+		if prompt == nil || server {
 			if err := registerPublishRouteFromEnroll(ctx, tx, bindingID, 1, ms(now), principal, req.SessionKey, cmd, s.routeHost(cmd), now); err != nil {
 				return core.Result{}, err
 			}
@@ -611,10 +615,12 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, Repository: cmd.EnrollRepository,
 			CreateChannel: cmd.EnrollCreate, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
 		}}
-		// A prompt that names its server reports the mode its start would
-		// have (#252), and its member event registers the route; any other
-		// prompt's mode rests on a launch the join has not bound.
-		if !promptNamesServer(cmd) {
+		// A prompt that names its server reports the mode and server its
+		// start would have (#252); any other prompt's mode rests on a launch
+		// the join has not bound.
+		if promptNamesServer(cmd) {
+			enroll.Host, enroll.VendorHome = cmd.Host, cmd.VendorHome
+		} else {
 			enroll.Profile.Mode = "unverified"
 		}
 		// The prompt keeps its launch: the join binds it late or records the
@@ -668,11 +674,6 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	}
 	if caller.Role != core.RoleMember {
 		return OK(out)
-	}
-	if found && (caller.BindingID == nil || *caller.BindingID == b.id) {
-		if err := s.registerMissingRoute(ctx, tx, req, principal, b, cmd, now); err != nil {
-			return core.Result{}, err
-		}
 	}
 	if cmd.Fact == FactIdlePrompt {
 		if !found || b.state != "live" {

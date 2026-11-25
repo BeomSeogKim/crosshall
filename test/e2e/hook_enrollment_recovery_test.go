@@ -108,13 +108,13 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			db := f.db()
 			// #252: a Claude prompt binds its process launch late, with the
 			// time its record was written, its mode and a route. Codex has no
-			// process launch: a session launch with an unknown start, and the
-			// route and mode its start would have given when the prompt names
-			// its server; none otherwise.
+			// process launch: a session launch with an unknown start and no
+			// route, or, when the prompt names its server, the start, mode and
+			// route its start would have given.
 			launchRows := `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'`
 			wantRoutes, wantLate := 0, 0
 			if test.server {
-				launchRows = `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'daemon'`
+				launchRows = `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms > 0 AND json_extract(profile, '$.mode') = 'daemon'`
 				wantRoutes = 1
 			}
 			if test.adapter == "claude" {
@@ -139,20 +139,11 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			if err := db.QueryRow(`SELECT COUNT(*) FROM event WHERE kind = 'launch_bound_late'`).Scan(&bound); err != nil || bound != wantLate {
 				t.Fatalf("%d launch_bound_late events, want %d (%v)", bound, wantLate, err)
 			}
-			if test.adapter == "codex" && !test.server {
-				// A member recovered without its server gets the route from
-				// the first prompt that names it.
-				f.codexServer = buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
-				if got := f.invokeHook(repo, test.adapter, "UserPromptSubmit", prompt("under-server")); got != "" {
-					t.Fatalf("a prompt under the server returned %q", got)
-				}
-			}
-			if test.adapter == "codex" {
+			if test.server {
 				codexHome, err := filepath.EvalSymlinks(filepath.Dir(f.paths["codex"]))
 				if err != nil {
 					t.Fatal(err)
 				}
-				// A prompt's request is one-way: the dispatcher applies it later.
 				var mode, home string
 				var host int
 				for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(50 * time.Millisecond) {

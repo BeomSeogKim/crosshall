@@ -23,6 +23,9 @@ const installConsentHeading = "Saying yes turns these on for the listed agents:"
 type installDisclosure struct {
 	store.InstallConsent
 	known, evidenced, prompt, unknownBuild bool
+	// sharedStop names the CLIs whose shared hooks file holds another
+	// group's Stop hooks.
+	sharedStop []string
 }
 
 func (s Service) attachInstallDisclosure(ctx context.Context, targets []installTarget) {
@@ -35,6 +38,9 @@ func (s Service) attachInstallDisclosure(ctx context.Context, targets []installT
 		})
 		targets[i].disclosure.evidenced = evidenced
 		targets[i].disclosure.prompt = hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)
+		if sharesStop(target) {
+			targets[i].disclosure.sharedStop = []string{ident.Identity{Vendor: target.Spec.Adapter}.CLIName()}
+		}
 		if evidenced {
 			b := target.Build
 			profile = wire.HookProfile{Adapter: target.Spec.Adapter, VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
@@ -69,10 +75,33 @@ func groupInstallDisclosure(plans []VendorPlan) installDisclosure {
 
 func (d *installDisclosure) include(other installDisclosure) {
 	prompt := d.prompt || other.prompt
+	shared := append(slices.Clone(d.sharedStop), other.sharedStop...)
 	if other.evidenced || !d.evidenced && !d.known {
 		*d = other
 	}
-	d.prompt = prompt
+	d.prompt, d.sharedStop = prompt, shared
+}
+
+// sharesStop reports whether crosshall installs a Stop hook into a hooks
+// file where another group already has one. Antigravity runs no later Stop
+// hook once one continues the turn (#328), so such a group can miss a Stop.
+func sharesStop(target installTarget) bool {
+	if installerFor(target.Spec.Adapter).hookGroup() == "" || !slices.Contains(target.Spec.Events, "Stop") {
+		return false
+	}
+	doc, err := parseConfigJSON(target.Current.Bytes)
+	if err != nil || doc == nil {
+		return false
+	}
+	for _, group := range doc.fields {
+		if group.key == installerFor(target.Spec.Adapter).hookGroup() {
+			continue
+		}
+		if stop := group.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (d installDisclosure) write(out io.Writer) error {
@@ -101,6 +130,9 @@ func (d installDisclosure) write(out io.Writer) error {
 	default:
 		fmt.Fprintln(&text, d.notices(pickup))
 		fmt.Fprintln(&text, d.turnEnd())
+	}
+	if len(d.sharedStop) > 0 {
+		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). Another hook group in the same hooks file has Stop hooks. When the turn-end check continues a turn, this CLI may skip the other Stop hooks for that Stop; they run again at the turn's next Stop.")
 	}
 	_, err := io.WriteString(out, text.String())
 	return err

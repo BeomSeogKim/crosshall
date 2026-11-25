@@ -315,3 +315,32 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		t.Fatalf("listed built-in evidence for another platform:\n%s", out)
 	}
 }
+
+// Antigravity runs no later Stop hook once one continues the turn (#328):
+// the offer says so when another group in the hooks file has Stop hooks.
+func TestTheOfferNamesAnotherGroupsStopHooks(t *testing.T) {
+	const line = "- Other Stop hooks (Antigravity). Another hook group in the same hooks file has Stop hooks."
+	for _, tc := range []struct {
+		name, hooks string
+		want        bool
+	}{
+		{"no other group", "{}\n", false},
+		{"other group without Stop", `{"owner": {"PreInvocation": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
+		{"other group with Stop", `{"owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setuptest.New(t, "agy")
+			target := filepath.Join(f.Home, ".gemini", "config", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, []byte(tc.hooks), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := realRun(t, scopedService(f), f, Request{Offer: true, Terminal: true}, "\n")
+			if err != nil || strings.Contains(out, line) != tc.want {
+				t.Fatalf("offer: %v\n%s", err, out)
+			}
+		})
+	}
+}

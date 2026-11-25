@@ -31,6 +31,10 @@ var binary string
 
 const fixtureEventTimeout = 10 * time.Second
 
+// binaryTags builds the binary under test; a test file that only an
+// adapter bundle's tag compiles adds that tag.
+var binaryTags = "testvendorhome"
+
 func TestMain(m *testing.M) {
 	os.Exit(runSuite(m))
 }
@@ -43,7 +47,7 @@ func runSuite(m *testing.M) int {
 	}
 	defer os.RemoveAll(dir)
 	binary = filepath.Join(dir, "crosshall")
-	build := exec.Command("go", "build", "-tags=testvendorhome", "-o", binary, "../../cmd/crosshall")
+	build := exec.Command("go", "build", "-tags="+binaryTags, "-o", binary, "../../cmd/crosshall")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build failed:", err)

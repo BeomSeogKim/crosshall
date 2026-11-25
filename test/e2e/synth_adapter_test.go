@@ -1,0 +1,208 @@
+//go:build e2e && synthadapter
+
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func init() { binaryTags += ",synthadapter" }
+
+const synthOriginal = "{\n  \"owner\": true,\n  \"hooks\": {\"SessionStart\": [{\"hooks\":[{\"type\":\"command\",\"command\":\"synth-owner-hook\"}]}]}\n}\n"
+
+// newSynthWorld adds the synth fixture vendor, built in only under the
+// synthadapter tag, to a setup world: its CLI probe and its home.
+func newSynthWorld(t *testing.T) *setupWorld {
+	t.Helper()
+	f := newSetupWorld(t)
+	home := filepath.Join(f.home, "synth test config")
+	if err := os.Mkdir(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "SYNTH_HOME="+home)
+	f.paths["synth"] = filepath.Join(home, "hooks.json")
+	if err := os.WriteFile(f.paths["synth"], []byte(synthOriginal), 0600); err != nil {
+		t.Fatal(err)
+	}
+	probe := "#!/bin/sh\n[ \"$1\" = --version ] || exit 9\nprintf 'synth 1.0.0\\n'\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(f.executable), "synth"), []byte(probe), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// invokeSynth runs the installed synth hook for event with the fixture's
+// own payload fields.
+func (f *setupWorld) invokeSynth(repo, session, event, fields string) string {
+	f.t.Helper()
+	hook := setupHookFor(f.t, readSetupFile(f.t, f.paths["synth"]), event)
+	if hook.Command != f.executable || !slices.Equal(hook.Args, []string{"hook", "synth", event}) || hook.Timeout != 1 {
+		f.t.Fatalf("synth %s hook: %+v", event, hook)
+	}
+	cmd := exec.CommandContext(context.Background(), hook.Command, hook.Args...)
+	payload := fmt.Sprintf(`{"event":%q,"session":%q,"cwd":%q%s}`, event, session, repo, fields)
+	var stdout, stderr bytes.Buffer
+	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = repo, f.env, strings.NewReader(payload), &stdout, &stderr
+	if err := cmd.Run(); err != nil || stderr.Len() != 0 {
+		f.t.Fatalf("invoke synth %s: %v, stderr %q", event, err, stderr.String())
+	}
+	return stdout.String()
+}
+
+// The synth fixture is a fresh adapter ID that only its bundle defines: a
+// manifest, an identity row and an installer, each in a file that only the
+// synthadapter tag compiles. Through the normal entry points it installs
+// beside the owner's hooks, enrolls, is identified, gets a request at its
+// next prompt, follows owner policy and uninstalls byte for byte.
+func TestSynthAdapterWorksThroughTheNormalEntryPoints(t *testing.T) {
+	f := newSynthWorld(t)
+	original := readSetupFile(t, f.paths["synth"])
+	if got := f.apply("", "setup", "synth", "--apply"); !strings.Contains(got.stdout, `"outcome":"installed"`) {
+		t.Fatalf("setup: %s", got.stdout)
+	}
+	installed := readSetupFile(t, f.paths["synth"]).bytes
+	if !bytes.Contains(installed, []byte(`"command":"synth-owner-hook"`)) || !bytes.Contains(installed, []byte(`"owner": true`)) {
+		t.Fatalf("setup changed the owner's settings: %s", installed)
+	}
+	status := f.apply("", "setup", "status").stdout
+	if !strings.Contains(status, `"adapter":"synth","name":"Synth Fixture"`) || !strings.Contains(status, `"install":"installed"`) {
+		t.Fatalf("status: %s", status)
+	}
+
+	repo := f.enrollmentRepo()
+	session := setupSessionPrefix + "synth"
+	f.waitForWelcomeDelivery("synth", "SessionStart", time.Now().Add(fixtureEventTimeout), func(string) string {
+		return f.invokeSynth(repo, session, "SessionStart", "")
+	})
+	f.waitEnrollmentPackets("synth", "SessionStart", time.Now().Add(fixtureEventTimeout))
+	if evidence := f.enrollmentEvidence("synth"); !strings.Contains(evidence, "live binding") {
+		t.Fatalf("synth session did not enroll: %s", evidence)
+	}
+	member := &participant{w: f.world, extra: []string{"SYNTH_SESSION_ID=" + session}}
+	if whoami := member.must("whoami"); whoami.obj["vendor"] != "synth" || whoami.obj["enrollment"] != "enrolled" ||
+		!strings.Contains(fmt.Sprint(whoami.obj["join_hint"]), "as @synth1.") {
+		t.Fatalf("synth session identified as %v", whoami.obj)
+	}
+
+	writer := f.member()
+	writer.must("join", "setup-check", "--as", "writer")
+	id := strconv.FormatInt(num(t, writer.must("ask", "@synth1", "a request for the fixture"), "id"), 10)
+	want := pendingContext([]string{id})
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for turn := 1; ; turn++ {
+		got := hostContext(t, f.invokeSynth(repo, session, "UserPromptSubmit", ""))
+		f.waitEnrollmentPackets("synth", "UserPromptSubmit", time.Now().Add(fixtureEventTimeout))
+		if got == want {
+			break
+		}
+		if got != "" || time.Now().After(deadline) {
+			t.Fatalf("prompt %d offered %q, want %q", turn, got, want)
+		}
+	}
+	member.must("read")
+	member.must("reply", id, "done")
+	if got := writer.must("read").stdout; !strings.Contains(got, "done") {
+		t.Fatalf("the writer did not get the reply: %s", got)
+	}
+
+	f.owner().must("owner", "adapter", "set", "synth", "--enabled", "off")
+	writer.must("ask", "@synth1", "while policy is off")
+	if got := f.invokeSynth(repo, session, "UserPromptSubmit", ""); got != "" && got != "{}" {
+		t.Fatalf("a disabled adapter's prompt offered %q", got)
+	}
+	if doctor := f.apply("", "owner", "doctor").stdout; !strings.Contains(doctor, "synth") {
+		t.Fatalf("doctor does not list the fixture: %s", doctor)
+	}
+
+	f.apply("", "uninstall", "synth", "--apply")
+	assertSetupFile(t, f.paths["synth"], original, false)
+}
+
+// synthFiles are the synth bundle: its provider files and adapter-owned
+// assembly, each built in only under the synthadapter tag, and this test.
+// The CI step and the changelog name the tag, not the adapter.
+var synthFiles = map[string]string{
+	"internal/hook/manifests/synth/synth.json": "",
+	"internal/hook/manifests/bundle_synth.go":  "//go:build synthadapter\n",
+	"internal/ident/identity_synth.go":         "//go:build synthadapter\n",
+	"internal/setup/installer_synth.go":        "//go:build synthadapter\n",
+	"test/e2e/synth_adapter_test.go":           "//go:build e2e && synthadapter\n",
+}
+
+// A fresh adapter needs no core edit: nothing outside the synth bundle's
+// own files names it, and each of its Go files builds only under its tag.
+func TestSynthBundleStaysInItsOwnFiles(t *testing.T) {
+	root := filepath.Join("..", "..")
+	names := regexp.MustCompile(`\bsynth\b|SYNTH_|Synth Fixture`)
+	for _, rel := range sourceFiles(t, root) {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		header, bundled := synthFiles[rel]
+		switch {
+		case !bundled && names.Match(data):
+			t.Errorf("%s names the synth adapter outside its bundle", rel)
+		case bundled && !bytes.HasPrefix(data, []byte(header)):
+			t.Errorf("%s does not start with %q", rel, header)
+		}
+	}
+	for file := range synthFiles {
+		if _, err := os.Stat(filepath.Join(root, file)); err != nil {
+			t.Errorf("bundle file %s: %v", file, err)
+		}
+	}
+}
+
+// sourceFiles lists the repository's source files, slash-separated from
+// root: in a Git checkout the files git lists, tracked and new but never
+// ignored (such as a binary built with a tag); without Git, the files of a
+// source archive by their source extensions. Nested checkouts and other
+// directories are not files.
+func sourceFiles(t *testing.T, root string) []string {
+	t.Helper()
+	regular := func(rel string) bool {
+		info, err := os.Lstat(filepath.Join(root, rel))
+		return err == nil && info.Mode().IsRegular()
+	}
+	var files []string
+	list := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	list.Dir = root
+	if out, err := list.Output(); err == nil {
+		for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+			if rel != "" && regular(rel) {
+				files = append(files, rel)
+			}
+		}
+		return files
+	}
+	source := map[string]bool{".go": true, ".json": true, ".sql": true, ".sh": true, ".py": true, ".md": true, ".yml": true, ".yaml": true}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() && rel != "." && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && source[filepath.Ext(rel)] && regular(rel) {
+			files = append(files, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}

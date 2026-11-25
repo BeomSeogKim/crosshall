@@ -59,6 +59,9 @@ type installer interface {
 	// resumed setup installs as approved and then asks the owner to upgrade.
 	legacyHook(entry Entry) bool
 
+	// hasMemberRules: setup installs member command permissions for the
+	// vendor. A hooks-only adapter has none.
+	hasMemberRules() bool
 	// memberRules are the routine member command permissions for an
 	// executable: entries of a JSON rules file, or a whole text rules file.
 	memberRules(adapter, executable string) (entries []Entry, text []byte, err error)
@@ -184,6 +187,8 @@ func (baseInstaller) legacyHook(Entry) bool { return false }
 func (baseInstaller) memberRules(adapter, _ string) ([]Entry, []byte, error) {
 	return nil, nil, fmt.Errorf("member command permissions are unsupported for adapter %q", adapter)
 }
+
+func (baseInstaller) hasMemberRules() bool { return false }
 
 func (baseInstaller) inlineRules() bool                           { return false }
 func (baseInstaller) addInlineRules(*installTarget, string) error { return nil }

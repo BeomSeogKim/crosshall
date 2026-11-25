@@ -90,3 +90,5 @@ func (codexInstaller) reminderMeasurement() reminderEvidence {
 		Reason: "The hook could not verify its launch version and mode. The tested post-tool matcher started on every Bash call.",
 	}
 }
+
+func (codexInstaller) hasMemberRules() bool { return true }

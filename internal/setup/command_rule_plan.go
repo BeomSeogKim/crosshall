@@ -20,6 +20,9 @@ type commandRuleTarget struct {
 func (s Service) preflightCommandRules(target *installTarget, j journal) error {
 	adapter := target.Spec.Adapter
 	i := installerFor(adapter)
+	if !i.hasMemberRules() {
+		return nil
+	}
 	if i.inlineRules() {
 		return i.addInlineRules(target, s.Executable)
 	}

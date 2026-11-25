@@ -74,3 +74,5 @@ func (claudeInstaller) reminderMeasurement() reminderEvidence {
 		Reason: "The read process did not receive the originating tool-call ID in conformance.",
 	}
 }
+
+func (claudeInstaller) hasMemberRules() bool { return true }

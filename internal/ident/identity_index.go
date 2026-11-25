@@ -4,9 +4,9 @@ package ident
 
 var identityIndex = []identityRow{
 	{adapter: "claude", sessionEnv: "CLAUDE_CODE_SESSION_ID", evidence: "documented", verifiedOn: []string{"2.1.327"}, markers: []string{"CLAUDECODE"}, cliName: "Claude Code",
-		version: versionSource{env: "AI_AGENT", prefix: "claude-code_", until: "_", dashesToDots: true, indirect: "", indirectName: ""}},
+		version: versionSource{env: "AI_AGENT", prefix: "claude-code_", until: "_", dashesToDots: true, indirect: "", indirectName: "", cliBuild: false}},
 	{adapter: "codex", sessionEnv: "CODEX_THREAD_ID", evidence: "observed", verifiedOn: []string{"0.170.0"}, markers: []string{"CODEX_SESSION_ID"}, cliName: "Codex CLI",
-		version: versionSource{env: "CODEX_VERSION", prefix: "", until: "", dashesToDots: false, indirect: "", indirectName: ""}},
-	{adapter: "agy", sessionEnv: "ANTIGRAVITY_CONVERSATION_ID", evidence: "observed", verifiedOn: []string{"1.5.11"}, markers: []string{"ANTIGRAVITY_AGENT"}, cliName: "Antigravity",
-		version: versionSource{env: "ANTIGRAVITY_LS_VERSION", prefix: "cli-", until: "", dashesToDots: false, indirect: "ls", indirectName: "language server"}},
+		version: versionSource{env: "CODEX_VERSION", prefix: "", until: "", dashesToDots: false, indirect: "", indirectName: "", cliBuild: false}},
+	{adapter: "agy", sessionEnv: "ANTIGRAVITY_CONVERSATION_ID", evidence: "observed", verifiedOn: []string{"1.5.16"}, markers: []string{"ANTIGRAVITY_AGENT"}, cliName: "Antigravity",
+		version: versionSource{env: "ANTIGRAVITY_LS_VERSION", prefix: "cli-", until: "", dashesToDots: false, indirect: "ls", indirectName: "language server", cliBuild: true}},
 }

@@ -75,6 +75,7 @@ func manifestIdentity(t *testing.T, adapter string) identityRow {
 				DashesToDots bool   `json:"dashes_to_dots"`
 				Indirect     string `json:"indirect"`
 				IndirectName string `json:"indirect_name"`
+				CLIBuild     bool   `json:"cli_build"`
 			} `json:"version"`
 		} `json:"identity"`
 	}
@@ -83,8 +84,9 @@ func manifestIdentity(t *testing.T, adapter string) identityRow {
 	}
 	id, v := m.Identity, m.Identity.Version
 	// A vendor may name no version: its sessions record "unknown".
-	noVersion := v.Env == "" && (v.Prefix != "" || v.Until != "" || v.DashesToDots || v.Indirect != "")
-	if m.SessionEnv == "" || id.Evidence == "" || noVersion || (v.Indirect == "") != (v.IndirectName == "") {
+	noVersion := v.Env == "" && (v.Prefix != "" || v.Until != "" || v.DashesToDots || v.Indirect != "" || v.CLIBuild)
+	if m.SessionEnv == "" || id.Evidence == "" || noVersion || (v.Indirect == "") != (v.IndirectName == "") ||
+		v.CLIBuild && v.Indirect == "" {
 		t.Fatalf("%s: incomplete identity declaration", adapter)
 	}
 	if m.CLIName == "" {
@@ -92,7 +94,7 @@ func manifestIdentity(t *testing.T, adapter string) identityRow {
 	}
 	return identityRow{adapter: m.Adapter, sessionEnv: m.SessionEnv, evidence: id.Evidence, verifiedOn: id.VerifiedOn,
 		markers: id.AgentMarkers, cliName: m.CLIName,
-		version: versionSource{env: v.Env, prefix: v.Prefix, until: v.Until, dashesToDots: v.DashesToDots, indirect: v.Indirect, indirectName: v.IndirectName}}
+		version: versionSource{env: v.Env, prefix: v.Prefix, until: v.Until, dashesToDots: v.DashesToDots, indirect: v.Indirect, indirectName: v.IndirectName, cliBuild: v.CLIBuild}}
 }
 
 func renderIdentityIndex(t *testing.T) []byte {
@@ -107,8 +109,8 @@ func renderIdentityIndex(t *testing.T) []byte {
 		v := r.version
 		fmt.Fprintf(&b, "{adapter: %q, sessionEnv: %q, evidence: %q, verifiedOn: %#v, markers: %#v, cliName: %q,\n",
 			r.adapter, r.sessionEnv, r.evidence, r.verifiedOn, r.markers, r.cliName)
-		fmt.Fprintf(&b, "version: versionSource{env: %q, prefix: %q, until: %q, dashesToDots: %t, indirect: %q, indirectName: %q}},\n",
-			v.env, v.prefix, v.until, v.dashesToDots, v.indirect, v.indirectName)
+		fmt.Fprintf(&b, "version: versionSource{env: %q, prefix: %q, until: %q, dashesToDots: %t, indirect: %q, indirectName: %q, cliBuild: %t}},\n",
+			v.env, v.prefix, v.until, v.dashesToDots, v.indirect, v.indirectName, v.cliBuild)
 	}
 	b.WriteString("}\n")
 	out, err := format.Source(b.Bytes())
@@ -143,7 +145,7 @@ func TestAnIdentityWithoutAVersionSource(t *testing.T) {
 	restore := manifests.SwapReader(func(adapter string) ([]byte, error) { return shipped[adapter], nil })
 	defer restore()
 	if index := renderIdentityIndex(t); !bytes.Contains(index, []byte(`{adapter: "codex", sessionEnv: "CODEX_THREAD_ID"`)) ||
-		!bytes.Contains(index, []byte(`version: versionSource{env: "", prefix: "", until: "", dashesToDots: false, indirect: "", indirectName: ""}`)) {
+		!bytes.Contains(index, []byte(`version: versionSource{env: "", prefix: "", until: "", dashesToDots: false, indirect: "", indirectName: "", cliBuild: false}`)) {
 		t.Fatalf("index without codex's version source:\n%s", index)
 	}
 

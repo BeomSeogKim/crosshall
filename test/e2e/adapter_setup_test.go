@@ -31,6 +31,9 @@ type setupWorld struct {
 	executable string
 	env        []string
 	paths      map[string]string
+	// codexServer, when set, runs every Codex hook under that stand-in
+	// managed server (buildCodexDaemon).
+	codexServer string
 }
 
 func newSetupWorld(t *testing.T) *setupWorld {
@@ -246,6 +249,9 @@ func (f *setupWorld) installedHookCommand(ctx context.Context, repo, adapter, ev
 			f.t.Fatalf("Codex encoding: %+v", hook)
 		}
 		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", hook.Command)
+		if f.codexServer != "" {
+			cmd = exec.CommandContext(ctx, f.codexServer, "app-server", "--managed-daemon", "--", "/bin/sh", "-c", hook.Command)
+		}
 	}
 	if hook.Timeout != 1 {
 		f.t.Errorf("%s %s timeout = %d", adapter, event, hook.Timeout)

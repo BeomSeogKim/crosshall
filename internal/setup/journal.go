@@ -272,7 +272,7 @@ func (e edit) matchesCleanupAbsence(dir string) bool {
 	return false
 }
 
-func (e edit) ownsDirectories() bool { return e.Adapter == "agy" || e.Rules }
+func (e edit) ownsDirectories() bool { return installerFor(e.Adapter).ownsConfigDirs() || e.Rules }
 
 func (e edit) publicationDirectoryMatches(dir string) bool {
 	if e.StageDir != "" {

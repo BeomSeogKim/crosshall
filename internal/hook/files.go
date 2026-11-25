@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -402,4 +403,22 @@ func launchMarked(rv *os.Root, pid string) bool {
 	defer dir.Close()
 	_, err = dir.Lstat(pid)
 	return err == nil
+}
+
+// openTurnFile holds a session's open turn, "<generation> <turn ref>", for
+// a vendor whose turn end names no turn (eventSpec.TurnFromOpen).
+const openTurnFile = "open-turn"
+
+func readOpenTurn(leaf *os.Root, generation string) string {
+	data, err := ident.ReadPrivateFile(leaf, openTurnFile, 512)
+	if err != nil {
+		return ""
+	}
+	record, complete := strings.CutSuffix(string(data), "\n")
+	gen, ref, ok := strings.Cut(record, " ")
+	if !complete || !ok || gen != generation || ref == "" || len(ref) > 256 ||
+		strings.IndexFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return ""
+	}
+	return ref
 }

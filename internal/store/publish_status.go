@@ -138,6 +138,11 @@ type PublishState struct {
 	// Invalidated marks an off state that is the route's own: it cannot
 	// carry a notice, and no switch turned it off.
 	Invalidated bool `json:"-"`
+	// NoRoute names the adapter whose route can carry no notice: its sender
+	// cannot reach the session, or it has no sender. It is set where the
+	// adapter reports it, never read back from Reason, whose words another
+	// adapter may share.
+	NoRoute string `json:"-"`
 }
 
 // ReadPublishState reports the publish state of a binding's route. A
@@ -293,9 +298,9 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	switch {
 	// A session the adapter cannot reach stays so with any sender.
 	case reach != "":
-		state.Reason = reach
+		state.Reason, state.NoRoute = reach, adapter
 	case !adapters.Sends(adapter):
-		state.Reason = PublishNoSender + adapter
+		state.Reason, state.NoRoute = PublishNoSender+adapter, adapter
 	case !verified:
 		state.Reason = "unverified launch"
 	case !current:

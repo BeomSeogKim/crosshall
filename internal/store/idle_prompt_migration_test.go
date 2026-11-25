@@ -53,7 +53,10 @@ func TestIdlePromptMigrationKeepsObservationsAndAdmitsTheKind(t *testing.T) {
 		names = append(names, name)
 	}
 	index.Close()
-	if want := []string{"observation_event", "observation_last_command", "observation_principal_sequence"}; !slices.Equal(names, want) {
+	// Migration 029 rebuilds the table with its three indexes; the store adds
+	// its read indexes when it opens.
+	if want := []string{"observation_event", "observation_last_command", "observation_launch_hook", "observation_launch_turn",
+		"observation_principal_sequence"}; !slices.Equal(names, want) {
 		t.Fatalf("observation indexes %v, want %v", names, want)
 	}
 	insert := `INSERT INTO observation (principal_id, kind, origin, source, observed_at_ms, launch_ref, event_ref, hook_at_ms)

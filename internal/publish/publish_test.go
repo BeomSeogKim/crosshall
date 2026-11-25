@@ -176,6 +176,8 @@ func (fixture) Notice(ids []int64) (string, bool)   { return "fixture " + notice
 func (fixture) ResumeNotice([]int64) (string, bool) { return "", false }
 func (fixture) Echo(prompt string) (string, bool)   { return strings.CutPrefix(prompt, "fixture ") }
 func (f fixture) Transport() Transport              { return f.transport }
+func (fixture) ReachReasons() []string              { return []string{"fixture cannot reach it"} }
+func (fixture) Evidence() []Evidence                { return []Evidence{{Vendor: "fixture", Capability: "publish"}} }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }

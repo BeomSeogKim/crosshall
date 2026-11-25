@@ -329,3 +329,7 @@ func confirmCodexApproval(ctx context.Context, target Target) Approval {
 	}
 	return ApprovalUnknown
 }
+
+func (codex) ReachReasons() []string { return []string{CodexNoDaemon, CodexDaemonUnverified} }
+
+func (codex) Evidence() []Evidence { return codexEvidence }

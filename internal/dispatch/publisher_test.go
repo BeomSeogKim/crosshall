@@ -835,6 +835,8 @@ func (fixtureAdapter) Echo(prompt string) (string, bool) {
 	return strings.CutPrefix(prompt, "fixture ")
 }
 func (a fixtureAdapter) Transport() publish.Transport { return a.transport }
+func (fixtureAdapter) ReachReasons() []string         { return nil }
+func (fixtureAdapter) Evidence() []publish.Evidence   { return nil }
 
 func countPublish(t *testing.T, f *publishTestFixture, table string) int {
 	t.Helper()

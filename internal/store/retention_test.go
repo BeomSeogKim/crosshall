@@ -116,3 +116,50 @@ func TestRetentionChunkStaysFastWithOldFactsOfRunningLaunches(t *testing.T) {
 		t.Fatalf("the slowest chunk took %s over %d facts of running launches", slowest, facts)
 	}
 }
+
+// A pass that deletes facts or turns clears the reassignment record of every
+// launch it may delete from, so the next reassignment reads all that is left;
+// a running launch keeps its facts and its record (#366).
+func TestRetentionClearsTheReassignmentRecordOfLaunchesItDeletesFrom(t *testing.T) {
+	ctx := t.Context()
+	db := retentionStore(t)
+	now := time.UnixMilli(1_900_000_000_000)
+	old := now.Add(-RetentionWindow - 25*time.Hour).UnixMilli()
+	if err := db.Update(ctx, func(tx Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms,
+				ended_hook_at_ms, reconciled_seq, reconciled_at_ms)
+			SELECT id, 'running-' || id, '{"adapter":"claude"}', 1, ?1 - 1, NULL, 1, ?1 FROM principal
+			UNION ALL SELECT id, 'ended-' || id, '{"adapter":"claude"}', 1, ?1 - 1, ?1, 1, ?1 FROM principal`, old); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO observation (principal_id, kind, origin, source, observed_at_ms, launch_ref, event_ref, turn_ref, hook_at_ms)
+			SELECT p.id, 'prompt_submitted', 'unknown', 'claude', ?1, l.launch_ref, 'event', 'turn', ?1
+			FROM principal p JOIN adapter_launch l ON l.principal_id = p.id`, old)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorded := `SELECT COUNT(*) FROM adapter_launch WHERE launch_ref LIKE ? AND reconciled_seq IS NOT NULL`
+	launches := db.count(t, recorded, "running-%")
+	if launches == 0 || db.count(t, recorded, "ended-%") != launches {
+		t.Fatalf("seeded %d running launches, %d ended", launches, db.count(t, recorded, "ended-%"))
+	}
+	pass, err := db.StartRetention(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for done := false; !done; {
+		if done, err = db.RetentionChunk(ctx, pass); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pass.Result.Observations == 0 {
+		t.Fatal("the pass deleted no facts")
+	}
+	if n := db.count(t, recorded, "ended-%"); n != 0 {
+		t.Fatalf("%d ended launches lost facts and kept their record", n)
+	}
+	if n := db.count(t, recorded, "running-%"); n != launches {
+		t.Fatalf("%d of %d running launches kept their record", n, launches)
+	}
+}

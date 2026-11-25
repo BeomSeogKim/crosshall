@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -183,9 +184,19 @@ func awaitPublishTest[T any](t *testing.T, ch <-chan T) T {
 	}
 }
 
+// sameTarget compares a published target with want, apart from the
+// attempt's identity, which must be set and name an attempt.
+func sameTarget(got, want domain.PublishTarget) bool {
+	attempt := got.Attempt
+	got.Attempt = ""
+	return got == want && attemptIdentity.MatchString(attempt)
+}
+
+var attemptIdentity = regexp.MustCompile(`^crosshall-[1-9][0-9]*-[1-9][0-9]*$`)
+
 func requirePublished(t *testing.T, call publishTestCall, ids ...int64) {
 	t.Helper()
-	if call.target != publishTestTarget || call.line != claudeNotice(ids) {
+	if !sameTarget(call.target, publishTestTarget) || call.line != claudeNotice(ids) {
 		t.Fatalf("published to %+v with %q, want %+v with IDs %v", call.target, call.line, publishTestTarget, ids)
 	}
 }
@@ -1016,5 +1027,30 @@ func TestPublisherAppliesTheStampsOfANoticeNotSubmitted(t *testing.T) {
 	f.requireAttempt(t, id, domain.PublishNotSubmitted)
 	if applied == 0 {
 		t.Fatal("the non-submission's stamps were left for a later transaction")
+	}
+}
+
+// A send names the home setup installed the adapter's hooks into, as a
+// proof does, and the attempt's identity: a transport finds its queue and
+// tags its notice with them, never with a path a hook reported.
+func TestPublisherSendNamesTheInstalledHomeAndTheAttempt(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	p, calls := f.publisher(t, nil)
+	p.homes = func(adapter string) string { return "/installed/" + adapter }
+	tickPublisher(t, p, f.now, true)
+	p.workers.Wait()
+	call := awaitPublishTest(t, calls)
+	want := publishTestTarget
+	want.Home = "/installed/claude"
+	if !sameTarget(call.target, want) {
+		t.Fatalf("published to %+v, want %+v", call.target, want)
+	}
+	var reservedAt int64
+	f.update(t, func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT reserved_at_ms FROM publish_attempt WHERE id = 1`).Scan(&reservedAt)
+	})
+	if call.target.Attempt != domain.AttemptIdentity(1, reservedAt) {
+		t.Fatalf("attempt %q, want attempt 1 reserved at %d", call.target.Attempt, reservedAt)
 	}
 }

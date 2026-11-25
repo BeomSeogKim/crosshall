@@ -41,6 +41,9 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 			if tc.adapter == "codex" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
 				want = codexNoticeOn + newVersionNotice
 			}
+			if tc.adapter == "agy" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
+				want = "- Turn-end check (Antigravity, interactive sessions). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set agy --turn-end off"
+			}
 			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI, Antigravity).") != tc.prompt ||
 				!strings.Contains(out, want) {
 				t.Fatalf("offer: %v\n%s", err, out)

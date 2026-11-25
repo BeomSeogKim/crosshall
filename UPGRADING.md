@@ -2,6 +2,18 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.3.1-rc.2
+
+Upgrading from v0.3.1-rc.1 keeps the database at schema 30. No migration runs, and no setup is needed.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. Install v0.3.1-rc.2 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command).
+3. Run `crosshall owner start`, then `crosshall owner doctor`.
+
+To go back to v0.3.1-rc.1, stop the dispatcher and running commands, put the rc.1 binary back at the same path and start it on the same schema 30 store.
+
+Coming from v0.3.0, follow [To v0.3.1-rc.1](#to-v031-rc1) with the v0.3.1-rc.2 binary: the first start backs up the store and runs migration 030, and its rollback steps apply unchanged.
+
 ## To v0.3.1-rc.1
 
 Upgrading from v0.3.0 moves the database from schema 29 to schema 30. Migration 030 adds two reconciliation checkpoint columns to `adapter_launch` and the index `turn_placeholder_finishing`. A launch from before the upgrade has no checkpoint, so its next reconciliation reads all its observations once.

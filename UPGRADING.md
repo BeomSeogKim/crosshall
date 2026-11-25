@@ -2,6 +2,16 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.3.0-rc.2
+
+Upgrading from v0.3.0-rc.1 keeps the database at schema 29. No migration runs, and no setup is needed.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. Install v0.3.0-rc.2 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command).
+3. Run `crosshall owner start`, then `crosshall owner doctor`.
+
+The first start recreates any member spool directory that macOS's daily `/tmp` cleaner removed, with one log line for each. To go back to v0.3.0-rc.1, stop the dispatcher and running commands, put the rc.1 binary back at the same path and start it on the same store. Coming from v0.2.0, follow the section below as well.
+
 ## To v0.3.0-rc.1
 
 Upgrading from v0.2.0 keeps the database at schema 29. No migration runs.

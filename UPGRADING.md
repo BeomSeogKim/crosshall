@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-The first start of this dispatcher adds three indexes to `store.sqlite3` (`observation_launch_hook`, `observation_launch_turn`, `turn_launch_opened`); the schema version stays 29. On a store of about 14,000 observations this took 26 ms, and on a million observations 2.4 s. Going back to v0.2.0 needs no step: v0.2.0 opens the store, ignores the indexes, and SQLite keeps them current.
+The first start of this dispatcher adds three indexes to `store.sqlite3` (`observation_launch_hook`, `observation_launch_turn`, `turn_launch_opened`); the schema version stays 29. On a store of about 14,000 observations this took 26 ms, and on a million observations 2.4 s; on a store that large, a session that starts while the dispatcher builds them may miss its start's wait, and its next prompt recovers it. Going back to v0.2.0 needs no step: v0.2.0 opens the store, ignores the indexes, and SQLite keeps them current.
 
 Known issue when going back to v0.2.0 or earlier: a hook of the older binary does not recognize a resume notice (`... The hall restarted and you still owe these requests ...`) that the session echoes, so its receipt never comes. A resume still being submitted when you switch back then holds that session's notices until that session ends or is restarted; v0.2.0 has no command that releases it.
 

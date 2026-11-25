@@ -21,7 +21,7 @@
     "events": ["SessionStart", "UserPromptSubmit"]
   },
   "events": {
-    "SessionStart": {"enroll": true, "output": "context"},
+    "SessionStart": {"enroll": true, "source": "startup", "output": "context"},
     "UserPromptSubmit": {"fact": "prompt_submitted", "notice": true, "output": "context"}
   }
 }

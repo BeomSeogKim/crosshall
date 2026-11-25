@@ -5,14 +5,15 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func init() { binaryTags += ",synthadapter" }
@@ -58,12 +59,71 @@ func (f *setupWorld) invokeSynth(repo, session, event, fields string) string {
 	return stdout.String()
 }
 
-func TestSynthAdapterInstallsThroughTheNormalSetup(t *testing.T) {
+// The synth fixture is a fresh adapter ID that only its bundle defines: a
+// manifest, an identity row and an installer, each in a file that only the
+// synthadapter tag compiles. Through the normal entry points it installs
+// beside the owner's hooks, enrolls, is identified, gets a request at its
+// next prompt, follows owner policy and uninstalls byte for byte.
+func TestSynthAdapterWorksThroughTheNormalEntryPoints(t *testing.T) {
 	f := newSynthWorld(t)
-	out := f.apply("", "setup", "synth", "--apply")
-	var installed struct{ Hooks map[string]json.RawMessage }
-	if err := json.Unmarshal(readSetupFile(t, f.paths["synth"]).bytes, &installed); err != nil {
-		t.Fatal(err)
+	original := readSetupFile(t, f.paths["synth"])
+	if got := f.apply("", "setup", "synth", "--apply"); !strings.Contains(got.stdout, `"outcome":"installed"`) {
+		t.Fatalf("setup: %s", got.stdout)
 	}
-	t.Logf("apply: %s\nfile: %s", out.stdout, readSetupFile(t, f.paths["synth"]).bytes)
+	installed := readSetupFile(t, f.paths["synth"]).bytes
+	if !bytes.Contains(installed, []byte(`"command":"synth-owner-hook"`)) || !bytes.Contains(installed, []byte(`"owner": true`)) {
+		t.Fatalf("setup changed the owner's settings: %s", installed)
+	}
+	status := f.apply("", "setup", "status").stdout
+	if !strings.Contains(status, `"adapter":"synth","name":"Synth Fixture"`) || !strings.Contains(status, `"install":"installed"`) {
+		t.Fatalf("status: %s", status)
+	}
+
+	repo := f.enrollmentRepo()
+	session := setupSessionPrefix + "synth"
+	f.waitForWelcomeDelivery("synth", "SessionStart", time.Now().Add(fixtureEventTimeout), func(string) string {
+		return f.invokeSynth(repo, session, "SessionStart", "")
+	})
+	f.waitEnrollmentPackets("synth", "SessionStart", time.Now().Add(fixtureEventTimeout))
+	if evidence := f.enrollmentEvidence("synth"); !strings.Contains(evidence, "live binding") {
+		t.Fatalf("synth session did not enroll: %s", evidence)
+	}
+	member := &participant{w: f.world, extra: []string{"SYNTH_SESSION_ID=" + session}}
+	if whoami := member.must("whoami"); whoami.obj["vendor"] != "synth" || whoami.obj["enrollment"] != "enrolled" ||
+		!strings.Contains(fmt.Sprint(whoami.obj["join_hint"]), "as @synth1.") {
+		t.Fatalf("synth session identified as %v", whoami.obj)
+	}
+
+	writer := f.member()
+	writer.must("join", "setup-check", "--as", "writer")
+	id := strconv.FormatInt(num(t, writer.must("ask", "@synth1", "a request for the fixture"), "id"), 10)
+	want := pendingContext([]string{id})
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for turn := 1; ; turn++ {
+		got := hostContext(t, f.invokeSynth(repo, session, "UserPromptSubmit", ""))
+		f.waitEnrollmentPackets("synth", "UserPromptSubmit", time.Now().Add(fixtureEventTimeout))
+		if got == want {
+			break
+		}
+		if got != "" || time.Now().After(deadline) {
+			t.Fatalf("prompt %d offered %q, want %q", turn, got, want)
+		}
+	}
+	member.must("read")
+	member.must("reply", id, "done")
+	if got := writer.must("read").stdout; !strings.Contains(got, "done") {
+		t.Fatalf("the writer did not get the reply: %s", got)
+	}
+
+	f.owner().must("owner", "adapter", "set", "synth", "--enabled", "off")
+	writer.must("ask", "@synth1", "while policy is off")
+	if got := f.invokeSynth(repo, session, "UserPromptSubmit", ""); got != "" && got != "{}" {
+		t.Fatalf("a disabled adapter's prompt offered %q", got)
+	}
+	if doctor := f.apply("", "owner", "doctor").stdout; !strings.Contains(doctor, "synth") {
+		t.Fatalf("doctor does not list the fixture: %s", doctor)
+	}
+
+	f.apply("", "uninstall", "synth", "--apply")
+	assertSetupFile(t, f.paths["synth"], original, false)
 }

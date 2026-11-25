@@ -177,9 +177,10 @@ type Adapter interface {
 	Echo(prompt string) (ids string, ok bool)
 	// Transport is the adapter's sender, without Send while it has none.
 	Transport() Transport
-	// ReachReasons lists, word for word as stored, every reason Reach
-	// gives. The core reads each as one class: this adapter's sender cannot
-	// reach the session at all.
+	// ReachReasons lists, word for word, every reason Reach gives: this
+	// adapter's sender cannot reach the session at all. The core classifies
+	// a session where this adapter's Reach reports it, never by these
+	// words, which another adapter or a core reason may share.
 	ReachReasons() []string
 	// Evidence is the adapter's shipped evidence.
 	Evidence() []Evidence
@@ -233,21 +234,6 @@ func Lookup(name string) (Adapter, bool) { return Adapters().Lookup(name) }
 func (r Registry) Lookup(name string) (Adapter, bool) {
 	a, ok := r[name]
 	return a, ok
-}
-
-// ReachReason reports whether reason is a Reach reason of a registered
-// adapter, and whose.
-func ReachReason(reason string) (adapter string, ok bool) { return Adapters().ReachReason(reason) }
-
-// ReachReason reports whether reason is a Reach reason one of r's adapters
-// declares, and whose.
-func (r Registry) ReachReason(reason string) (adapter string, ok bool) {
-	for _, name := range r.Names() {
-		if reason != "" && slices.Contains(r[name].ReachReasons(), reason) {
-			return name, true
-		}
-	}
-	return "", false
 }
 
 // Evidence lists the shipped evidence of r's adapters, adapters in name

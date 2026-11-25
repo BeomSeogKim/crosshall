@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
-	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -87,17 +85,12 @@ func reachWake(status store.PublishState, found bool) Wake {
 		}
 		return none(WhyOff)
 	}
-	if adapter, ok := strings.CutPrefix(status.Reason, store.PublishNoSender); ok {
-		w := none(WhyNoRoute)
-		w.Adapter = adapter
-		return w
-	}
 	// A session its adapter's sender cannot reach at all (such as a Codex
-	// session outside a confirmed managed app server) has no route a notice
-	// could take.
-	if adapter, ok := publish.ReachReason(status.Reason); ok {
+	// session outside a confirmed managed app server), or whose adapter has
+	// no sender, has no route a notice could take.
+	if status.NoRoute != "" {
 		w := none(WhyNoRoute)
-		w.Adapter = adapter
+		w.Adapter = status.NoRoute
 		return w
 	}
 	return none(WhyUnproven)

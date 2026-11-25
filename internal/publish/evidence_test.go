@@ -32,29 +32,24 @@ func TestShippedEvidenceIsRegisteredByItsAdapter(t *testing.T) {
 	}
 }
 
-// Every shipped Reach reason is declared by its adapter word for word, so a
-// stored reason keeps its class across releases.
+// Every Reach reason a shipped adapter gives is one it declares, word for
+// word, and none is a core reason. The core classifies a reason where the
+// adapter's Reach gives it, never by these words.
 func TestReachReasonsAreDeclaredWordForWord(t *testing.T) {
-	for reason, want := range map[string]string{
-		"codex runs without its daemon": "codex",
-		"codex daemon not confirmed":    "codex",
-	} {
-		if got, ok := ReachReason(reason); !ok || got != want {
-			t.Errorf("ReachReason(%q) = %q, %v", reason, got, ok)
-		}
+	codex, _ := Shipped().Lookup("codex")
+	if got := codex.ReachReasons(); !slices.Equal(got, []string{"codex runs without its daemon", "codex daemon not confirmed"}) {
+		t.Errorf("codex declares %q", got)
 	}
 	for _, mode := range []string{ModeInProcess, ModeDaemon, "unverified", ""} {
 		for name, a := range Shipped() {
-			if why := a.Reach(Route{ThreadID: "t", Mode: mode}); why != "" {
-				if owner, ok := ReachReason(why); !ok || owner != name {
-					t.Errorf("%s reach reason %q not declared for it", name, why)
-				}
+			if why := a.Reach(Route{ThreadID: "t", Mode: mode}); why != "" && !slices.Contains(a.ReachReasons(), why) {
+				t.Errorf("%s reach reason %q not declared for it", name, why)
 			}
 		}
 	}
-	for _, reason := range []string{"route not proven", ""} {
-		if _, ok := ReachReason(reason); ok {
-			t.Errorf("%q read as a reach reason", reason)
+	for name, a := range Shipped() {
+		if slices.Contains(a.ReachReasons(), "route not proven") || slices.Contains(a.ReachReasons(), "") {
+			t.Errorf("%s declares a core reason: %q", name, a.ReachReasons())
 		}
 	}
 }
@@ -63,18 +58,18 @@ func TestReachReasonsAreDeclaredWordForWord(t *testing.T) {
 // reach reasons to be read as its own and its evidence to be seeded.
 func TestANewAdapterRegistersItsReachReasonsAndEvidence(t *testing.T) {
 	r := Shipped().With("fixture", fixture{})
-	if got, ok := r.ReachReason("fixture cannot reach it"); !ok || got != "fixture" {
-		t.Fatalf("fixture reach reason = %q, %v", got, ok)
+	if a, ok := r.Lookup("fixture"); !ok || !slices.Contains(a.ReachReasons(), "fixture cannot reach it") {
+		t.Fatal("fixture not registered with its reach reason")
 	}
 	if !slices.ContainsFunc(r.Evidence(), func(e Evidence) bool { return e.Vendor == "fixture" }) {
 		t.Fatal("fixture evidence not listed")
 	}
-	if _, ok := ReachReason("fixture cannot reach it"); ok {
-		t.Fatal("an unregistered adapter's reason was read before Swap")
+	if _, ok := Lookup("fixture"); ok {
+		t.Fatal("an unregistered adapter was found before Swap")
 	}
 	restore := Swap(r)
 	defer restore()
-	if got, ok := ReachReason("fixture cannot reach it"); !ok || got != "fixture" {
-		t.Fatalf("after Swap: %q, %v", got, ok)
+	if _, ok := Lookup("fixture"); !ok {
+		t.Fatal("fixture not found after Swap")
 	}
 }

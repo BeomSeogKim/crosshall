@@ -32,6 +32,7 @@ func (p *publishFixture) publishState() store.PublishState {
 	}
 	visible := state
 	visible.RecoveryHint = store.PublishRecoveryHint{}
+	visible.NoRoute = ""
 	if owner == nil || *owner != visible {
 		p.t.Fatalf("owner who shows %+v, the store %+v", owner, state)
 	}

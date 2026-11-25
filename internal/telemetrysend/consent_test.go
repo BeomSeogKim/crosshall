@@ -98,44 +98,43 @@ func TestOptOutSeenDuringBuildIsRecorded(t *testing.T) {
 	}
 }
 
-// Building a day reads the store on a connection of its own: with a large
-// ledger a competing write transaction does not wait for the build.
+// Building a day reads the store on a connection of its own: it neither
+// waits for nor holds the write connection. The build runs to the end while
+// a write transaction stays open on that connection; a build that needed it
+// would wait for that transaction to end.
 func TestBuildDoesNotHoldTheStore(t *testing.T) {
 	h := newHall(t)
 	h.setMode("on", d0.AddDate(0, 0, -9))
 	h.hookActivity(d0.AddDate(0, 0, -1))
-	if err := h.db.Update(t.Context(), func(tx store.Tx) error {
-		_, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 500000)
-			INSERT INTO event(kind, subject, detail, at_ms) SELECT 'joined', 'synthetic', '{}', ?1 + (x % 180) * 86400000 FROM n`,
-			d0.AddDate(0, 0, -180).UnixMilli())
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
+	held, release, wrote := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		wrote <- h.db.Update(t.Context(), func(tx store.Tx) error {
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO event(kind, subject, detail, at_ms) VALUES ('joined', 'synthetic', '{}', ?)`,
+				d0.UnixMilli()); err != nil {
+				return err
+			}
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
 	s := New(h.cfg, h.db)
 	s.Tick(t.Context(), d0.Add(time.Minute))
-	var worst time.Duration
 	done := make(chan struct{})
 	go func() { s.Wait(); close(done) }()
-	for running := true; running; {
-		select {
-		case <-done:
-			running = false
-		default:
-			start := time.Now()
-			if err := h.db.Update(t.Context(), func(store.Tx) error { return nil }); err != nil {
-				t.Fatal(err)
-			}
-			worst = max(worst, time.Since(start))
-			time.Sleep(time.Millisecond)
-		}
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second): // a liveness guard, not a cost bound
+		close(release)
+		t.Fatal("the build waited for an open write transaction")
 	}
-	t.Logf("a write transaction waited at most %v", worst)
-	if worst > 50*time.Millisecond {
-		t.Fatalf("a write transaction waited %v for the build", worst)
+	close(release)
+	if err := <-wrote; err != nil {
+		t.Fatal(err)
 	}
-	if len(h.files("pending")) != 7 {
-		t.Fatalf("pending = %v", h.files("pending"))
+	if pending := h.files("pending"); !slices.Equal(pending, []string{"2026-11-09.json"}) {
+		t.Fatalf("pending = %v, want the day with activity", pending)
 	}
 }
 

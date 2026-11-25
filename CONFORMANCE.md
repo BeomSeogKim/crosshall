@@ -162,18 +162,21 @@ receiving turns without entering any further prompts. The release gate has a
 separate row for this scenario and requires both directions. A missing package
 or unsupported host blocks that row.
 
-On Linux arm64, Codex 0.172.0 and Claude Code 2.1.331 passed both directions in
-a container with `--network none`. The run used scratch publish evidence for
-Claude Code. An amd64 run under Rosetta stopped at route activation because
-Linux reported `/run/rosetta/rosetta` as the daemon executable. The managed
-server check requires the executable from the fixture's release directory.
-Native Linux amd64 still needs a run.
+Codex 0.172.0 and Claude Code 2.1.331 passed both directions on native Linux
+arm64 and amd64 in containers with `--network none`. Claude Code used scratch
+publish evidence in both runs. On GitHub, manually dispatch the `race` workflow
+with `native_linux_amd64` enabled to run the amd64 round trip and the Codex
+publish trial on `ubuntu-latest`. [Linux amd64 run](https://github.com/BeomSeogKim/crosshall/actions/runs/45707349401).
+
+An amd64 run under Rosetta stopped at route activation because Linux reported
+`/run/rosetta/rosetta` as the daemon executable. The managed server check
+requires the executable from the fixture's release directory.
 
 ### Codex daemon publish evidence
 
 Use the same managed package setup and select `TestCodexDaemonPublishTrial`
 to reproduce the publish trial for Codex `0.172.0`, `daemon`, and `codex-1`.
-Crosshall ships evidence for `darwin-arm64` and `linux-arm64`:
+Crosshall ships evidence for `darwin-arm64`, `linux-arm64` and `linux-amd64`:
 
 ```sh
 CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-0.172.0-release \

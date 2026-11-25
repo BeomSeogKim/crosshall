@@ -3,14 +3,17 @@ package setup
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
@@ -23,6 +26,35 @@ type readmeTerminal struct {
 func (t *readmeTerminal) Read([]byte) (int, error) {
 	t.beforeInput = t.String()
 	return 0, io.EOF
+}
+
+func hostInstallEvidence(vendor, revision string) []store.BuiltinEvidence {
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	var evidence []store.BuiltinEvidence
+	for _, row := range domain.BuiltinCapabilityEvidence {
+		if row.Vendor == vendor && row.Platform == platform && row.ManifestRev == revision {
+			evidence = append(evidence, row)
+		}
+	}
+	return evidence
+}
+
+func hasInstallCapability(evidence []store.BuiltinEvidence, capability, mode string) bool {
+	return slices.ContainsFunc(evidence, func(row store.BuiltinEvidence) bool {
+		return row.Capability == capability && row.Mode == mode
+	})
+}
+
+func expectedInstallNotice(evidence []store.BuiltinEvidence, mode, version, notice string) string {
+	if !hasInstallCapability(evidence, "publish", mode) {
+		return ""
+	}
+	if slices.ContainsFunc(evidence, func(row store.BuiltinEvidence) bool {
+		return row.Capability == "publish" && row.Mode == mode && row.Version == version
+	}) {
+		return notice
+	}
+	return notice + newVersionNotice
 }
 
 func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
@@ -38,10 +70,12 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 				pickup = "its next prompt or " + pickup
 			}
 			want := "- Notices and the turn-end check are not available for these builds. A session sees new work at " + pickup
-			if tc.adapter == "codex" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
-				want = codexNoticeOn + newVersionNotice
+			if tc.adapter == "codex" {
+				if notice := expectedInstallNotice(hostInstallEvidence("codex", "codex-1"), "daemon", "0.170.0", codexNoticeOn); notice != "" {
+					want = notice
+				}
 			}
-			if tc.adapter == "agy" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
+			if tc.adapter == "agy" && hasInstallCapability(hostInstallEvidence("agy", "agy-2"), "turn_end", "interactive") {
 				want = "- Turn-end check (Antigravity, interactive sessions). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set agy --turn-end off"
 			}
 			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI, Antigravity).") != tc.prompt ||
@@ -135,13 +169,16 @@ func knownBuildPlans(t *testing.T, s Service, adapters ...string) []VendorPlan {
 	return plans
 }
 
+const claudeNoticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
 const codexNoticeOn = "- Notices (Codex, managed daemon sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
 const newVersionNotice = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
 
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
-	const noticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
+	const noticeOn = claudeNoticeOn
 	const turnEndBody = "When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off"
 	const turnEndOn = "- Turn-end check (Claude Code, interactive sessions and print mode). " + turnEndBody
+	const noticeUnavailable = "- Notices (Claude Code, interactive sessions). Not available for this build. A session sees new work at its next prompt or its next crosshall read."
+	const turnEndUnavailable = "- Turn-end check (Claude Code). Not available for this build."
 	const unavailable = "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read."
 	for _, tc := range []struct {
 		name, version, publishLevel, turnEndLevel, printLevel, settings, notice, turnEnd, codexNotice string
@@ -184,7 +221,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			turnEnd:  "- Turn-end check (Claude Code). Not available for this build."},
 		{name: "exact candidate", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "candidate", notice: unavailable},
 		{name: "publish unavailable", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "tested", turnEnd: turnEndOn,
-			notice: "- Notices (Claude Code, interactive sessions). Not available for this build. A session sees new work at its next prompt or its next crosshall read."},
+			notice: noticeUnavailable},
 		{name: "cold"},
 		{name: "unreadable", notice: "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it."},
 	} {
@@ -195,9 +232,28 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			notice, turnEnd, codexNotice := tc.notice, tc.turnEnd, tc.codexNotice
 			ledger := filepath.Join(f.State, "store.sqlite3")
 			if tc.name == "cold" {
-				notice = unavailable
-				if platform == "darwin-arm64" {
-					notice, turnEnd, codexNotice = noticeOn+newVersionNotice, turnEndOn, codexNoticeOn+newVersionNotice
+				claude := hostInstallEvidence("claude", "claude-3")
+				interactiveTurnEnd := hasInstallCapability(claude, "turn_end", "interactive")
+				printTurnEnd := hasInstallCapability(claude, "turn_end", "print")
+				switch {
+				case interactiveTurnEnd && printTurnEnd:
+					turnEnd = turnEndOn
+				case interactiveTurnEnd:
+					turnEnd = "- Turn-end check (Claude Code, interactive sessions). " + turnEndBody
+				case printTurnEnd:
+					turnEnd = "- Turn-end check (Claude Code, print mode). " + turnEndBody
+				}
+				notice = expectedInstallNotice(claude, "interactive", "2.1.327", noticeOn)
+				if notice != "" {
+					if turnEnd == "" {
+						turnEnd = turnEndUnavailable
+					}
+				} else if turnEnd != "" {
+					notice = noticeUnavailable
+				}
+				codexNotice = expectedInstallNotice(hostInstallEvidence("codex", "codex-1"), "daemon", "0.170.0", codexNoticeOn)
+				if notice == "" && codexNotice == "" {
+					notice = unavailable
 				}
 			} else if tc.name == "unreadable" {
 				if err := os.Mkdir(f.State, 0700); err != nil {
@@ -275,12 +331,11 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			} else if tc.name == "unreadable" {
 				joining = "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off)."
 			}
-			want := joining + "\n- Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
-			if turnEnd != "" {
-				want += turnEnd + "\n"
-			}
-			if codexNotice != "" {
-				want += codexNotice + "\n"
+			want := joining + "\n- Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n"
+			for _, line := range []string{notice, turnEnd, codexNotice} {
+				if line != "" {
+					want += line + "\n"
+				}
 			}
 			if !found || !ends || block != want || strings.Count(out, "[y/N]") != 1 {
 				t.Fatalf("offer:\n%s\nwant disclosure:\n%s", out, want)
@@ -314,31 +369,44 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(f.State, "store.sqlite3")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the preview created a store: %v", err)
 	}
-	// The Claude Code entry runs from its own line to the next unindented one.
-	_, block, _ := strings.Cut(out, "\nclaude 2.1.331 ")
-	if i := strings.Index(block, "\n"); i >= 0 {
-		block = block[i+1:]
-	}
-	for i, line := range strings.Split(block, "\n") {
-		if !strings.HasPrefix(line, "  ") {
-			block = strings.Join(strings.Split(block, "\n")[:i], "\n") + "\n"
-			break
-		}
-	}
-	listed := strings.Contains(block, "  publish darwin-arm64/interactive tested\n") &&
-		strings.Contains(block, "  turn_end darwin-arm64/interactive tested\n") &&
-		strings.Contains(block, "  turn_end darwin-arm64/print tested\n")
-	unknown := strings.Contains(block, "Capability evidence for this build: unknown")
 	if strings.Contains(out, "could not read this Claude Code's version") {
 		t.Fatalf("the question treats a build whose version was read as unknown:\n%s", out)
 	}
-	if runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
-		if !listed || unknown || !strings.Contains(out, "- Notices (Claude Code, interactive sessions). When work arrives for an idle session") ||
-			!strings.Contains(out, "publish darwin-arm64/daemon tested") || !strings.Contains(out, codexNoticeOn+"\n") {
-			t.Fatalf("the listing and the question disagree:\n%s", out)
+	for _, build := range []struct {
+		vendor, revision, version, mode, notice string
+	}{
+		{"claude", "claude-3", "2.1.331", "interactive", claudeNoticeOn},
+		{"codex", "codex-1", "0.172.0", "daemon", codexNoticeOn},
+	} {
+		evidence := hostInstallEvidence(build.vendor, build.revision)
+		var want, listed []string
+		for _, row := range evidence {
+			if row.Version == build.version {
+				want = append(want, fmt.Sprintf("  %s %s/%s tested", row.Capability, row.Platform, row.Mode))
+			}
 		}
-	} else if listed || !unknown || strings.Contains(out, "- Notices (Codex, managed daemon sessions).") {
-		t.Fatalf("listed built-in evidence for another platform:\n%s", out)
+		_, vendorBlock, found := strings.Cut(out, "\n"+build.vendor+" "+build.version+" ")
+		_, details, _ := strings.Cut(vendorBlock, "\n")
+		unknown := false
+		for _, line := range strings.Split(details, "\n") {
+			if !strings.HasPrefix(line, "  ") {
+				break
+			}
+			if fields := strings.Fields(line); len(fields) == 3 && strings.Contains(fields[1], "/") {
+				listed = append(listed, line)
+			}
+			unknown = unknown || line == "  Capability evidence for this build: unknown"
+		}
+		slices.Sort(want)
+		slices.Sort(listed)
+		wantNotice := expectedInstallNotice(evidence, build.mode, build.version, build.notice)
+		noticeMatches := !strings.Contains(out, build.notice)
+		if wantNotice != "" {
+			noticeMatches = strings.Contains(out, wantNotice+"\n")
+		}
+		if !found || !slices.Equal(listed, want) || unknown != (len(want) == 0) || !noticeMatches {
+			t.Fatalf("%s listing %q, want %q, or question disagrees:\n%s", build.vendor, listed, want, out)
+		}
 	}
 }
 

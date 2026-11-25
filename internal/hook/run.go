@@ -228,7 +228,9 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	// so does a Stop the dispatcher recorded no ask to announce for (#261).
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision) && !noTurnEndAsk(rv, leaf, gen)
-	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
+	// A prompt that binds a launch whose start was missed asks: while the
+	// session had no open launch, new work did not mark its stamp.
+	clean := !spec.Enroll && notice && !launch.late && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
 	}

@@ -177,6 +177,13 @@ type Adapter interface {
 	Echo(prompt string) (ids string, ok bool)
 	// Transport is the adapter's sender, without Send while it has none.
 	Transport() Transport
+	// ReachReasons lists, word for word, every reason Reach gives: this
+	// adapter's sender cannot reach the session at all. The core classifies
+	// a session where this adapter's Reach reports it, never by these
+	// words, which another adapter or a core reason may share.
+	ReachReasons() []string
+	// Evidence is the adapter's shipped evidence.
+	Evidence() []Evidence
 	// BackgroundWakes reports whether the agent starts its next turn when a
 	// background command it ran exits, so an idle session can stand by on a
 	// background crosshall wait at no model cost. A session of an adapter
@@ -227,6 +234,16 @@ func Lookup(name string) (Adapter, bool) { return Adapters().Lookup(name) }
 func (r Registry) Lookup(name string) (Adapter, bool) {
 	a, ok := r[name]
 	return a, ok
+}
+
+// Evidence lists the shipped evidence of r's adapters, adapters in name
+// order and each adapter's rows in its own order.
+func (r Registry) Evidence() []Evidence {
+	var out []Evidence
+	for _, name := range r.Names() {
+		out = append(out, r[name].Evidence()...)
+	}
+	return out
 }
 
 // Names lists the registered adapters, sorted.

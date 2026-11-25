@@ -107,13 +107,17 @@ func (c claudeSession) startWithContext(source string) string {
 
 // promptContext fires a prompt and returns the context it adds. A prompt hook
 // past its budget prints nothing on a slow runner; the same prompt fired again
-// shows what it missed.
+// shows what it missed. An offer counts as made once the dispatcher has the
+// receipt the hook sends after printing, so the context is returned only
+// after the hook's packets are consumed: a next prompt fired earlier gets the
+// same IDs again.
 func (c claudeSession) promptContext(fields map[string]any) string {
 	c.w.t.Helper()
 	deadline := time.Now().Add(fixtureEventTimeout)
 	for attempt := 1; ; attempt++ {
 		out := c.fire("UserPromptSubmit", fields)
 		if out != "" {
+			c.waitForConsumption(deadline)
 			return hostContext(c.w.t, out)
 		}
 		counter := c.lastCounter()

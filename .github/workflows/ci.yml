@@ -18,6 +18,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # The e2e suite runs this build's hooks under the base build's
+      # dispatcher, as after an upgrade in place.
+      - name: Build the base for the mixed-build check
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CGO_ENABLED: "0"
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          mkdir "$RUNNER_TEMP/base"
+          git archive "$BASE" | tar -x -C "$RUNNER_TEMP/base"
+          (cd "$RUNNER_TEMP/base" && go build -tags=testvendorhome -o "$RUNNER_TEMP/crosshall-base" ./cmd/crosshall)
+          echo "CROSSHALL_E2E_BASE_BINARY=$RUNNER_TEMP/crosshall-base" >> "$GITHUB_ENV"
       - name: Repository checks
         env:
           CGO_ENABLED: "0"

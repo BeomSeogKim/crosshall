@@ -51,6 +51,11 @@ The repository is trunk-based.
   ```
 
   It needs Go and Python 3; Python runs the installer and terminal tests.
+  On Linux, CI also builds the pull request's base and runs this build's
+  hooks under that build's dispatcher, as after an upgrade in place. To run
+  that check locally, build the base with `go build -tags=testvendorhome`
+  and set `CROSSHALL_E2E_BASE_BINARY` to it; without it the check is
+  skipped.
 
 - Resolve review conversations before merging.
 

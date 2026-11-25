@@ -6,6 +6,11 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 - **Assigning a prompt to its turn no longer reads the launch's whole history:** at every prompt, Stop and idle report, the hall folded all prompts, Stops and idle reports of the member's launch into turns, so a long session paid more for each hook as it went on: 4.3 ms per prompt at 1,000 turns and 12 ms at 3,000 in a domain measurement. Migration 030 records on each launch the newest observation the last fold read and the dispatcher's time then. The next fold starts at the latest turn before anything it has not read, and starts with the typed-ahead turns still running there; it stays about 0.45 ms at 3,000 turns. It folds every fact, as before, when that start could give other turns: no record yet, a fact that names an earlier turn, a running placeholder a turn-end notice keeps, or a dispatcher clock that went back past a fact the last fold read. A retention pass that deletes a launch's facts or turns clears its record (#366).
 
+## v0.3.0 (2026-11-26)
+
+- **Release of v0.3.0-rc.2:** no product change since rc.2; one end-to-end test now waits for a prompt's receipt before the session's next prompt.
+- **Upgrade:** from v0.3.0-rc.2 the database stays at schema 29; no migration runs and no setup is needed. From v0.2.0, the steps include `crosshall setup antigravity --apply` and Codex's managed app server. See [UPGRADING.md](UPGRADING.md#to-v030).
+
 ## v0.3.0-rc.2 (2026-11-25)
 
 - **The dispatcher recreates a member's removed spool once:** macOS's daily `/tmp` cleaner removes empty directories left unmodified for more than three days, so a quiet member's `in`, `work` and `out` disappeared while its directory stayed. The dispatcher then logged two errors for that member on every pass, about 25 lines a second. It now recreates them and logs one line (#372).

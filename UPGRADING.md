@@ -12,6 +12,18 @@ Upgrading from v0.3.0 moves the database from schema 29 to schema 30. Migration 
 
 To roll back, stop the dispatcher, restore the schema 29 database from your copy (or the `store-v29-*.sqlite3` backup) and start v0.3.0, which refuses a schema 30 store. Restoring discards messages and other changes made since the upgrade.
 
+## To v0.3.0
+
+Upgrading from v0.3.0-rc.2 keeps the database at schema 29. No migration runs, and no setup is needed.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. Install v0.3.0 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command).
+3. Run `crosshall owner start`, then `crosshall owner doctor`.
+
+To go back to v0.3.0-rc.2, stop the dispatcher and running commands, put the rc.2 binary back at the same path and start it on the same schema 29 store.
+
+Coming from v0.2.0, follow [To v0.3.0-rc.1](#to-v030-rc1) with the v0.3.0 binary: it adds `crosshall setup antigravity --apply` and the Codex managed app server step, and its notes on going back to v0.2.0 apply unchanged.
+
 ## To v0.3.0-rc.2
 
 Upgrading from v0.3.0-rc.1 keeps the database at schema 29. No migration runs, and no setup is needed.

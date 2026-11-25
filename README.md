@@ -116,7 +116,7 @@ After the focus, each line says how the hall reaches that member: `the hall star
 | Any other Claude Code, Codex CLI or Antigravity CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. If the agent is idle, send a prompt to surface the pending line, or have it run `crosshall read`. |
 | Any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
 
-The bidirectional idle-wake check requires `publish: available` for both sessions. When a session has no notice route, use the next-prompt or manual-read steps in the table.
+The bidirectional idle-wake check requires `publish: available` for both sessions. On Linux arm64, built-in publish evidence covers managed Codex. Claude Code needs its own tested publish evidence to receive an idle wake there. When a session has no notice route, use the next-prompt or manual-read steps in the table.
 
 To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` offers to remove the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
 

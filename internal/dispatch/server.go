@@ -83,6 +83,7 @@ type server struct {
 	lastLogged      string
 	adapterSequence uint64
 	revisions       revisionNotes
+	builds          hostBuilds
 }
 
 // Serve runs in the dedicated dispatcher process until ctx is canceled.
@@ -144,6 +145,10 @@ func Serve(ctx context.Context, cfg Config) error {
 	rand.Read(instance[:])
 	s := server{cfg: cfg, state: state, db: db, watch: watcher, cancel: cancel,
 		ready: newReadyMarker(hex.EncodeToString(instance[:]))}
+	defer func() {
+		cancel()
+		s.builds.workers.Wait()
+	}()
 	pub := &publisher{db: db, evidence: domain.BuiltinCapabilityEvidence, stamps: s.applyAdapterStamps,
 		homes: func(adapter string) string { return setup.InstalledConfigDir(cfg.StateRoot, adapter) }}
 	sends := len(publish.Adapters().Senders()) > 0
@@ -232,6 +237,7 @@ func Serve(ctx context.Context, cfg Config) error {
 			if sends {
 				logPublishFailure(pub.tick(ctx, now, false))
 			}
+			s.hostBuildTick(ctx, now)
 		}
 	}
 }

@@ -433,7 +433,7 @@ func (s *server) publishAdapterFilesAt(ctx context.Context, root *os.Root) error
 		if err != nil {
 			return err
 		}
-		return errors.Join(publishAdapterText(root, adapterPolicyName, policy),
+		return errors.Join(s.publishHostBuilds(root), publishAdapterText(root, adapterPolicyName, policy),
 			publishAdapterText(s.state, hook.StatePolicyName, policy),
 			publishAdapterText(root, adapterRepoSetName, repos),
 			publishAdapterText(root, adapterTurnEndName, turnEnd))

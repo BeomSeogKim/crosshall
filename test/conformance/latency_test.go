@@ -136,7 +136,11 @@ func (m *turnModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func codexFixtureShell(w io.Writer, id, command string) {
-	args, _ := json.Marshal(map[string]any{"cmd": command, "login": false})
+	codexFixtureExec(w, id, map[string]any{"cmd": command, "login": false})
+}
+
+func codexFixtureExec(w io.Writer, id string, arguments map[string]any) {
+	args, _ := json.Marshal(arguments)
 	call := map[string]any{"type": "function_call", "name": "exec_command", "call_id": id, "id": id, "arguments": string(args), "status": "completed"}
 	event(w, "response.created", map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_" + id, "model": "fixture", "status": "in_progress", "output": []any{}}})
 	event(w, "response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": call})

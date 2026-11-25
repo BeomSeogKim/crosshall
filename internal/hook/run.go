@@ -173,8 +173,14 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if errors.Is(err, errHookIdentity) {
 		return "identity"
 	}
+	if errors.Is(err, errHookSkip) {
+		return "clean"
+	}
 	if err != nil {
 		return "refused"
+	}
+	if m.BuildFromHost {
+		e.VendorVersion, e.Mode = hostBuild(rv, m)
 	}
 	if hookExpired(ctx) {
 		return "deadline"
@@ -193,6 +199,14 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	defer leaf.Close()
 	if hookExpired(ctx) {
 		return "deadline"
+	}
+	if spec.OpenTurn && e.TurnRef != "" {
+		// Best effort: without it the turn's end is only observed.
+		_ = writeRecord(leaf, openTurnFile, gen+" "+e.TurnRef+"\n")
+	}
+	if spec.TurnFromOpen {
+		e.TurnRef = readOpenTurn(leaf, gen)
+		e.setEventRef(spec)
 	}
 	membership, err := ident.LookupMembership(leaf)
 	if err != nil {
@@ -794,11 +808,11 @@ func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
 	switch spec.Output {
 	case "context":
 		return presentContext(spec.Name, line)
-	case "block":
+	case "block", "continue":
 		payload := struct {
 			Decision string `json:"decision"`
 			Reason   string `json:"reason"`
-		}{"block", line}
+		}{spec.Output, line}
 		b, err := json.Marshal(payload)
 		return append(b, '\n'), err
 	default:

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Codex managed-daemon notices on Linux amd64.** Crosshall ships publish evidence for Codex 0.172.0 with `codex-1`. A native Linux amd64 run verified request and reply delivery in both directions with Claude Code using scratch evidence, and suppression while a Codex server approval is open (#384).
+
 ## v0.3.1-rc.1 (2026-11-26)
 
 - **Upgrade from v0.3.0.** The first start backs up `store.sqlite3` and migrates schema 29 to 30. To roll back, restore the schema 29 backup and reinstall v0.3.0. See [UPGRADING.md](UPGRADING.md#to-v031-rc1).

@@ -2,7 +2,17 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.3.0-rc.1
+
+Upgrading from v0.2.0 keeps the database at schema 29. No migration runs.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. Install v0.3.0-rc.1 at the path your members and installed hooks use (the [quick start](README.md#quick-start) has the command).
+3. Run `crosshall owner start`, then `crosshall owner doctor`.
+4. If you use Antigravity CLI, run `crosshall setup antigravity --apply` to move its hooks to manifest `agy-2` (below).
+5. For Codex notices, run Codex sessions in Codex's managed app server (the default) with crosshall's hooks trusted (`/hooks` in Codex, then reopen it). A session started with "Run without daemon this time" is not woken; it sees new work at its next prompt.
+
+To go back to v0.2.0, stop the dispatcher and running commands, put the v0.2.0 binary back at the same path and start it on the same schema 29 store; it ignores the new indexes. With Antigravity hooks installed, follow the steps below first.
 
 Antigravity hooks move to manifest `agy-2`: `crosshall setup antigravity` replaces the `agy-1` group (SessionStart only) with one that also holds `PreInvocation` and `Stop`. Setup changes only its own group; when you have not edited the file since setup, it starts again from your original bytes, which uninstall still restores. Until you run it, `crosshall owner doctor` and `crosshall setup status` name the step.
 

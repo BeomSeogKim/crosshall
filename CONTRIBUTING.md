@@ -56,6 +56,13 @@ The repository is trunk-based.
   place. To run that check locally, build them with
   `go build -tags=testvendorhome` and set `CROSSHALL_E2E_BASE_BINARY` and
   `CROSSHALL_E2E_RELEASE_BINARY`; a build left unset is skipped.
+  The race detector runs nightly on main, not on pull requests (it makes
+  these tests 14 to 25 times slower). Run it locally when you change
+  concurrent code; on Linux it needs cgo:
+
+  ```sh
+  CGO_ENABLED=1 go test -race ./internal/dispatch ./internal/appserver ./internal/publish ./internal/store
+  ```
 
 - Resolve review conversations before merging.
 

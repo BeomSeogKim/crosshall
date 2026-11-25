@@ -25,6 +25,8 @@ import (
 var (
 	errHookInput    = errors.New("invalid hook input")
 	errHookIdentity = errors.New("invalid hook identity")
+	// errHookSkip is a callback outside the event's boundary (When).
+	errHookSkip = errors.New("callback outside the boundary")
 )
 
 type manifest struct {
@@ -66,6 +68,12 @@ type manifest struct {
 	ModeEnv        string            `json:"mode_env"`
 	ModeField      string            `json:"mode_field"`
 	Modes          map[string]string `json:"modes"`
+	// LiteralFields are read as their JSON text: integers and booleans a
+	// vendor reports as such, never strings.
+	LiteralFields []string `json:"literal_fields"`
+	// StopActive names the Stop field that says a continuation is running,
+	// and its value when none is; stop_hook_active ("false") when unset.
+	StopActive *stopActiveSpec `json:"stop_active"`
 	// Daemon names the vendor's managed server when its sessions can run as
 	// its clients. The hooks of such a session run under that server, so a
 	// hook's host tells the two modes apart and names the server's release
@@ -81,6 +89,11 @@ type daemonSpec struct {
 	HomeDefault string   `json:"home_default"`
 	Releases    string   `json:"releases"`
 	Args        []string `json:"args"`
+}
+
+type stopActiveSpec struct {
+	Field    string `json:"field"`
+	Inactive string `json:"inactive"`
 }
 
 type eventSpec struct {
@@ -99,6 +112,36 @@ type eventSpec struct {
 	ReasonField   string            `json:"reason_field"`
 	MatchField    string            `json:"match_field"`
 	FactsByMatch  map[string]string `json:"facts_by_match"`
+	// When lists field values a callback must report to be a boundary at
+	// all; any other callback of the event is answered empty at once.
+	When map[string]string `json:"when"`
+	// TurnField overrides the manifest's turn field for this event.
+	// OpenTurn records the callback's turn reference as its session's open
+	// turn; TurnFromOpen takes the open turn's reference, for a vendor
+	// whose turn end names no turn.
+	TurnField    string `json:"turn_field"`
+	OpenTurn     bool   `json:"open_turn"`
+	TurnFromOpen bool   `json:"turn_from_open"`
+	// RefFields name the fields whose values tell repeated callbacks of
+	// one turn apart in the event reference.
+	RefFields []string `json:"ref_fields"`
+	// StopRequire lists the field values a Stop needs to offer a
+	// continuation; any other Stop is published as an observation.
+	StopRequire map[string]string `json:"stop_require"`
+}
+
+func (s eventSpec) turnField(m manifest) string {
+	if s.TurnField != "" {
+		return s.TurnField
+	}
+	return m.TurnField
+}
+
+func (m manifest) stopActive() stopActiveSpec {
+	if m.StopActive != nil {
+		return *m.StopActive
+	}
+	return stopActiveSpec{Field: stopActiveField, Inactive: "false"}
 }
 
 func loadManifest(adapter string) (manifest, bool) {
@@ -138,10 +181,12 @@ type event struct {
 	Mode          string
 	// Host is the managed server that runs the hook, in daemon mode, and
 	// VendorHome the home it serves.
-	Host        *wire.Host
-	VendorHome  string
-	receipt     string
-	stopActive  string
+	Host       *wire.Host
+	VendorHome string
+	receipt    string
+	stopActive string
+	// refSuffix carries the event's RefFields values into its reference.
+	refSuffix   string
 	name        string
 	startupRepo *string
 }
@@ -206,6 +251,11 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 	if callback != spec.Name && (!m.EventFieldOptional || named) {
 		return event{}, errHookInput
 	}
+	for field, want := range spec.When {
+		if fields[field] != want {
+			return event{}, errHookSkip
+		}
+	}
 	fact := spec.Fact
 	if spec.MatchField != "" {
 		fact = spec.FactsByMatch[fields[spec.MatchField]]
@@ -233,7 +283,7 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		return event{}, errHookIdentity
 	}
 
-	turnRef := fields[m.TurnField]
+	turnRef := fields[spec.turnField(m)]
 	if fact == wire.HookIdlePrompt {
 		turnRef = ""
 	}
@@ -245,7 +295,17 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 		Source:     fields[spec.SourceField],
 		Reason:     fields[spec.ReasonField],
 		receipt:    receipt,
-		stopActive: fields[stopActiveField],
+		stopActive: stopActivity(m, spec, fields),
+	}
+	for _, field := range spec.RefFields {
+		value := fields[field]
+		if value == "" {
+			continue // such a callback is only observed (stopActivity)
+		}
+		if len(value) > 32 || strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+			return event{}, errHookInput
+		}
+		e.refSuffix += ":" + value
 	}
 	if m.IdentityProof != "" {
 		if proof, known := identityProofs[m.IdentityProof]; !known || !proof.check(id.Key, fields, lookup) {
@@ -305,10 +365,39 @@ func parseEvent(input io.Reader, m manifest, spec eventSpec, lookup func(string)
 			e.PermissionMode = pm
 		}
 	}
-	if !spec.Enroll && spec.ReasonField == "" && e.TurnRef != "" {
-		e.EventRef = e.TurnRef + ":" + spec.Name
-	}
+	e.setEventRef(spec)
 	return e, nil
+}
+
+func (e *event) setEventRef(spec eventSpec) {
+	e.EventRef = ""
+	if !spec.Enroll && spec.ReasonField == "" && e.TurnRef != "" {
+		e.EventRef = e.TurnRef + ":" + spec.Name + e.refSuffix
+	}
+}
+
+// stopActivity is "false" for a Stop that may offer a continuation, "true"
+// while one runs, and "" when the callback cannot tell: an observation.
+func stopActivity(m manifest, spec eventSpec, fields map[string]string) string {
+	if !spec.Stop {
+		return ""
+	}
+	for field, want := range spec.StopRequire {
+		if fields[field] != want {
+			return ""
+		}
+	}
+	active := m.stopActive()
+	switch value := fields[active.Field]; {
+	case value == "":
+		return ""
+	case value == active.Inactive:
+		return "false"
+	case active.Field == stopActiveField && value != "true":
+		return ""
+	default:
+		return "true"
+	}
 }
 
 // Prompt text stays local. Only a marker and validated message IDs may leave it.
@@ -317,7 +406,14 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return nil, "", errHookInput
 	}
-	selected := []string{m.EventField, m.SessionField, m.TurnField, spec.SourceField, spec.ReasonField, spec.MatchField}
+	selected := []string{m.EventField, m.SessionField, spec.turnField(m), spec.SourceField, spec.ReasonField, spec.MatchField}
+	selected = append(selected, spec.RefFields...)
+	for field := range spec.When {
+		selected = append(selected, field)
+	}
+	for field := range spec.StopRequire {
+		selected = append(selected, field)
+	}
 	if m.ModeField != "" {
 		selected = append(selected, m.ModeField)
 	}
@@ -331,7 +427,7 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 		selected = append(selected, "cwd")
 	}
 	if spec.Stop {
-		selected = append(selected, stopActiveField)
+		selected = append(selected, m.stopActive().Field)
 	}
 	fields := make(map[string]string)
 	// An adapter that publishes recognizes its own notice echoed back as a
@@ -371,6 +467,17 @@ func eventFields(body []byte, m manifest, spec eventSpec) (map[string]string, st
 				path = ""
 			}
 			fields[key] = path
+			continue
+		}
+		if slices.Contains(m.LiteralFields, key) {
+			// A literal the vendor sends as JSON text; a repeated or other
+			// value drops the field, so a gated callback is skipped and a
+			// Stop is only observed.
+			literal := string(bytes.TrimSpace(raw))
+			if duplicated || !validLiteral(literal) {
+				literal = ""
+			}
+			fields[key] = literal
 			continue
 		}
 		if key == stopActiveField {
@@ -433,4 +540,16 @@ func launchBuild(m manifest, lookup func(string) (string, bool)) (string, string
 		}
 	}
 	return version, mode
+}
+
+// validLiteral accepts a JSON boolean or a non-negative integer of at most
+// 18 digits.
+func validLiteral(v string) bool {
+	if v == "true" || v == "false" {
+		return true
+	}
+	if v == "" || len(v) > 18 || (v[0] == '0' && len(v) > 1) {
+		return false
+	}
+	return strings.IndexFunc(v, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }

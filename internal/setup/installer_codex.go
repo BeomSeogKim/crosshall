@@ -83,3 +83,5 @@ func (codexInstaller) rulesChanged(path string) error {
 	}
 	return nil
 }
+
+func (codexInstaller) hasMemberRules() bool { return true }

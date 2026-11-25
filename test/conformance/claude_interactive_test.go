@@ -207,7 +207,7 @@ func (c *conformance) startInteractive(cmd *exec.Cmd, env []string) *terminal {
 	if err != nil {
 		c.t.Fatalf("open a pseudo-terminal: %v", err)
 	}
-	tty, err := os.OpenFile(name, os.O_RDWR, 0)
+	tty, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		c.t.Fatal(err)
 	}

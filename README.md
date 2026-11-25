@@ -20,7 +20,7 @@ What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - A crosshall hook that fails never blocks an agent's turn.
 
 What it does not do:
-- It starts idle turns through available notice routes. Built-in coverage includes interactive Claude Code on macOS arm64 and managed Codex CLI daemon sessions on macOS arm64 and Linux arm64. A Claude Code, Codex CLI or Antigravity CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Other sessions see new work when they run `crosshall read` or when a `crosshall wait` they started returns.
+- It starts idle turns through available notice routes. Built-in coverage includes interactive Claude Code on macOS arm64 and managed Codex CLI daemon sessions on macOS arm64, Linux arm64 and Linux amd64. A Claude Code, Codex CLI or Antigravity CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Other sessions see new work when they run `crosshall read` or when a `crosshall wait` they started returns.
 - It is not a network service. It runs on one machine for one user. The only network call crosshall can make is an optional daily usage report, sent only after you said yes (see [usage statistics](docs/telemetry.md)); messages never leave the machine.
 - It cannot make an agent obey. The member rules are text the agent reads and follows.
 
@@ -116,7 +116,7 @@ After the focus, each line says how the hall reaches that member: `the hall star
 | Any other Claude Code, Codex CLI or Antigravity CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. If the agent is idle, send a prompt to surface the pending line, or have it run `crosshall read`. |
 | Any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
 
-The bidirectional idle-wake check requires `publish: available` for both sessions. On Linux arm64, built-in publish evidence covers managed Codex. Claude Code needs its own tested publish evidence to receive an idle wake there. When a session has no notice route, use the next-prompt or manual-read steps in the table.
+The bidirectional idle-wake check requires `publish: available` for both sessions. On Linux arm64 and amd64, built-in publish evidence covers managed Codex. Claude Code needs its own tested publish evidence to receive an idle wake there. When a session has no notice route, use the next-prompt or manual-read steps in the table.
 
 To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` offers to remove the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
 
@@ -287,13 +287,13 @@ To move a joined session to another channel, run `crosshall join <channel> --mov
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.328, macOS |
-| Codex CLI | `CODEX_THREAD_ID` | Hook-joined sessions end the turn. A reachable session wakes on a notice. Otherwise new work appears at its next prompt. A hand-joined session waits in the foreground. | yes; its observations are marked unverified | unavailable | 0.172.0, managed daemon on macOS arm64 and Linux arm64 |
+| Codex CLI | `CODEX_THREAD_ID` | Hook-joined sessions end the turn. A reachable session wakes on a notice. Otherwise new work appears at its next prompt. A hand-joined session waits in the foreground. | yes; its observations are marked unverified | unavailable | 0.172.0, managed daemon on macOS arm64, Linux arm64 and Linux amd64 |
 | Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | a wait in the background starts the next turn when it ends (1.5.15) | SessionStart, PreInvocation, Stop | interactive on macOS arm64, with matching manifest evidence | 1.5.16, macOS (1.5.11 as the agent reported it) |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
 
 - **Standing by** without an available publish route uses one wait, `crosshall wait --existing --work-only`. Its result says whether to read or to wait again. In Claude Code it runs in the background without `--timeout` and costs nothing until something arrives. In Antigravity CLI 1.5.15 it also runs in the background without `--timeout`. The cost of an idle session there is unmeasured. A hook-joined Codex CLI session ends its turn. Its managed server can wake it with a native notice where the route is available. Otherwise its next prompt shows new work. Other agents, and a Codex session joined by hand, bound the wait with `--timeout 9m`. Each wait that ends costs the agent one turn of model calls, so one that keeps timing out costs about seven turns an hour. While it polls, a sender sees `its wait is running`. See [waiting](docs/waiting.md).
 - **Adapter hooks** are optional. Once installed they run in every session of that agent under your account, in every repository: they join new sessions to a repository's channel. They also show a pending line at a prompt when something new is unread; in Antigravity CLI at the first model call of a prompt. See [adapters](docs/adapters.md).
-- **Notices** can start idle turns in interactive Claude Code and managed Codex CLI sessions. Built-in evidence covers Claude Code with `claude-2` and `claude-3` on macOS arm64, and Codex 0.172.0 in daemon mode with `codex-1` on macOS arm64 and Linux arm64. Other builds with the same profile can inherit that evidence. The hall checks their first three notices that run as their own turns. The owner can switch notices off for the hall, an agent kind or one member. A member can switch notices off for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
+- **Notices** can start idle turns in interactive Claude Code and managed Codex CLI sessions. Built-in evidence covers Claude Code with `claude-2` and `claude-3` on macOS arm64, and Codex 0.172.0 in daemon mode with `codex-1` on macOS arm64, Linux arm64 and Linux amd64. Other builds with the same profile can inherit that evidence. The hall checks their first three notices that run as their own turns. The owner can switch notices off for the hall, an agent kind or one member. A member can switch notices off for itself with `crosshall publish off`. See [publish notices](docs/adapters.md#publish-notices).
 - **Recorded runs** are in [CONFORMANCE.md](CONFORMANCE.md): the table shows which build and rule each assisted exercise covered. The exercise scripts the commands and the agent supplies its choices.
 
 The member rules are in [PROTOCOL.md](PROTOCOL.md).
@@ -337,7 +337,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 ## Limits
 
-- An idle session with an available publish route can wake for a notice. Built-in Codex idle-wake evidence covers managed daemon mode on macOS arm64 and Linux arm64. When a session has no notice route, it sees new requests at its next crosshall command or adapter prompt.
+- An idle session with an available publish route can wake for a notice. Built-in Codex idle-wake evidence covers managed daemon mode on macOS arm64, Linux arm64 and Linux amd64. When a session has no notice route, it sees new requests at its next crosshall command or adapter prompt.
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
 - A Claude Code version other than the tested one, on the same platform and mode, runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
 - One machine and one user.

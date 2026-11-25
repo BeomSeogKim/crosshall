@@ -7,12 +7,18 @@ on:
   schedule:
     - cron: "30 18 * * *"
   workflow_dispatch:
+    inputs:
+      native_linux_amd64:
+        description: Run the native Claude Code and Codex conformance tests on Linux amd64
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   race:
+    if: github.event_name != 'workflow_dispatch' || !inputs.native_linux_amd64
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -26,3 +32,65 @@ jobs:
           # On Linux the race detector needs cgo.
           CGO_ENABLED: "1"
         run: go test -race -count=1 -timeout 25m ./internal/dispatch ./internal/appserver ./internal/publish ./internal/store
+
+  native-linux-amd64:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_linux_amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Stage the test and pinned vendor binaries
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          test "$(uname -m)" = x86_64
+          fixture="$RUNNER_TEMP/native-fixture"
+          downloads="$RUNNER_TEMP/native-downloads"
+          mkdir -m 755 "$fixture" "$downloads"
+          npm pack --ignore-scripts --silent --registry=https://registry.npmjs.org --pack-destination "$downloads" \
+            @openai/codex@0.172.0-linux-x64 @anthropic-ai/claude-code-linux-x64@2.1.331
+          tar -xzf "$downloads/openai-codex-0.172.0-linux-x64.tgz" -C "$downloads"
+          mv "$downloads/package/vendor/x86_64-unknown-linux-musl" "$fixture/codex"
+          test -f "$fixture/codex/codex-package.json"
+          test -x "$fixture/codex/bin/codex"
+          tar -xOf "$downloads/anthropic-ai-claude-code-linux-x64-2.1.331.tgz" package/claude > "$fixture/claude"
+          chmod 755 "$fixture/claude"
+          mkdir "$fixture/source"
+          git archive HEAD | tar -xf - -C "$fixture/source"
+          go build -o "$fixture/crosshall" ./cmd/crosshall
+          go test -tags conformance -c -o "$fixture/native.test" ./test/conformance/
+          docker build --tag crosshall-native-linux-amd64 - <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update && apt-get install -y --no-install-recommends git procps \
+              && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+      - name: Verify native notices with loopback models
+        shell: bash
+        run: |
+          events="$RUNNER_TEMP/native-linux-amd64.json"
+          docker run --rm --network none --read-only --user 65534:65534 \
+            --tmpfs /tmp:rw,exec,mode=1777 \
+            --mount "type=bind,src=$RUNNER_TEMP/native-fixture,dst=/fixture,readonly" \
+            --workdir /fixture/source/test/conformance \
+            --env HOME=/tmp --env PATH=/fixture:/usr/bin:/bin \
+            --env CROSSHALL_CONFORMANCE_CROSSHALL=/fixture/crosshall \
+            --env CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/fixture/codex \
+            crosshall-native-linux-amd64 /fixture/native.test -test.v=test2json -test.count=1 -test.timeout=3m \
+            -test.run '^(TestCrossVendorNativeRoundTrip|TestCodexDaemonPublishTrial)$' \
+            | go tool test2json -t -p github.com/BeomSeogKim/crosshall/test/conformance | tee "$events"
+          python3 -B scripts/release_gate_events.py TestCrossVendorNativeRoundTrip \
+            claude_to_codex_notice codex_to_claude_notice < "$events"
+          python3 -B scripts/release_gate_events.py TestCodexDaemonPublishTrial \
+            queued_read_and_settled_once server_approval_stops_publish < "$events"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-linux-amd64-events
+          path: ${{ runner.temp }}/native-linux-amd64.json

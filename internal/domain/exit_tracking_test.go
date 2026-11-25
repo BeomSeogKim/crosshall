@@ -8,6 +8,7 @@ import (
 func TestExitTrackingModes(t *testing.T) {
 	for _, tc := range []struct {
 		name, adapter, launch string
+		revision              string // adapter-1 when empty
 		host, enabled         bool
 		want                  ExitTracking
 	}{
@@ -20,6 +21,10 @@ func TestExitTrackingModes(t *testing.T) {
 		{name: "Antigravity startup hook", adapter: "agy", launch: "session", host: true, enabled: true, want: ExitByProcess},
 		{name: "Antigravity startup hook without a host", adapter: "agy", launch: "session", enabled: true, want: ExitUntracked},
 		{name: "no launch or host", want: ExitUntracked},
+		// A process reference alone gives no exit authority: the revision
+		// must declare process_launch.
+		{name: "Codex launch with a process reference", adapter: "codex", launch: "pid-100-stable", want: ExitUntracked},
+		{name: "Claude launch of a revision this build does not know", adapter: "claude", revision: "claude-9", launch: "pid-100-stable", want: ExitUntracked},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHostFixture(t)
@@ -33,10 +38,13 @@ func TestExitTrackingModes(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.revision == "" {
+				tc.revision = tc.adapter + "-1"
+			}
 			if tc.launch != "" {
 				if _, err := f.db.Exec(`INSERT INTO adapter_launch (principal_id, launch_ref, profile, verified, started_hook_at_ms)
 					VALUES (?, ?, json_object('adapter', ?, 'manifest_rev', ?), ?, ?)`,
-					member, tc.launch, tc.adapter, tc.adapter+"-1", tc.launch != SessionLaunch, ms(f.now)); err != nil {
+					member, tc.launch, tc.adapter, tc.revision, tc.launch != SessionLaunch, ms(f.now)); err != nil {
 					t.Fatal(err)
 				}
 			}

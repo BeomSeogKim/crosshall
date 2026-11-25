@@ -116,12 +116,12 @@ func TestAnOpenApprovalEndsWithItsLaunch(t *testing.T) {
 		if _, _, open := p.readerApproval("open"); !open {
 			t.Fatal("fixture: the approval is not open")
 		}
-		launches := liveClaudeLaunches(p.fixture, 0, 5)
+		launches := liveProcessLaunches(p.fixture, 0, 5)
 		if len(launches) != 1 {
 			t.Fatalf("fixture launches: %+v", launches)
 		}
 		p.now = p.now.Add(2 * time.Second)
-		if !applyClaudeProbes(p.fixture, ClaudeLaunchProbe{ClaudeLaunch: launches[0], Gone: true}) {
+		if !applyProcessProbes(p.fixture, ProcessLaunchProbe{ProcessLaunch: launches[0], Gone: true}) {
 			t.Fatal("the probe did not end the launch")
 		}
 		// The probe departs the member, so no ask reaches it; neither its

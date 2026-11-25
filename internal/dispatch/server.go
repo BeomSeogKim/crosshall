@@ -394,6 +394,7 @@ func (s *server) scan(ctx context.Context) error {
 	if reap {
 		s.nextReap = now.Add(time.Hour)
 		s.renewRendezvousFiles(root, now)
+		s.logFailure(hook.RenewLaunchMarks(root))
 	}
 	return s.publishReady(ctx, root)
 }
@@ -547,6 +548,9 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 	s.logFailure(ident.RepublishMembership(dir, leaf.membership))
 	watched.add(filepath.Join(path, "in"))
 	if reap {
+		if !leaf.fenced {
+			s.logFailure(hook.RenewMemberFiles(dir))
+		}
 		s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), true))
 	}
 	s.logFailure(spool.DrainMemberSpool(dir, func(id string, raw []byte, admittedOneWay bool) (core.Result, error) {

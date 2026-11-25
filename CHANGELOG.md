@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Long-running sessions keep their `/clear` route through macOS `/tmp` cleanup.** The dispatcher renews launch marks hourly while their original processes are alive. It also renews the receipts and snapshots that quiet members use to avoid repeating guidance or waiting on the dispatcher for a clean hook (#378).
 - **Codex managed-daemon notices on Linux amd64.** Crosshall ships publish evidence for Codex 0.172.0 with `codex-1`. A native Linux amd64 run verified request and reply delivery in both directions with Claude Code using scratch evidence, and suppression while a Codex server approval is open (#384).
 - **The release gate times a hook at 1,000 turns:** the hook-cost test adds a session of 1,000 turns and fails when its hook event costs more than 1.5 times the 250-turn one (since #382 they cost the same; folding the whole launch made it 2.2 times). The gate's hook-cost row compares the 1,000-turn median with the base's as it does the 500-turn one, and shows the candidate's alone while the base has no such sample (#366).
 

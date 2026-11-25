@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -391,8 +393,75 @@ func markLaunch(rv *os.Root, pid string) {
 	}
 	defer dir.Close()
 	if f, err := spool.OpenServerFile(dir, pid, os.O_WRONLY|os.O_CREATE); err == nil {
+		_ = f.Truncate(0)
 		_ = f.Close()
 	}
+}
+
+func RenewLaunchMarks(rv *os.Root) error {
+	dir, err := spool.OpenServerChild(rv, launchMarks, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	entries, err := fs.ReadDir(dir.FS(), ".")
+	if err != nil {
+		return err
+	}
+	var failures error
+	for _, entry := range entries {
+		name := entry.Name()
+		pid, err := strconv.Atoi(name)
+		if err != nil || pid <= 0 || strconv.Itoa(pid) != name || !entry.Type().IsRegular() {
+			continue
+		}
+		if err := renewLaunchMark(dir, name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failures = errors.Join(failures, err)
+		}
+	}
+	return failures
+}
+
+func renewLaunchMark(dir *os.Root, name string) error {
+	f, err := spool.OpenServerFile(dir, name, os.O_RDONLY)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !proc.LaunchAlive("pid-"+name, info.ModTime().UnixMilli()) {
+		return nil
+	}
+	// Renew ctime for the cleaner while keeping the mtime that bounds PID reuse.
+	return f.Chmod(0600)
+}
+
+// RenewMemberFiles preserves existing receipts and hook fast paths while a
+// registered leaf is quiet. Losing gen would discard the roster receipts.
+func RenewMemberFiles(leaf *os.Root) error {
+	names := []string{
+		"gen", "ack", "ack-move", spool.RulesReceipt, spool.RulesReceipt + "-move",
+		"stamp", seenReceiptNotice, "seen-notice", TurnEndAskFile,
+		seenJoinHint, JoinHintOfferFile, seenReach, ReachOfferFile,
+	}
+	var failures error
+	for _, name := range names {
+		f, err := spool.OpenServerFile(leaf, name, os.O_RDONLY)
+		if err == nil {
+			err = f.Chmod(0600)
+			_ = f.Close()
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			failures = errors.Join(failures, err)
+		}
+	}
+	return failures
 }
 
 func launchMarked(rv *os.Root, pid string) bool {

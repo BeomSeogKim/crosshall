@@ -140,6 +140,11 @@ in separate scratch homes. Both models use loopback endpoints. The fixture
 imports publish evidence for those exact builds into the scratch hall and
 waits for both native routes to activate.
 
+The temporary homes share a short root for local socket paths. A watchdog
+owns that root and closes it to new hook launches when the test process
+exits. It stops the processes tagged for that run and removes its scratch
+files, including after a test timeout or SIGKILL.
+
 Each direction requires a native request notice, recipient pickup and a
 correlated answer. A native reply notice tells the original sender to read
 the answer. Both notices must be recorded as submitted and observed in their

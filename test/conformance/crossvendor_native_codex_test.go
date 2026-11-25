@@ -64,7 +64,7 @@ type nativeCodexSession struct {
 	id, version string
 }
 
-func newNativeCodex(t *testing.T, release nativeCodexRelease, root, repo, exe string, env []string, modelURL string) *nativeCodexSession {
+func newNativeCodex(t *testing.T, release nativeCodexRelease, root, repo, exe string, env []string, entry, modelURL string) *nativeCodexSession {
 	t.Helper()
 	codexMust(t, validateCodexEnv(env))
 	physicalRoot, err := filepath.EvalSymlinks(root)
@@ -84,8 +84,8 @@ func newNativeCodex(t *testing.T, release nativeCodexRelease, root, repo, exe st
 	installed := filepath.Join(releases, release.Version+"-"+release.Target)
 	copyCtx, cancelCopy := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancelCopy()
-	copyPkg := exec.CommandContext(copyCtx, "/bin/cp", "-RP", release.dir, installed)
-	copyPkg.Env = []string{}
+	copyPkg := exec.CommandContext(copyCtx, "/bin/cp", "-cRP", release.dir, installed)
+	copyPkg.Env = []string{entry}
 	if out, err := copyPkg.CombinedOutput(); err != nil {
 		t.Fatalf("copy managed Codex release: %v: %.1000s", err, out)
 	}
@@ -137,12 +137,9 @@ requires_openai_auth = false
 		t.Fatalf("install stock Codex hooks: %v: %.1500s", err, out)
 	}
 
-	alias := filepath.Join(home, "app-server-control", "app-server-control.sock")
 	tmp, err := filepath.EvalSymlinks("/tmp")
 	codexMust(t, err)
-	// Codex uses a deterministic short path where the control alias exceeds the Unix socket limit.
-	socketDir := filepath.Join(tmp, fmt.Sprintf("codex-daemon-%d", os.Geteuid()))
-	socket := filepath.Join(socketDir, fmt.Sprintf("%x", sha256.Sum256([]byte(alias))))
+	alias, socket := nativeCodexControlSocket(root, tmp)
 	for _, path := range []string{alias, socket, socket + ".lock"} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("expected an unused fixture socket path %s: %v", path, err)
@@ -151,7 +148,7 @@ requires_openai_auth = false
 	prefix := codexToolCommand(t, bin, env, endpoint.Port(), root)
 	account, err := user.Current()
 	codexMust(t, err)
-	prefix[2] += fmt.Sprintf(`(deny file-read* file-write* (subpath %q))(allow network-bind network-inbound network-outbound (local unix-socket (path %q)) (remote unix-socket (path %q)) (local unix-socket (path %q)) (remote unix-socket (path %q)))(allow file-write* (literal %q) (literal %q) (literal %q))`, account.HomeDir, alias, alias, socket, socket, socketDir, socket, socket+".lock")
+	prefix[2] += fmt.Sprintf(`(deny file-read* file-write* (subpath %q))(allow network-bind network-inbound network-outbound (local unix-socket (path %q)) (remote unix-socket (path %q)) (local unix-socket (path %q)) (remote unix-socket (path %q)))(allow file-write* (literal %q) (literal %q) (literal %q))`, account.HomeDir, alias, alias, socket, socket, filepath.Dir(socket), socket, socket+".lock")
 	vendorEnv := append(slices.Clone(env), "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CEILING_DIRECTORIES="+root)
 	for _, name := range []string{"CONFIG", "CACHE", "DATA", "STATE"} {
 		dir := filepath.Join(root, "xdg-"+strings.ToLower(name))
@@ -195,6 +192,13 @@ requires_openai_auth = false
 		}
 	}
 	return s
+}
+
+func nativeCodexControlSocket(root, tmp string) (alias, socket string) {
+	alias = filepath.Join(root, "codex", "app-server-control", "app-server-control.sock")
+	// Codex can shorten the control alias to fit the Unix socket path limit.
+	socket = filepath.Join(tmp, fmt.Sprintf("codex-daemon-%d", os.Geteuid()), fmt.Sprintf("%x", sha256.Sum256([]byte(alias))))
+	return alias, socket
 }
 
 func waitNativeCodex(t *testing.T, cmd *exec.Cmd, alias, socket, logPath string) *appserver.Client {

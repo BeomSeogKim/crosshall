@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/BeomSeogKim/crosshall/internal/testreap"
 )
 
 type nativeClaudeSession struct {
@@ -21,7 +23,7 @@ type nativeClaudeSession struct {
 	id, version string
 }
 
-func newNativeClaude(t *testing.T, root, repo, exe string, env []string, server *httptest.Server) *nativeClaudeSession {
+func newNativeClaude(t *testing.T, root, repo, exe string, env []string, entry string, server *httptest.Server) *nativeClaudeSession {
 	t.Helper()
 	endpoint, err := url.Parse(server.URL)
 	codexMust(t, err)
@@ -45,8 +47,10 @@ func newNativeClaude(t *testing.T, root, repo, exe string, env []string, server 
 	for _, dir := range []string{c.root, c.home} {
 		codexMust(t, os.Mkdir(dir, 0700))
 	}
-	claudeEnv := slices.DeleteFunc(c.claudeEnv(), func(kv string) bool { return strings.HasPrefix(kv, "TMPDIR=") })
-	claudeEnv = append(claudeEnv, "TMPDIR="+tmp, "CLAUDE_CODE_TMPDIR="+tmp, "XDG_RUNTIME_DIR="+tmp)
+	claudeEnv := slices.DeleteFunc(c.claudeEnv(), func(kv string) bool {
+		return strings.HasPrefix(kv, "TMPDIR=") || strings.HasPrefix(kv, testreap.Key+"=")
+	})
+	claudeEnv = append(claudeEnv, entry, "TMPDIR="+tmp, "CLAUDE_CODE_TMPDIR="+tmp, "XDG_RUNTIME_DIR="+tmp)
 	version := exec.CommandContext(t.Context(), prefix[0], append(slices.Clone(prefix[1:]), "--version")...)
 	version.Dir, version.Env = repo, claudeEnv
 	out, err := version.CombinedOutput()

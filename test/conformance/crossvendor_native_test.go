@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 )
 
@@ -49,21 +50,15 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 		t.Skipf("native cross-vendor conformance needs Claude Code on PATH: %v", err)
 	}
 
-	// The managed server's control socket has a fixed suffix and Unix path limit.
-	temp, err := os.MkdirTemp("/tmp", "xv.")
-	codexMust(t, err)
-	t.Cleanup(func() { codexMust(t, os.RemoveAll(temp)) })
-	root, err := filepath.EvalSymlinks(temp)
-	codexMust(t, err)
-
-	env := codexEnv(t, root)
+	root, entry := armNativeFixture(t)
+	env := codexEnvWithReaper(t, root, entry)
 	env = append(env, "CROSSHALL_TELEMETRY=off", "CROSSHALL_NOTIFY=off", "XDG_RUNTIME_DIR="+filepath.Join(root, "tmp"))
 	repo := filepath.Join(root, "repo")
 	codexMust(t, os.Mkdir(repo, 0700))
 	git := exec.Command("git", "init", "-q", repo)
 	git.Env = env
 	codexMust(t, git.Run())
-	exe := codexBinary(t, root)
+	exe := codexBinaryWithEnv(t, root, []string{entry})
 
 	claudeModel := &crossVendorModel{vendor: "claude"}
 	codexModel := &crossVendorModel{vendor: "codex"}
@@ -78,7 +73,9 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	state := filepath.Join(root, "state")
-	startCodexDispatcher(t, exe, state, env)
+	reserved, err := os.Lstat(ident.Rendezvous(state, os.Geteuid()))
+	codexMust(t, err)
+	startCodexDispatcherWithRendezvous(t, exe, state, env, reserved)
 	owner := func(args ...string) {
 		t.Helper()
 		codexMust(t, codexCLI(exe, env, append([]string{"owner"}, args...)...))
@@ -89,8 +86,8 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 	owner("publish", "hall", "off")
 	owner("adapter", "set", "claude", "--enabled", "on")
 
-	claude := newNativeClaude(t, root, repo, exe, env, server)
-	codex := newNativeCodex(t, pkg, root, repo, exe, env, server.URL)
+	claude := newNativeClaude(t, root, repo, exe, env, entry, server)
+	codex := newNativeCodex(t, pkg, root, repo, exe, env, entry, server.URL)
 	claudePeer := &nativeCrossVendorPeer{
 		member:  &crossVendorSession{model: claudeModel, id: claude.id},
 		version: claude.version, mode: "interactive", turn: claude.turn, armAwait: claude.armAwait,

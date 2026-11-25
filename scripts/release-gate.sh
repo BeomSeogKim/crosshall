@@ -459,22 +459,33 @@ row_hook_cost() {
       exit !(h / b <= l) }' > "$out/$current.detail"
 }
 
-row_cross_vendor() {
-  local test=TestCrossVendorRoundTrip events=$out/cross-vendor.json status verdict judged
-  needs_builds || return
+cross_vendor_test() {
+  local test=$1 events=$out/$2 status verdict judged
+  shift 2
   grep -q "^func $test(" "$head_tree"/test/conformance/*_test.go || { detail "the candidate has no $test"; return 2; }
-  command -v claude > /dev/null && command -v codex > /dev/null || { detail "$test needs claude and codex on PATH"; return 2; }
   (cd -- "$head_tree" && CROSSHALL_CONFORMANCE_CROSSHALL="$cand" go test -tags conformance -count=1 -timeout 3m \
     -run "^$test\$" -json ./test/conformance/) > "$events"
   status=$?
   # Each direction must pass on its own; a skipped one is not a pass, and a
   # failed go test is a failure whatever its events say.
-  verdict=$(python3 -B "$repo/scripts/release_gate_events.py" "$test" claude_to_codex codex_to_claude < "$events")
+  verdict=$(python3 -B "$repo/scripts/release_gate_events.py" "$test" "$@" < "$events")
   judged=$?
   printf 'go test exit %s; %s\n' "$status" "$verdict"
   detail "$verdict"
   ((status == 0)) || { detail "go test exit $status; $verdict"; return 1; }
   return $judged
+}
+
+row_cross_vendor() {
+  needs_builds || return
+  command -v claude > /dev/null && command -v codex > /dev/null ||
+    { detail "TestCrossVendorRoundTrip needs claude and codex on PATH"; return 2; }
+  cross_vendor_test TestCrossVendorRoundTrip cross-vendor.json claude_to_codex codex_to_claude
+}
+
+row_cross_vendor_native() {
+  needs_builds || return
+  cross_vendor_test TestCrossVendorNativeRoundTrip cross-vendor-native.json claude_to_codex_notice codex_to_claude_notice
 }
 
 row_full_run() {
@@ -503,6 +514,7 @@ row 'Store snapshot upgrade and rollback' row_store
 row 'CLI continuity across upgrade' row_continuity
 row 'Hook cost against the base' row_hook_cost
 row 'Cross-vendor round trip' row_cross_vendor
+row 'Cross-vendor native notices' row_cross_vendor_native
 row 'One locked full run' row_full_run
 
 verdict=PASS

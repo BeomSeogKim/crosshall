@@ -82,7 +82,7 @@ func TestOwnerMarkers(t *testing.T) {
 }
 
 func TestVersionEvidence(t *testing.T) {
-	for vendor, version := range map[string]string{"claude": "2.1.327", "codex": "0.170.0", "agy": "1.5.11"} {
+	for vendor, version := range map[string]string{"claude": "2.1.327", "codex": "0.170.0", "agy": "1.5.16"} {
 		id := Identity{Vendor: vendor, Version: version}
 		if source, ok := id.Evidence(); source == "" || !ok || id.Warning() != "" {
 			t.Fatalf("missing evidence for %s %s", vendor, version)
@@ -176,6 +176,28 @@ func TestAntigravityRuntimeVersionDoesNotVerifyTheCLIVersion(t *testing.T) {
 		}
 		if tc.want != "unknown" && (!strings.Contains(id.Warning(), "CLI version unknown") || !strings.Contains(id.Warning(), tc.value)) {
 			t.Fatalf("ambiguous version diagnostic: %q", id.Warning())
+		}
+	}
+}
+
+// An Antigravity session records only its language server's build, whose
+// number is the CLI release (agy --version printed the same 1.5.16 that
+// ANTIGRAVITY_LS_VERSION named as cli-1.5.16). That release verifies; every
+// other build keeps the unknown-CLI warning.
+func TestAntigravityCLIBuildVerifiesItsRelease(t *testing.T) {
+	id, err := ResolveEnvironment(lookupMap(map[string]string{
+		"ANTIGRAVITY_CONVERSATION_ID": "test-member", "ANTIGRAVITY_LS_VERSION": "cli-1.5.16",
+	}))
+	if err != nil || id.Version != "ls:cli-1.5.16" {
+		t.Fatalf("got %+v (%v)", id, err)
+	}
+	if _, verified := id.Evidence(); !verified || id.UnknownCLI() || id.Warning() != "" {
+		t.Fatalf("cli-1.5.16: verified %t, unknown CLI %t, warning %q", verified, id.UnknownCLI(), id.Warning())
+	}
+	for _, version := range []string{"ls:cli-1.5.17", "ls:cli-1.5.16.1", "ls:1.5.16", "ls:cli-1.5.16\n"} {
+		other := Identity{Vendor: "agy", Version: version}
+		if _, verified := other.Evidence(); verified || !other.UnknownCLI() || !strings.Contains(other.Warning(), "CLI version unknown") {
+			t.Errorf("%q: verified %t, unknown CLI %t, warning %q", version, verified, other.UnknownCLI(), other.Warning())
 		}
 	}
 }

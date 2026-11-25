@@ -209,11 +209,11 @@ func TestSetupShowsCandidateForUnmeasuredBuildAfterImport(t *testing.T) {
 // produced it, which no test in this repository can read.
 func TestReminderReasonsStateFactsWithoutFigures(t *testing.T) {
 	const codex = "The hook could not verify its launch version and mode. The tested post-tool matcher started on every Bash call."
-	if got := releaseReminderMeasurements["codex"].Reason; got != codex {
+	if got := installerFor("codex").reminderMeasurement().Reason; got != codex {
 		t.Errorf("codex reason %q", got)
 	}
-	for adapter, m := range releaseReminderMeasurements {
-		if strings.ContainsAny(m.Reason, "0123456789") {
+	for adapter, i := range installers {
+		if m := i.reminderMeasurement(); strings.ContainsAny(m.Reason, "0123456789") {
 			t.Errorf("%s reason carries a figure: %q", adapter, m.Reason)
 		}
 	}

@@ -153,10 +153,16 @@ func codexCLI(exe string, env []string, args ...string) error {
 
 func startCodexDispatcher(t *testing.T, exe, state string, env []string) func() {
 	t.Helper()
+	return startCodexDispatcherWithRendezvous(t, exe, state, env, nil)
+}
+
+func startCodexDispatcherWithRendezvous(t *testing.T, exe, state string, env []string, reserved os.FileInfo) func() {
+	t.Helper()
 	codexMust(t, os.MkdirAll(state, 0700))
 	rv := ident.Rendezvous(state, os.Geteuid())
-	if _, err := os.Lstat(rv); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("fixture rendezvous already occupied: %v", err)
+	current, err := os.Lstat(rv)
+	if reserved == nil && !errors.Is(err, os.ErrNotExist) || reserved != nil && (err != nil || !os.SameFile(reserved, current)) {
+		t.Fatalf("unexpected fixture rendezvous: %v", err)
 	}
 	cmd := exec.Command(exe, "__dispatch")
 	cmd.Env, cmd.Dir = env, state
@@ -356,6 +362,11 @@ func codexEvidenceDir(dir string) (string, error) {
 
 func codexBinary(t *testing.T, root string, buildFlags ...string) string {
 	t.Helper()
+	return codexBinaryWithEnv(t, root, nil, buildFlags...)
+}
+
+func codexBinaryWithEnv(t *testing.T, root string, extraEnv []string, buildFlags ...string) string {
+	t.Helper()
 	dir := filepath.Join(root, "owner's fixture bin")
 	codexMust(t, os.Mkdir(dir, 0700))
 	exe := filepath.Join(dir, "crosshall")
@@ -375,7 +386,7 @@ func codexBinary(t *testing.T, root string, buildFlags ...string) string {
 	// vendor process both run without account credentials or network fetches.
 	account, err := user.Current()
 	codexMust(t, err)
-	goEnv := []string{"PATH=" + os.Getenv("PATH"), "GOENV=off", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off"}
+	goEnv := append([]string{"PATH=" + os.Getenv("PATH"), "GOENV=off", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off"}, extraEnv...)
 	cacheCmd := exec.Command("go", "env", "-json", "GOMODCACHE", "GOCACHE")
 	cacheCmd.Env = append(slices.Clone(goEnv), "HOME="+account.HomeDir)
 	for _, key := range []string{"GOMODCACHE", "GOCACHE", "GOPATH"} {

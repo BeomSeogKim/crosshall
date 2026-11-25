@@ -74,11 +74,16 @@ func codexCheckRoot(root string) error {
 
 func codexEnv(t *testing.T, root string) []string {
 	t.Helper()
+	testreap.Arm(t)
+	return codexEnvWithReaper(t, root, testreap.Env())
+}
+
+func codexEnvWithReaper(t *testing.T, root, entry string) []string {
+	t.Helper()
 	if err := codexCheckRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	testreap.Arm(t)
-	env := []string{codexRootKey + "=" + root, "PATH=/usr/bin:/bin:/usr/sbin:/sbin", testreap.Env()}
+	env := []string{codexRootKey + "=" + root, "PATH=/usr/bin:/bin:/usr/sbin:/sbin", entry}
 	for key, child := range codexPaths {
 		path := filepath.Join(root, child)
 		if key == "CROSSHALL_STATE_DIR" {

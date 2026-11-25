@@ -33,6 +33,36 @@ type crossVendorStep struct {
 	askFrom string
 }
 
+type crossVendorCommands struct{ exe string }
+
+func (c crossVendorCommands) command(args string, wants ...string) crossVendorStep {
+	return crossVendorStep{command: codexQuote(c.exe) + " " + args, wants: wants}
+}
+
+func (c crossVendorCommands) ask(recipient, body string) crossVendorStep {
+	return c.command("ask @"+recipient+" "+codexQuote(body), "stored. due")
+}
+
+func (c crossVendorCommands) readAsk(sender, body string) crossVendorStep {
+	step := c.command("read", body)
+	step.askFrom = sender
+	return step
+}
+
+func (c crossVendorCommands) reply(recipient, body string) crossVendorStep {
+	return c.command("reply {ask} "+codexQuote(body), "answers #{ask} (to @"+recipient+")")
+}
+
+func (c crossVendorCommands) readReply(sender, body string, askID int64) crossVendorStep {
+	return c.command("read", body, fmt.Sprintf("reply (answer) from @%s in #%s (to #%d)", sender, crossVendorChannel, askID))
+}
+
+func crossVendorMessageID(ctx context.Context, db *sql.DB, kind, body string) (int64, error) {
+	var id int64
+	err := db.QueryRowContext(ctx, "SELECT id FROM message WHERE kind = ? AND body = ?", kind, body).Scan(&id)
+	return id, err
+}
+
 type crossVendorModel struct {
 	vendor              string
 	mu                  sync.Mutex
@@ -41,12 +71,17 @@ type crossVendorModel struct {
 	request, sequence   int
 	lastCall, requestID string
 	failure             error
+	firstRequest        func(context.Context, []byte) (string, error)
 }
 
 func (m *crossVendorModel) begin(prompt string, steps []crossVendorStep) {
+	m.beginWithFirstRequest(prompt, steps, nil)
+}
+
+func (m *crossVendorModel) beginWithFirstRequest(prompt string, steps []crossVendorStep, check func(context.Context, []byte) (string, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.prompt, m.steps = prompt, steps
+	m.prompt, m.steps, m.firstRequest = prompt, steps, check
 	m.request, m.lastCall, m.requestID, m.failure = 0, "", "", nil
 }
 
@@ -59,8 +94,13 @@ func (m *crossVendorModel) verify(t *testing.T) {
 	}
 }
 
-func (m *crossVendorModel) checkRequest(raw []byte) error {
+func (m *crossVendorModel) checkRequest(ctx context.Context, raw []byte) error {
 	if m.request == 0 {
+		if m.firstRequest != nil {
+			id, err := m.firstRequest(ctx, raw)
+			m.requestID = id
+			return err
+		}
 		if m.prompt == "" {
 			return nil
 		}
@@ -91,7 +131,7 @@ func (m *crossVendorModel) checkRequest(raw []byte) error {
 			return fmt.Errorf("missing ask ID from @%s in tool result: %s", previous.askFrom, result)
 		}
 		if m.requestID != "" && m.requestID != match[1] {
-			return fmt.Errorf("read request #%s after the wait named #%s", match[1], m.requestID)
+			return fmt.Errorf("read request #%s after delivery named #%s", match[1], m.requestID)
 		}
 		m.requestID = match[1]
 	}
@@ -106,7 +146,7 @@ func (m *crossVendorModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid fixture request", http.StatusBadRequest)
 		return
 	}
-	if err := m.checkRequest(raw); err != nil {
+	if err := m.checkRequest(r.Context(), raw); err != nil {
 		m.failure = err
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -305,12 +345,10 @@ func TestCrossVendorRoundTrip(t *testing.T) {
 	})
 	codex.id = codex.appServer.thread
 
-	tool := func(args string, wants ...string) crossVendorStep {
-		return crossVendorStep{command: codexQuote(exe) + " " + args, wants: wants}
-	}
+	commands := crossVendorCommands{exe}
 	for _, session := range []*crossVendorSession{claude, codex} {
 		alias := session.model.vendor
-		session.startTurn(t, "", tool("join "+crossVendorChannel+" --move --as "+alias, "Joined #"+crossVendorChannel+" as @"+alias))()
+		session.startTurn(t, "", commands.command("join "+crossVendorChannel+" --move --as "+alias, "Joined #"+crossVendorChannel+" as @"+alias))()
 	}
 	db := openCodexLedger(t, state)
 	const (
@@ -319,34 +357,19 @@ func TestCrossVendorRoundTrip(t *testing.T) {
 		codexAsk     = "Codex cross-vendor request payload"
 		claudeAnswer = "Claude cross-vendor answer payload"
 	)
-	readAsk := func(sender, body string) crossVendorStep {
-		step := tool("read", body)
-		step.askFrom = sender
-		return step
-	}
-	ask := func(recipient, body string) crossVendorStep {
-		return tool("ask @"+recipient+" "+codexQuote(body), "stored. due")
-	}
-	reply := func(recipient, body string) crossVendorStep {
-		return tool("reply {ask} "+codexQuote(body), "answers #{ask} (to @"+recipient+")")
-	}
-	readReply := func(sender, body string, askID int64) crossVendorStep {
-		return tool("read", body, fmt.Sprintf("reply (answer) from @%s in #%s (to #%d)", sender, crossVendorChannel, askID))
-	}
 	requestID := func(t *testing.T, body string) int64 {
 		t.Helper()
-		var id int64
-		codexMust(t, db.QueryRowContext(t.Context(), "SELECT id FROM message WHERE kind = 'ask' AND body = ?", body).Scan(&id))
+		id, err := crossVendorMessageID(t.Context(), db, "ask", body)
+		codexMust(t, err)
 		return id
 	}
 
 	if !t.Run("claude_to_codex_next_prompt", func(t *testing.T) {
-		send := ask("codex", claudeAsk)
+		send := commands.ask("codex", claudeAsk)
 		send.wants = append(send.wants, "it sees this at its next prompt")
 		claude.startTurn(t, "", send)()
 		id := requestID(t, claudeAsk)
-		// A native Codex notice case can use the same read and reply script and replace this turn submission.
-		codex.startTurn(t, fmt.Sprintf("[crosshall] pending: %d", id), readAsk("claude", claudeAsk), reply("claude", codexAnswer))()
+		codex.startTurn(t, fmt.Sprintf("[crosshall] pending: %d", id), commands.readAsk("claude", claudeAsk), commands.reply("claude", codexAnswer))()
 		var offerReasons string
 		codexMust(t, db.QueryRowContext(t.Context(), `SELECT COALESCE(GROUP_CONCAT(o.reason), '')
 			FROM offer_item i JOIN offer o ON o.id = i.offer_id
@@ -356,16 +379,16 @@ func TestCrossVendorRoundTrip(t *testing.T) {
 		if offerReasons != "prompt" {
 			t.Fatalf("Codex request #%d: want one confirmed prompt offer, got %q", id, offerReasons)
 		}
-		claude.startTurn(t, "", readReply("codex", codexAnswer, id))()
+		claude.startTurn(t, "", commands.readReply("codex", codexAnswer, id))()
 		assertCrossVendorSettlement(t, db, claude, codex, id, claudeAsk, codexAnswer)
 	}) {
 		return
 	}
 
 	t.Run("codex_to_claude_running_wait", func(t *testing.T) {
-		wait := tool("wait --existing --work-only --timeout 35s", "Arrived during the wait")
+		wait := commands.command("wait --existing --work-only --timeout 35s", "Arrived during the wait")
 		wait.askFrom = "codex"
-		finish := claude.startTurn(t, "", wait, readAsk("codex", codexAsk), reply("codex", claudeAnswer))
+		finish := claude.startTurn(t, "", wait, commands.readAsk("codex", codexAsk), commands.reply("codex", claudeAnswer))
 		rosterWait := crossVendorStep{
 			command: fmt.Sprintf(`i=0
 			while [ "$i" -lt 50 ]; do
@@ -378,12 +401,12 @@ func TestCrossVendorRoundTrip(t *testing.T) {
 			exit 1`, codexQuote(exe)),
 			wants: []string{"woken by its wait"},
 		}
-		send := ask("claude", codexAsk)
+		send := commands.ask("claude", codexAsk)
 		send.wants = append(send.wants, "its wait is running")
 		codex.startTurn(t, "", rosterWait, send)()
 		finish()
 		id := requestID(t, codexAsk)
-		codex.startTurn(t, "", readReply("claude", claudeAnswer, id))()
+		codex.startTurn(t, "", commands.readReply("claude", claudeAnswer, id))()
 		assertCrossVendorSettlement(t, db, codex, claude, id, codexAsk, claudeAnswer)
 	})
 }

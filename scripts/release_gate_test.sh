@@ -41,9 +41,11 @@ grep -q '^| Store snapshot upgrade and rollback | BLOCKED |' "$out/summary.md" |
   fail "the store row did not wait for the builds: $(cat "$out/summary.md")"
 
 # 2. The cross-vendor verdict.
-judge() { # judge <want-exit> < events
+judge() { # judge <want-exit> [subtest-prefix...] < events
   local want=$1 got=0 said
-  said=$(python3 -B "$here/release_gate_events.py" T claude_to_codex codex_to_claude) || got=$?
+  shift
+  if (($# == 0)); then set -- claude_to_codex codex_to_claude; fi
+  said=$(python3 -B "$here/release_gate_events.py" T "$@") || got=$?
   [[ $got == "$want" ]] || fail "verdict exit $got, want $want: $said"
 }
 ev() { # ev <action> <test> [output]
@@ -80,6 +82,17 @@ printf '{"Action":"output","Output":"build failed"}\n' | judge 1
   ev skip T/codex_to_claude_running_wait
   ev pass T
 } | judge 2
+
+{
+  ev pass T/claude_to_codex_notice
+  ev pass T/codex_to_claude_notice
+  ev pass T
+} | judge 0 claude_to_codex_notice codex_to_claude_notice
+{
+  ev pass T/claude_to_codex_next_prompt
+  ev pass T/codex_to_claude_running_wait
+  ev pass T
+} | judge 1 claude_to_codex_notice codex_to_claude_notice
 
 # 3. The store row fails when any command it runs fails. A shim makes the
 #    n-th call of sqlite3, cp, chmod, mkdir, find, cmp or join exit 7, for

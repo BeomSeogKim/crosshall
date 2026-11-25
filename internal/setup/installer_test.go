@@ -39,3 +39,18 @@ func TestEveryInstallableAdapterHasItsInstaller(t *testing.T) {
 		}
 	}
 }
+
+// A hooks-only adapter has no member command permissions: setup plans no
+// rules for it instead of refusing. Every shipped adapter has them.
+func TestAHooksOnlyAdapterGetsNoCommandRules(t *testing.T) {
+	for _, spec := range hook.InstallSpecs() {
+		if !installerFor(spec.Adapter).hasMemberRules() {
+			t.Errorf("%s lost its member command rules", spec.Adapter)
+		}
+	}
+	target := installTarget{Spec: hook.InstallSpec{Adapter: "hooksonly"}, Wanted: []Entry{{Event: "SessionStart"}}}
+	if err := (Service{Executable: "/opt/crosshall"}).preflightCommandRules(&target, journal{}); err != nil ||
+		target.CommandRules != nil || len(target.Wanted) != 1 {
+		t.Fatalf("hooks-only adapter rules: %+v (%v)", target, err)
+	}
+}

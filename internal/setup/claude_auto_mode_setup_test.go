@@ -23,7 +23,9 @@ func TestClaudeAutoModeRulesShareSetupConsentAndRestoreSettings(t *testing.T) {
 			before: []string{"Owner guidance", "$defaults"}},
 		{name: "owner replaces defaults", original: "{\n \"autoMode\": {\"allow\": [\"Owner guidance\"]}\n}\n",
 			before: []string{"Owner guidance"}},
-		{name: "edited settings retain defaults", original: "{\n \"owner\": 1\n}\n", before: []string{"$defaults"}, edit: true},
+		// Setup created the list, so an uninstall after an owner edit removes
+		// it with $defaults, as restoring the original bytes would (#385).
+		{name: "edited settings drop the list setup created", original: "{\n \"owner\": 1\n}\n", before: []string{"$defaults"}, edit: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := setuptest.New(t, "claude")
@@ -77,7 +79,7 @@ func TestClaudeAutoModeRulesShareSetupConsentAndRestoreSettings(t *testing.T) {
 			}
 			restored := configBytes(t, path)
 			if tc.edit {
-				if got := autoModeAllowed(t, restored); !slices.Equal(got, tc.before) || !bytes.Contains(restored, []byte(`"owner": 2`)) {
+				if bytes.Contains(restored, []byte(`"autoMode"`)) || !bytes.Contains(restored, []byte(`"owner": 2`)) {
 					t.Fatalf("semantic uninstall changed defaults or owner edits: %s", restored)
 				}
 			} else if string(restored) != tc.original {

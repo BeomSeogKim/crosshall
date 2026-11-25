@@ -62,6 +62,7 @@ type PlanFile struct {
 	Add        []Entry                `json:"add,omitempty"`
 	Remove     []Entry                `json:"remove,omitempty"`
 	Kept       []Entry                `json:"kept,omitempty"`
+	Prune      [][]string             `json:"remove_if_empty,omitempty"`
 	AddText    string                 `json:"add_text,omitempty"`
 	RemoveText string                 `json:"remove_text,omitempty"`
 	Evidence   []store.DoctorEvidence `json:"capability_evidence,omitempty"`
@@ -396,7 +397,7 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 	}
 	for _, e := range op.Edits {
 		b := op.Builds[e.Adapter]
-		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Add: e.Add, Remove: e.Remove, Kept: e.Kept,
+		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Add: e.Add, Remove: e.Remove, Kept: e.Kept, Prune: e.Prune,
 			AddText: e.AddText, RemoveText: e.RemoveText}
 		if !e.Rules {
 			f.Version = b.Version
@@ -490,6 +491,9 @@ func printPlan(out io.Writer, p plan) error {
 				}
 				fmt.Fprintf(&contents, "  %s %s %s\n", group.label, kind, e.Value)
 			}
+		}
+		for _, slot := range f.Prune {
+			fmt.Fprintf(&contents, "  remove %s if empty\n", strings.Join(slot, "."))
 		}
 		for _, group := range []struct {
 			label string

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -240,7 +241,7 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 		wanted = append(keep, wanted...)
 	}
 	if len(restore) > 0 {
-		record.Undo, record.Entries = nil, nil
+		record.Undo, record.Entries, record.Created = nil, nil, nil
 	} else if known && !rules {
 		entries := record.Entries
 		if i.checksRelocation() {
@@ -290,6 +291,11 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 		}
 		record.Undo = append(slices.Clone(record.Undo), inverse)
 	}
+	created, err := createdSlots(base, updated, added)
+	if err != nil {
+		return edit{}, err
+	}
+	record.Created = appendSlots(slices.Clone(record.Created), created)
 	record.Entries = append(slices.Clone(record.Entries), remainingEntries(added, record.Entries)...)
 	record.Latest = after
 	return edit{
@@ -427,15 +433,31 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 		return e, nil
 	}
 	// Removing $defaults while leaving the list would discard Claude's
-	// built-in rules. The byte-exact path above restores an absent list.
+	// built-in rules. The byte-exact path above restores an absent list,
+	// and so does removing a list setup created once only $defaults is left.
 	claims := slices.DeleteFunc(slices.Clone(record.Entries), isClaudeAutoModeDefaults)
 	updated, removed, kept, err := removeEntries(current.Bytes, claims)
 	if err != nil {
 		return edit{}, err
 	}
+	if defaults := slices.IndexFunc(record.Entries, isClaudeAutoModeDefaults); defaults >= 0 && onlyDefaultsInCreatedList(updated, record.Created) {
+		claims = append(claims, record.Entries[defaults])
+		if updated, removed, kept, err = removeEntries(current.Bytes, claims); err != nil {
+			return edit{}, err
+		}
+	}
+	if len(record.Created) != 0 {
+		pruned, err := pruneSlots(updated, record.Created)
+		if err != nil {
+			return edit{}, err
+		}
+		if !bytes.Equal(pruned, updated) {
+			updated, e.Prune = pruned, record.Created
+		}
+	}
 	e.Kept = kept
 	e.Remove = removed
-	if len(e.Remove) != 0 {
+	if len(e.Remove) != 0 || len(e.Prune) != 0 {
 		e.After.Hash, e.After.File = sum(updated), ""
 	}
 	if len(kept) > 0 {
@@ -443,6 +465,23 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 		e.Record = &record
 	}
 	return e, nil
+}
+
+func onlyDefaultsInCreatedList(raw []byte, created [][]string) bool {
+	slot := slotPath(Entry{AutoMode: true})
+	if !slices.ContainsFunc(created, func(s []string) bool { return slices.Equal(s, slot) }) {
+		return false
+	}
+	doc, err := configDocument(raw)
+	if err != nil {
+		return false
+	}
+	list := configAt(doc, slot)
+	if list == nil || list.kind != '[' || len(list.items) != 1 {
+		return false
+	}
+	value, ok := list.items[0].stringValue()
+	return ok && `"`+value+`"` == claudeDefaultRules
 }
 
 func remainingEntries(entries, kept []Entry) []Entry {

@@ -68,6 +68,13 @@ type manifest struct {
 	ModeEnv        string            `json:"mode_env"`
 	ModeField      string            `json:"mode_field"`
 	Modes          map[string]string `json:"modes"`
+	// BuildFromHost takes the launch's vendor version from the build setup
+	// recorded for the executable that runs the hook (HostBuildsName), and
+	// its mode from that executable's arguments: HostModes maps a mode to
+	// the flags that select it, HostModeDefault applies without one.
+	BuildFromHost   bool                `json:"build_from_host"`
+	HostModes       map[string][]string `json:"host_modes"`
+	HostModeDefault string              `json:"host_mode_default"`
 	// LiteralFields are read as their JSON text: integers and booleans a
 	// vendor reports as such, never strings.
 	LiteralFields []string `json:"literal_fields"`

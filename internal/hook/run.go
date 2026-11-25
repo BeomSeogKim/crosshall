@@ -179,6 +179,9 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err != nil {
 		return "refused"
 	}
+	if m.BuildFromHost {
+		e.VendorVersion, e.Mode = hostBuild(rv, m)
+	}
 	if hookExpired(ctx) {
 		return "deadline"
 	}

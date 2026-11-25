@@ -118,19 +118,33 @@ func TestBuildDoesNotHoldTheStore(t *testing.T) {
 			return nil
 		})
 	}()
-	<-held
+	// The holder ends on every path: released, then joined, so a failed
+	// setup or a stuck build fails the test instead of hanging it.
+	var once sync.Once
+	finish := func() error {
+		once.Do(func() { close(release) })
+		return <-wrote
+	}
+	guard := time.After(30 * time.Second) // a liveness guard, not a cost bound
+	select {
+	case <-held:
+	case err := <-wrote:
+		t.Fatalf("the write transaction ended before the build: %v", err)
+	case <-guard:
+		once.Do(func() { close(release) })
+		t.Fatal("the write transaction did not start")
+	}
 	s := New(h.cfg, h.db)
 	s.Tick(t.Context(), d0.Add(time.Minute))
 	done := make(chan struct{})
 	go func() { s.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second): // a liveness guard, not a cost bound
-		close(release)
-		t.Fatal("the build waited for an open write transaction")
+	case <-guard:
+		err := finish()
+		t.Fatalf("the build waited for an open write transaction (holder: %v)", err)
 	}
-	close(release)
-	if err := <-wrote; err != nil {
+	if err := finish(); err != nil {
 		t.Fatal(err)
 	}
 	if pending := h.files("pending"); !slices.Equal(pending, []string{"2026-11-09.json"}) {

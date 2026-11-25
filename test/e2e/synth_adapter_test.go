@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,32 +146,29 @@ var synthFiles = map[string]string{
 func TestSynthBundleStaysInItsOwnFiles(t *testing.T) {
 	root := filepath.Join("..", "..")
 	names := regexp.MustCompile(`\bsynth\b|SYNTH_|Synth Fixture`)
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	// Source files only, as git sees them: tracked and new files, never
+	// ignored build output such as a binary built with the tag.
+	list := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	list.Dir = root
+	out, err := list.Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // deleted in the work tree
+		}
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		rel, _ := filepath.Rel(root, path)
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && rel != "." {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		header, bundled := synthFiles[filepath.ToSlash(rel)]
+		header, bundled := synthFiles[rel]
 		switch {
 		case !bundled && names.Match(data):
 			t.Errorf("%s names the synth adapter outside its bundle", rel)
 		case bundled && !bytes.HasPrefix(data, []byte(header)):
 			t.Errorf("%s does not start with %q", rel, header)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	for file := range synthFiles {
 		if _, err := os.Stat(filepath.Join(root, file)); err != nil {

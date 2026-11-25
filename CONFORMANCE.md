@@ -137,8 +137,9 @@ CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-release \
 The check uses the same candidate binary for both adapters. It starts a Claude
 Code interactive session and a loaded thread on the real Codex managed server
 in separate scratch homes. Both models use loopback endpoints. The fixture
-imports publish evidence for those exact builds into the scratch hall and
-waits for both native routes to activate.
+uses shipped publish evidence for the two builds where present and imports
+scratch evidence for either build that still needs it. Both native routes
+must activate.
 
 The temporary homes share a short root for local socket paths. A watchdog
 owns that root and closes it to new hook launches when the test process
@@ -152,6 +153,27 @@ own turns. The fixture submits the initiating ask turn and observes the
 receiving turns without entering any further prompts. The release gate has a
 separate row for this scenario and requires both directions. A missing package
 or unsupported host blocks that row.
+
+### Codex daemon publish evidence
+
+Use the same managed package setup and select `TestCodexDaemonPublishTrial`
+to reproduce the publish trial for Codex `0.172.0`, `darwin-arm64`, `daemon`,
+and `codex-1`:
+
+```sh
+CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-0.172.0-release \
+  go test -tags conformance -count=1 -timeout 3m -run '^TestCodexDaemonPublishTrial$' -v ./test/conformance/
+```
+
+A Claude Code ask must queue on the idle Codex thread. The resulting new
+turn reads the ask, replies, and records a submitted `own_turn` receipt.
+The asker reads the reply. The app server must show exactly one new turn
+and an empty queue after settlement. With a real approval open on that
+thread, a second Claude ask must report the approval wait and stay unread
+without creating a notice or opening another model turn. The trial leaves
+the approval unanswered. Both model endpoints are on loopback. The pass
+line records the observed profile, test time, evidence source and request
+counts.
 
 ## Hall-level checks
 

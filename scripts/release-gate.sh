@@ -445,18 +445,44 @@ row_hook_cost() {
       fi
     done
   done
-  median500() { # nanoseconds of the median 500-turn sample of three runs
-    cat "$work"/cost-"$1"-*.log | awk '$2 == "500" && $3 == "turns:" {
-        v = $4; f = 1
-        if (v ~ /ms$/) { f = 1e6 } else if (v ~ /µs$/) { f = 1e3 } else if (v ~ /ns$/) { f = 1 } else if (v ~ /s$/) { f = 1e9 }
-        gsub(/[^0-9.]/, "", v); print v * f }' | sort -n | sed -n 2p
+  samples() { # nanoseconds of side $1's samples at $2 turns, sorted: one per run, or none in any
+    local round got runs=() none=0
+    for round in 1 2 3; do
+      got=$(awk -v n="$2" '$2 == n && $3 == "turns:" {
+          v = $4; f = 1
+          if (v ~ /ms$/) { f = 1e6 } else if (v ~ /µs$/) { f = 1e3 } else if (v ~ /ns$/) { f = 1 } else if (v ~ /s$/) { f = 1e9 }
+          gsub(/[^0-9.]/, "", v); print v * f }' "$work/cost-$1-$round.log")
+      case $(grep -c . <<< "$got") in
+        1) runs+=("$got") ;;
+        0) none=$((none + 1)) ;;
+        *) return 1 ;;
+      esac
+    done
+    ((none == 3)) && return 0
+    ((none == 0)) || return 1
+    printf '%s\n' "${runs[@]}" | sort -n
   }
-  base_ns=$(median500 base)
-  head_ns=$(median500 head)
-  [[ -n $base_ns && -n $head_ns ]] || { detail "could not read the 500-turn medians"; return 1; }
-  awk -v b="$base_ns" -v h="$head_ns" -v l="$hook_cost_limit" 'BEGIN {
-      printf "500 turns: %s %.3f ms, candidate %.3f ms, ratio %.2f (limit %s), median of 3 interleaved runs\n", "base", b / 1e6, h / 1e6, h / b, l
-      exit !(h / b <= l) }' > "$out/$current.detail"
+  local turns base_runs head_runs part parts=() failed=0
+  for turns in 500 1000; do
+    # The median of three runs needs one sample from each.
+    head_runs=$(samples head "$turns") && [[ -n $head_runs ]] ||
+      { detail "the candidate has no single $turns-turn sample in each of 3 runs"; return 1; }
+    base_runs=$(samples base "$turns") || { detail "$base has no single $turns-turn sample in each of 3 runs"; return 1; }
+    if [[ -z $base_runs ]]; then
+      # A base from before the 1,000-turn sample (#366) has none in any run.
+      [[ $turns == 1000 ]] || { detail "$base has no $turns-turn sample"; return 1; }
+      parts+=("$(awk -v h="$(sed -n 2p <<< "$head_runs")" 'BEGIN { printf "1000 turns: candidate %.3f ms, base has no sample", h / 1e6 }')")
+      continue
+    fi
+    part=$(awk -v n="$turns" -v b="$(sed -n 2p <<< "$base_runs")" -v h="$(sed -n 2p <<< "$head_runs")" -v l="$hook_cost_limit" 'BEGIN {
+        printf "%s turns: base %.3f ms, candidate %.3f ms, ratio %.2f", n, b / 1e6, h / 1e6, h / b
+        exit !(h / b <= l) }') || failed=1
+    parts+=("$part")
+  done
+  # The summary shows a row's first detail line: both comparisons go on it.
+  part=$(printf '%s; ' "${parts[@]}")
+  detail "${part%; } (limit $hook_cost_limit, median of 3 interleaved runs)"
+  return "$failed"
 }
 
 cross_vendor_test() {

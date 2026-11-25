@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The release gate times a hook at 1,000 turns:** the hook-cost test adds a session of 1,000 turns and fails when its hook event costs more than 1.5 times the 250-turn one (since #382 they cost the same; folding the whole launch made it 2.2 times). The gate's hook-cost row compares the 1,000-turn median with the base's as it does the 500-turn one, and shows the candidate's alone while the base has no such sample (#366).
+
 ## v0.3.1-rc.1 (2026-11-26)
 
 - **Upgrade from v0.3.0.** The first start backs up `store.sqlite3` and migrates schema 29 to 30. To roll back, restore the schema 29 backup and reinstall v0.3.0. See [UPGRADING.md](UPGRADING.md#to-v031-rc1).

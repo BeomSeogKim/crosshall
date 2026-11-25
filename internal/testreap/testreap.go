@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -152,14 +153,10 @@ func Check(code int) int {
 func owned(entry string) ([]int, error) {
 	var pids []int
 	if runtime.GOOS == "linux" {
-		entries, err := os.ReadDir("/proc")
+		var err error
+		pids, err = linuxPIDs()
 		if err != nil {
 			return nil, err
-		}
-		for _, e := range entries {
-			if pid, err := strconv.Atoi(e.Name()); err == nil {
-				pids = append(pids, pid)
-			}
 		}
 	} else {
 		// One ps lists the candidates; each is checked again on its own.
@@ -204,16 +201,7 @@ func mine(pid int, entry string) (bool, error) {
 		if last := string(args[len(args)-1]); last != "__dispatch" && last != "__test_dispatch_guardian" {
 			return false, nil
 		}
-		environ, err := os.ReadFile(filepath.Join(dir, "environ"))
-		if err != nil {
-			return false, nil
-		}
-		for _, e := range bytes.Split(environ, []byte{0}) {
-			if string(e) == entry {
-				return true, nil
-			}
-		}
-		return false, nil
+		return linuxHasEntry(pid, entry), nil
 	}
 	// The arguments alone, then the environment, which ps -E prints after
 	// them with a newline in a value escaped, so entries are space separated.
@@ -239,39 +227,20 @@ func psLine(pid int, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// EndDarwinFixture stops all processes carrying this fixture's exact token,
+// EndFixture stops all processes carrying this fixture's exact token,
 // including the vendor sessions and their tools. The caller must fence new
 // launches before calling it. The token is distinct from every other run's.
-func EndDarwinFixture(entry string) error {
+func EndFixture(entry string) error {
+	kill := killDarwinFixtureProcesses
+	if runtime.GOOS == "linux" {
+		kill = killLinuxFixtureProcesses
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	empty := false
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("/bin/ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "stat=", "-o", "command=").Output()
+		found, err := kill(entry)
 		if err != nil {
 			return err
-		}
-		found := false
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 3 || strings.HasPrefix(fields[1], "Z") || !slices.Contains(fields[2:], entry) {
-				continue
-			}
-			pid, err := strconv.Atoi(fields[0])
-			if err != nil || pid <= 1 || pid == os.Getpid() {
-				return fmt.Errorf("testreap: unsafe fixture PID %q", fields[0])
-			}
-			current, err := psLine(pid, "-E", "-o", "stat=", "-o", "command=")
-			if err != nil {
-				return err
-			}
-			fields = strings.Fields(current)
-			if len(fields) < 2 || strings.HasPrefix(fields[0], "Z") || !slices.Contains(fields[1:], entry) {
-				continue
-			}
-			found = true
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-				return err
-			}
 		}
 		if !found && empty {
 			return nil
@@ -280,6 +249,87 @@ func EndDarwinFixture(entry string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("testreap: fixture processes did not exit")
+}
+
+func killDarwinFixtureProcesses(entry string) (bool, error) {
+	out, err := exec.Command("/bin/ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "stat=", "-o", "command=").Output()
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || strings.HasPrefix(fields[1], "Z") || !slices.Contains(fields[2:], entry) {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 1 || pid == os.Getpid() {
+			return false, fmt.Errorf("testreap: unsafe fixture PID %q", fields[0])
+		}
+		current, err := psLine(pid, "-E", "-o", "stat=", "-o", "command=")
+		if err != nil {
+			return false, err
+		}
+		fields = strings.Fields(current)
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "Z") || !slices.Contains(fields[1:], entry) {
+			continue
+		}
+		found = true
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return false, err
+		}
+	}
+	return found, nil
+}
+
+func linuxPIDs() ([]int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var pids []int
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
+}
+
+func linuxHasEntry(pid int, entry string) bool {
+	environ, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
+	return err == nil && slices.ContainsFunc(bytes.Split(environ, []byte{0}), func(variable []byte) bool {
+		return string(variable) == entry
+	})
+}
+
+func killLinuxFixtureProcesses(entry string) (bool, error) {
+	pids, err := linuxPIDs()
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, pid := range pids {
+		if !linuxHasEntry(pid, entry) {
+			continue
+		}
+		if pid <= 1 || pid == os.Getpid() {
+			return false, fmt.Errorf("testreap: unsafe fixture PID %d", pid)
+		}
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			return false, err
+		}
+		if linuxHasEntry(pid, entry) {
+			found = true
+			err = process.Kill()
+		}
+		_ = process.Release()
+		if err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+			return false, err
+		}
+	}
+	return found, nil
 }
 
 // end signals pid while it is still a dispatcher with entry: TERM, then

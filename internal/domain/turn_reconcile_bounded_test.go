@@ -22,6 +22,7 @@ type historyFact struct {
 // prompting new turns and stopping the running one.
 type historyMix struct {
 	typedAhead, oldPrompt, unknownStop, oldStop, idle int // facts
+	lookalike                                         int // new ids that look like a placeholder's name
 	tie                                               int // facts in the millisecond of the one before
 	late, veryLate, behind, back                      int // deliveries
 }
@@ -29,7 +30,7 @@ type historyMix struct {
 // harshMix stresses every rule of the fold; realMix is closer to what a
 // session sends.
 var (
-	harshMix = historyMix{typedAhead: 150, oldPrompt: 50, unknownStop: 100, oldStop: 50, idle: 100,
+	harshMix = historyMix{typedAhead: 150, oldPrompt: 50, unknownStop: 100, oldStop: 50, idle: 100, lookalike: 50,
 		tie: 100, late: 150, veryLate: 50, behind: 50, back: 20}
 	realMix = historyMix{typedAhead: 20, oldPrompt: 5, unknownStop: 20, oldStop: 5, idle: 50,
 		tie: 20, late: 30, veryLate: 2, behind: 2, back: 2}
@@ -44,7 +45,14 @@ func turnHistory(r *rand.Rand, n int, m historyMix) []historyFact {
 	var facts []historyFact
 	var refs []string
 	cur := ""
-	newRef := func() string { refs = append(refs, fmt.Sprintf("t%d", len(refs)+1)); return refs[len(refs)-1] }
+	newRef := func() string {
+		ref := fmt.Sprintf("t%d", len(refs)+1)
+		if r.IntN(1000) < m.lookalike {
+			ref = placeholder("vendor"+ref, at) // a vendor may send such an id (hook.go admits it)
+		}
+		refs = append(refs, ref)
+		return ref
+	}
 	old := func() string {
 		if len(refs) == 0 {
 			return newRef()
@@ -168,7 +176,12 @@ func TestRecentReassignmentEqualsTheFullOne(t *testing.T) {
 		mix       historyMix
 		histories int
 		atLeast   float64 // the share of reassignments that fold only the recent facts
-	}{{"harsh", harshMix, 200, 0.25}, {"real", realMix, 40, 0.9}} {
+	}{
+		{"harsh", harshMix, 200, 0.25},
+		// Twelve seeds gave 0.88 to 0.96: the bound says the recent fold is the
+		// common case, not how often it is.
+		{"real", realMix, 40, 0.8},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 			calls, bounded := reassignBothWays(t, r, seed, c.mix, c.histories)

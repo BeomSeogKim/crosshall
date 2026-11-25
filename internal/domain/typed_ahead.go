@@ -235,10 +235,10 @@ const placeholderName = `(turn_ref >= 'typed-ahead:' AND turn_ref < 'typed-ahead
 
 // unreadTurnFacts is the earliest hook time of a turn fact this
 // reassignment reads and the launch's last one did not: stored after it,
-// or stamped past its clock slack. The first part walks the sequence, not
-// the launch.
+// or stamped past its clock slack. The first part walks the member's
+// sequence, not the launch.
 const unreadTurnFacts = `SELECT MIN(hook_at_ms) FROM (
-	SELECT hook_at_ms FROM observation WHERE seq > ?3 AND +principal_id = ?1 AND +launch_ref = ?2 AND +hook_at_ms <= ?5 AND ` + turnFactKind + `
+	SELECT hook_at_ms FROM observation WHERE principal_id = ?1 AND seq > ?3 AND +launch_ref = ?2 AND +hook_at_ms <= ?5 AND ` + turnFactKind + `
 	UNION ALL
 	SELECT hook_at_ms FROM observation WHERE principal_id = ?1 AND launch_ref = ?2 AND hook_at_ms > ?4 AND hook_at_ms <= ?5 AND ` + turnFactKind + `)`
 
@@ -268,6 +268,9 @@ const (
 		FROM turn t INDEXED BY turn_placeholder_finishing
 		WHERE principal_id = ?1 AND launch_ref = ?2 AND ` + placeholderName + ` AND opened_hook_at_ms < ?3 AND finishing_hook_at_ms >= ?3
 		ORDER BY 2, 1`
+	// ?1 principal, ?2 launch, ?3 names (JSON).
+	factNamed = `SELECT EXISTS (SELECT 1 FROM json_each(?3) j CROSS JOIN observation o
+		ON o.principal_id = ?1 AND o.launch_ref = ?2 AND o.turn_ref = j.value)`
 	// ?1 principal, ?2 launch, ?3 names (JSON), ?4 cut, ?5 names to skip (JSON).
 	earlierTurnNamed = `SELECT EXISTS (SELECT 1 FROM json_each(?3) j CROSS JOIN turn t
 		ON t.principal_id = ?1 AND t.launch_ref = ?2 AND t.turn_ref = j.value
@@ -388,6 +391,19 @@ func recentTurns(ctx context.Context, tx store.Tx, principal int64, launch, even
 	if err := rows.Close(); err != nil || claimed {
 		return 0, nil, nil, false, err
 	}
+	running := make([]string, len(seed))
+	for i, t := range seed {
+		running[i] = t.name
+	}
+	seeded, err := json.Marshal(running)
+	if err != nil {
+		return 0, nil, nil, false, err
+	}
+	// A vendor may name a turn like a placeholder: such a turn is its own.
+	var native bool
+	if err := tx.QueryRowContext(ctx, factNamed, principal, launch, string(seeded)).Scan(&native); err != nil || native {
+		return 0, nil, nil, false, err
+	}
 	facts, err := launchFacts(ctx, tx, principal, launch, cut, nowMS)
 	if err != nil {
 		return 0, nil, nil, false, err
@@ -399,10 +415,6 @@ func recentTurns(ctx context.Context, tx store.Tx, principal int64, launch, even
 	// rows were written: the turns before it decide that, not the seed.
 	turns, opened = assignTurnsFrom(append(seed, assignedTurn{name: name, opened: cut}), facts[1:])
 	opened[facts[0].event] = len(seed)
-	running := make([]string, len(seed))
-	for i, t := range seed {
-		running[i] = t.name
-	}
 	names := make([]string, 0, len(facts)+len(turns))
 	for _, f := range facts {
 		names = append(names, f.ref)
@@ -415,10 +427,6 @@ func recentTurns(ctx context.Context, tx store.Tx, principal int64, launch, even
 		return 0, nil, nil, false, err
 	}
 	var reached bool
-	seeded, err := json.Marshal(running)
-	if err != nil {
-		return 0, nil, nil, false, err
-	}
 	if err := tx.QueryRowContext(ctx, earlierTurnNamed, principal, launch, string(list), cut, string(seeded)).
 		Scan(&reached); err != nil || reached {
 		return 0, nil, nil, false, err

@@ -19,11 +19,13 @@ func TestTheRecentReassignmentReadsThroughIndexes(t *testing.T) {
 		"cutTurns":            {cutTurns, []any{1, "l", 5, cutCandidates}},
 		"runningPlaceholders": {runningPlaceholders, []any{1, "l", 5}},
 		"earlierTurnNamed":    {earlierTurnNamed, []any{1, "l", `["a"]`, 5, `[]`}},
+		"factNamed":           {factNamed, []any{1, "l", `["a"]`}},
 		"turnRowsFrom":        {turnRowsFrom, []any{1, "l", 5, `["a"]`}},
 	}
 	bounded := []string{
 		"USING INDEX observation_launch_hook (principal_id=? AND launch_ref=? AND hook_at_ms>? AND hook_at_ms<?)",
-		"USING INTEGER PRIMARY KEY (rowid>?)", // the facts stored since the launch's last reassignment
+		"USING INDEX observation_principal_sequence (principal_id=? AND seq>?)", // the member's facts since the launch's last reassignment
+		"USING COVERING INDEX observation_launch_turn (principal_id=? AND launch_ref=? AND turn_ref=?)",
 		"USING INDEX turn_launch_opened (principal_id=? AND launch_ref=? AND opened_hook_at_ms>?)",
 		"USING INDEX sqlite_autoindex_turn_1 (principal_id=? AND launch_ref=? AND turn_ref=?)",
 		"USING INDEX turn_placeholder_finishing (principal_id=? AND launch_ref=? AND finishing_hook_at_ms=?)",

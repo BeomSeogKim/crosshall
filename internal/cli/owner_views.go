@@ -616,7 +616,7 @@ func endedLines(ended []domain.EndedMember) []string {
 		lines = append(lines, line+".")
 	}
 	if len(free) > 0 {
-		lines = append([]string{fmt.Sprintf("Sessions ended over 12 hours ago, no open requests: %s. crosshall owner depart --ended departs them.",
+		lines = append([]string{fmt.Sprintf("Sessions ended, or with no recorded start silent, over 12 hours ago; no open requests: %s. crosshall owner depart --ended departs them.",
 			strings.Join(free, ", "))}, lines...)
 	}
 	return lines

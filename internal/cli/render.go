@@ -128,7 +128,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			return err
 		}
 		if len(r.Departed) == 0 {
-			fmt.Fprintln(w, "No member's session ended over 12 hours ago with nothing owed.")
+			fmt.Fprintln(w, "No member with nothing owed had its session end, or was silent with no recorded start, over 12 hours ago.")
 		}
 		for _, m := range r.Departed {
 			fmt.Fprintf(w, "@%s in #%s departed (binding %d, %s %s).\n", m.Alias, m.Channel, m.BindingID, endedHow(m), clock(m.EndedAtMS))

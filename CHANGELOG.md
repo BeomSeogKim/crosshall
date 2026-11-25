@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.3.0 (2026-11-26)
+
+- **Release of v0.3.0-rc.2:** no product change since rc.2; one end-to-end test now waits for a prompt's receipt before the session's next prompt.
+- **Upgrade:** from v0.3.0-rc.2 the database stays at schema 29; no migration runs and no setup is needed. From v0.2.0, the steps include `crosshall setup antigravity --apply` and Codex's managed app server. See [UPGRADING.md](UPGRADING.md#to-v030).
+
 ## v0.3.0-rc.2 (2026-11-25)
 
 - **The dispatcher recreates a member's removed spool once:** macOS's daily `/tmp` cleaner removes empty directories left unmodified for more than three days, so a quiet member's `in`, `work` and `out` disappeared while its directory stayed. The dispatcher then logged two errors for that member on every pass, about 25 lines a second. It now recreates them and logs one line (#372).

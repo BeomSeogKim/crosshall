@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,4 +106,42 @@ func TestTheDispatcherPublishesOnlyCurrentRecordedBuildsAndRereadsTheRecordedPat
 	if _, _, current := effectiveHostBuild(stateDir, state, "agy"); !current {
 		t.Fatal("the refreshed build is not current")
 	}
+}
+
+// The refresh worker logs its own failures: the main loop's failure log is
+// not shared with it. Run with -race.
+func TestTheRefreshWorkerSharesNoStateWithTheMainLoop(t *testing.T) {
+	withHostBuildAdapter(t)
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	if err := os.Mkdir(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the refreshed builds go makes the worker's write fail.
+	if err := os.Mkdir(filepath.Join(stateDir, hostBuildsRefreshed), 0700); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(dir, "agy")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho 1.5.16\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	recorded, ok := setup.Reprobe(t.Context(), "agy", setup.HostBuild{Executable: exe}, 2*time.Second)
+	if !ok {
+		t.Fatal("no recorded build")
+	}
+	recorded.Size++ // stale: the worker reads the version again
+	saved := recordedHostBuild
+	recordedHostBuild = func(string, string) (setup.HostBuild, bool) { return recorded, true }
+	t.Cleanup(func() { recordedHostBuild = saved })
+	state, err := os.OpenRoot(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	s := &server{cfg: Config{StateRoot: stateDir, Rendezvous: filepath.Join(dir, "rv")}, state: state}
+	s.hostBuildTick(t.Context(), time.Now())
+	for range 50 {
+		s.logFailure(errors.New("main loop failure"))
+	}
+	s.builds.workers.Wait()
 }

@@ -11,7 +11,9 @@ import (
 )
 
 // The identity rules as they were written in ident before the manifests
-// declared them (#324). The index must keep every outcome.
+// declared them (#324), with one later rule: an Antigravity language server
+// build names the CLI release, verified on 1.5.16. The index must keep every
+// outcome.
 func legacyRuntimeVersion(vendor string, lookup func(string) (string, bool)) string {
 	var version, prefix string
 	switch vendor {
@@ -36,13 +38,13 @@ func legacyRuntimeVersion(vendor string, lookup func(string) (string, bool)) str
 }
 
 func legacyUnknownCLI(id Identity) bool {
-	return id.Vendor == "agy" && (id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, "ls:"))
+	return id.Vendor == "agy" && id.Version != "ls:cli-1.5.16" && (id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, "ls:"))
 }
 
 func legacyWarning(id Identity) string {
-	verified := map[string][]string{"claude": {"2.1.327"}, "codex": {"0.170.0"}, "agy": {"1.5.11"}}
+	verified := map[string][]string{"claude": {"2.1.327"}, "codex": {"0.170.0"}, "agy": {"1.5.16"}}
 	known, ok := verified[id.Vendor]
-	if !ok || slices.Contains(known, id.Version) {
+	if !ok || slices.Contains(known, id.Version) || id.Vendor == "agy" && id.Version == "ls:cli-1.5.16" {
 		return ""
 	}
 	version := id.Version
@@ -63,7 +65,7 @@ func TestIdentityVersionsKeepTheirNormalization(t *testing.T) {
 	values := map[string][]string{
 		"AI_AGENT":               {"claude-code_2-1-327_harness", "claude-code_2-1-327_agent", "claude-code_2-1-3", "claude-code_", "claude-code__agent", "claude-code_x-1_agent", "claude-code_2-1-3+b_agent", "codex_1-2_agent", "2.1.327"},
 		"CODEX_VERSION":          {"0.170.0", "1.2.3-rc.1+b", "v0.1", "0.1 beta", "-1"},
-		"ANTIGRAVITY_LS_VERSION": {"cli-1.5.10", "cli-1.5.11+abc", "1.5.10", "cli-", "cli-x", "ls_1_5", "CLI-1.5.10"},
+		"ANTIGRAVITY_LS_VERSION": {"cli-1.5.10", "cli-1.5.16", "cli-1.5.16.1", "cli-1.5.160", "cli-1.5.11+abc", "1.5.10", "cli-", "cli-x", "ls_1_5", "CLI-1.5.10"},
 	}
 	for _, vendor := range []string{"claude", "codex", "agy", "route", "other"} {
 		for name, list := range values {
@@ -89,7 +91,7 @@ func TestIdentityVersionsKeepTheirNormalization(t *testing.T) {
 	}
 	// Versions read back from the store need not come from runtimeVersion.
 	for _, vendor := range []string{"claude", "codex", "agy", "route"} {
-		for _, version := range []string{"", "unknown", "ls:", "ls:cli-", "ls:cli-1.5.10", "ls:junk", "1.5.11", "2.1.327", "0.170.0", "9.9.9"} {
+		for _, version := range []string{"", "unknown", "ls:", "ls:cli-", "ls:cli-1.5.10", "ls:cli-1.5.16", "ls:cli-1.5.16+b", "ls:1.5.16", "ls:junk", "1.5.11", "1.5.16", "2.1.327", "0.170.0", "9.9.9"} {
 			id := Identity{Vendor: vendor, Version: version}
 			if id.UnknownCLI() != legacyUnknownCLI(id) || id.Warning() != legacyWarning(id) {
 				t.Errorf("%+v: unknown CLI %t warning %q, was %t %q", id, id.UnknownCLI(), id.Warning(), legacyUnknownCLI(id), legacyWarning(id))

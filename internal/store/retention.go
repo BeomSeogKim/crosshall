@@ -141,6 +141,16 @@ func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 	case "turns":
 		p.Result.Turns += n
 	}
+	// A launch that lost facts or turns has its turns reassigned from all
+	// its facts again: every launch this pass may delete from, in the same
+	// transaction as the delete.
+	if n > 0 && step.name != "ops" {
+		if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET reconciled_seq = NULL, reconciled_at_ms = NULL
+			WHERE reconciled_seq IS NOT NULL AND principal_id || ':' || launch_ref NOT IN (SELECT value FROM json_each(?))`,
+			p.keep.running); err != nil {
+			return err
+		}
+	}
 	if n < int64(p.limit) {
 		p.step++
 	}

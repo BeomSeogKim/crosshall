@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Codex managed-daemon publish evidence:** the release ships evidence from a real Codex 0.172.0 daemon on macOS arm64 with `codex-1`. Eligible Codex sessions can receive native notices under the existing publish controls. The trial verified one idle wake and settled reply, plus suppression while an approval is open.
 - **The adapter-name guard covers the whole core:** it now also scans the dispatcher, the generic publish code, identity and the store, and flags SQL text that names an adapter in quotes. The only allowed case is the approved `TurnEndClaude` telemetry key. The release's own reminder measurements for Claude Code and Codex moved from setup's shared code into their installers; doctor and setup show the same evidence.
 - **Native cross-vendor release check:** Claude Code and the Codex managed app server exchange requests and replies through native notices in both directions using loopback models. The release gate requires both directions.
 - **A fresh adapter ID proves adapters need no core edit:** a fixture adapter built in only under the `synthadapter` build tag (a manifest, an identity row and an installer in its own files) installs beside the owner's hooks, enrolls, is identified, gets a request at its next prompt, follows owner policy and uninstalls byte for byte through the normal entry points. CI runs it, and checks that nothing outside its files names it. Shipped builds do not contain it.

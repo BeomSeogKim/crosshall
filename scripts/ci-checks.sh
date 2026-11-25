@@ -96,6 +96,15 @@ fi
 if ! go vet -tags e2e,testvendorhome ./test/e2e/ || ! go test -tags e2e,testvendorhome -count=1 ./test/e2e/; then
   fail=1
 fi
+# A fresh adapter ID, built in only under its tag, must keep installing,
+# enrolling, being identified, taking work at its next prompt, following
+# owner policy and uninstalling through the normal entry points, and must
+# stay within its own files.
+if ! go vet -tags e2e,testvendorhome,synthadapter ./... ||
+  ! go test -tags synthadapter,testvendorhome -count=1 -run '^(TestABundleAddsItsManifest|TestIdentityIndexCoversEveryManifest|TestIdentityIndexMatchesManifests|TestEveryInstallableAdapterRegistersAnInstaller|TestEveryInstallableAdapterHasItsInstaller|TestAHooksOnlyAdapterGetsNoCommandRules)$' ./internal/hook/manifests ./internal/ident ./internal/setup ||
+  ! go test -tags e2e,testvendorhome,synthadapter -count=1 -run '^TestSynth' ./test/e2e/; then
+  fail=1
+fi
 # The conformance suite drives real vendor binaries, so CI cannot run it.
 # Compile it, so that a change it no longer builds against fails here, and
 # run its checks that need no vendor binary: ledger SQL, complete evidence,

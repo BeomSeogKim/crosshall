@@ -1,7 +1,6 @@
 package manifests
 
 import (
-	"io/fs"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -15,15 +14,18 @@ func TestABundleAddsItsManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundles = []fs.FS{fstest.MapFS{
-		"zbundle.json": {Data: []byte(`{"schema":1,"adapter":"zbundle","display_name":"Z Fixture","setup_order":9,"revision":"zbundle-1","install":{"events":["SessionStart"]},"events":{"SessionStart":{}}}`)},
-		"claude.json":   {Data: []byte(`{"schema":1,"adapter":"claude","display_name":"Not Claude"}`)},
-		"notes.txt":     {Data: []byte("not a manifest")},
-	}}
+	saved := bundles
+	bundles = append(slices.Clone(bundles), fstest.MapFS{
+		"zbundle.json": {Data: []byte(`{"schema":1,"adapter":"zbundle","display_name":"Z Fixture","setup_order":99,"revision":"zbundle-1","install":{"events":["SessionStart"]},"events":{"SessionStart":{}}}`)},
+		"claude.json":  {Data: []byte(`{"schema":1,"adapter":"claude","display_name":"Not Claude"}`)},
+		"notes.txt":    {Data: []byte("not a manifest")},
+	})
 	restore := SwapReader(readSource)
-	t.Cleanup(func() { bundles = nil; restore() })
+	t.Cleanup(func() { bundles = saved; restore() })
 
-	if got := Names(); !slices.Equal(got, append(slices.Clone(shipped), "zbundle")) || !slices.IsSorted(got) {
+	want := append(slices.Clone(shipped), "zbundle")
+	slices.Sort(want)
+	if got := Names(); !slices.Equal(got, want) {
 		t.Fatalf("names = %v", got)
 	}
 	if !Has("zbundle") || DisplayName("zbundle") != "Z Fixture" || SetupOrder()[len(SetupOrder())-1] != "zbundle" {

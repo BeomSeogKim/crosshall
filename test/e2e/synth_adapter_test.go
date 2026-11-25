@@ -9,9 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
-	"strings"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,4 +127,54 @@ func TestSynthAdapterWorksThroughTheNormalEntryPoints(t *testing.T) {
 
 	f.apply("", "uninstall", "synth", "--apply")
 	assertSetupFile(t, f.paths["synth"], original, false)
+}
+
+// synthFiles are the synth bundle: its provider files and adapter-owned
+// assembly, each built in only under the synthadapter tag, and this test.
+// The CI step and the changelog name the tag, not the adapter.
+var synthFiles = map[string]string{
+	"internal/hook/manifests/synth/synth.json": "",
+	"internal/hook/manifests/bundle_synth.go":  "//go:build synthadapter\n",
+	"internal/ident/identity_synth.go":         "//go:build synthadapter\n",
+	"internal/setup/installer_synth.go":        "//go:build synthadapter\n",
+	"test/e2e/synth_adapter_test.go":           "//go:build e2e && synthadapter\n",
+}
+
+// A fresh adapter needs no core edit: nothing outside the synth bundle's
+// own files names it, and each of its Go files builds only under its tag.
+func TestSynthBundleStaysInItsOwnFiles(t *testing.T) {
+	root := filepath.Join("..", "..")
+	names := regexp.MustCompile(`\bsynth\b|SYNTH_|Synth Fixture`)
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") && rel != "." {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		header, bundled := synthFiles[filepath.ToSlash(rel)]
+		switch {
+		case !bundled && names.Match(data):
+			t.Errorf("%s names the synth adapter outside its bundle", rel)
+		case bundled && !bytes.HasPrefix(data, []byte(header)):
+			t.Errorf("%s does not start with %q", rel, header)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for file := range synthFiles {
+		if _, err := os.Stat(filepath.Join(root, file)); err != nil {
+			t.Errorf("bundle file %s: %v", file, err)
+		}
+	}
 }

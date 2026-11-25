@@ -393,8 +393,25 @@ func (s *server) scan(ctx context.Context) error {
 	watched.removeStale()
 	if reap {
 		s.nextReap = now.Add(time.Hour)
+		s.renewRendezvousFiles(root, now)
 	}
 	return s.publishReady(ctx, root)
+}
+
+// adapterSnapshots are the files publishAdapterFilesAt writes at the top of
+// the rendezvous.
+var adapterSnapshots = []string{adapterPolicyName, adapterRepoSetName, adapterTurnEndName, hook.HostBuildsName}
+
+// renewRendezvousFiles keeps macOS's daily /tmp cleaner from taking the
+// files hooks read while this dispatcher runs: it removes a file once its
+// access, change and modification times are all more than three days old,
+// and reads after the first do not renew the access time (#378).
+func (s *server) renewRendezvousFiles(root *os.Root, now time.Time) {
+	for _, name := range append([]string{"ready", spool.ReadyLeaseFile}, adapterSnapshots...) {
+		if err := root.Chtimes(name, now, now); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.logFailure(err)
+		}
+	}
 }
 
 func (s *server) publishReady(ctx context.Context, root *os.Root) error {
@@ -410,7 +427,7 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 		sameLease = statErr == nil && pathErr == nil && atPath.Mode() == 0600 && os.SameFile(held, atPath)
 	}
 	if sameLease && readReadyAt(root).same(s.ready) {
-		return nil
+		return s.restoreAdapterFiles(ctx, root)
 	}
 	if err := root.Remove("ready"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -435,6 +452,29 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 		return err
 	}
 	return spool.PublishServerFile(root, "ready", s.ready)
+}
+
+// restoreAdapterFiles republishes the snapshots hooks read when one was
+// removed while readiness stands: without its policy a hook is off (#378).
+func (s *server) restoreAdapterFiles(ctx context.Context, root *os.Root) error {
+	var missing []string
+	for _, name := range adapterSnapshots {
+		if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, name)
+		} else if err != nil {
+			return err
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if err := s.publishAdapterFilesAt(ctx, root); err != nil {
+		return err
+	}
+	for _, name := range missing {
+		log.Printf("dispatcher: republished the removed %s", filepath.Join(s.cfg.Rendezvous, name))
+	}
+	return nil
 }
 
 // Withdraw readiness as soon as shutdown starts, even if a scan is still

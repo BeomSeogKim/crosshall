@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
@@ -22,8 +24,8 @@ func (agyInstaller) statePinned() bool { return true }
 
 func (agyInstaller) hookGroup() string { return agyHookGroup }
 
-// recognizeHooks counts the crosshall group and any SessionStart handler of
-// another group that runs crosshall.
+// recognizeHooks counts the crosshall group and any installed event's
+// handler of another group that runs crosshall.
 func (agyInstaller) recognizeHooks(doc *configNode, spec hook.InstallSpec) int {
 	if doc == nil {
 		return 0
@@ -34,13 +36,15 @@ func (agyInstaller) recognizeHooks(doc *configNode, spec hook.InstallSpec) int {
 			count++
 			continue
 		}
-		list := group.value.field("SessionStart")
-		if list == nil || list.kind != '[' {
-			continue
-		}
-		for _, handler := range list.items {
-			if recognizableHook(handler, spec, "SessionStart") {
-				count++
+		for _, event := range spec.Events {
+			list := group.value.field(event)
+			if list == nil || list.kind != '[' {
+				continue
+			}
+			for _, handler := range list.items {
+				if recognizableHook(handler, spec, event) {
+					count++
+				}
 			}
 		}
 	}
@@ -57,6 +61,33 @@ func (agyInstaller) recognizeShellCommand(command, event string, spec hook.Insta
 	state, executable, ok := splitHookStatePin(command)
 	command, literal := literalShellExecutable(executable)
 	return ok && literal && (state != "" || isCrosshallExecutable(command))
+}
+
+// upgrade replaces the crosshall group an earlier revision installed. A
+// stale group the owner already removed is dropped from the record too: it
+// is in the remove list, where applying skips an entry the file lacks.
+func (i agyInstaller) upgrade(target installTarget, record ownedFile, known bool) ([]byte, [][]span, []Entry, []Entry, error) {
+	stale := slices.DeleteFunc(slices.Clone(record.Entries), func(e Entry) bool {
+		return e.Group == "" || len(target.Wanted) == 0 || !sameRecordedExecutable(i, e, target.Wanted[0], target.Spec) ||
+			slices.ContainsFunc(target.Wanted, func(w Entry) bool { return bytes.Equal(w.Value, e.Value) })
+	})
+	if !known || len(stale) == 0 {
+		return target.Current.Bytes, nil, nil, nil, nil
+	}
+	base, restore, remove, err := replaceOwned(target, record, stale, "Antigravity hooks")
+	if err != nil || len(restore) > 0 {
+		return base, restore, remove, nil, err
+	}
+	doc, err := configDocument(target.Current.Bytes)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, e := range stale {
+		if _, _, matches, err := locateConfigEntry(doc, e); err == nil && matches.full == 0 && matches.related == 0 {
+			remove = append(remove, e)
+		}
+	}
+	return base, restore, remove, nil, nil
 }
 
 func (agyInstaller) checksRelocation() bool { return false }

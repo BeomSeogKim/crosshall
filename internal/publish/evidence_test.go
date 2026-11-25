@@ -6,13 +6,24 @@ import (
 	"testing"
 )
 
-// Each adapter registers its own rows, which name it; a build and
+// Each adapter registers its own rows, which name it, through its publish
+// adapter or, without one, beside it; a build and
 // capability has at most one shipped row.
 func TestShippedEvidenceIsRegisteredByItsAdapter(t *testing.T) {
 	type key struct{ vendor, version, platform, mode, rev, capability string }
 	seen := map[key]bool{}
+	rows := map[string][]Evidence{}
 	for name, a := range Shipped() {
-		for _, r := range a.Evidence() {
+		rows[name] = a.Evidence()
+	}
+	for name, evidence := range evidenceOnly {
+		if _, ok := rows[name]; ok {
+			t.Errorf("%s registers evidence twice", name)
+		}
+		rows[name] = evidence
+	}
+	for name, evidence := range rows {
+		for _, r := range evidence {
 			if r.Vendor != name {
 				t.Errorf("%s row names %q", name, r.Vendor)
 			}

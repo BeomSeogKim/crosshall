@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -21,6 +23,9 @@ const installConsentHeading = "Saying yes turns these on for the listed agents:"
 type installDisclosure struct {
 	known, inspectFailed, autoJoinOff, prompt bool
 	adapters                                  []installAdapterDisclosure
+	// sharedStop names the CLIs whose shared hooks file holds Stop hooks of
+	// a group that runs after crosshall's.
+	sharedStop []string
 }
 
 type installAdapterDisclosure struct {
@@ -39,6 +44,9 @@ func (s Service) attachInstallDisclosure(ctx context.Context, targets []installT
 	for i, target := range targets {
 		d := &targets[i].disclosure
 		*d = installDisclosure{prompt: hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)}
+		if sharesStop(target) {
+			d.sharedStop = []string{manifests.DisplayName(target.Spec.Adapter)}
+		}
 		if openErr != nil && !errors.Is(openErr, fs.ErrNotExist) {
 			d.inspectFailed = true
 			continue
@@ -85,6 +93,43 @@ func (d *installDisclosure) include(other installDisclosure) {
 		d.known, d.autoJoinOff = true, other.autoJoinOff
 	}
 	d.adapters = append(d.adapters, other.adapters...)
+	d.sharedStop = append(d.sharedStop, other.sharedStop...)
+}
+
+// sharesStop reports whether crosshall installs a Stop hook into a hooks
+// file where an enabled group whose name sorts after crosshall's has one.
+// Antigravity runs groups in name order and no later Stop hook once one
+// continues the turn (#328), so such a group can miss a Stop.
+func sharesStop(target installTarget) bool {
+	group := installerFor(target.Spec.Adapter).hookGroup()
+	if group == "" || !slices.Contains(target.Spec.Events, "Stop") {
+		return false
+	}
+	doc, err := parseConfigJSON(target.Current.Bytes)
+	if err != nil || doc == nil {
+		return false
+	}
+	for _, other := range doc.fields {
+		if other.key <= group || other.value.field("enabled") != nil && other.value.field("enabled").atom == false {
+			continue
+		}
+		if stop := other.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// promptLineAgents names, in setup order, the agents whose hooks show the
+// prompt line.
+func promptLineAgents() []string {
+	var names []string
+	for _, adapter := range manifests.SetupOrder() {
+		if caps, _ := manifests.CapabilitiesOf(adapter); caps.PromptLine {
+			names = append(names, ident.Identity{Vendor: adapter}.CLIName())
+		}
+	}
+	return names
 }
 
 func (d installDisclosure) write(out io.Writer) error {
@@ -100,7 +145,7 @@ func (d installDisclosure) write(out io.Writer) error {
 		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.")
 	}
 	if d.prompt {
-		fmt.Fprintln(&text, "- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
+		fmt.Fprintln(&text, "- Prompt line ("+strings.Join(promptLineAgents(), ", ")+"). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
 	}
 	pickup := "its next crosshall read."
 	if d.prompt {
@@ -110,6 +155,9 @@ func (d installDisclosure) write(out io.Writer) error {
 		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
 	} else if !d.writeAdapterEffects(&text, pickup) {
 		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup)
+	}
+	if len(d.sharedStop) > 0 {
+		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
 	}
 	_, err := io.WriteString(out, text.String())
 	return err

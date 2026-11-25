@@ -69,6 +69,7 @@ func TestAdapterPolicyRefusesNonOwnerAndInvalidRequests(t *testing.T) {
 	wantCode(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "unknown", Enabled: &on}}, "unknown-adapter"),
 		core.ExitUsage, "")
 	switchOn := "on"
+	withSessionStartOnlyAgy(t)
 	for _, c := range []struct {
 		args wire.AdapterPolicyArgs
 		want string

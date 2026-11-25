@@ -178,11 +178,19 @@ func parseConfigEntry(entry Entry) (configEntry, error) {
 	parsed := configEntry{value: node}
 	switch {
 	case entry.Group != "":
-		if entry.Group != agyHookGroup || entry.Event != "SessionStart" || node.kind != '{' || len(node.fields) != 1 {
+		// The group lists one handler per event; the entry's event names
+		// the handler that records the installed executable.
+		if entry.Group != agyHookGroup || !eventName.MatchString(entry.Event) || node.kind != '{' || len(node.fields) == 0 {
 			return configEntry{}, errInvalidEntry
 		}
+		for _, field := range node.fields {
+			list := field.value
+			if !eventName.MatchString(field.key) || list == nil || list.kind != '[' || len(list.items) != 1 || list.items[0].kind != '{' {
+				return configEntry{}, errInvalidEntry
+			}
+		}
 		list := node.field(entry.Event)
-		if list == nil || list.kind != '[' || len(list.items) != 1 || list.items[0].kind != '{' {
+		if list == nil {
 			return configEntry{}, errInvalidEntry
 		}
 		parsed.handler = list.items[0]

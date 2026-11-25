@@ -113,16 +113,8 @@ type unregisteredInstaller struct{ baseInstaller }
 func (unregisteredInstaller) defaultHome(string) string          { return "" }
 func (unregisteredInstaller) rulePath(hooks configTarget) string { return hooks.Path }
 
-// layoutHookEntry places one event's handler: in the installer's named
-// group, or as a matcher list entry.
+// layoutHookEntry places one event's handler as a matcher list entry.
 func layoutHookEntry(i installer, event, matcher string, h hookHandler) (Entry, error) {
-	if group := i.hookGroup(); group != "" {
-		raw, err := json.Marshal(map[string][]hookHandler{event: {h}})
-		if err != nil {
-			return Entry{}, err
-		}
-		return Entry{Event: event, Group: group, Value: raw}, nil
-	}
 	raw, err := json.Marshal(struct {
 		Matcher string        `json:"matcher,omitempty"`
 		Hooks   []hookHandler `json:"hooks"`

@@ -1,5 +1,11 @@
 package publish
 
+import (
+	"maps"
+	"slices"
+	"strings"
+)
+
 // Evidence is one shipped test result for a vendor build: which build
 // (version, platform, mode and hook manifest revision), which capability
 // it proves, the run that proved it and when. Each adapter keeps its own
@@ -11,5 +17,18 @@ type Evidence struct {
 	CheckedAtMS                                  int64
 }
 
-// ShippedEvidence lists the evidence the shipped adapters register.
-func ShippedEvidence() []Evidence { return Shipped().Evidence() }
+// evidenceOnly holds the rows of adapters that have shipped evidence but no
+// publish adapter: registering one in Shipped would make it a publish
+// adapter everywhere the registry is read.
+var evidenceOnly = map[string][]Evidence{"agy": agyEvidence}
+
+// ShippedEvidence lists the evidence the shipped adapters register, in
+// adapter name order.
+func ShippedEvidence() []Evidence {
+	out := Shipped().Evidence()
+	for _, name := range slices.Sorted(maps.Keys(evidenceOnly)) {
+		out = append(out, evidenceOnly[name]...)
+	}
+	slices.SortStableFunc(out, func(a, b Evidence) int { return strings.Compare(a.Vendor, b.Vendor) })
+	return out
+}

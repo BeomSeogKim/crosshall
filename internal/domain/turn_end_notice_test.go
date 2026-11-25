@@ -311,8 +311,12 @@ func TestTurnEndNoticeFollowsTheOwnersSwitch(t *testing.T) {
 	if r := f.hook(reader, stop("launch", "turn-2", f.now.UnixMilli()+1)); r.TurnEndLine != fmt.Sprintf("[crosshall] pending: %d", ask) {
 		t.Fatalf("a Stop after default = %+v, want ask %d", r, ask)
 	}
+	if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &[]string{"on"}[0]}}, "agy2-on"); r.Status != core.ExitOK {
+		t.Fatalf("Antigravity agy-2 refused --turn-end on: %+v", r)
+	}
+	withSessionStartOnlyAgy(t)
 	if r := f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "agy", TurnEnd: &[]string{"on"}[0]}}, "agy-on"); r.Status == core.ExitOK {
-		t.Fatal("Antigravity accepted --turn-end on")
+		t.Fatal("Antigravity agy-1 accepted --turn-end on")
 	}
 	// The way back that doctor names after an Antigravity off is accepted.
 	for _, value := range []string{"off", "default"} {

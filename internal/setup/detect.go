@@ -4,6 +4,7 @@ package setup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -172,6 +173,8 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 	}
 	entries := make([]Entry, 0, len(spec.Events))
 	seen := make(map[string]bool)
+	// A named group holds every event's handler in one entry, the group.
+	grouped := map[string][]hookHandler{}
 	for _, event := range spec.Events {
 		if !eventName.MatchString(event) || seen[event] {
 			return nil, errors.New("invalid or duplicate install event")
@@ -190,11 +193,22 @@ func hookEntries(spec hook.InstallSpec, executable, stateRoot string) ([]Entry, 
 		default:
 			return nil, fmt.Errorf("unsupported install encoding %q", spec.Encoding)
 		}
+		if i.hookGroup() != "" {
+			grouped[event] = []hookHandler{h}
+			continue
+		}
 		entry, err := layoutHookEntry(i, event, spec.Matchers[event], h)
 		if err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
+	}
+	if group := i.hookGroup(); group != "" && len(spec.Events) > 0 {
+		raw, err := json.Marshal(grouped)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, Entry{Event: spec.Events[0], Group: group, Value: raw})
 	}
 	return entries, nil
 }

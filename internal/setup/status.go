@@ -214,7 +214,7 @@ func inspectStatusInstall(status *AdapterStatus, spec hook.InstallSpec, executab
 		status.PathError = err.Error()
 		return
 	}
-	measured := InstallStatus{Intended: len(spec.Events)}
+	measured := InstallStatus{Intended: intendedEntries(spec)}
 	if err := inspectHookEntries(&measured, spec, executable, stateRoot, target.Path, record, current, doc); err != nil {
 		status.PathError = err.Error()
 		return

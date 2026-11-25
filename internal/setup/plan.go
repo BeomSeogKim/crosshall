@@ -99,7 +99,18 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 		if err != nil {
 			return target, err
 		}
-		if count := i.recognizeHooks(doc, spec); count > matches[0] {
+		// The group this journal records for this same executable is
+		// setup's own, an earlier revision's included: the edit replaces it.
+		owned := 0
+		if record, ok := j.Files[spec.Adapter]; ok && len(wanted) > 0 {
+			same := slices.DeleteFunc(slices.Clone(record.Entries), func(e Entry) bool {
+				return !sameRecordedExecutable(i, e, wanted[0], spec)
+			})
+			if _, removed, _, err := removeEntries(current.Bytes, same); err == nil {
+				owned = len(removed)
+			}
+		}
+		if count := i.recognizeHooks(doc, spec); count > max(matches[0], owned) {
 			return target, fmt.Errorf("%s configuration has an existing crosshall hook group or conflicting hook; inspect it before setup", manifests.DisplayName(spec.Adapter))
 		}
 	}
@@ -230,10 +241,13 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 	}
 	if len(restore) > 0 {
 		record.Undo, record.Entries = nil, nil
-	} else if known && i.checksRelocation() && !rules {
-		entries, err := checkHookRelocation(target, record.Entries)
-		if err != nil {
-			return edit{}, err
+	} else if known && !rules {
+		entries := record.Entries
+		if i.checksRelocation() {
+			var err error
+			if entries, err = checkHookRelocation(target, record.Entries); err != nil {
+				return edit{}, err
+			}
 		}
 		record.Entries = remainingEntries(entries, remove)
 	}
@@ -488,4 +502,12 @@ func verifyTargets(op operation) error {
 		}
 	}
 	return nil
+}
+
+// sameRecordedExecutable reports that two hook entries run the same
+// executable, with the same state pin.
+func sameRecordedExecutable(i installer, a, b Entry, spec hook.InstallSpec) bool {
+	x, errX := i.recordedExecutable(a, spec)
+	y, errY := i.recordedExecutable(b, spec)
+	return errX == nil && errY == nil && x == y
 }

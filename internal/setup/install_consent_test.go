@@ -29,7 +29,7 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 	for _, tc := range []struct {
 		adapter string
 		prompt  bool
-	}{{"codex", true}, {"agy", false}} {
+	}{{"codex", true}, {"agy", true}} {
 		t.Run(tc.adapter, func(t *testing.T) {
 			f := setuptest.New(t, tc.adapter)
 			out, err := realRun(t, scopedService(f), f, Request{Offer: true, Terminal: true}, "\n")
@@ -41,7 +41,10 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 			if tc.adapter == "codex" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
 				want = codexNoticeOn + newVersionNotice
 			}
-			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI).") != tc.prompt ||
+			if tc.adapter == "agy" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
+				want = "- Turn-end check (Antigravity, interactive sessions). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set agy --turn-end off"
+			}
+			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI, Antigravity).") != tc.prompt ||
 				!strings.Contains(out, want) {
 				t.Fatalf("offer: %v\n%s", err, out)
 			}
@@ -272,7 +275,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			} else if tc.name == "unreadable" {
 				joining = "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off)."
 			}
-			want := joining + "\n- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
+			want := joining + "\n- Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
 			if turnEnd != "" {
 				want += turnEnd + "\n"
 			}
@@ -336,5 +339,37 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		}
 	} else if listed || !unknown || strings.Contains(out, "- Notices (Codex, managed daemon sessions).") {
 		t.Fatalf("listed built-in evidence for another platform:\n%s", out)
+	}
+}
+
+// Antigravity runs no later Stop hook once one continues the turn (#328):
+// the offer says so when another group in the hooks file has Stop hooks.
+func TestTheOfferNamesAnotherGroupsStopHooks(t *testing.T) {
+	const line = "- Other Stop hooks (Antigravity). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks."
+	for _, tc := range []struct {
+		name, hooks string
+		want        bool
+	}{
+		{"no other group", "{}\n", false},
+		{"other group without Stop", `{"owner": {"PreInvocation": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
+		{"other group with Stop", `{"owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", true},
+		// Antigravity runs groups in name order: this one runs before crosshall's.
+		{"disabled later group with Stop", `{"owner": {"enabled": false, "Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
+		{"earlier group with Stop", `{"aaa-owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setuptest.New(t, "agy")
+			target := filepath.Join(f.Home, ".gemini", "config", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, []byte(tc.hooks), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := realRun(t, scopedService(f), f, Request{Offer: true, Terminal: true}, "\n")
+			if err != nil || strings.Contains(out, line) != tc.want {
+				t.Fatalf("offer: %v\n%s", err, out)
+			}
+		})
 	}
 }

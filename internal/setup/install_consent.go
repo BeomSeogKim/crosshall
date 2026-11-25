@@ -83,8 +83,9 @@ func (d *installDisclosure) include(other installDisclosure) {
 }
 
 // sharesStop reports whether crosshall installs a Stop hook into a hooks
-// file where another group already has one. Antigravity runs no later Stop
-// hook once one continues the turn (#328), so such a group can miss a Stop.
+// file where a group whose name sorts after crosshall's has one.
+// Antigravity runs groups in name order and no later Stop hook once one
+// continues the turn (#328), so such a group can miss a Stop.
 func sharesStop(target installTarget) bool {
 	if installerFor(target.Spec.Adapter).hookGroup() == "" || !slices.Contains(target.Spec.Events, "Stop") {
 		return false
@@ -94,7 +95,7 @@ func sharesStop(target installTarget) bool {
 		return false
 	}
 	for _, group := range doc.fields {
-		if group.key == installerFor(target.Spec.Adapter).hookGroup() {
+		if group.key <= installerFor(target.Spec.Adapter).hookGroup() {
 			continue
 		}
 		if stop := group.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {
@@ -132,7 +133,7 @@ func (d installDisclosure) write(out io.Writer) error {
 		fmt.Fprintln(&text, d.turnEnd())
 	}
 	if len(d.sharedStop) > 0 {
-		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). Another hook group in the same hooks file has Stop hooks. When the turn-end check continues a turn, this CLI may skip the other Stop hooks for that Stop; they run again at the turn's next Stop.")
+		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
 	}
 	_, err := io.WriteString(out, text.String())
 	return err

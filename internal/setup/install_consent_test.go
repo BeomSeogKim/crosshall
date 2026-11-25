@@ -319,7 +319,7 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 // Antigravity runs no later Stop hook once one continues the turn (#328):
 // the offer says so when another group in the hooks file has Stop hooks.
 func TestTheOfferNamesAnotherGroupsStopHooks(t *testing.T) {
-	const line = "- Other Stop hooks (Antigravity). Another hook group in the same hooks file has Stop hooks."
+	const line = "- Other Stop hooks (Antigravity). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks."
 	for _, tc := range []struct {
 		name, hooks string
 		want        bool
@@ -327,6 +327,8 @@ func TestTheOfferNamesAnotherGroupsStopHooks(t *testing.T) {
 		{"no other group", "{}\n", false},
 		{"other group without Stop", `{"owner": {"PreInvocation": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
 		{"other group with Stop", `{"owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", true},
+		// Antigravity runs groups in name order: this one runs before crosshall's.
+		{"earlier group with Stop", `{"aaa-owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := setuptest.New(t, "agy")

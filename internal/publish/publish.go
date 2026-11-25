@@ -177,26 +177,17 @@ type Adapter interface {
 	Echo(prompt string) (ids string, ok bool)
 	// Transport is the adapter's sender, without Send while it has none.
 	Transport() Transport
+	// ReachReasons lists, word for word as stored, every reason Reach
+	// gives. The core reads each as one class: this adapter's sender cannot
+	// reach the session at all.
+	ReachReasons() []string
+	// Evidence is the adapter's shipped evidence.
+	Evidence() []Evidence
 	// BackgroundWakes reports whether the agent starts its next turn when a
 	// background command it ran exits, so an idle session can stand by on a
 	// background crosshall wait at no model cost. A session of an adapter
 	// without it is told to end its turn instead of running a wait.
 	BackgroundWakes() bool
-}
-
-// reachReasons maps each reason an adapter's Reach gives to that adapter.
-// The words are adapter-owned and stored as they are; the core reads them
-// as one class: the adapter's sender cannot reach the session at all.
-var reachReasons = map[string]string{
-	CodexNoDaemon:         "codex",
-	CodexDaemonUnverified: "codex",
-}
-
-// ReachReason reports whether reason is a shipped adapter's Reach reason,
-// and whose.
-func ReachReason(reason string) (adapter string, ok bool) {
-	adapter, ok = reachReasons[reason]
-	return adapter, ok
 }
 
 // Registry maps an adapter name to its Adapter.
@@ -242,6 +233,31 @@ func Lookup(name string) (Adapter, bool) { return Adapters().Lookup(name) }
 func (r Registry) Lookup(name string) (Adapter, bool) {
 	a, ok := r[name]
 	return a, ok
+}
+
+// ReachReason reports whether reason is a Reach reason of a registered
+// adapter, and whose.
+func ReachReason(reason string) (adapter string, ok bool) { return Adapters().ReachReason(reason) }
+
+// ReachReason reports whether reason is a Reach reason one of r's adapters
+// declares, and whose.
+func (r Registry) ReachReason(reason string) (adapter string, ok bool) {
+	for _, name := range r.Names() {
+		if reason != "" && slices.Contains(r[name].ReachReasons(), reason) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// Evidence lists the shipped evidence of r's adapters, adapters in name
+// order and each adapter's rows in its own order.
+func (r Registry) Evidence() []Evidence {
+	var out []Evidence
+	for _, name := range r.Names() {
+		out = append(out, r[name].Evidence()...)
+	}
+	return out
 }
 
 // Names lists the registered adapters, sorted.

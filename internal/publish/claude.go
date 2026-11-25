@@ -185,3 +185,7 @@ func claudeSocketDirs() []string {
 	}
 	return dirs
 }
+
+func (claude) ReachReasons() []string { return nil }
+
+func (claude) Evidence() []Evidence { return claudeEvidence }

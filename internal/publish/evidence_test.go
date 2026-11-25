@@ -6,16 +6,13 @@ import (
 	"testing"
 )
 
-// Each adapter's rows sit beside it and name it; a build and capability
-// has at most one shipped row; every adapter with rows is registered.
-func TestShippedEvidenceSitsBesideItsAdapter(t *testing.T) {
+// Each adapter registers its own rows, which name it; a build and
+// capability has at most one shipped row.
+func TestShippedEvidenceIsRegisteredByItsAdapter(t *testing.T) {
 	type key struct{ vendor, version, platform, mode, rev, capability string }
 	seen := map[key]bool{}
-	for name, rows := range shippedEvidence {
-		if _, ok := Shipped().Lookup(name); !ok {
-			t.Errorf("evidence for unregistered adapter %q", name)
-		}
-		for _, r := range rows {
+	for name, a := range Shipped() {
+		for _, r := range a.Evidence() {
 			if r.Vendor != name {
 				t.Errorf("%s row names %q", name, r.Vendor)
 			}
@@ -35,9 +32,8 @@ func TestShippedEvidenceSitsBesideItsAdapter(t *testing.T) {
 	}
 }
 
-// Every shipped Reach reason is declared with its adapter, word for word,
-// so a stored reason keeps its class across releases (stored rows and
-// v0.2.0 binaries read the same strings).
+// Every shipped Reach reason is declared by its adapter word for word, so a
+// stored reason keeps its class across releases.
 func TestReachReasonsAreDeclaredWordForWord(t *testing.T) {
 	for reason, want := range map[string]string{
 		"codex runs without its daemon": "codex",
@@ -47,9 +43,8 @@ func TestReachReasonsAreDeclaredWordForWord(t *testing.T) {
 			t.Errorf("ReachReason(%q) = %q, %v", reason, got, ok)
 		}
 	}
-	for _, mode := range []string{ModeInProcess, "unverified", ""} {
-		for name := range Shipped() {
-			a, _ := Shipped().Lookup(name)
+	for _, mode := range []string{ModeInProcess, ModeDaemon, "unverified", ""} {
+		for name, a := range Shipped() {
 			if why := a.Reach(Route{ThreadID: "t", Mode: mode}); why != "" {
 				if owner, ok := ReachReason(why); !ok || owner != name {
 					t.Errorf("%s reach reason %q not declared for it", name, why)
@@ -57,7 +52,29 @@ func TestReachReasonsAreDeclaredWordForWord(t *testing.T) {
 			}
 		}
 	}
-	if _, ok := ReachReason("route not proven"); ok {
-		t.Error("a core reason read as a reach reason")
+	for _, reason := range []string{"route not proven", ""} {
+		if _, ok := ReachReason(reason); ok {
+			t.Errorf("%q read as a reach reason", reason)
+		}
+	}
+}
+
+// A new adapter needs no central edit: registering it is enough for its
+// reach reasons to be read as its own and its evidence to be seeded.
+func TestANewAdapterRegistersItsReachReasonsAndEvidence(t *testing.T) {
+	r := Shipped().With("fixture", fixture{})
+	if got, ok := r.ReachReason("fixture cannot reach it"); !ok || got != "fixture" {
+		t.Fatalf("fixture reach reason = %q, %v", got, ok)
+	}
+	if !slices.ContainsFunc(r.Evidence(), func(e Evidence) bool { return e.Vendor == "fixture" }) {
+		t.Fatal("fixture evidence not listed")
+	}
+	if _, ok := ReachReason("fixture cannot reach it"); ok {
+		t.Fatal("an unregistered adapter's reason was read before Swap")
+	}
+	restore := Swap(r)
+	defer restore()
+	if got, ok := ReachReason("fixture cannot reach it"); !ok || got != "fixture" {
+		t.Fatalf("after Swap: %q, %v", got, ok)
 	}
 }

@@ -11,18 +11,5 @@ type Evidence struct {
 	CheckedAtMS                                  int64
 }
 
-// shippedEvidence holds each adapter's rows, by adapter name.
-var shippedEvidence = map[string][]Evidence{
-	"claude": claudeEvidence,
-	"codex":  codexEvidence,
-}
-
-// ShippedEvidence lists every adapter's shipped rows, adapters in name
-// order and each adapter's rows in its own order.
-func ShippedEvidence() []Evidence {
-	var out []Evidence
-	for _, name := range Shipped().Names() {
-		out = append(out, shippedEvidence[name]...)
-	}
-	return out
-}
+// ShippedEvidence lists the evidence the shipped adapters register.
+func ShippedEvidence() []Evidence { return Shipped().Evidence() }

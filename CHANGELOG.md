@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The /tmp cleaner no longer turns hooks off at midnight:** macOS's daily `/tmp` cleaner removes a file once its access, change and modification times are all more than three days old, and reads after the first do not renew the access time. So it removed `policy`, `repo-defaults`, `turn_end` and `builds` about three days after the dispatcher wrote them, in use or not. Until it also removed `ready`, which makes the dispatcher republish everything, every hook was off for that moment. The dispatcher now renews the times of these files every hour, and republishes any of them that is removed anyway, with one log line (#378).
+
 ## v0.3.0 (2026-11-26)
 
 - **Release of v0.3.0-rc.2:** no product change since rc.2; one end-to-end test now waits for a prompt's receipt before the session's next prompt.

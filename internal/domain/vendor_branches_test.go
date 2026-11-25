@@ -42,23 +42,13 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 	}
 	found := make(map[string]int)
 	fset := token.NewFileSet()
-	// SQL text that names an adapter in quotes ('claude') decides by vendor
-	// in the store.
 	isSQLName := func(e ast.Expr) bool {
 		lit, ok := e.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return false
 		}
 		value, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			return false
-		}
-		for name := range names {
-			if strings.Contains(value, "'"+name+"'") {
-				return true
-			}
-		}
-		return false
+		return err == nil && sqlNamesAdapter(value, names)
 	}
 	for _, dir := range []string{".", "../wire", "../cli", "../hook", "../setup", "../telemetry", "../dispatch", "../publish", "../ident", "../store"} {
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
@@ -139,6 +129,33 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 	for _, key := range slices.Sorted(maps.Keys(vendorBranchesLeft)) {
 		if want := vendorBranchesLeft[key]; found[key] != want {
 			t.Errorf("%s: %d adapter-name decisions, allowed exactly %d; update vendorBranchesLeft", key, found[key], want)
+		}
+	}
+}
+
+// sqlNamesAdapter reports SQL text that names an adapter as a value: quoted
+// as a string ('claude'), or double-quoted ("claude"), which SQLite reads as
+// a string when no column has that name.
+func sqlNamesAdapter(sql string, names map[string]bool) bool {
+	for name := range names {
+		if strings.Contains(sql, "'"+name+"'") || strings.Contains(sql, `"`+name+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSQLNamingAnAdapterIsFound(t *testing.T) {
+	names := map[string]bool{"codex": true}
+	for sql, want := range map[string]bool{
+		"SELECT 1 FROM leaf WHERE vendor = 'codex'":    true,
+		`SELECT 1 FROM leaf WHERE vendor = "codex"`:    true,
+		"SELECT 1 FROM leaf WHERE vendor = ?":          false,
+		"SELECT 1 FROM leaf WHERE vendor = 'codexcli'": false,
+		`SELECT "codex_route" FROM leaf`:               false,
+	} {
+		if got := sqlNamesAdapter(sql, names); got != want {
+			t.Errorf("%s: %t, want %t", sql, got, want)
 		}
 	}
 }

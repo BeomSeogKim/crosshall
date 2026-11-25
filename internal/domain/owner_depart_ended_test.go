@@ -43,6 +43,8 @@ func TestOwnerDepartsEndedMembersThatOweNothing(t *testing.T) {
 	}
 	f.now = f.now.Add(2 * time.Minute)
 	wantOK(t, f.exec(f.caller(back), Request{Command: Status{}}))
+	// The writer joined by hand (no launch); a command keeps it off the list.
+	wantOK(t, f.exec(f.caller(writer), Request{Command: Status{}}))
 	f.now = f.now.Add(time.Minute)
 
 	ended := decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Ended
@@ -102,6 +104,7 @@ func TestDepartEndedKeepsEveryMemberWithOpenWorkOrRecentActivity(t *testing.T) {
 	wantOK(t, f.exec(f.caller(sameMS), Request{Command: Status{}}))
 
 	f.now = f.now.Add(endedDepartAfter)
+	wantOK(t, f.exec(f.caller(writer), Request{Command: Status{}}))
 	if got := decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Ended; len(got) != 0 {
 		t.Fatalf("listed at exactly 12 hours: %+v", got)
 	}
@@ -118,5 +121,41 @@ func TestDepartEndedKeepsEveryMemberWithOpenWorkOrRecentActivity(t *testing.T) {
 	out := decode[OwnerDepartEndedResult](t, f.owner(OwnerDepartEnded{}, "depart-ended"))
 	if len(out.Departed) != 1 || out.Departed[0].BindingID != idleBinding || len(out.Owing) != 2 {
 		t.Fatalf("depart --ended: %+v", out)
+	}
+}
+
+// A member whose session start never reached the hall has no launch and so
+// no route a session end could close (the old @agy in #dev). Once nothing,
+// not even a command, was seen from it for 12 hours, it is listed and
+// depart --ended departs it if it owes nothing; open requests keep it.
+func TestDepartEndedCoversAMemberWithoutASessionStart(t *testing.T) {
+	f, writer := adapterChannel(t)
+	silent := f.newSession("antigravity")
+	wantOK(t, f.join(silent, Join{Channel: "checkout", Alias: "silent"}, ""))
+	owing := f.newSession("antigravity")
+	wantOK(t, f.join(owing, Join{Channel: "checkout", Alias: "owing"}, ""))
+	ask := f.turnEndAsk(writer, "owing", "owed")
+	recent := f.newSession("antigravity")
+	wantOK(t, f.join(recent, Join{Channel: "checkout", Alias: "recent"}, ""))
+	joined := f.now.UnixMilli()
+
+	f.now = f.now.Add(endedDepartAfter)
+	wantOK(t, f.exec(f.caller(writer), Request{Command: Status{}}))
+	wantOK(t, f.exec(f.caller(recent), Request{Command: Status{}}))
+	if got := decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Ended; len(got) != 0 {
+		t.Fatalf("listed at exactly 12 hours: %+v", got)
+	}
+	f.now = f.now.Add(time.Millisecond)
+	ended := decode[OwnerWhoResult](t, f.owner(OwnerWho{}, "")).Ended
+	if len(ended) != 2 || ended[0].Alias != "owing" || !ended[0].NoStart || !slices.Equal(ended[0].OpenRequests, []int64{ask}) ||
+		ended[1].Alias != "silent" || !ended[1].NoStart || ended[1].EndedAtMS != joined || len(ended[1].OpenRequests) != 0 {
+		t.Fatalf("ended members %+v", ended)
+	}
+	r := decode[OwnerDepartEndedResult](t, f.owner(OwnerDepartEnded{}, "depart-ended"))
+	if len(r.Departed) != 1 || r.Departed[0].Alias != "silent" || len(r.Owing) != 1 || r.Owing[0].Alias != "owing" {
+		t.Fatalf("depart --ended: %+v", r)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM binding WHERE state = 'live'`); n != 3 {
+		t.Fatalf("%d live bindings, want writer, owing and recent", n)
 	}
 }

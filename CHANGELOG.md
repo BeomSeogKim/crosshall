@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **`owner depart --ended` covers a member whose session start never reached the hall:** such a member (for example a session joined by hand before its hooks were installed) has no session end to wait for, so it was never listed and the owner had to find its binding and token by hand. It is now listed in `owner who`, marked `(no session start recorded)`, once nothing, not even a command, was seen from it for 12 hours; `owner depart --ended` departs it if it has no open request.
 - **Codex managed-daemon notices on Linux amd64.** Crosshall ships publish evidence for Codex 0.172.0 with `codex-1`. A native Linux amd64 run verified request and reply delivery in both directions with Claude Code using scratch evidence, and suppression while a Codex server approval is open (#384).
 - **The release gate times a hook at 1,000 turns:** the hook-cost test adds a session of 1,000 turns and fails when its hook event costs more than 1.5 times the 250-turn one (since #382 they cost the same; folding the whole launch made it 2.2 times). The gate's hook-cost row compares the 1,000-turn median with the base's as it does the 500-turn one, and shows the candidate's alone while the base has no such sample (#366).
 

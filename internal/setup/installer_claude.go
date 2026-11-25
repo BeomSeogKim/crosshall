@@ -67,3 +67,5 @@ func (claudeInstaller) addInlineRules(target *installTarget, executable string) 
 func (claudeInstaller) optionalRules() []Entry {
 	return slices.Concat(claudeRules(false), claudeRules(true))
 }
+
+func (claudeInstaller) hasMemberRules() bool { return true }

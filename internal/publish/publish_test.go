@@ -88,8 +88,8 @@ func TestCodexReachesOnlyADaemonThread(t *testing.T) {
 	if address, why := sending.Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server, Home: "/h"}); address != "thread-1" || why != "" {
 		t.Errorf("daemon address = %q, %q", address, why)
 	}
-	if _, why := Shipped().Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server, Home: "/h"}); why != "no sender for codex" {
-		t.Errorf("shipped codex address reason = %q", why)
+	if address, why := Shipped().Address("codex", Route{ThreadID: "thread-1", Mode: ModeDaemon, Host: server, Home: "/h"}); address != "thread-1" || why != "" {
+		t.Errorf("shipped codex daemon address = %q, %q", address, why)
 	}
 }
 
@@ -114,9 +114,6 @@ func TestCodexNoticeEchoesItsIDs(t *testing.T) {
 		if _, ok := codex.Echo(prompt); ok {
 			t.Errorf("codex echoed %q", prompt)
 		}
-	}
-	if Shipped().Sends("codex") {
-		t.Error("codex sends without a transport")
 	}
 }
 
@@ -145,15 +142,21 @@ func TestClaudeRecognizesOnlyItsOwnNotice(t *testing.T) {
 	}
 }
 
-func TestOnlyClaudeSendsInTheShippedBuild(t *testing.T) {
-	if got := Shipped().Senders(); !slices.Equal(got, []string{"claude"}) {
+// Both shipped adapters send. A Codex route still reaches only a named
+// managed server, and a Codex queue is never retired by its server's exit:
+// the queued notice survives in the home (C10).
+func TestClaudeAndCodexSendInTheShippedBuild(t *testing.T) {
+	if got := Shipped().Senders(); !slices.Equal(got, []string{"claude", "codex"}) {
 		t.Fatalf("shipped senders %v", got)
 	}
-	if _, why := Shipped().Address("codex", Route{ThreadID: "t"}); why != "no sender for codex" {
-		t.Fatalf("codex route: %q", why)
+	if _, why := Shipped().Address("codex", Route{ThreadID: "t"}); why != CodexDaemonUnverified {
+		t.Fatalf("codex route without a mode: %q", why)
 	}
 	if tr := Shipped()["claude"].Transport(); tr.Prove == nil || tr.Retired == nil {
 		t.Fatal("the Claude sender cannot prove or retire its queue")
+	}
+	if tr := Shipped()["codex"].Transport(); tr.Prove == nil || tr.Send == nil || tr.Retired != nil {
+		t.Fatal("the Codex sender must prove and send, and must not retire on its server's exit")
 	}
 }
 
@@ -176,7 +179,7 @@ func (f fixture) Transport() Transport              { return f.transport }
 
 func TestTheRegistryAnswersFromOneAdapterAtATime(t *testing.T) {
 	send := func(context.Context, Target, string) Outcome { return Submitted }
-	r := Shipped().WithTransport("claude", Transport{}).With("fixture", fixture{Transport{Send: send}})
+	r := Shipped().WithTransport("claude", Transport{}).WithTransport("codex", Transport{}).With("fixture", fixture{Transport{Send: send}})
 	if got := r.Senders(); !slices.Equal(got, []string{"fixture"}) {
 		t.Fatalf("senders %v: one adapter's sender must not count for another", got)
 	}
@@ -230,11 +233,11 @@ func TestThePublishCoreNamesNoVendor(t *testing.T) {
 
 // The Codex transport proves the server a session's start named: the same
 // process, run as the managed server from the release tree of the home
-// setup installed the hooks into. It has no sender yet.
+// setup installed the hooks into.
 func TestCodexProvesTheServerItsStartNamed(t *testing.T) {
 	tr := Shipped()["codex"].Transport()
-	if tr.Prove == nil || tr.Send != nil {
-		t.Fatal("the Codex transport must prove and must not send")
+	if tr.Prove == nil {
+		t.Fatal("the Codex transport must prove")
 	}
 	// The stand-in server is this test binary, which waits in
 	// TestCodexServerStandIn when the environment asks it to.

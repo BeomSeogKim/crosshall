@@ -33,6 +33,13 @@ type Target struct {
 	Adapter string
 	Address string
 	Queue   Queue
+	// Home is the vendor's configuration home setup installed the hooks
+	// into (as Probe.InstalledHome), never a path a hook reported; empty
+	// when none is recorded.
+	Home string
+	// Attempt is the attempt's stable identity, unique across the store's
+	// life: a transport may tag the notice with it to find it again.
+	Attempt string
 }
 
 // Outcome is what a transport reports for one notice.
@@ -60,7 +67,44 @@ type Transport struct {
 	Send func(context.Context, Target, string) Outcome
 	// Retired requires proof the queue is gone.
 	Retired func(context.Context, Queue) bool
+	// Withdraw, for a transport whose queue outlives its process, takes a
+	// submitted notice back before it runs. The target names the notice's
+	// thread, home and attempt; its Queue is the server it was written to,
+	// which may be gone: the transport proves whichever server now holds
+	// the home. Nil means notices are never withdrawn.
+	Withdraw func(context.Context, Target) Withdrawal
+	// ConfirmApproval, for an adapter whose approval fact may be a request
+	// the vendor approves on its own, asks the vendor whether the target's
+	// thread now waits on its owner's approval. It runs in the publisher
+	// only, never in a hook. Nil means the hook fact is all there is.
+	ConfirmApproval func(context.Context, Target) Approval
 }
+
+// Approval is what a vendor says about a pending approval.
+type Approval string
+
+const (
+	// ApprovalShown: the thread waits on its owner's approval.
+	ApprovalShown Approval = "shown"
+	// ApprovalAbsent: it does not; the request was answered or approved
+	// by the vendor itself.
+	ApprovalAbsent Approval = "absent"
+	// ApprovalUnknown: no proven server answered.
+	ApprovalUnknown Approval = "unknown"
+)
+
+// Withdrawal is what a transport reports for one withdrawal. Only Deleted
+// settles the notice; the others leave it to its receipt.
+type Withdrawal string
+
+const (
+	// Deleted: the notice was pending and is gone; it will not run.
+	Deleted Withdrawal = "deleted"
+	// NotPending: no such pending notice; it ran, or may still run.
+	NotPending Withdrawal = "not_pending"
+	// Unreachable: no proven server answered; nothing is known.
+	Unreachable Withdrawal = "unreachable"
+)
 
 // Probe is what a transport proves: the resolved target (its Queue is not
 // known yet), the registered route, and the launch expected to own it.

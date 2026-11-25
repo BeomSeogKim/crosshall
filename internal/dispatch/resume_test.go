@@ -29,7 +29,7 @@ func TestPublisherResumesOwedWorkOncePerStart(t *testing.T) {
 	p, calls := f.publisher(t, nil)
 	tickPublisher(t, p, f.now, true)
 	p.workers.Wait()
-	if call := awaitPublishTest(t, calls); call.line != claudeResume(10) || call.target != publishTestTarget {
+	if call := awaitPublishTest(t, calls); call.line != claudeResume(10) || !sameTarget(call.target, publishTestTarget) {
 		t.Fatalf("published %q to %+v, want the resume notice of 10", call.line, call.target)
 	}
 	f.requireAttempt(t, 1, domain.PublishSubmitted)

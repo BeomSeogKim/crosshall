@@ -62,7 +62,9 @@ func TestCodexRouteFollowsTheModeOfEachStart(t *testing.T) {
 	if sess != s.key || launch != SessionLaunch || mode != publish.ModeDaemon || state != "active" {
 		t.Fatalf("daemon start: session %q launch %q mode %q state %q", sess, launch, mode, state)
 	}
-	if got, why := reason(bid); got != "candidate" || why != "no sender for codex" {
+	// Codex sends now; without tested evidence for the build the route
+	// stays a candidate.
+	if got, why := reason(bid); got != "candidate" || why != "no tested evidence for codex-1 on darwin-arm64 daemon" {
 		t.Fatalf("daemon start reads %s (%s)", got, why)
 	}
 
@@ -75,7 +77,7 @@ func TestCodexRouteFollowsTheModeOfEachStart(t *testing.T) {
 	for i, tc := range []struct{ mode, reason string }{
 		{publish.ModeInProcess, publish.CodexNoDaemon},
 		{"unverified", publish.CodexDaemonUnverified},
-		{publish.ModeDaemon, "no sender for codex"},
+		{publish.ModeDaemon, "no tested evidence for codex-1 on darwin-arm64 daemon"},
 	} {
 		at := t0 + int64(2_000*(i+1))
 		f.hook(s, codexStart("resume", tc.mode, at))

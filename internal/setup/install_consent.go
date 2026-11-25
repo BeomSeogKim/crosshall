@@ -21,47 +21,60 @@ import (
 const installConsentHeading = "Saying yes turns these on for the listed agents:"
 
 type installDisclosure struct {
-	store.InstallConsent
-	known, evidenced, prompt, unknownBuild bool
-	// sharedStop names the CLIs whose shared hooks file holds another
-	// group's Stop hooks.
+	known, inspectFailed, autoJoinOff, prompt bool
+	adapters                                  []installAdapterDisclosure
+	// sharedStop names the CLIs whose shared hooks file holds Stop hooks of
+	// a group that runs after crosshall's.
 	sharedStop []string
 }
 
+type installAdapterDisclosure struct {
+	store.InstallConsent
+	adapter, name, publishMode   string
+	unknownBuild, turnEndShipped bool
+}
+
 func (s Service) attachInstallDisclosure(ctx context.Context, targets []installTarget) {
-	var profile wire.HookProfile
-	for i, target := range targets {
-		// Notices and the turn-end check are disclosed for an adapter with
-		// built-in capability evidence, read for its build.
-		evidenced := slices.ContainsFunc(domain.BuiltinCapabilityEvidence, func(e domain.BuiltinEvidence) bool {
-			return e.Vendor == target.Spec.Adapter
-		})
-		targets[i].disclosure.evidenced = evidenced
-		targets[i].disclosure.prompt = hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)
-		if sharesStop(target) {
-			targets[i].disclosure.sharedStop = []string{ident.Identity{Vendor: target.Spec.Adapter}.CLIName()}
-		}
-		if evidenced {
-			b := target.Build
-			profile = wire.HookProfile{Adapter: target.Spec.Adapter, VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision}
-			if b.Version == "" || b.Version == unknown {
-				profile.VendorVersion = "unverified"
-				targets[i].disclosure.unknownBuild = true
-			}
-		}
-	}
 	var files fs.FS
-	state, err := spool.OpenServerRoot(s.StateRoot)
-	if err == nil {
+	state, openErr := spool.OpenServerRoot(s.StateRoot)
+	if openErr == nil {
 		defer state.Close()
 		files = spool.ServerFiles{Root: state}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return
 	}
-	consent, err := store.InspectInstallConsent(ctx, files, profile, domain.BuiltinCapabilityEvidence)
-	for i := range targets {
-		targets[i].disclosure.InstallConsent = consent
-		targets[i].disclosure.known = err == nil
+	for i, target := range targets {
+		d := &targets[i].disclosure
+		*d = installDisclosure{prompt: hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)}
+		if sharesStop(target) {
+			d.sharedStop = []string{manifests.DisplayName(target.Spec.Adapter)}
+		}
+		if openErr != nil && !errors.Is(openErr, fs.ErrNotExist) {
+			d.inspectFailed = true
+			continue
+		}
+		adapter := installAdapterDisclosure{adapter: target.Spec.Adapter, name: manifests.DisplayName(target.Spec.Adapter)}
+		for _, row := range domain.BuiltinCapabilityEvidence {
+			if row.Vendor != adapter.adapter {
+				continue
+			}
+			switch row.Capability {
+			case "publish":
+				adapter.publishMode = row.Mode
+			case "turn_end":
+				adapter.turnEndShipped = true
+			}
+		}
+		b := target.Build
+		profile := wire.HookProfile{Adapter: adapter.adapter, VendorVersion: b.Version, Platform: b.Platform, ManifestRev: b.Revision, Mode: adapter.publishMode}
+		if b.Version == "" || b.Version == unknown {
+			adapter.unknownBuild = true
+			profile.VendorVersion = "unverified"
+		}
+		consent, err := store.InspectInstallConsent(ctx, files, profile, domain.BuiltinCapabilityEvidence)
+		d.known, d.inspectFailed, d.autoJoinOff = err == nil, err != nil, consent.AutoJoinOff
+		if err == nil && (adapter.publishMode != "" || adapter.turnEndShipped) {
+			adapter.InstallConsent = consent
+			d.adapters = append(d.adapters, adapter)
+		}
 	}
 }
 
@@ -74,12 +87,13 @@ func groupInstallDisclosure(plans []VendorPlan) installDisclosure {
 }
 
 func (d *installDisclosure) include(other installDisclosure) {
-	prompt := d.prompt || other.prompt
-	shared := append(slices.Clone(d.sharedStop), other.sharedStop...)
-	if other.evidenced || !d.evidenced && !d.known {
-		*d = other
+	d.prompt = d.prompt || other.prompt
+	d.inspectFailed = d.inspectFailed || other.inspectFailed
+	if other.known {
+		d.known, d.autoJoinOff = true, other.autoJoinOff
 	}
-	d.prompt, d.sharedStop = prompt, shared
+	d.adapters = append(d.adapters, other.adapters...)
+	d.sharedStop = append(d.sharedStop, other.sharedStop...)
 }
 
 // sharesStop reports whether crosshall installs a Stop hook into a hooks
@@ -87,107 +101,23 @@ func (d *installDisclosure) include(other installDisclosure) {
 // Antigravity runs groups in name order and no later Stop hook once one
 // continues the turn (#328), so such a group can miss a Stop.
 func sharesStop(target installTarget) bool {
-	if installerFor(target.Spec.Adapter).hookGroup() == "" || !slices.Contains(target.Spec.Events, "Stop") {
+	group := installerFor(target.Spec.Adapter).hookGroup()
+	if group == "" || !slices.Contains(target.Spec.Events, "Stop") {
 		return false
 	}
 	doc, err := parseConfigJSON(target.Current.Bytes)
 	if err != nil || doc == nil {
 		return false
 	}
-	for _, group := range doc.fields {
-		if group.key <= installerFor(target.Spec.Adapter).hookGroup() {
+	for _, other := range doc.fields {
+		if other.key <= group {
 			continue
 		}
-		if stop := group.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {
+		if stop := other.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {
 			return true
 		}
 	}
 	return false
-}
-
-func (d installDisclosure) write(out io.Writer) error {
-	var text strings.Builder
-	fmt.Fprintln(&text, installConsentHeading)
-	switch {
-	case !d.known:
-		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off).")
-	case d.AutoJoinOff:
-		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. You turned automatic joining off, so a repository without a channel gets none. On: crosshall owner channel auto on")
-	default:
-		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.")
-	}
-	if d.prompt {
-		fmt.Fprintln(&text, "- Prompt line ("+strings.Join(promptLineAgents(), ", ")+"). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
-	}
-	pickup := "its next crosshall read."
-	if d.prompt {
-		pickup = "its next prompt or " + pickup
-	}
-	switch {
-	case !d.known:
-		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
-	case !d.evidenced || !d.unknownBuild && !d.PublishCovered && !d.PublishStopped && !d.TurnEndInteractive && !d.TurnEndPrint:
-		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup)
-	default:
-		fmt.Fprintln(&text, d.notices(pickup))
-		fmt.Fprintln(&text, d.turnEnd())
-	}
-	if len(d.sharedStop) > 0 {
-		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
-	}
-	_, err := io.WriteString(out, text.String())
-	return err
-}
-
-func (d installDisclosure) notices(pickup string) string {
-	const prefix = "- Notices (Claude Code, interactive sessions). "
-	switch {
-	case d.PublishStopped:
-		return prefix + "Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."
-	case !d.PublishCovered && !d.unknownBuild:
-		return "- Notices. Not available for these builds: a session sees new work at " + pickup
-	case d.PublishSwitch == "hall_off":
-		return prefix + "Off by your setting; installing does not change it. On: crosshall owner publish hall on"
-	case d.PublishSwitch == "adapter_off":
-		return prefix + "Off by your setting for Claude Code; installing does not change it. On: crosshall owner adapter set claude --publish on"
-	}
-	off := "crosshall owner publish hall off"
-	if d.PublishSwitch == "adapter_on" {
-		off = "crosshall owner adapter set claude --publish off"
-	}
-	if d.unknownBuild {
-		return prefix + "crosshall could not read this Claude Code's version, so it cannot say here whether notices are available for it. If they are, the hall starts a turn in an idle session when work arrives, and each notice costs that session one model turn. Off: " + off
-	}
-	line := prefix + "When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: " + off
-	if d.PublishProbation {
-		line += " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
-	}
-	return line
-}
-
-func (d installDisclosure) turnEnd() string {
-	const off = "Off: crosshall owner adapter set claude --turn-end off"
-	covered := d.unknownBuild || d.TurnEndInteractive || d.TurnEndPrint
-	if covered && d.TurnEndSwitch == "off" {
-		// The owner's switch does not depend on the build; an uncovered
-		// build stays "not available" whatever the switch says.
-		return "- Turn-end check (Claude Code). Off by your setting; installing does not change it. On: crosshall owner adapter set claude --turn-end on"
-	}
-	if d.unknownBuild {
-		return "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. " + off
-	}
-	var mode string
-	switch {
-	case d.TurnEndInteractive && d.TurnEndPrint:
-		mode = "interactive sessions and print mode"
-	case d.TurnEndInteractive:
-		mode = "interactive sessions"
-	case d.TurnEndPrint:
-		mode = "print mode"
-	default:
-		return "- Turn-end check. Not available for these builds."
-	}
-	return "- Turn-end check (Claude Code, " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
 }
 
 // promptLineAgents names, in setup order, the agents whose hooks show the
@@ -200,4 +130,113 @@ func promptLineAgents() []string {
 		}
 	}
 	return names
+}
+
+func (d installDisclosure) write(out io.Writer) error {
+	var text strings.Builder
+	known := d.known && !d.inspectFailed
+	fmt.Fprintln(&text, installConsentHeading)
+	switch {
+	case !known:
+		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off).")
+	case d.autoJoinOff:
+		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. You turned automatic joining off, so a repository without a channel gets none. On: crosshall owner channel auto on")
+	default:
+		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.")
+	}
+	if d.prompt {
+		fmt.Fprintln(&text, "- Prompt line ("+strings.Join(promptLineAgents(), ", ")+"). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
+	}
+	pickup := "its next crosshall read."
+	if d.prompt {
+		pickup = "its next prompt or " + pickup
+	}
+	if !known {
+		fmt.Fprintln(&text, "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it.")
+	} else if !d.writeAdapterEffects(&text, pickup) {
+		fmt.Fprintln(&text, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup)
+	}
+	if len(d.sharedStop) > 0 {
+		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
+	}
+	_, err := io.WriteString(out, text.String())
+	return err
+}
+
+func (d installDisclosure) writeAdapterEffects(text *strings.Builder, pickup string) bool {
+	wrote := false
+	for _, adapter := range d.adapters {
+		notices := adapter.publishMode != ""
+		turnEnd := adapter.TurnEndInteractive || adapter.TurnEndPrint || adapter.turnEndShipped && adapter.unknownBuild
+		if !turnEnd && !(notices && (adapter.unknownBuild || adapter.PublishCovered || adapter.PublishStopped)) {
+			continue
+		}
+		if notices {
+			fmt.Fprintln(text, adapter.notices(pickup))
+		}
+		if turnEnd || adapter.turnEndShipped {
+			fmt.Fprintln(text, adapter.turnEnd())
+		}
+		wrote = true
+	}
+	return wrote
+}
+
+func (d installAdapterDisclosure) notices(pickup string) string {
+	mode := d.publishMode
+	switch mode {
+	case "interactive":
+		mode = "interactive sessions"
+	case "daemon":
+		mode = "managed daemon sessions"
+	}
+	prefix := "- Notices (" + d.name + ", " + mode + "). "
+	switch {
+	case d.PublishStopped:
+		return prefix + "Stopped for this version after a notice went wrong. crosshall owner who --all shows how to resume."
+	case !d.PublishCovered && !d.unknownBuild:
+		return prefix + "Not available for this build. A session sees new work at " + pickup
+	case d.PublishSwitch == "hall_off":
+		return prefix + "Off by your setting; installing does not change it. On: crosshall owner publish hall on"
+	case d.PublishSwitch == "adapter_off":
+		return prefix + "Off by your setting for " + d.name + "; installing does not change it. On: crosshall owner adapter set " + d.adapter + " --publish on"
+	}
+	off := "crosshall owner publish hall off"
+	if d.PublishSwitch == "adapter_on" {
+		off = "crosshall owner adapter set " + d.adapter + " --publish off"
+	}
+	if d.unknownBuild {
+		return prefix + "crosshall could not read this " + d.name + "'s version, so it cannot say here whether notices are available for it. If they are, the hall starts a turn in an idle session when work arrives, and each notice costs that session one model turn. Off: " + off
+	}
+	line := prefix + "When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: " + off
+	if d.PublishProbation {
+		line += " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
+	}
+	return line
+}
+
+func (d installAdapterDisclosure) turnEnd() string {
+	prefix := "- Turn-end check (" + d.name
+	off := "Off: crosshall owner adapter set " + d.adapter + " --turn-end off"
+	covered := d.unknownBuild && d.turnEndShipped || d.TurnEndInteractive || d.TurnEndPrint
+	if covered && d.TurnEndSwitch == "off" {
+		// The owner's switch does not depend on the build; an uncovered
+		// build stays "not available" whatever the switch says.
+		return prefix + "). Off by your setting; installing does not change it. On: crosshall owner adapter set " + d.adapter + " --turn-end on"
+	}
+	if d.unknownBuild && d.turnEndShipped {
+		return prefix + "). crosshall could not read this " + d.name + "'s version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. " + off
+	}
+	var mode string
+	switch {
+	case d.TurnEndInteractive && d.TurnEndPrint:
+		mode = "interactive sessions and print mode"
+	case d.TurnEndInteractive:
+		mode = "interactive sessions"
+	case d.TurnEndPrint:
+		mode = "print mode"
+	default:
+		return prefix + "). Not available for this build."
+	}
+	return prefix + ", " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
 }

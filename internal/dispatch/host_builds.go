@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -122,21 +123,26 @@ func (s *server) hostBuildTick(ctx context.Context, now time.Time) {
 		defer s.builds.workers.Done()
 		defer s.builds.running.Store(false)
 		refreshed := readRefreshedBuilds(s.state)
+		changed := false
 		for _, adapter := range stale {
 			recorded, ok := recordedHostBuild(s.cfg.StateRoot, adapter)
 			if !ok {
 				continue
 			}
 			if b, ok := setup.Reprobe(ctx, adapter, recorded, hostBuildProbe); ok {
-				refreshed[adapter] = b
+				refreshed[adapter], changed = b, true
 			}
+		}
+		if !changed {
+			return
 		}
 		data, err := json.Marshal(refreshed)
 		if err == nil {
 			err = publishAdapterText(s.state, hostBuildsRefreshed, string(data))
 		}
+		// The main loop owns s.logFailure's state; this worker logs alone.
 		if err != nil && !errors.Is(err, context.Canceled) {
-			s.logFailure(err)
+			log.Printf("dispatcher: refresh host builds: %v", err)
 		}
 	}()
 }

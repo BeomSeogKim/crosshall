@@ -42,10 +42,39 @@ func (p *nativeCrossVendorPeer) sawTurn(t *testing.T, id string) {
 }
 
 func TestCrossVendorNativeRoundTrip(t *testing.T) {
+	f := newNativeCrossVendorFixture(t, "")
+	for _, direction := range []struct {
+		name            string
+		asker, answerer *nativeCrossVendorPeer
+	}{
+		{"claude_to_codex_notice", f.claudePeer, f.codexPeer},
+		{"codex_to_claude_notice", f.codexPeer, f.claudePeer},
+	} {
+		if !t.Run(direction.name, func(t *testing.T) {
+			runNativeCrossVendorRoundTrip(t, f.db, f.commands, direction.asker, direction.answerer)
+		}) {
+			return
+		}
+	}
+}
+
+type nativeCrossVendorFixture struct {
+	db                    *sql.DB
+	codex                 *nativeCodexSession
+	claudePeer, codexPeer *nativeCrossVendorPeer
+	commands              crossVendorCommands
+	codexEvidenceSource   string
+}
+
+func newNativeCrossVendorFixture(t *testing.T, codexVersion string) *nativeCrossVendorFixture {
+	t.Helper()
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		t.Skip("native cross-vendor conformance currently requires macOS arm64")
 	}
 	pkg := nativeCodexPackage(t)
+	if codexVersion != "" && pkg.Version != codexVersion {
+		t.Fatalf("publish trial needs Codex %s, found %s", codexVersion, pkg.Version)
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skipf("native cross-vendor conformance needs Claude Code on PATH: %v", err)
 	}
@@ -76,15 +105,15 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 	reserved, err := os.Lstat(ident.Rendezvous(state, os.Geteuid()))
 	codexMust(t, err)
 	startCodexDispatcherWithRendezvous(t, exe, state, env, reserved)
-	owner := func(args ...string) {
+	owner := func(t *testing.T, args ...string) {
 		t.Helper()
 		codexMust(t, codexCLI(exe, env, append([]string{"owner"}, args...)...))
 	}
-	owner("channel", "create", crossVendorChannel)
-	owner("channel", "create", "lobby")
-	owner("channel", "default", "lobby", "--repo", repo)
-	owner("publish", "hall", "off")
-	owner("adapter", "set", "claude", "--enabled", "on")
+	owner(t, "channel", "create", crossVendorChannel)
+	owner(t, "channel", "create", "lobby")
+	owner(t, "channel", "default", "lobby", "--repo", repo)
+	owner(t, "publish", "hall", "off")
+	owner(t, "adapter", "set", "claude", "--enabled", "on")
 
 	claude := newNativeClaude(t, root, repo, exe, env, entry, server)
 	codex := newNativeCodex(t, pkg, root, repo, exe, env, entry, server.URL)
@@ -97,9 +126,11 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 		version: codex.version, mode: "daemon", turn: codex.turn, armAwait: codex.armAwait,
 	}
 	commands := crossVendorCommands{exe}
+	db := openCodexLedger(t, state)
+	codexEvidenceSource := "owner"
 	for _, peer := range []*nativeCrossVendorPeer{claudePeer, codexPeer} {
 		vendor := peer.member.model.vendor
-		owner("adapter", "set", vendor, "--turn-end", "off")
+		owner(t, "adapter", "set", vendor, "--turn-end", "off")
 		peer.member.model.begin("", []crossVendorStep{
 			commands.command("join "+crossVendorChannel+" --move --as "+vendor, "Joined #"+crossVendorChannel+" as @"+vendor),
 		})
@@ -108,52 +139,54 @@ func TestCrossVendorNativeRoundTrip(t *testing.T) {
 		peer.member.model.begin("", nil)
 		peer.sawTurn(t, peer.turn(t, "Finish the fixture setup."))
 		peer.member.model.verify(t)
+		var builtin bool
+		codexMust(t, db.QueryRowContext(t.Context(), `SELECT EXISTS (SELECT 1 FROM capability_evidence
+			WHERE vendor = ? AND vendor_version = ? AND platform = ? AND mode = ? AND manifest_rev = ?
+			AND cap = 'publish' AND level = 'tested' AND source = 'builtin')`, vendor, peer.version,
+			runtime.GOOS+"-"+runtime.GOARCH, peer.mode, nativeFixtureManifestRevision(t, vendor)).Scan(&builtin))
+		if builtin {
+			if peer == codexPeer {
+				codexEvidenceSource = "builtin"
+			}
+			continue
+		}
 		file := filepath.Join(root, vendor+"-fixture-publish.json")
 		writeNativeFixtureEvidence(t, peer, file)
-		owner("adapter", "evidence", file)
+		owner(t, "adapter", "evidence", file)
 	}
 
-	owner("publish", "hall", "on")
-	db := openCodexLedger(t, state)
+	owner(t, "publish", "hall", "on")
 	for _, peer := range []*nativeCrossVendorPeer{codexPeer, claudePeer} {
 		awaitCrossVendorNativeRoute(t, db, peer.member)
 	}
 
-	for _, direction := range []struct {
-		name            string
-		asker, answerer *nativeCrossVendorPeer
-	}{
-		{"claude_to_codex_notice", claudePeer, codexPeer},
-		{"codex_to_claude_notice", codexPeer, claudePeer},
-	} {
-		if !t.Run(direction.name, func(t *testing.T) {
-			runNativeCrossVendorRoundTrip(t, db, commands, direction.asker, direction.answerer)
-		}) {
-			return
-		}
+	return &nativeCrossVendorFixture{
+		db: db, codex: codex, claudePeer: claudePeer, codexPeer: codexPeer, commands: commands,
+		codexEvidenceSource: codexEvidenceSource,
 	}
 }
 
 func writeNativeFixtureEvidence(t *testing.T, peer *nativeCrossVendorPeer, file string) {
 	t.Helper()
 	vendor := peer.member.model.vendor
-	var revision string
-	for _, spec := range hook.InstallSpecs() {
-		if spec.Adapter == vendor {
-			revision = spec.Revision
-			break
-		}
-	}
-	if revision == "" {
-		t.Fatalf("no hook manifest for %s", vendor)
-	}
 	raw, err := json.Marshal(map[string]any{
-		"vendor": vendor, "vendor_version": peer.version, "mode": peer.mode, "manifest_rev": revision,
+		"vendor": vendor, "vendor_version": peer.version, "mode": peer.mode, "manifest_rev": nativeFixtureManifestRevision(t, vendor),
 		"platform": runtime.GOOS + "-" + runtime.GOARCH, "run_at_ms": time.Now().UnixMilli(),
 		"results": []evidenceResult{{"publish", "tested", "scratch hall only: exercise the native sender"}},
 	})
 	codexMust(t, err)
 	codexPut(t, file, raw)
+}
+
+func nativeFixtureManifestRevision(t *testing.T, vendor string) string {
+	t.Helper()
+	for _, spec := range hook.InstallSpecs() {
+		if spec.Adapter == vendor {
+			return spec.Revision
+		}
+	}
+	t.Fatalf("no hook manifest for %s", vendor)
+	return ""
 }
 
 func awaitCrossVendorNativeRoute(t *testing.T, db *sql.DB, member *crossVendorSession) {
@@ -188,7 +221,7 @@ func awaitCrossVendorNativeRoute(t *testing.T, db *sql.DB, member *crossVendorSe
 	}
 }
 
-func runNativeCrossVendorRoundTrip(t *testing.T, db *sql.DB, commands crossVendorCommands, asker, answerer *nativeCrossVendorPeer) {
+func runNativeCrossVendorRoundTrip(t *testing.T, db *sql.DB, commands crossVendorCommands, asker, answerer *nativeCrossVendorPeer) int64 {
 	t.Helper()
 	from, to := asker.member.model.vendor, answerer.member.model.vendor
 	request := from + " native cross-vendor request payload"
@@ -239,6 +272,7 @@ func runNativeCrossVendorRoundTrip(t *testing.T, db *sql.DB, commands crossVendo
 	assertCrossVendorNativeDelivery(t, db, answerer.member, askID)
 	assertCrossVendorNativeDelivery(t, db, asker.member, replyID)
 	assertCrossVendorSettlement(t, db, asker.member, answerer.member, askID, request, answer)
+	return askID
 }
 
 func nativeCrossVendorNotice(vendor string, messageID func(context.Context) (int64, error)) func(context.Context, []byte) (string, error) {

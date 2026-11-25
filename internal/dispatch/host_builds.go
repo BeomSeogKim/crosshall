@@ -27,6 +27,9 @@ const (
 	hostBuildProbe = 2 * time.Second
 )
 
+// recordedHostBuild is setup.RecordedBuild; tests replace it.
+var recordedHostBuild = setup.RecordedBuild
+
 type hostBuilds struct {
 	running   atomic.Bool
 	workers   sync.WaitGroup
@@ -58,7 +61,7 @@ func readRefreshedBuilds(state *os.Root) map[string]setup.HostBuild {
 // recorded: a refresh of that same path, else setup's record. current
 // reports that the file is still that build.
 func effectiveHostBuild(stateRoot string, state *os.Root, adapter string) (b setup.HostBuild, recorded, current bool) {
-	b, recorded = setup.RecordedBuild(stateRoot, adapter)
+	b, recorded = recordedHostBuild(stateRoot, adapter)
 	if !recorded {
 		return b, false, false
 	}
@@ -120,7 +123,7 @@ func (s *server) hostBuildTick(ctx context.Context, now time.Time) {
 		defer s.builds.running.Store(false)
 		refreshed := readRefreshedBuilds(s.state)
 		for _, adapter := range stale {
-			recorded, ok := setup.RecordedBuild(s.cfg.StateRoot, adapter)
+			recorded, ok := recordedHostBuild(s.cfg.StateRoot, adapter)
 			if !ok {
 				continue
 			}

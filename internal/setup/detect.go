@@ -55,6 +55,10 @@ func currentBuild(spec hook.InstallSpec) (build, error) {
 }
 
 func detectVersion(ctx context.Context, spec hook.InstallSpec, b build) string {
+	return probeVersion(ctx, spec.HomeEnv, b.Executable, time.Second)
+}
+
+func probeVersion(ctx context.Context, homeEnv, executable string, timeout time.Duration) string {
 	// A version command may initialize caches. Keep its writable directories
 	// out of the selected home even when the caller's TMPDIR points there.
 	scratch, err := os.MkdirTemp("/tmp", "crosshall-version-")
@@ -66,13 +70,13 @@ func detectVersion(ctx context.Context, spec hook.InstallSpec, b build) string {
 	if err := os.Mkdir(config, 0700); err != nil {
 		return unknown
 	}
-	probe, cancel := context.WithTimeout(ctx, time.Second)
+	probe, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(probe, b.Executable, "--version")
+	cmd := exec.CommandContext(probe, executable, "--version")
 	cmd.Dir = scratch
 	cmd.Env = []string{"HOME=" + scratch, "TMPDIR=" + scratch, "PATH=" + os.Getenv("PATH")}
-	if spec.HomeEnv != "" {
-		cmd.Env = append(cmd.Env, spec.HomeEnv+"="+config)
+	if homeEnv != "" {
+		cmd.Env = append(cmd.Env, homeEnv+"="+config)
 	}
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 100 * time.Millisecond

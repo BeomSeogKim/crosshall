@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -235,12 +236,8 @@ func findConfigSlot(doc *configNode, entry Entry) (container *configNode, missin
 	if doc.kind != '{' {
 		return nil, nil, errInvalidConfig
 	}
-	section, key := "hooks", entry.Event
-	if entry.AutoMode {
-		section, key = "autoMode", "allow"
-	} else if entry.Event == "" {
-		section, key = "permissions", "allow"
-	}
+	slot := slotPath(entry)
+	section, key := slot[0], slot[1]
 	object := doc.field(section)
 	if object == nil {
 		return doc, []string{section, key}, nil
@@ -256,6 +253,91 @@ func findConfigSlot(doc *configNode, entry Entry) (container *configNode, missin
 		return nil, nil, errInvalidConfig
 	}
 	return list, nil, nil
+}
+
+// slotPath names the object and the list that hold an entry.
+func slotPath(entry Entry) []string {
+	switch {
+	case entry.AutoMode:
+		return []string{"autoMode", "allow"}
+	case entry.Event == "":
+		return []string{"permissions", "allow"}
+	}
+	return []string{"hooks", entry.Event}
+}
+
+// createdSlots lists the objects and lists holding the entries that exist
+// after an edit but not before it: setup created them for its entries.
+func createdSlots(before, after []byte, entries []Entry) ([][]string, error) {
+	was, err := configDocument(before)
+	if err != nil {
+		return nil, err
+	}
+	now, err := configDocument(after)
+	if err != nil {
+		return nil, err
+	}
+	var created [][]string
+	for _, entry := range entries {
+		if entry.Group != "" {
+			continue
+		}
+		path := slotPath(entry)
+		for n := 1; n <= len(path); n++ {
+			if configAt(now, path[:n]) != nil && configAt(was, path[:n]) == nil {
+				created = appendSlots(created, [][]string{path[:n]})
+			}
+		}
+	}
+	return created, nil
+}
+
+func appendSlots(slots, more [][]string) [][]string {
+	for _, slot := range more {
+		if !slices.ContainsFunc(slots, func(s []string) bool { return slices.Equal(s, slot) }) {
+			slots = append(slots, slices.Clone(slot))
+		}
+	}
+	return slots
+}
+
+func configAt(doc *configNode, path []string) *configNode {
+	for _, key := range path {
+		if doc == nil || doc.kind != '{' {
+			return nil
+		}
+		doc = doc.field(key)
+	}
+	return doc
+}
+
+// pruneSlots removes each listed object or list that is empty, deepest
+// first, so an object emptied by removing its last list goes too.
+func pruneSlots(raw []byte, slots [][]string) ([]byte, error) {
+	if slices.ContainsFunc(slots, func(s []string) bool { return len(s) == 0 }) {
+		return nil, errors.New("invalid install journal: empty created slot")
+	}
+	ordered := slices.Clone(slots)
+	slices.SortStableFunc(ordered, func(a, b []string) int { return len(b) - len(a) })
+	for _, path := range ordered {
+		doc, err := configDocument(raw)
+		if err != nil || doc == nil {
+			return raw, err
+		}
+		parent := configAt(doc, path[:len(path)-1])
+		if parent == nil || parent.kind != '{' {
+			continue
+		}
+		i := slices.IndexFunc(parent.fields, func(f configField) bool { return f.key == path[len(path)-1] })
+		if i < 0 {
+			continue
+		}
+		if value := parent.fields[i].value; value.kind == '[' && len(value.items) == 0 || value.kind == '{' && len(value.fields) == 0 {
+			start, end := configEntryRange(parent, i)
+			raw = spliceConfig(raw, start, end, nil)
+		}
+	}
+	return raw, nil
 }
 
 type configMatches struct {

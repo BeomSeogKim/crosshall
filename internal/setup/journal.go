@@ -33,11 +33,14 @@ type journal struct {
 }
 
 type ownedFile struct {
-	Path     string             `json:"path"`
-	Original fingerprint        `json:"original"`
-	Latest   fingerprint        `json:"latest"`
-	Entries  []Entry            `json:"entries"`
-	Undo     [][]span           `json:"undo,omitempty"`
+	Path     string      `json:"path"`
+	Original fingerprint `json:"original"`
+	Latest   fingerprint `json:"latest"`
+	Entries  []Entry     `json:"entries"`
+	Undo     [][]span    `json:"undo,omitempty"`
+	// Created names the objects and lists setup created for its entries, so
+	// an uninstall after an owner edit can remove them once they are empty.
+	Created  [][]string         `json:"created_slots,omitempty"`
 	Dirs     []createdConfigDir `json:"created_dirs,omitempty"`
 	RuleText string             `json:"rule_text,omitempty"`
 }
@@ -94,6 +97,7 @@ type edit struct {
 	Add            []Entry            `json:"add,omitempty"`
 	Remove         []Entry            `json:"remove,omitempty"`
 	Kept           []Entry            `json:"kept,omitempty"`
+	Prune          [][]string         `json:"prune_slots,omitempty"`
 	Restore        [][]span           `json:"restore,omitempty"`
 	Record         *ownedFile         `json:"record,omitempty"`
 	Stage          string             `json:"stage,omitempty"`
@@ -352,8 +356,11 @@ func (e edit) materialize(raw []byte) ([]byte, error) {
 	var err error
 	if len(e.Restore) != 0 {
 		raw, err = undoInsertions(raw, e.Restore)
-	} else if len(e.Remove) != 0 {
+	} else if len(e.Remove) != 0 || len(e.Prune) != 0 {
 		raw, _, _, err = removeEntries(raw, e.Remove)
+		if err == nil {
+			raw, err = pruneSlots(raw, e.Prune)
+		}
 	}
 	if err != nil || len(e.Add) == 0 {
 		return raw, err

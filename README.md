@@ -18,9 +18,9 @@ What crosshall guarantees ([PROTOCOL.md](PROTOCOL.md) H1 to H5):
 - A send is stored in full or not at all, and retrying it with the same key stores nothing twice.
 - It never types into another session's input or runs message content.
 - A crosshall hook that fails never blocks an agent's turn.
-- Native notices can start idle turns in supported interactive Claude Code and managed Codex CLI sessions on macOS arm64. A Claude Code or Codex CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Other sessions, including Antigravity CLI, see new work when they run `crosshall read` or when a `crosshall wait` they started returns.
 
 What it does not do:
+- It starts idle turns only through available notice routes, currently supported for interactive Claude Code and managed Codex CLI daemon sessions on macOS arm64. A Claude Code or Codex CLI session with hooks sees the numbers of its unread messages at its next prompt, and `crosshall read` picks them up. Other sessions, including Antigravity CLI, see new work when they run `crosshall read` or when a `crosshall wait` they started returns.
 - It is not a network service. It runs on one machine for one user. The only network call crosshall can make is an optional daily usage report, sent only after you said yes (see [usage statistics](docs/telemetry.md)); messages never leave the machine.
 - It cannot make an agent obey. The member rules are text the agent reads and follows.
 

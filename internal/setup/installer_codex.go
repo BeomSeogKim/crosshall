@@ -83,3 +83,10 @@ func (codexInstaller) rulesChanged(path string) error {
 	}
 	return nil
 }
+
+func (codexInstaller) reminderMeasurement() reminderEvidence {
+	return reminderEvidence{
+		Version: "0.170.0", Platform: "darwin-arm64", Mode: "exec", ManifestRev: "codex-1", Level: "unavailable",
+		Reason: "The hook could not verify its launch version and mode. The tested post-tool matcher started on every Bash call.",
+	}
+}

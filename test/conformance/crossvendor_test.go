@@ -28,9 +28,10 @@ import (
 const crossVendorChannel = "crossvendor"
 
 type crossVendorStep struct {
-	command string
-	wants   []string
-	askFrom string
+	command          string
+	wants            []string
+	askFrom          string
+	requiresApproval bool
 }
 
 type crossVendorCommands struct{ exe string }
@@ -152,8 +153,11 @@ func (m *crossVendorModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	command := ""
+	requiresApproval := false
 	if m.request < len(m.steps) {
-		command = strings.ReplaceAll(m.steps[m.request].command, "{ask}", m.requestID)
+		step := m.steps[m.request]
+		command = strings.ReplaceAll(step.command, "{ask}", m.requestID)
+		requiresApproval = step.requiresApproval
 	}
 	m.request++
 	m.sequence++
@@ -163,6 +167,11 @@ func (m *crossVendorModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var request struct{ Model string }
 		_ = json.Unmarshal(raw, &request)
 		claudeFixtureReply(w, request.Model, m.lastCall, command)
+	} else if requiresApproval {
+		codexFixtureExec(w, m.lastCall, map[string]any{
+			"cmd": command, "login": false, "sandbox_permissions": "require_escalated",
+			"justification": "Exercise the synthetic owner approval gate.",
+		})
 	} else if command != "" {
 		codexFixtureShell(w, m.lastCall, command)
 	} else {

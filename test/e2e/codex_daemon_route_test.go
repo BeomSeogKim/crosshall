@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 )
 
 // codexDaemonSource stands in for Codex's managed app server: it runs the
@@ -108,9 +111,20 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 		}
 	}
 
+	evidence, err := json.Marshal(domain.AdapterEvidence{Vendor: "codex", VendorVersion: "0.171.0",
+		Platform: runtime.GOOS + "-" + runtime.GOARCH, Mode: "daemon", ManifestRev: "codex-1", RunAtMS: time.Now().UnixMilli(),
+		Results: []domain.EvidenceResult{{Cap: "publish", Level: "candidate", Check: "fixture daemon for launch classification"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.home, "codex-route-evidence.json")
+	if err := os.WriteFile(path, evidence, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.owner().must("owner", "adapter", "evidence", path)
 	startUntil("startup", true, true, "daemon")
-	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (no tested evidence for codex-1 on ") {
-		t.Fatalf("a daemon session should wait only for tested evidence:\n%s", out)
+	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (version 0.171.0 exact evidence is candidate)") {
+		t.Fatalf("a daemon session should honor candidate evidence for its exact build:\n%s", out)
 	}
 	startUntil("resume", false, true, "in_process")
 	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (codex runs without its daemon)") {

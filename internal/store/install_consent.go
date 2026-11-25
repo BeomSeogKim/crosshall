@@ -27,7 +27,9 @@ type InstallConsent struct {
 // InspectInstallConsent previews the settings and evidence after the new
 // binary starts. It reads existing owner choices without creating a store.
 func InspectInstallConsent(ctx context.Context, files fs.FS, profile wire.HookProfile, shipped []BuiltinEvidence) (InstallConsent, error) {
-	profile.Mode = "interactive"
+	if profile.Mode == "" {
+		profile.Mode = "interactive"
+	}
 	launch, err := json.Marshal(profile)
 	if err != nil {
 		return InstallConsent{}, err
@@ -94,6 +96,7 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 	if version >= 18 {
 		turnEnd = `CASE (SELECT turn_end FROM adapter_policy WHERE adapter = ?1) WHEN 0 THEN 'off' WHEN 1 THEN 'on' ELSE '' END`
 	}
+	interactiveProfile := `json_set(?2, '$.mode', 'interactive')`
 	printProfile := `json_set(?2, '$.mode', 'print')`
 	return tx.QueryRowContext(ctx, `WITH
 		owner_evidence(vendor, vendor_version, platform, mode, manifest_rev, cap, level) AS (`+owner+`),
@@ -117,7 +120,7 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 				AND e.vendor_version = `+profileField("?2", "vendor_version")+`)
 			AND COALESCE((SELECT cb.confirmed FROM capability_build cb WHERE `+capabilityProfileMatch("cb", "?1", "?2", "'publish'")+`
 				AND cb.vendor_version = `+profileField("?2", "vendor_version")+`), 0) < ?4,
-			`+CapabilityCovered("?1", "?2", "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd,
+			`+CapabilityCovered("?1", interactiveProfile, "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd,
 		vendor, profile, builtin, PublishBuildConfirmations).
 		Scan(&consent.AutoJoinOff, &consent.PublishCovered, &consent.PublishSwitch, &consent.PublishStopped,
 			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint, &consent.TurnEndSwitch)

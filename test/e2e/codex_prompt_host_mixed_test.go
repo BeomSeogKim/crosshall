@@ -10,10 +10,14 @@ import (
 	"time"
 )
 
-// baseBinaryEnv names a crosshall built with -tags=testvendorhome from an
-// earlier commit; CI builds the pull request's base (or, on main, the
-// previous main).
-const baseBinaryEnv = "CROSSHALL_E2E_BASE_BINARY"
+// Each names a crosshall built with -tags=testvendorhome from an earlier
+// commit. CI builds both: the pull request's base (on main, the previous
+// main), and a fixed release from before prompts could name their server,
+// whose dispatcher refuses the fields a hook must not send it unasked.
+const (
+	baseBinaryEnv    = "CROSSHALL_E2E_BASE_BINARY"
+	releaseBinaryEnv = "CROSSHALL_E2E_RELEASE_BINARY"
+)
 
 // An upgrade in place while a session runs: crosshall of the base commit is
 // installed and runs the dispatcher, then the binary the hooks name is
@@ -24,10 +28,18 @@ const baseBinaryEnv = "CROSSHALL_E2E_BASE_BINARY"
 // sends a field the dispatcher does not offer to accept loses the prompt
 // (as a hook sending the prompt's server unasked would, #252).
 func TestNewCodexHookUnderAnOlderDispatcherStaysFailOpen(t *testing.T) {
-	old := os.Getenv(baseBinaryEnv)
-	if old == "" {
-		t.Skip("set " + baseBinaryEnv + " to run a new hook against an older dispatcher")
+	for _, env := range []string{baseBinaryEnv, releaseBinaryEnv} {
+		t.Run(env, func(t *testing.T) {
+			old := os.Getenv(env)
+			if old == "" {
+				t.Skip("set " + env + " to run a new hook against that older dispatcher")
+			}
+			upgradeInPlaceUnderOlderDispatcher(t, old)
+		})
 	}
+}
+
+func upgradeInPlaceUnderOlderDispatcher(t *testing.T, old string) {
 	head := binary
 	binary = old // newSetupWorld installs it; its setup starts its dispatcher
 	t.Cleanup(func() { binary = head })
@@ -65,6 +77,11 @@ func TestNewCodexHookUnderAnOlderDispatcherStaysFailOpen(t *testing.T) {
 			t.Fatalf("the start did not join under the older dispatcher; %s", f.enrollmentEvidence("codex"))
 		}
 	}
+	// A note sent across the upgrade must reach the session.
+	const body = "fixture note across the upgrade"
+	writer := f.member()
+	writer.must("join", "setup-check", "--as", "writer")
+	writer.must("note", "@codex1", body)
 	for _, turn := range []string{"turn-1", "turn-2"} {
 		out := f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"`+turn+`","prompt":"fixture private text"`)
 		for _, word := range []string{"refus", "invalid", "error", "bad arguments"} {
@@ -84,8 +101,8 @@ func TestNewCodexHookUnderAnOlderDispatcherStaysFailOpen(t *testing.T) {
 		}
 	}
 	member := &participant{w: f.world, extra: []string{"CODEX_THREAD_ID=" + setupSessionPrefix + "codex"}}
-	if got := member.run("read"); got.exit != 0 {
-		t.Fatalf("the session cannot read its messages: exit %d\n%s%s", got.exit, got.stdout, got.stderr)
+	if got := member.run("read"); got.exit != 0 || !strings.Contains(got.stdout, body) {
+		t.Fatalf("the session did not read the note: exit %d\n%s%s", got.exit, got.stdout, got.stderr)
 	}
 	if got := f.dispatcherPIDs(); len(got) != 1 || got[0] != dispatcher[0] {
 		t.Fatalf("dispatchers %v, want the base build's %d throughout", got, dispatcher[0])

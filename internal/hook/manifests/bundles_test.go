@@ -1,7 +1,6 @@
 package manifests
 
 import (
-	"io/fs"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -18,8 +17,8 @@ func TestABundleAddsItsManifest(t *testing.T) {
 	saved := bundles
 	bundles = append(slices.Clone(bundles), fstest.MapFS{
 		"zbundle.json": {Data: []byte(`{"schema":1,"adapter":"zbundle","display_name":"Z Fixture","setup_order":99,"revision":"zbundle-1","install":{"events":["SessionStart"]},"events":{"SessionStart":{}}}`)},
-		"claude.json":   {Data: []byte(`{"schema":1,"adapter":"claude","display_name":"Not Claude"}`)},
-		"notes.txt":     {Data: []byte("not a manifest")},
+		"claude.json":  {Data: []byte(`{"schema":1,"adapter":"claude","display_name":"Not Claude"}`)},
+		"notes.txt":    {Data: []byte("not a manifest")},
 	})
 	restore := SwapReader(readSource)
 	t.Cleanup(func() { bundles = saved; restore() })

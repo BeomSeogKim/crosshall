@@ -679,6 +679,7 @@ func TestClaudeCodeInteractiveTurnEndConformance(t *testing.T) {
 	world := func(t *testing.T, tested bool) *conformance {
 		t.Helper()
 		c := newConformance(t)
+		t.Cleanup(c.logTurnEndFailure)
 		c.requireClaude()
 		c.owner("owner", "start")
 		c.owner("owner", "publish", "hall", "off")

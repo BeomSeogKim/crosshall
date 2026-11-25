@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 	t.Helper()
 	c := newConformance(t)
+	t.Cleanup(c.logTurnEndFailure)
 	c.requireClaude()
 	c.owner("owner", "start")
 	c.owner("owner", "channel", "create", "checkout")
@@ -36,6 +38,33 @@ func turnEndWorld(t *testing.T, tested bool) (*conformance, string) {
 		c.importTurnEnd(version, "print", "candidate", "no tested evidence for this fixture")
 	}
 	return c, version
+}
+
+func (c *conformance) logTurnEndFailure() {
+	if !c.t.Failed() {
+		return
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(c.state, "store.sqlite3")+"?mode=ro")
+	if err != nil {
+		c.t.Logf("Claude turn-end store unavailable: %v", err)
+		return
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var launches, verified, prompts, stops, claims int
+	err = db.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM adapter_launch),
+		(SELECT count(*) FROM adapter_launch WHERE verified = 1),
+		(SELECT count(*) FROM observation WHERE kind = 'prompt_submitted'),
+		(SELECT count(*) FROM observation WHERE kind = 'turn_finishing'),
+		(SELECT count(*) FROM turn_end_notice)`).Scan(&launches, &verified, &prompts, &stops, &claims)
+	if err != nil {
+		c.t.Logf("Claude turn-end store unavailable: %v", err)
+		return
+	}
+	c.t.Logf("Claude turn-end state: launches=%d verified=%d prompts=%d stops=%d claims=%d model_requests=%d",
+		launches, verified, prompts, stops, claims, c.model.count())
 }
 
 // importTurnEnd records one turn_end result for this build and mode.

@@ -97,7 +97,7 @@ func (d *installDisclosure) include(other installDisclosure) {
 }
 
 // sharesStop reports whether crosshall installs a Stop hook into a hooks
-// file where a group whose name sorts after crosshall's has one.
+// file where an enabled group whose name sorts after crosshall's has one.
 // Antigravity runs groups in name order and no later Stop hook once one
 // continues the turn (#328), so such a group can miss a Stop.
 func sharesStop(target installTarget) bool {
@@ -110,7 +110,7 @@ func sharesStop(target installTarget) bool {
 		return false
 	}
 	for _, other := range doc.fields {
-		if other.key <= group {
+		if other.key <= group || other.value.field("enabled") != nil && other.value.field("enabled").atom == false {
 			continue
 		}
 		if stop := other.value.field("Stop"); stop != nil && stop.kind == '[' && len(stop.items) > 0 {

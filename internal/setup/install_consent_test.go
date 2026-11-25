@@ -354,6 +354,7 @@ func TestTheOfferNamesAnotherGroupsStopHooks(t *testing.T) {
 		{"other group without Stop", `{"owner": {"PreInvocation": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
 		{"other group with Stop", `{"owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", true},
 		// Antigravity runs groups in name order: this one runs before crosshall's.
+		{"disabled later group with Stop", `{"owner": {"enabled": false, "Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
 		{"earlier group with Stop", `{"aaa-owner": {"Stop": [{"type": "command", "command": "/owner-tool"}]}}` + "\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

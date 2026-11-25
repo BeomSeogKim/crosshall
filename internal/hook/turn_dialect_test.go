@@ -21,7 +21,7 @@ const perCallDialect = `{
     "PreInvocation": {"fact": "prompt_submitted", "notice": true, "output": "inject_steps", "turn_required": true,
       "when": {"invocationNum": "0"}, "turn_field": "initialNumSteps", "open_turn": true},
     "Stop": {"fact": "turn_finishing", "stop": true, "output": "continue", "turn_from_open": true,
-      "ref_fields": ["executionNum"], "stop_require": {"terminationReason": "NO_TOOL_CALL", "fullyIdle": "true"}}
+      "ref_fields": ["executionNum"], "stop_require": {"terminationReason": "NO_TOOL_CALL", "fullyIdle": "true", "error": ""}}
   }
 }`
 
@@ -82,7 +82,7 @@ func TestAPerCallPromptIsABoundaryOnlyAtItsFirstCall(t *testing.T) {
 
 func TestAPerCallStopOffersOnlyAtItsFirstEligibleEnd(t *testing.T) {
 	m := perCallManifest(t)
-	eligible := map[string]any{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "fullyIdle": true}
+	eligible := map[string]any{"executionNum": 0, "terminationReason": "NO_TOOL_CALL", "fullyIdle": true, "error": ""}
 	for _, tc := range []struct {
 		name   string
 		change map[string]any
@@ -93,6 +93,7 @@ func TestAPerCallStopOffersOnlyAtItsFirstEligibleEnd(t *testing.T) {
 		{"after a continuation", map[string]any{"executionNum": 1}, "true", ":1"},
 		{"tool call pending", map[string]any{"terminationReason": "max_steps_exceeded"}, "", ":0"},
 		{"background work", map[string]any{"fullyIdle": false}, "", ":0"},
+		{"an error", map[string]any{"error": "model unavailable"}, "", ":0"},
 		{"no execution number", map[string]any{"executionNum": nil}, "", ""},
 		{"execution number as text", map[string]any{"executionNum": "0"}, "", ""},
 	} {

@@ -4,6 +4,8 @@ package conformance
 
 import (
 	"bufio"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -231,10 +233,11 @@ func deref(p *int) any {
 
 // claudeWriter runs crosshall as a Claude Code session of another vendor,
 // joined by hand.
+var claudeWriterEnv = []string{"CLAUDE_CODE_SESSION_ID=0e1d2c3b-4a59-4876-8f9e-a0b1c2d3e4f5", "AI_AGENT=claude-code_2-1-331_agent"}
+
 func (c *conformance) claudeWriter(args ...string) string {
 	c.t.Helper()
-	out, err := c.crosshallRun([]string{"CLAUDE_CODE_SESSION_ID=0e1d2c3b-4a59-4876-8f9e-a0b1c2d3e4f5",
-		"AI_AGENT=claude-code_2-1-331_agent"}, args...)
+	out, err := c.crosshallRun(claudeWriterEnv, args...)
 	if err != nil {
 		c.t.Fatalf("writer %v: %v\n%s", args, err, out)
 	}
@@ -333,19 +336,24 @@ func TestAntigravityInteractiveTurnEndConformance(t *testing.T) {
 		c, agy := world(t)
 		term := c.startAgy(agy)
 		term.agyTurn("Reply with just the word hello.", 1)
-		prompts := c.storeCount(`SELECT COUNT(*) FROM turn`)
-		var id int64
-		go func() {
-			deadline := time.Now().Add(time.Minute)
-			for c.storeCount(`SELECT COUNT(*) FROM turn`) == prompts && time.Now().Before(deadline) {
-				time.Sleep(20 * time.Millisecond)
-			}
-			id = c.agyWriterSends("ask", "please answer done")
-		}()
+		turns := c.storeCount(`SELECT COUNT(*) FROM turn`)
+		sent := make(chan sentAsk, 1)
+		ctx := t.Context()
+		go func() { sent <- c.askDuringNextTurn(ctx, turns) }()
 		// agy runs no later Stop hook once one answers continue, so the
 		// probe logs only the continued turn's own Stop.
 		term.agyTurn("Count from one to five in words, one per line. "+agyRules, 1)
-		if id == 0 || !replied(c, id) {
+		var ask sentAsk
+		select {
+		case ask = <-sent:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("the sender did not finish")
+		}
+		if ask.err != nil {
+			t.Fatal(ask.err)
+		}
+		id := ask.id
+		if !replied(c, id) {
 			t.Fatalf("request %d unanswered; screen:\n%s", id, term.text())
 		}
 		if n := c.storeCount(`SELECT COUNT(*) FROM turn_end_notice`); n != 1 {
@@ -410,4 +418,43 @@ func (c *conformance) writeAgyEvidence(version string) string {
 		c.t.Fatal("cannot write the evidence file")
 	}
 	return file
+}
+
+type sentAsk struct {
+	id  int64
+	err error
+}
+
+// askDuringNextTurn sends the request once the store has more turns than
+// before, that is once the next prompt opened its turn. It runs beside the
+// test, so it reports instead of failing, and gives up when the test ends.
+func (c *conformance) askDuringNextTurn(ctx context.Context, before int) sentAsk {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(c.state, "store.sqlite3")+"?mode=ro&_pragma=busy_timeout(5000)")
+		if err != nil {
+			return sentAsk{err: err}
+		}
+		var n int
+		err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn`).Scan(&n)
+		db.Close()
+		switch {
+		case ctx.Err() != nil:
+			return sentAsk{err: ctx.Err()}
+		case err != nil:
+			return sentAsk{err: err}
+		case n > before:
+			out, err := c.crosshallRun(claudeWriterEnv, "--json", "ask", "@agy1", "please answer done")
+			var r struct {
+				ID int64 `json:"id"`
+			}
+			if err != nil || json.Unmarshal([]byte(out), &r) != nil || r.ID == 0 {
+				return sentAsk{err: fmt.Errorf("ask: %v: %s", err, out)}
+			}
+			return sentAsk{id: r.ID}
+		case time.Now().After(deadline):
+			return sentAsk{err: fmt.Errorf("no new turn within a minute; nothing sent")}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

@@ -39,6 +39,6 @@
     "PreInvocation": {"fact": "prompt_submitted", "notice": true, "output": "inject_steps", "turn_required": true,
       "when": {"invocationNum": "0"}, "turn_field": "initialNumSteps", "open_turn": true},
     "Stop": {"fact": "turn_finishing", "stop": true, "output": "continue", "turn_from_open": true,
-      "ref_fields": ["executionNum"], "stop_require": {"terminationReason": "NO_TOOL_CALL", "fullyIdle": "true"}}
+      "ref_fields": ["executionNum"], "stop_require": {"terminationReason": "NO_TOOL_CALL", "fullyIdle": "true", "error": ""}}
   }
 }

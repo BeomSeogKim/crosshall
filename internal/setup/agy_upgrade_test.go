@@ -132,3 +132,36 @@ func TestAgySetupUpgradesTheAgy1GroupAfterAnOwnerEdit(t *testing.T) {
 		t.Fatalf("after the upgrade: %+v", status)
 	}
 }
+
+// An agy-1 group the owner removed by hand leaves no claim behind once
+// setup installs agy-2: status reads installed, and uninstall leaves the
+// owner's file and no drift.
+func TestAgySetupForgetsAnAgy1GroupTheOwnerRemoved(t *testing.T) {
+	f, service, path, original := installAgy1(t)
+	if err := os.WriteFile(path, original, 0640); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := service.PlanInstall(t.Context(), []string{"agy"})
+	plan := requireAgyPlan(t, plans, err)
+	f.CheckTargets(t)
+	if err := service.Install(t.Context(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := crosshallGroupEvents(t, path); !slices.Equal(got, []string{"PreInvocation", "SessionStart", "Stop"}) {
+		t.Fatalf("agy-2 group = %v", got)
+	}
+	if status := agyInstallStatus(t, service); status.InstalledRev != "agy-2" || status.InstallState != "installed" {
+		t.Fatalf("after the reinstall: %+v", status)
+	}
+	plans, err = service.PlanUninstall(t.Context(), []string{"agy"})
+	f.CheckTargets(t)
+	if err := service.Uninstall(t.Context(), requireAgyPlan(t, plans, err)); err != nil {
+		t.Fatal(err)
+	}
+	if got := configBytes(t, path); string(got) != string(original) {
+		t.Fatalf("uninstall left %s, want %s", got, original)
+	}
+	if status := agyInstallStatus(t, service); status.InstallState == "drifted" || status.InstallState == "drift" {
+		t.Fatalf("after uninstall: %+v", status)
+	}
+}

@@ -63,7 +63,9 @@ func (agyInstaller) recognizeShellCommand(command, event string, spec hook.Insta
 	return ok && literal && (state != "" || isCrosshallExecutable(command))
 }
 
-// upgrade replaces the crosshall group an earlier revision installed.
+// upgrade replaces the crosshall group an earlier revision installed. A
+// stale group the owner already removed is dropped from the record too: it
+// is in the remove list, where applying skips an entry the file lacks.
 func (i agyInstaller) upgrade(target installTarget, record ownedFile, known bool) ([]byte, [][]span, []Entry, []Entry, error) {
 	stale := slices.DeleteFunc(slices.Clone(record.Entries), func(e Entry) bool {
 		return e.Group == "" || len(target.Wanted) == 0 || !sameRecordedExecutable(i, e, target.Wanted[0], target.Spec) ||
@@ -73,7 +75,19 @@ func (i agyInstaller) upgrade(target installTarget, record ownedFile, known bool
 		return target.Current.Bytes, nil, nil, nil, nil
 	}
 	base, restore, remove, err := replaceOwned(target, record, stale, "Antigravity hooks")
-	return base, restore, remove, nil, err
+	if err != nil || len(restore) > 0 {
+		return base, restore, remove, nil, err
+	}
+	doc, err := configDocument(target.Current.Bytes)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, e := range stale {
+		if _, _, matches, err := locateConfigEntry(doc, e); err == nil && matches.full == 0 && matches.related == 0 {
+			remove = append(remove, e)
+		}
+	}
+	return base, restore, remove, nil, nil
 }
 
 func (agyInstaller) checksRelocation() bool { return false }

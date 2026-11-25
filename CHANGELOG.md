@@ -2,8 +2,9 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## Unreleased
+## v0.3.1-rc.2 (2026-11-26)
 
+- **Upgrade from v0.3.1-rc.1:** the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, follow the v0.3.1-rc.1 steps (migration 030). See [UPGRADING.md](UPGRADING.md#to-v031-rc2).
 - **Long-running sessions keep their `/clear` route through macOS `/tmp` cleanup.** The dispatcher renews launch marks hourly while their original processes are alive. It also renews the receipts and snapshots that quiet members use to avoid repeating guidance or waiting on the dispatcher for a clean hook (#378).
 - **`owner depart --ended` covers a member whose session start never reached the hall:** such a member (for example a session joined by hand before its hooks were installed) has no session end to wait for, so it was never listed and the owner had to find its binding and token by hand. It is now listed in `owner who`, marked `(no session start recorded)`, once nothing, not even a command, was seen from it for 12 hours; `owner depart --ended` departs it if it has no open request.
 - **Codex managed-daemon notices on Linux amd64.** Crosshall ships publish evidence for Codex 0.172.0 with `codex-1`. A native Linux amd64 run verified request and reply delivery in both directions with Claude Code using scratch evidence, and suppression while a Codex server approval is open (#384).

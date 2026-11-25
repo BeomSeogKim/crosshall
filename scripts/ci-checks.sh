@@ -49,6 +49,7 @@ export GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache"
 test_root=$(mktemp -d /tmp/crosshall-ci.XXXXXXXX)
 trap 'rm -rf -- "$test_root"' EXIT
 test_root=$(cd -- "$test_root" && pwd -P)
+test_started=$(date '+%Y-%m-%d %H:%M:%S')
 export CROSSHALL_TEST_VENDOR_SENTINEL="$test_root/sentinel"
 mkdir -m 700 -- "$CROSSHALL_TEST_VENDOR_SENTINEL"
 # Record names only. The sentinel never opens the caller's configuration.
@@ -138,5 +139,12 @@ fi
 
 if [ "$fail" -eq 0 ]; then
   echo "checks passed"
+elif [ "$(uname -s)" = Darwin ]; then
+  # A launch denial can prevent a test binary from printing any Go output.
+  predicate="process == \"kernel\" AND eventMessage BEGINSWITH \"ASP: Security policy would not allow process:\" AND eventMessage CONTAINS \"$test_root/\""
+  denials=$(/usr/bin/log show --style compact --start "$test_started" --predicate "$predicate" 2>/dev/null) || denials=
+  if [[ $denials == *'ASP: Security policy would not allow process:'* ]]; then
+    printf 'macOS launch denials in this test run\n%s\n' "$denials" >&2
+  fi
 fi
 exit "$fail"

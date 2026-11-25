@@ -2,7 +2,7 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## Unreleased
+## v0.3.0-rc.2 (2026-11-25)
 
 - **The dispatcher recreates a member's removed spool once:** macOS's daily `/tmp` cleaner removes empty directories left unmodified for more than three days, so a quiet member's `in`, `work` and `out` disappeared while its directory stayed. The dispatcher then logged two errors for that member on every pass, about 25 lines a second. It now recreates them and logs one line (#372).
 - **A hand-joined session gets its pending line and turn-end check without a restart:** a member that joined by hand while its session's start never reached the hall (for example an Antigravity session begun before `crosshall setup antigravity`) had no launch, so the hall only stored its prompts and Stops: no pending line at a prompt and no turn-end check until the session restarted. Found on the v0.3.0-rc.1 hall. Now such a member's first prompt opens the launch its start would have. The prompt's mode counts unless the vendor can run sessions in a shared server (Codex), where a prompt that names no server leaves the mode unverified, as a recovered prompt does.

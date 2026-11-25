@@ -18,6 +18,24 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # The e2e suite runs this build's hooks under an older build's
+      # dispatcher, as after an upgrade in place: the base, and v0.2.0,
+      # from before prompts could name their server.
+      - name: Build the older builds for the mixed-build check
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CGO_ENABLED: "0"
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE" tag v0.2.0
+          build() {
+            mkdir "$RUNNER_TEMP/$2"
+            git archive "$1" | tar -x -C "$RUNNER_TEMP/$2"
+            (cd "$RUNNER_TEMP/$2" && go build -tags=testvendorhome -o "$RUNNER_TEMP/crosshall-$2" ./cmd/crosshall)
+          }
+          build "$BASE" base
+          build v0.2.0 release
+          echo "CROSSHALL_E2E_BASE_BINARY=$RUNNER_TEMP/crosshall-base" >> "$GITHUB_ENV"
+          echo "CROSSHALL_E2E_RELEASE_BINARY=$RUNNER_TEMP/crosshall-release" >> "$GITHUB_ENV"
       - name: Repository checks
         env:
           CGO_ENABLED: "0"

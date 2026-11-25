@@ -59,7 +59,9 @@ func TestRetentionRunsOneChunkPerTickAndNoneInAScan(t *testing.T) {
 		Services: testServices()}, state: state, db: db, ready: readyMarker{Instance: "retention-test"}}
 	defer s.withdrawReady()
 
-	now := time.Now()
+	// Noon UTC: the tick a minute later is on the same UTC day whenever the
+	// test runs.
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-store.RetentionWindow - 48*time.Hour).UnixMilli()
 	const chunk = 2000
 	if err := db.Update(ctx, func(tx store.Tx) error {

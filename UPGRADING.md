@@ -4,6 +4,15 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
+Antigravity hooks move to manifest `agy-2`: `crosshall setup antigravity` replaces the `agy-1` group (SessionStart only) with one that also holds `PreInvocation` and `Stop`. Setup changes only its own group; when you have not edited the file since setup, it starts again from your original bytes, which uninstall still restores. Until you run it, `crosshall owner doctor` and `crosshall setup status` name the step.
+
+To go back to v0.2.0 or earlier with Antigravity hooks installed, remove them with this release first, because v0.2.x's setup reads only a SessionStart-only group:
+
+1. Run `crosshall uninstall antigravity --apply` with this release.
+2. Put the older binary back at the same path, then run `crosshall setup antigravity --apply` to install `agy-1`.
+
+If you already switched back, v0.2.x shows the Antigravity hooks as `unknown` (`invalid setup entry`) and its setup refuses them. Its `uninstall antigravity --apply` restores your original file only when you have not edited it since setup; after an edit it reports `removed` but leaves the crosshall group. In that case put this release back, run `crosshall setup antigravity --apply` and then `crosshall uninstall antigravity --apply`, and switch again. Meanwhile an older hook answers the new callbacks with `{}`, and Antigravity carries on.
+
 Known issue when going back to v0.2.0 or earlier: a hook of the older binary does not recognize a resume notice (`... The hall restarted and you still owe these requests ...`) that the session echoes, so its receipt never comes. A resume still being submitted when you switch back then holds that session's notices until that session ends or is restarted; v0.2.0 has no command that releases it.
 
 ## To v0.2.0

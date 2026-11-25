@@ -1,6 +1,11 @@
 package setup
 
-import "path/filepath"
+import (
+	"errors"
+	"path/filepath"
+	"slices"
+	"strings"
+)
 
 // claudeInstaller installs Claude Code hooks and command rules in one
 // settings file.
@@ -21,4 +26,44 @@ func (claudeInstaller) upgrade(target installTarget, record ownedFile, known boo
 		return base, restore, remove, nil, err
 	}
 	return base, restore, remove, keepFirst(record, isClaudeAutoModeDefaults), nil
+}
+
+func (claudeInstaller) memberRules(adapter, executable string) ([]Entry, []byte, error) {
+	if strings.ContainsRune(executable, '*') {
+		return nil, nil, errors.New("Claude command permissions cannot represent an executable path containing '*'")
+	}
+	entries, err := jsonMemberRules(adapter, executable, "Bash(%s %s:*)")
+	return entries, nil, err
+}
+
+// Claude Code's permissions live in its settings file beside the hooks.
+func (claudeInstaller) inlineRules() bool { return true }
+
+// addInlineRules adds the member permissions and the auto-mode rules,
+// including Claude Code's defaults when the settings hold no auto-mode list.
+func (claudeInstaller) addInlineRules(target *installTarget, executable string) error {
+	entries, _, err := memberCommandRules(target.Spec.Adapter, executable)
+	if err != nil {
+		return err
+	}
+	doc, err := configDocument(target.Current.Bytes)
+	if err != nil {
+		return err
+	}
+	defaults := true
+	if doc != nil {
+		_, missing, err := findConfigSlot(doc, Entry{AutoMode: true})
+		if err != nil {
+			return err
+		}
+		defaults = len(missing) > 0
+	}
+	target.Wanted = append(target.Wanted, entries...)
+	target.Wanted = append(target.Wanted, claudeAutoModeEntries(executable, defaults)...)
+	return nil
+}
+
+// optionalRules are the send and receive rules the owner turns on.
+func (claudeInstaller) optionalRules() []Entry {
+	return slices.Concat(claudeRules(false), claudeRules(true))
 }

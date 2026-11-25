@@ -314,15 +314,11 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 	}
 	if op.Action == "setup" {
 		for _, e := range op.Edits {
-			if e.Adapter != "codex" || e.AddText == "" {
+			if e.AddText == "" {
 				continue
 			}
-			conflict, err := existingCodexHostRule(e.Path, true)
-			if err != nil {
+			if err := installerFor(e.Adapter).rulesChanged(e.Path); err != nil {
 				return err
-			}
-			if conflict != nil {
-				return fmt.Errorf("Codex rules changed at %q after planning; rerun to review the new plan", conflict.Path)
 			}
 		}
 	}

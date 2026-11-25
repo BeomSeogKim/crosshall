@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
@@ -20,26 +19,9 @@ type commandRuleTarget struct {
 
 func (s Service) preflightCommandRules(target *installTarget, j journal) error {
 	adapter := target.Spec.Adapter
-	if adapter == "claude" {
-		entries, _, err := memberCommandRules(adapter, s.Executable)
-		if err != nil {
-			return err
-		}
-		doc, err := configDocument(target.Current.Bytes)
-		if err != nil {
-			return err
-		}
-		defaults := true
-		if doc != nil {
-			_, missing, err := findConfigSlot(doc, Entry{AutoMode: true})
-			if err != nil {
-				return err
-			}
-			defaults = len(missing) > 0
-		}
-		target.Wanted = append(target.Wanted, entries...)
-		target.Wanted = append(target.Wanted, claudeAutoModeEntries(s.Executable, defaults)...)
-		return nil
+	i := installerFor(adapter)
+	if i.inlineRules() {
+		return i.addInlineRules(target, s.Executable)
 	}
 	location, err := resolveCommandRulePath(target.Spec)
 	if err != nil {
@@ -53,19 +35,12 @@ func (s Service) preflightCommandRules(target *installTarget, j journal) error {
 		return fmt.Errorf("command rules belong to another configuration home (%q); resolved %q", record.Path, location.Path)
 	}
 	rules := commandRuleTarget{Location: location}
-	if adapter == "codex" {
-		if filepath.Base(s.Executable) != "crosshall" {
-			rules.Skipped = &retainedFile{adapter, location.Path, "skipped Codex command rules because the installed executable uses a different name"}
-		} else {
-			rules.Skipped, err = existingCodexHostRule(location.Path, record.Path != "")
-			if err != nil {
-				return err
-			}
-		}
-		if rules.Skipped != nil {
-			target.CommandRules = &rules
-			return nil
-		}
+	if rules.Skipped, err = i.skipRules(s.Executable, location, record.Path != ""); err != nil {
+		return err
+	}
+	if rules.Skipped != nil {
+		target.CommandRules = &rules
+		return nil
 	}
 	entries, text, err := memberCommandRules(adapter, s.Executable)
 	if err != nil {
@@ -78,7 +53,7 @@ func (s Service) preflightCommandRules(target *installTarget, j journal) error {
 	if record.Latest.Dir != "" && record.Latest.Dir != current.DirIdentity {
 		return errors.New("command rules directory has changed since installation")
 	}
-	if adapter == "agy" && current.Exists && len(current.Bytes) == 0 {
+	if text == nil && current.Exists && len(current.Bytes) == 0 {
 		return errors.New("command rules configuration is empty; expected a JSON object")
 	}
 	rules.Current, rules.Entries, rules.Text = current, entries, string(text)
@@ -146,10 +121,7 @@ func planTextRuleRemoval(e edit, current fileSnapshot, record ownedFile) (edit, 
 }
 
 func checkCommandRuleRelocation(target installTarget, owned []Entry) error {
-	wanted := target.Wanted
-	if target.Spec.Adapter == "claude" {
-		wanted = slices.Concat(wanted, claudeRules(false), claudeRules(true))
-	}
+	wanted := slices.Concat(target.Wanted, installerFor(target.Spec.Adapter).optionalRules())
 	for _, entry := range remainingEntries(owned, wanted) {
 		if entry.Event != "" || isClaudeAutoModeDefaults(entry) {
 			continue

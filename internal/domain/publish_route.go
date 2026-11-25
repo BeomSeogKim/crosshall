@@ -82,6 +82,36 @@ func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID,
 		cmd.Epoch, route, cmd.HookAtMS, now)
 }
 
+// promptNamesServer reports whether a prompt names what its start would
+// have for the route: the adapter's route rests on the session's thread and
+// the server its hooks name, not on a launch, and the prompt names that
+// server. Without one a route would be registered that no sender can reach
+// and no later prompt would replace, so none is.
+func promptNamesServer(cmd HookEvent) bool {
+	a, ok := publish.Lookup(cmd.Profile.Adapter)
+	return ok && a.ThreadRouted() && cmd.Host != nil
+}
+
+// registerMissingRoute registers, from a prompt, the route a live member of
+// a server-routed adapter never got because its start was missed (#252),
+// also for a member recovered before prompts named their server. A route
+// that exists, ended or invalidated included, is left as it is.
+func (s *Service) registerMissingRoute(ctx context.Context, tx store.Tx, req Request, principal int64, b hookBinding,
+	cmd HookEvent, now time.Time) error {
+	if cmd.Fact != FactPromptSubmitted || !promptNamesServer(cmd) {
+		return nil
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_route WHERE binding_id = ?)`, b.id).
+		Scan(&exists); err != nil || exists {
+		return err
+	}
+	enroll := HookEnroll{wire.HookEnrollArgs{Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
+		Source: "prompt", HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch, Host: cmd.Host, VendorHome: cmd.VendorHome}}
+	return registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, enroll,
+		s.routeHost(enroll), now)
+}
+
 // routeHost is the server a session's start named as its host, and the
 // vendor home it serves, when the dispatcher can judge that process later;
 // else none.

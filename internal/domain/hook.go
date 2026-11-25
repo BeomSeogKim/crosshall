@@ -606,13 +606,17 @@ func (s *Service) hookEvent(ctx context.Context, tx store.Tx, caller core.Caller
 				return okOrErr(out, err)
 			}
 		}
-		profile := cmd.Profile
-		profile.Mode = "unverified"
 		enroll := HookEnroll{wire.HookEnrollArgs{
-			Profile: profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
+			Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
 			Source: "prompt", RepoRoot: cmd.EnrollRepoRoot, Repository: cmd.EnrollRepository,
 			CreateChannel: cmd.EnrollCreate, HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch,
 		}}
+		// A prompt that names its server reports the mode its start would
+		// have (#252), and its member event registers the route; any other
+		// prompt's mode rests on a launch the join has not bound.
+		if !promptNamesServer(cmd) {
+			enroll.Profile.Mode = "unverified"
+		}
 		// The prompt keeps its launch: the join binds it late or records the
 		// prompt under the session launch.
 		cmd.WantOutput = false
@@ -664,6 +668,11 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	}
 	if caller.Role != core.RoleMember {
 		return OK(out)
+	}
+	if found && (caller.BindingID == nil || *caller.BindingID == b.id) {
+		if err := s.registerMissingRoute(ctx, tx, req, principal, b, cmd, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	if cmd.Fact == FactIdlePrompt {
 		if !found || b.state != "live" {

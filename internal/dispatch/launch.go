@@ -223,7 +223,7 @@ func (r readyMarker) same(o readyMarker) bool {
 
 func newReadyMarker(instance string) readyMarker {
 	return readyMarker{Instance: instance, Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true,
-		Hello: []string{wire.HelloStart, wire.HelloLaunchProof}}
+		Hello: []string{wire.HelloStart, wire.HelloLaunchProof, wire.HelloPromptHost}}
 }
 
 func (r readyMarker) live(state *os.Root) bool {

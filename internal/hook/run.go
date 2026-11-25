@@ -247,6 +247,11 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if !spec.Enroll && !slices.Contains(offers, wire.HelloLaunchProof) {
 		e.LaunchAtMS, e.PIDNamespace = 0, "" // an older dispatcher refuses the proof
 	}
+	// A prompt names its server as a start does; an older dispatcher
+	// refuses the fields, and no other callback needs them.
+	if !spec.Enroll && (spec.Fact != wire.HookPromptSubmitted || !slices.Contains(offers, wire.HelloPromptHost)) {
+		e.Host, e.VendorHome = nil, ""
+	}
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	req.Membership = membership
 	if gone {
@@ -644,6 +649,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 			ContinuationActive: e.stopActive == "true",
 			LaunchAtMS:         e.LaunchAtMS,
 			PIDNamespace:       e.PIDNamespace,
+			Host:               e.Host,
+			VendorHome:         e.VendorHome,
 		})
 	}
 	return req

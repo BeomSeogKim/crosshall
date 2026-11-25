@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// A dispatcher's ready marker tells a hook it accepts the start intent and
-// a prompt's launch proof.
+// A dispatcher's ready marker tells a hook it accepts the start intent, a
+// prompt's launch proof and a prompt's server.
 func TestTheReadyMarkerOffersWhatTheDispatcherAccepts(t *testing.T) {
 	raw, err := json.Marshal(newReadyMarker("instance"))
 	if err != nil {
@@ -16,7 +16,7 @@ func TestTheReadyMarkerOffersWhatTheDispatcherAccepts(t *testing.T) {
 	var marker struct {
 		Hello []string `json:"hello"`
 	}
-	if err := json.Unmarshal(raw, &marker); err != nil || !slices.Equal(marker.Hello, []string{"start", "launch_proof"}) {
+	if err := json.Unmarshal(raw, &marker); err != nil || !slices.Equal(marker.Hello, []string{"start", "launch_proof", "prompt_host"}) {
 		t.Fatalf("ready marker %s", raw)
 	}
 }

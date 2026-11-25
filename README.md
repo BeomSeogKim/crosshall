@@ -102,11 +102,11 @@ Send usage statistics? [Y/n]
 $ crosshall owner who --all
 #shop-api
   @claude1 [binding 1] live, claude, focus unset; the hall starts its turn; publish: available, last evidence: unknown (joined 1s ago); ends by its hooks; depart token: 9b91d2a1d6ca3f9e0b1aed0a
-  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; publish: candidate (no sender for codex), last evidence: unknown (joined 0s ago); last observed: prompt submitted 0s ago (unverified); exit not tracked; depart token: c72075004a3e86a72de918dd
+  @codex1 [binding 2] live, codex, focus unset; sees work at its next prompt; publish: candidate (no tested evidence for codex-1 on darwin-arm64 daemon), last evidence: unknown (joined 0s ago); last observed: prompt submitted 0s ago (unverified); exit not tracked; depart token: c72075004a3e86a72de918dd
 To depart a listed binding, run crosshall owner depart <binding-id> --seen <token>.
 ```
 
-After the focus, each line says how the hall reaches that member: `the hall starts its turn`, `sees work at its next prompt`, or `pull only: sees work when it runs a crosshall command`. The rest is detail: `publish: candidate (no sender for codex)` means crosshall has no notice route for Codex CLI. If notices to a Claude Code version are stopped, a last line says so and gives the command that turns them back on.
+After the focus, each line says how the hall reaches that member: `the hall starts its turn`, `sees work at its next prompt`, or `pull only: sees work when it runs a crosshall command`. The rest is detail: `publish: candidate (no tested evidence for codex-1 on darwin-arm64 daemon)` means crosshall can queue a notice on that Codex CLI session's thread but sends none until evidence for that Codex build ships. If notices to a Claude Code version are stopped, a last line says so and gives the command that turns them back on.
 
 To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` removes the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
 

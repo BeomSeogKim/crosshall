@@ -105,7 +105,7 @@ func TestReadmeOwnerWhoMatchesTheCommand(t *testing.T) {
 				Publish: &domain.PublishStatus{State: "available"}},
 				BindingState: "live", Reach: "notice", ExitTracking: domain.ExitByHooks, DepartToken: departureToken},
 			{Member: domain.Member{Alias: "codex1", Vendor: "codex", BindingID: 2,
-				Publish:  &domain.PublishStatus{State: "candidate", Reason: "no sender for codex"},
+				Publish:  &domain.PublishStatus{State: "candidate", Reason: "no tested evidence for codex-1 on darwin-arm64 daemon"},
 				Observed: &domain.Observed{Fact: domain.FactPromptSubmitted, Source: "codex", Current: true}},
 				BindingState: "live", Reach: "prompt", ExitTracking: domain.ExitUntracked, DepartToken: strings.Repeat("a", 24)},
 		},

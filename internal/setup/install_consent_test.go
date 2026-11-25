@@ -37,8 +37,12 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 			if tc.prompt {
 				pickup = "its next prompt or " + pickup
 			}
+			want := "- Notices and the turn-end check are not available for these builds. A session sees new work at " + pickup
+			if tc.adapter == "codex" && runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
+				want = codexNoticeOn + newVersionNotice
+			}
 			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI).") != tc.prompt ||
-				!strings.Contains(out, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup) {
+				!strings.Contains(out, want) {
 				t.Fatalf("offer: %v\n%s", err, out)
 			}
 		})
@@ -76,7 +80,8 @@ func TestInstallerDisclosesPossibleCostsWhenTheClaudeVersionProbeFails(t *testin
 			}
 			out, err := realRun(t, s, f, Request{Offer: true, Terminal: true}, "\n")
 			turnEnd := "- Turn-end check (Claude Code). crosshall could not read this Claude Code's version, so it cannot say here whether the check is available for it. If it is, a turn that ends while a request waits that is unread, unanswered and not yet announced to the session continues once, and each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off"
-			if err != nil || !strings.Contains(out, tc.notice+"\n"+turnEnd+"\nA no skips future installer offers") ||
+			if err != nil || !strings.Contains(out, tc.notice+"\n"+turnEnd+"\n") ||
+				!strings.Contains(out, "A no skips future installer offers") ||
 				strings.Contains(out, "not available for these builds") {
 				t.Fatalf("offer: %v\n%s", err, out)
 			}
@@ -127,28 +132,30 @@ func knownBuildPlans(t *testing.T, s Service, adapters ...string) []VendorPlan {
 	return plans
 }
 
+const codexNoticeOn = "- Notices (Codex, managed daemon sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
+const newVersionNotice = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
+
 func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 	const noticeOn = "- Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off"
-	const probation = " This version is new to crosshall: the first three notices are checked, and a bad one stops notices until you resume them."
 	const turnEndBody = "When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off"
 	const turnEndOn = "- Turn-end check (Claude Code, interactive sessions and print mode). " + turnEndBody
 	const unavailable = "- Notices and the turn-end check are not available for these builds. A session sees new work at its next prompt or its next crosshall read."
 	for _, tc := range []struct {
-		name, version, publishLevel, turnEndLevel, printLevel, settings, notice, turnEnd string
+		name, version, publishLevel, turnEndLevel, printLevel, settings, notice, turnEnd, codexNotice string
 	}{
 		{name: "exact", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn},
 		{name: "print only", version: "2.1.327", publishLevel: "tested", turnEndLevel: "unavailable", printLevel: "tested",
 			notice: noticeOn, turnEnd: "- Turn-end check (Claude Code, print mode). " + turnEndBody},
 		{name: "interactive only", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", printLevel: "unavailable",
 			notice: noticeOn, turnEnd: "- Turn-end check (Claude Code, interactive sessions). " + turnEndBody},
-		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + probation, turnEnd: turnEndOn},
+		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice, turnEnd: turnEndOn},
 		{name: "seen", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, confirmed)
 				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-3', 'publish', 3)`},
 		{name: "owner hall off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "candidate",
 			settings: `INSERT INTO hall_publish VALUES (1, 0, 1); INSERT INTO hall_auto_join VALUES (1, 0, 1)`,
 			notice:   "- Notices (Claude Code, interactive sessions). Off by your setting; installing does not change it. On: crosshall owner publish hall on",
-			turnEnd:  "- Turn-end check. Not available for these builds."},
+			turnEnd:  "- Turn-end check (Claude Code). Not available for this build."},
 		{name: "owner adapter off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", turnEnd: turnEndOn,
 			settings: `INSERT INTO hall_publish VALUES (1, 0, 1);
 				INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, publish) VALUES ('claude', 0, 0, 1, 1, 0)`,
@@ -157,6 +164,9 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			settings: `INSERT INTO hall_publish VALUES (1, 0, 1);
 				INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, publish) VALUES ('claude', 0, 0, 1, 1, 1)`,
 			notice: strings.Replace(noticeOn, "crosshall owner publish hall off", "crosshall owner adapter set claude --publish off", 1)},
+		{name: "codex adapter off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn,
+			settings:    `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, publish) VALUES ('codex', 1, 0, 1, 1, 0)`,
+			codexNotice: "- Notices (Codex, managed daemon sessions). Off by your setting for Codex; installing does not change it. On: crosshall owner adapter set codex --publish on"},
 		{name: "stopped", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, stopped_at_ms, stop_reason, stop_ref)
 				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-3', 'publish', 1, 'absorbed', 41)`,
@@ -168,10 +178,10 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 1)`},
 		{name: "turn-end switch off, uncovered", version: "2.1.327", publishLevel: "tested", turnEndLevel: "candidate", notice: noticeOn,
 			settings: `INSERT INTO adapter_policy (adapter, enabled, reminder, epoch, changed_at_ms, turn_end) VALUES ('claude', 1, 0, 1, 1, 0)`,
-			turnEnd:  "- Turn-end check. Not available for these builds."},
+			turnEnd:  "- Turn-end check (Claude Code). Not available for this build."},
 		{name: "exact candidate", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "candidate", notice: unavailable},
 		{name: "publish unavailable", version: "2.1.327", publishLevel: "candidate", turnEndLevel: "tested", turnEnd: turnEndOn,
-			notice: "- Notices. Not available for these builds: a session sees new work at its next prompt or its next crosshall read."},
+			notice: "- Notices (Claude Code, interactive sessions). Not available for this build. A session sees new work at its next prompt or its next crosshall read."},
 		{name: "cold"},
 		{name: "unreadable", notice: "- Notices and the turn-end check. crosshall could not read its settings, so it cannot say here whether they are on for these builds. After installing, crosshall owner doctor shows it."},
 	} {
@@ -179,12 +189,12 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			s, f, _ := realSetup(t)
 			ctx := t.Context()
 			platform := runtime.GOOS + "-" + runtime.GOARCH
-			notice, turnEnd := tc.notice, tc.turnEnd
+			notice, turnEnd, codexNotice := tc.notice, tc.turnEnd, tc.codexNotice
 			ledger := filepath.Join(f.State, "store.sqlite3")
 			if tc.name == "cold" {
 				notice = unavailable
 				if platform == "darwin-arm64" {
-					notice, turnEnd = noticeOn+probation, turnEndOn
+					notice, turnEnd, codexNotice = noticeOn+newVersionNotice, turnEndOn, codexNoticeOn+newVersionNotice
 				}
 			} else if tc.name == "unreadable" {
 				if err := os.Mkdir(f.State, 0700); err != nil {
@@ -206,14 +216,19 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 				if printLevel == "" {
 					printLevel = tc.turnEndLevel
 				}
+				codexLevel := "candidate"
+				if codexNotice != "" {
+					codexLevel = "tested"
+				}
 				err = db.Update(ctx, func(tx store.Tx) error {
 					_, err := tx.ExecContext(ctx, `INSERT INTO capability_evidence
 						(vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
 						('claude', ?2, ?1, 'interactive', 'claude-3', 'publish', ?3, 'fixture', 1),
 						('claude', ?2, ?1, 'interactive', 'claude-3', 'turn_end', ?4, 'fixture', 1),
 						('claude', ?2, ?1, 'print', 'claude-3', 'turn_end', ?5, 'fixture', 1),
-						('claude', '2.1.325', ?1, 'interactive', 'claude-3', 'publish', 'tested', 'older', 1)`,
-						platform, tc.version, tc.publishLevel, tc.turnEndLevel, printLevel)
+						('claude', '2.1.325', ?1, 'interactive', 'claude-3', 'publish', 'tested', 'older', 1),
+						('codex', '0.170.0', ?1, 'daemon', 'codex-1', 'publish', ?6, 'fixture', 1)`,
+						platform, tc.version, tc.publishLevel, tc.turnEndLevel, printLevel, codexLevel)
 					if err == nil && tc.settings != "" {
 						_, err = tx.ExecContext(ctx, tc.settings, platform)
 					}
@@ -261,6 +276,9 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			if turnEnd != "" {
 				want += turnEnd + "\n"
 			}
+			if codexNotice != "" {
+				want += codexNotice + "\n"
+			}
 			if !found || !ends || block != want || strings.Count(out, "[y/N]") != 1 {
 				t.Fatalf("offer:\n%s\nwant disclosure:\n%s", out, want)
 			}
@@ -280,6 +298,10 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 	s, f, _ := realSetup(t)
 	stub := "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' '2.1.331 (Claude Code)'\n"
 	if err := os.WriteFile(filepath.Join(f.Bin, "claude"), []byte(stub), 0700); err != nil {
+		t.Fatal(err)
+	}
+	stub = "#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf '%s\\n' 'codex-cli 0.172.0'\n"
+	if err := os.WriteFile(filepath.Join(f.Bin, "codex"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
 	out, err := realRun(t, s, f, Request{Offer: true, Terminal: true}, "\n")
@@ -308,10 +330,11 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 		t.Fatalf("the question treats a build whose version was read as unknown:\n%s", out)
 	}
 	if runtime.GOOS+"-"+runtime.GOARCH == "darwin-arm64" {
-		if !listed || unknown || !strings.Contains(out, "When work arrives for an idle session") {
+		if !listed || unknown || !strings.Contains(out, "- Notices (Claude Code, interactive sessions). When work arrives for an idle session") ||
+			!strings.Contains(out, "publish darwin-arm64/daemon tested") || !strings.Contains(out, codexNoticeOn+"\n") {
 			t.Fatalf("the listing and the question disagree:\n%s", out)
 		}
-	} else if listed || !unknown {
+	} else if listed || !unknown || strings.Contains(out, "- Notices (Codex, managed daemon sessions).") {
 		t.Fatalf("listed built-in evidence for another platform:\n%s", out)
 	}
 }

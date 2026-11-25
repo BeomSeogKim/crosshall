@@ -173,8 +173,14 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if errors.Is(err, errHookIdentity) {
 		return "identity"
 	}
+	if errors.Is(err, errHookSkip) {
+		return "clean"
+	}
 	if err != nil {
 		return "refused"
+	}
+	if m.BuildFromHost {
+		e.VendorVersion, e.Mode = hostBuild(rv, m)
 	}
 	if hookExpired(ctx) {
 		return "deadline"
@@ -193,6 +199,14 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	defer leaf.Close()
 	if hookExpired(ctx) {
 		return "deadline"
+	}
+	if spec.OpenTurn && e.TurnRef != "" {
+		// Best effort: without it the turn's end is only observed.
+		_ = writeRecord(leaf, openTurnFile, gen+" "+e.TurnRef+"\n")
+	}
+	if spec.TurnFromOpen {
+		e.TurnRef = readOpenTurn(leaf, gen)
+		e.setEventRef(spec)
 	}
 	membership, err := ident.LookupMembership(leaf)
 	if err != nil {
@@ -228,7 +242,9 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	// so does a Stop the dispatcher recorded no ask to announce for (#261).
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision) && !noTurnEndAsk(rv, leaf, gen)
-	clean := !spec.Enroll && notice && stampClean(rv, leaf, gen, "notice", "")
+	// A prompt that binds a launch whose start was missed asks: while the
+	// session had no open launch, new work did not mark its stamp.
+	clean := !spec.Enroll && notice && !launch.late && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
 		repo = mappedEnrollmentRoot(ctx, rv, state.root, e)
 	}
@@ -246,6 +262,11 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	gone, offers := readDispatcher(rv)
 	if !spec.Enroll && !slices.Contains(offers, wire.HelloLaunchProof) {
 		e.LaunchAtMS, e.PIDNamespace = 0, "" // an older dispatcher refuses the proof
+	}
+	// A prompt names its server as a start does; an older dispatcher
+	// refuses the fields, and no other callback needs them.
+	if !spec.Enroll && (spec.Fact != wire.HookPromptSubmitted || !slices.Contains(offers, wire.HelloPromptHost)) {
+		e.Host, e.VendorHome = nil, ""
 	}
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)
 	req.Membership = membership
@@ -644,6 +665,8 @@ func makeRequest(entry time.Time, m manifest, spec eventSpec, e event, repo enro
 			ContinuationActive: e.stopActive == "true",
 			LaunchAtMS:         e.LaunchAtMS,
 			PIDNamespace:       e.PIDNamespace,
+			Host:               e.Host,
+			VendorHome:         e.VendorHome,
 		})
 	}
 	return req
@@ -785,11 +808,11 @@ func presentTurnEnd(spec eventSpec, line string) ([]byte, error) {
 	switch spec.Output {
 	case "context":
 		return presentContext(spec.Name, line)
-	case "block":
+	case "block", "continue":
 		payload := struct {
 			Decision string `json:"decision"`
 			Reason   string `json:"reason"`
-		}{"block", line}
+		}{spec.Output, line}
 		b, err := json.Marshal(payload)
 		return append(b, '\n'), err
 	default:

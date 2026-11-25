@@ -35,3 +35,9 @@ const HelloStart = "start"
 // pid_namespace in hook.event): an older one refuses arguments it does not
 // know, so a hook sends the proof only when it is listed.
 const HelloLaunchProof = "launch_proof"
+
+// HelloPromptHost is listed by a dispatcher that accepts a prompt's server
+// (host and vendor_home in hook.event), which registers the notice route of
+// a session whose start it missed (#252); a hook sends them only when it is
+// listed.
+const HelloPromptHost = "prompt_host"

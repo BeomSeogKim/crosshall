@@ -131,7 +131,7 @@ func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 			fmt.Fprintln(w, "No member's session ended over 12 hours ago with nothing owed.")
 		}
 		for _, m := range r.Departed {
-			fmt.Fprintf(w, "@%s in #%s departed (binding %d, session ended %s).\n", m.Alias, m.Channel, m.BindingID, clock(m.EndedAtMS))
+			fmt.Fprintf(w, "@%s in #%s departed (binding %d, %s %s).\n", m.Alias, m.Channel, m.BindingID, endedHow(m), clock(m.EndedAtMS))
 		}
 		for _, m := range r.Owing {
 			line := fmt.Sprintf("@%s in #%s kept (binding %d): open requests", m.Alias, m.Channel, m.BindingID)

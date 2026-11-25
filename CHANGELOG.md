@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **`owner depart --ended` covers a member whose session start never reached the hall:** such a member (for example a session joined by hand before its hooks were installed) has no session end to wait for, so it was never listed and the owner had to find its binding and token by hand. It is now listed in `owner who`, marked `(no session start recorded)`, once nothing, not even a command, was seen from it for 12 hours; `owner depart --ended` departs it if it has no open request.
+
 ## v0.3.1-rc.1 (2026-11-26)
 
 - **Upgrade from v0.3.0.** The first start backs up `store.sqlite3` and migrates schema 29 to 30. To roll back, restore the schema 29 backup and reinstall v0.3.0. See [UPGRADING.md](UPGRADING.md#to-v031-rc1).

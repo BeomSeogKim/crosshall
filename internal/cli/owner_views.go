@@ -590,15 +590,26 @@ func takeoverLines(takeovers []domain.OwnerTakeoverLine) []string {
 // endedLines reports the live members whose session ended over 12 hours
 // ago: one line for those with no open request, with the command that
 // departs them, and one per member that still has some.
+func endedHow(m domain.EndedMember) string {
+	if m.NoStart {
+		return "no session start recorded, last seen"
+	}
+	return "session ended"
+}
+
 func endedLines(ended []domain.EndedMember) []string {
 	var free []string
 	var lines []string
 	for _, m := range ended {
 		if len(m.OpenRequests) == 0 {
-			free = append(free, fmt.Sprintf("@%s in #%s", m.Alias, m.Channel))
+			name := fmt.Sprintf("@%s in #%s", m.Alias, m.Channel)
+			if m.NoStart {
+				name += " (no session start recorded)"
+			}
+			free = append(free, name)
 			continue
 		}
-		line := fmt.Sprintf("@%s in #%s: session ended %s, over 12 hours ago; open requests:", m.Alias, m.Channel, clock(m.EndedAtMS))
+		line := fmt.Sprintf("@%s in #%s: %s %s, over 12 hours ago; open requests:", m.Alias, m.Channel, endedHow(m), clock(m.EndedAtMS))
 		for _, id := range m.OpenRequests {
 			line += fmt.Sprintf(" #%d", id)
 		}

@@ -78,6 +78,11 @@ type installer interface {
 	textRules() bool
 	// rulesChanged refuses an apply whose rules file changed after planning.
 	rulesChanged(path string) error
+
+	// reminderMeasurement is the release's own reminder measurement for the
+	// vendor, which doctor and setup show beside imported evidence; zero
+	// when the release measured none.
+	reminderMeasurement() reminderEvidence
 }
 
 // hookHandler is one hook command as the vendors' hooks files hold it.
@@ -190,6 +195,8 @@ func (baseInstaller) addInlineRules(*installTarget, string) error { return nil }
 func (baseInstaller) optionalRules() []Entry                      { return nil }
 
 func (baseInstaller) skipRules(string, configTarget, bool) (*retainedFile, error) { return nil, nil }
+
+func (baseInstaller) reminderMeasurement() reminderEvidence { return reminderEvidence{} }
 
 func (baseInstaller) textRules() bool           { return false }
 func (baseInstaller) rulesChanged(string) error { return nil }

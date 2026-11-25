@@ -68,4 +68,11 @@ func (claudeInstaller) optionalRules() []Entry {
 	return slices.Concat(claudeRules(false), claudeRules(true))
 }
 
+func (claudeInstaller) reminderMeasurement() reminderEvidence {
+	return reminderEvidence{
+		Version: "2.1.327", Platform: "darwin-arm64", Mode: "print", ManifestRev: "claude-1", Level: "unavailable",
+		Reason: "The read process did not receive the originating tool-call ID in conformance.",
+	}
+}
+
 func (claudeInstaller) hasMemberRules() bool { return true }

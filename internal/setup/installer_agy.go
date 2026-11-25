@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
@@ -59,6 +61,19 @@ func (agyInstaller) recognizeShellCommand(command, event string, spec hook.Insta
 	state, executable, ok := splitHookStatePin(command)
 	command, literal := literalShellExecutable(executable)
 	return ok && literal && (state != "" || isCrosshallExecutable(command))
+}
+
+// upgrade replaces the crosshall group an earlier revision installed.
+func (i agyInstaller) upgrade(target installTarget, record ownedFile, known bool) ([]byte, [][]span, []Entry, []Entry, error) {
+	stale := slices.DeleteFunc(slices.Clone(record.Entries), func(e Entry) bool {
+		return e.Group == "" || len(target.Wanted) == 0 || !sameRecordedExecutable(i, e, target.Wanted[0], target.Spec) ||
+			slices.ContainsFunc(target.Wanted, func(w Entry) bool { return bytes.Equal(w.Value, e.Value) })
+	})
+	if !known || len(stale) == 0 {
+		return target.Current.Bytes, nil, nil, nil, nil
+	}
+	base, restore, remove, err := replaceOwned(target, record, stale, "Antigravity hooks")
+	return base, restore, remove, nil, err
 }
 
 func (agyInstaller) checksRelocation() bool { return false }

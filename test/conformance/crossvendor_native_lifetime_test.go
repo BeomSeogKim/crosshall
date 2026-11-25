@@ -56,8 +56,8 @@ func armNativeFixture(t *testing.T) (root, entry string) {
 }
 
 func watchNativeFixture() (err error) {
-	if runtime.GOOS != "darwin" {
-		return errors.New("native fixture watchdog requires macOS")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return errors.New("native fixture watchdog requires macOS or Linux")
 	}
 	// The parent can die before it reads stdout; cleanup still owns the root.
 	signal.Ignore(syscall.SIGPIPE)
@@ -92,7 +92,7 @@ func watchNativeFixture() (err error) {
 	// Fence the stock hook commands and the state directory before stopping
 	// the sessions. Otherwise an in-flight hook can start another dispatcher.
 	fenceErr := os.Chmod(root, 0)
-	reapErr := testreap.EndDarwinFixture(entry)
+	reapErr := testreap.EndFixture(entry)
 	return errors.Join(err, fenceErr, reapErr, os.Chmod(root, 0700), removeNativeSocket(socket))
 }
 
@@ -129,8 +129,8 @@ type nativeFixtureProbe struct {
 }
 
 func TestNativeFixtureWatchdogReapsKilledRun(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("native fixture watchdog requires macOS")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("native fixture watchdog requires macOS or Linux")
 	}
 	bin, err := os.Executable()
 	codexMust(t, err)

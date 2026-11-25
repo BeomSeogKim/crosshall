@@ -68,15 +68,15 @@ type nativeCrossVendorFixture struct {
 
 func newNativeCrossVendorFixture(t *testing.T, codexVersion string) *nativeCrossVendorFixture {
 	t.Helper()
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-		t.Skip("native cross-vendor conformance currently requires macOS arm64")
-	}
 	pkg := nativeCodexPackage(t)
 	if codexVersion != "" && pkg.Version != codexVersion {
 		t.Fatalf("publish trial needs Codex %s, found %s", codexVersion, pkg.Version)
 	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skipf("native cross-vendor conformance needs Claude Code on PATH: %v", err)
+	}
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		t.Fatal("run Linux native conformance as a non-root user so fixture cleanup can fence new launches")
 	}
 
 	root, entry := armNativeFixture(t)

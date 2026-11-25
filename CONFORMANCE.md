@@ -114,7 +114,7 @@ go test -tags conformance -count=1 -timeout 3m -run '^TestCrossVendorRoundTrip$'
 
 The check uses separate temporary vendor homes, one disposable dispatcher and
 loopback model endpoints. It requires macOS with `sandbox-exec` or a disposable
-Linux account in a network namespace with only `lo` and no real vendor homes.
+Linux account with no real vendor homes and only the loopback interface active.
 To check an already-built release candidate, set
 `CROSSHALL_CONFORMANCE_CROSSHALL` to its absolute path outside vendor homes.
 
@@ -126,13 +126,21 @@ and settlement.
 
 ### Native notices in both directions
 
-Run the native release-gate check on macOS arm64 with Claude Code on `PATH`
-and an unpacked official Codex managed app-server release package:
+Run the native round-trip check with Claude Code on `PATH` and the unpacked
+official Codex managed app-server package for the host. The test accepts
+macOS arm64 and Linux arm64 or amd64:
 
 ```sh
 CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-release \
   go test -tags conformance -count=1 -timeout 3m -run '^TestCrossVendorNativeRoundTrip$' -v ./test/conformance/
 ```
+
+On Linux, run the command as a non-root user inside a disposable container
+with `--network none`, a read-only source mount and a writable `/tmp`. Stage the
+CLIs and Go dependencies before starting the container. Use the matching
+`aarch64-unknown-linux-musl` or `x86_64-unknown-linux-musl` Codex release and keep
+all host vendor configuration and credentials outside the container. The
+container provides the sandbox for Codex and its tool processes.
 
 The check uses the same candidate binary for both adapters. It starts a Claude
 Code interactive session and a loaded thread on the real Codex managed server

@@ -159,8 +159,21 @@ func codexCommand(t *testing.T, bin string, env []string, port string) []string 
 		return append([]string{"/usr/bin/sandbox-exec", "-p", profile}, vendorLaunch(t, executable)...)
 	case "linux":
 		interfaces, err := net.Interfaces()
-		if err != nil || len(interfaces) != 1 || interfaces[0].Name != "lo" || interfaces[0].Flags&net.FlagLoopback == 0 {
-			t.Fatal("use an isolated Linux network namespace with only lo")
+		codexMust(t, err)
+		loopbackUp := false
+		for _, link := range interfaces {
+			if link.Name == "lo" && link.Flags&net.FlagLoopback != 0 {
+				loopbackUp = link.Flags&net.FlagUp != 0
+				continue
+			}
+			addresses, err := link.Addrs()
+			codexMust(t, err)
+			if link.Flags&net.FlagUp != 0 || len(addresses) != 0 {
+				t.Fatalf("use an isolated Linux network namespace: %s is up or has addresses", link.Name)
+			}
+		}
+		if !loopbackUp {
+			t.Fatal("the isolated Linux network namespace needs lo up")
 		}
 		for _, config := range configs {
 			if _, err := os.Lstat(config); !errors.Is(err, os.ErrNotExist) {

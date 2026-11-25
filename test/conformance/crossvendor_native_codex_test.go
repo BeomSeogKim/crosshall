@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -31,6 +32,17 @@ type nativeCodexRelease struct {
 
 func nativeCodexPackage(t *testing.T) nativeCodexRelease {
 	t.Helper()
+	var target string
+	switch runtime.GOOS + "-" + runtime.GOARCH {
+	case "darwin-arm64":
+		target = "aarch64-apple-darwin"
+	case "linux-arm64":
+		target = "aarch64-unknown-linux-musl"
+	case "linux-amd64":
+		target = "x86_64-unknown-linux-musl"
+	default:
+		t.Skip("native cross-vendor conformance requires macOS arm64 or Linux arm64/amd64")
+	}
 	path := os.Getenv("CROSSHALL_CONFORMANCE_CODEX_PACKAGE")
 	if path == "" {
 		t.Skip("set CROSSHALL_CONFORMANCE_CODEX_PACKAGE to a public managed Codex release directory")
@@ -45,8 +57,8 @@ func nativeCodexPackage(t *testing.T) nativeCodexRelease {
 	release := nativeCodexRelease{dir: path}
 	codexMust(t, json.Unmarshal(data, &release))
 	if release.Entrypoint != "bin/codex" || !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(release.Version) ||
-		release.Target != "aarch64-apple-darwin" {
-		t.Fatalf("expected a managed Codex release for macOS arm64, got %+v", release)
+		release.Target != target {
+		t.Fatalf("expected a managed Codex release for %s, got %+v", target, release)
 	}
 	entryPath := filepath.Join(path, release.Entrypoint)
 	physicalEntry, err := filepath.EvalSymlinks(entryPath)
@@ -84,13 +96,19 @@ func newNativeCodex(t *testing.T, release nativeCodexRelease, root, repo, exe st
 	installed := filepath.Join(releases, release.Version+"-"+release.Target)
 	copyCtx, cancelCopy := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancelCopy()
-	copyPkg := exec.CommandContext(copyCtx, "/bin/cp", "-cRP", release.dir, installed)
+	copyFlags := "-RP"
+	if runtime.GOOS == "darwin" {
+		copyFlags = "-cRP"
+	}
+	copyPkg := exec.CommandContext(copyCtx, "/bin/cp", copyFlags, release.dir, installed)
 	copyPkg.Env = []string{entry}
 	if out, err := copyPkg.CombinedOutput(); err != nil {
 		t.Fatalf("copy managed Codex release: %v: %.1000s", err, out)
 	}
 	codexMust(t, os.Symlink(installed, filepath.Join(packages, "current")))
 	bin := filepath.Join(installed, release.Entrypoint)
+	// The outer sandbox also encloses tools. Docker's default policy blocks nested bwrap namespaces.
+	const sandboxMode = "danger-full-access"
 	config := fmt.Sprintf(`model = "fixture"
 model_provider = "fixture"
 cli_auth_credentials_store = "file"
@@ -119,7 +137,7 @@ name = "Local conformance model"
 wire_api = "responses"
 base_url = %q
 requires_openai_auth = false
-`, codexToolSandbox(), modelURL+"/offline", modelURL+"/offline", repo, modelURL+"/v1")
+`, sandboxMode, modelURL+"/offline", modelURL+"/offline", repo, modelURL+"/v1")
 	codexPut(t, filepath.Join(home, "config.toml"), []byte(config))
 	state := filepath.Join(home, "app-server-daemon")
 	codexMust(t, os.Mkdir(state, 0700))
@@ -146,9 +164,11 @@ requires_openai_auth = false
 		}
 	}
 	prefix := codexToolCommand(t, bin, env, endpoint.Port(), root)
-	account, err := user.Current()
-	codexMust(t, err)
-	prefix[2] += fmt.Sprintf(`(deny file-read* file-write* (subpath %q))(allow network-bind network-inbound network-outbound (local unix-socket (path %q)) (remote unix-socket (path %q)) (local unix-socket (path %q)) (remote unix-socket (path %q)))(allow file-write* (literal %q) (literal %q) (literal %q))`, account.HomeDir, alias, alias, socket, socket, filepath.Dir(socket), socket, socket+".lock")
+	if runtime.GOOS == "darwin" {
+		account, err := user.Current()
+		codexMust(t, err)
+		prefix[2] += fmt.Sprintf(`(deny file-read* file-write* (subpath %q))(allow network-bind network-inbound network-outbound (local unix-socket (path %q)) (remote unix-socket (path %q)) (local unix-socket (path %q)) (remote unix-socket (path %q)))(allow file-write* (literal %q) (literal %q) (literal %q))`, account.HomeDir, alias, alias, socket, socket, filepath.Dir(socket), socket, socket+".lock")
+	}
 	vendorEnv := append(slices.Clone(env), "TERM=dumb", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CEILING_DIRECTORIES="+root)
 	for _, name := range []string{"CONFIG", "CACHE", "DATA", "STATE"} {
 		dir := filepath.Join(root, "xdg-"+strings.ToLower(name))
@@ -178,7 +198,7 @@ requires_openai_auth = false
 	t.Cleanup(func() { _ = client.Close() })
 	s := &nativeCodexSession{client: client, version: release.Version}
 	request, err := client.ConformanceStart("thread/start", map[string]any{
-		"cwd": repo, "approvalPolicy": "never", "sandbox": codexToolSandbox(),
+		"cwd": repo, "approvalPolicy": "never", "sandbox": sandboxMode,
 		"config": map[string]bool{"bypass_hook_trust": true},
 	})
 	codexMust(t, err)
@@ -273,8 +293,11 @@ type nativeCodexEvent struct {
 	sessionMessage
 	Params struct {
 		ThreadID, TurnID string
-		Turn             struct{ ID, Status string }
-		Item             struct{ Type, Text string }
+		Turn             struct {
+			ID, Status string
+			Error      *struct{ Message string }
+		}
+		Item struct{ Type, Text string }
 	}
 }
 
@@ -338,6 +361,9 @@ func (s *nativeCodexSession) finishTurn(t *testing.T, request int) string {
 				}
 			case "turn/completed":
 				turn := event.Params.Turn
+				if turn.Error != nil {
+					t.Fatalf("native Codex thread %s turn %q failed: %s", s.id, turn.ID, turn.Error.Message)
+				}
 				if turn.ID == "" || turn.Status != "completed" || !answered[turn.ID] {
 					t.Fatalf("native Codex thread %s turn %q finished as %q, OK=%v", s.id, turn.ID, turn.Status, answered[turn.ID])
 				}

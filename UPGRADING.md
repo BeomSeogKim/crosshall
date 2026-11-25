@@ -2,15 +2,18 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Unreleased
+## To v0.3.1-rc.1
 
-Upgrading from v0.3.0 moves the database from schema 29 to schema 30. Migration 030 adds two columns to `adapter_launch` (`reconciled_seq`, `reconciled_at_ms`) and the index `turn_placeholder_finishing`; on a copy of a running hall's store (13,854 observations, 1,704 turns) it took 20 ms. A launch from before the upgrade has no record, so its next fold reads all its facts once, as v0.3.0 does.
+Upgrading from v0.3.0 moves the database from schema 29 to schema 30. Migration 030 adds two reconciliation checkpoint columns to `adapter_launch` and the index `turn_placeholder_finishing`. A launch from before the upgrade has no checkpoint, so its next reconciliation reads all its observations once.
+
+An earlier migration check took 20 ms on a copy with 13,854 observations and 1,704 turns. On macOS arm64, opening and migrating a 370 MiB synthetic store with about one million observations, 500,000 turns and 100,000 typed-ahead placeholders took 1.0–1.5 seconds across three runs, including the automatic backup.
 
 1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
-2. Copy `store.sqlite3` from the stopped hall's state directory to a private backup. On its first start, the new dispatcher also saves a `store-v29-*.sqlite3` backup beside the database.
-3. Install the new release at the path your members and installed hooks use, then run `crosshall owner start` and `crosshall owner doctor`. No setup is needed.
+2. Copy `store.sqlite3` from the stopped hall's state directory, shown by `crosshall owner doctor`, to a private backup.
+3. Install v0.3.1-rc.1 at the same path your members and installed hooks use.
+4. Run `crosshall owner start`. On first start the dispatcher saves a `store-v29-*.sqlite3` backup beside the database and runs migration 030. Run `crosshall owner doctor` and check for schema version 30. Existing hook setup still applies.
 
-To roll back, stop the dispatcher, restore the schema 29 database from your copy (or the `store-v29-*.sqlite3` backup) and start v0.3.0, which refuses a schema 30 store. Restoring discards messages and other changes made since the upgrade.
+v0.3.0 refuses to start on a schema 30 store. To roll back, stop running crosshall commands and run `crosshall owner stop` with v0.3.1-rc.1. While stopped, move the upgraded `store.sqlite3` and any `store.sqlite3-wal` or `store.sqlite3-shm` files out of the state directory. Copy your private schema 29 backup or the automatic `store-v29-*.sqlite3` backup back as `store.sqlite3`, keeping mode `0600`. Put the v0.3.0 binary back at the original path, run `crosshall owner start`, and check for schema version 29 with `crosshall owner doctor`. The restored store contains only data written before the upgrade.
 
 ## To v0.3.0
 

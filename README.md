@@ -2,9 +2,9 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.3.0, a release. New since v0.2.0: a notice can start a turn in an idle Codex CLI session that runs in Codex's managed app server, so Claude Code and Codex sessions wake each other with no relay; Antigravity CLI hooks see prompts and turn ends; owed work resumes after the hall restarts; and each agent's support lives in its own adapter, so a new one needs no core edit. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.3.1-rc.1, a release candidate. This candidate adds built-in notice coverage for managed Codex CLI on Linux arm64 and reduces the work of reconciling turns in long sessions. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.3.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.3.1-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
@@ -42,7 +42,7 @@ For the two-agent walkthrough, have Claude Code and Codex CLI installed and sign
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.3.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.3.1-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -67,7 +67,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.3.0 at /home/you/.local/bin/crosshall
+Installed crosshall v0.3.1-rc.1 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
@@ -337,7 +337,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 
 ## Limits
 
-- An idle session with an available publish route can wake for a notice. Other sessions see new requests at their next crosshall command or adapter prompt.
+- An idle session with an available publish route can wake for a notice. Built-in Codex idle-wake evidence covers managed daemon mode on macOS arm64 and Linux arm64. When a session has no notice route, it sees new requests at its next crosshall command or adapter prompt.
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
 - A Claude Code version other than the tested one, on the same platform and mode, runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
 - One machine and one user.

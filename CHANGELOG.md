@@ -2,7 +2,9 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## Unreleased
+## v0.3.1-rc.1 (2026-11-26)
+
+- **Upgrade from v0.3.0.** The first start backs up `store.sqlite3` and migrates schema 29 to 30. To roll back, restore the schema 29 backup and reinstall v0.3.0. See [UPGRADING.md](UPGRADING.md#to-v031-rc1).
 
 - **Codex managed-daemon notices on Linux arm64:** Crosshall ships publish evidence for Codex 0.172.0 with `codex-1`. An offline run with the official CLI packages verified one idle wake and settled reply, no wake during server approval, and native request and reply delivery in both directions with Claude Code using scratch evidence (#384).
 - **Uninstall removes what setup created after an agent edits its settings:** Claude Code writes its settings file after setup, for example when you pick a theme at first run. Uninstall could then no longer restore the file byte for byte, and it left the empty hook lists, the empty `permissions.allow` list and the `autoMode.allow: ["$defaults"]` list that setup had created. Setup now records the lists and objects it creates, and uninstall removes each one that is empty once crosshall's entries are gone, with `"$defaults"` when it is the last item of an allow list setup created. The agent's and the owner's own settings stay. An install made by an earlier version has no such record: after an edit, its uninstall still removes only crosshall's entries. (#385)

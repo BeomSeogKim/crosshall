@@ -147,6 +147,26 @@ func PrepareServerSpool(root *os.Root) error {
 	return nil
 }
 
+// RestoreServerSpool recreates the states of a spool that something else
+// removed, and reports whether it had to. macOS's daily /tmp cleaner removes
+// empty directories left unmodified for more than three days, which is a
+// quiet member's spool (#372).
+func RestoreServerSpool(root *os.Root) (bool, error) {
+	missing := false
+	for _, name := range []string{"in", "work", "out"} {
+		_, err := root.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			missing = true
+		} else if err != nil {
+			return false, err
+		}
+	}
+	if !missing {
+		return false, nil
+	}
+	return true, PrepareServerSpool(root)
+}
+
 // PublishServerFile atomically publishes a JSON response or readiness marker.
 func PublishServerFile(root *os.Root, name string, value any) error {
 	if name != filepath.Base(name) || name == "." || name == ".." || name == "" {

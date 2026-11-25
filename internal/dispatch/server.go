@@ -490,6 +490,12 @@ func (s *server) runMember(ctx context.Context, members *os.Root, watched watchS
 		s.logFailure(fmt.Errorf("registered member directory changed: %s", path))
 		return
 	}
+	if restored, err := spool.RestoreServerSpool(dir); err != nil {
+		s.logFailure(err)
+		return
+	} else if restored {
+		log.Printf("dispatcher: recreated the removed spool of member directory %s", path)
+	}
 	if leaf.fenced {
 		s.logFailure(hook.RetireJoinHintFiles(dir))
 	} else if err := ident.RepublishGeneration(dir, leaf.generation); !errors.Is(err, ident.ErrDirectoryBusy) {

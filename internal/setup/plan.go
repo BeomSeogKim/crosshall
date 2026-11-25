@@ -462,6 +462,13 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 	}
 	if len(kept) > 0 {
 		record.Entries, record.Undo = kept, nil
+		// A slot this edit prunes is no longer setup's: a later uninstall
+		// must not remove a list of the same name the owner adds.
+		doc, err := configDocument(updated)
+		if err != nil {
+			return edit{}, err
+		}
+		record.Created = slices.DeleteFunc(slices.Clone(record.Created), func(s []string) bool { return configAt(doc, s) == nil })
 		e.Record = &record
 	}
 	return e, nil

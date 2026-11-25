@@ -314,6 +314,9 @@ func configAt(doc *configNode, path []string) *configNode {
 // pruneSlots removes each listed object or list that is empty, deepest
 // first, so an object emptied by removing its last list goes too.
 func pruneSlots(raw []byte, slots [][]string) ([]byte, error) {
+	if slices.ContainsFunc(slots, func(s []string) bool { return len(s) == 0 }) {
+		return nil, errors.New("invalid install journal: empty created slot")
+	}
 	ordered := slices.Clone(slots)
 	slices.SortStableFunc(ordered, func(a, b []string) int { return len(b) - len(a) })
 	for _, path := range ordered {

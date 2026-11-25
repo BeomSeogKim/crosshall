@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,4 +81,58 @@ func vendorEdit(t *testing.T, installed []byte, fields string) []byte {
 		t.Fatalf("settings are not an object: %s", installed)
 	}
 	return append(append(append([]byte{}, installed[:at+1]...), fields...), installed[at+1:]...)
+}
+
+// A partial uninstall keeps the changed entry's record but must not keep
+// claiming the slots it pruned: a list the owner adds later stays.
+func TestPartialUninstallReleasesThePrunedSlots(t *testing.T) {
+	f := setuptest.New(t, "claude")
+	s := scopedService(f)
+	path := filepath.Join(f.Home, ".claude", "settings.json")
+	if err := os.Mkdir(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigFixture(t, path, []byte(`{"hooks":{}}`), 0600)
+	if out, err := realRun(t, s, f, Request{Terminal: true, Adapters: []string{"claude"}}, "y\n"); err != nil {
+		t.Fatalf("setup failed: %v\n%s", err, out)
+	}
+	installed := configBytes(t, path)
+	start := bytes.Index(installed, []byte(`"SessionStart"`))
+	timeout := regexp.MustCompile(`"timeout":\s*\d+`).FindIndex(installed[start:])
+	if start < 0 || timeout == nil {
+		t.Fatalf("no managed SessionStart timeout: %s", installed)
+	}
+	edited := slices.Concat(installed[:start+timeout[0]], []byte(`"timeout": 99`), installed[start+timeout[1]:])
+	writeConfigFixture(t, path, edited, 0600)
+	uninstall := func() map[string]any {
+		t.Helper()
+		if out, err := realRun(t, s, f, Request{Action: "uninstall", Apply: true, Adapters: []string{"claude"}}, ""); err != nil {
+			t.Fatalf("uninstall failed: %v\n%s", err, out)
+		}
+		var got struct {
+			Hooks map[string]any `json:"hooks"`
+		}
+		if err := json.Unmarshal(configBytes(t, path), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Hooks
+	}
+	if hooks := uninstall(); hooks["SessionStart"] == nil || hooks["Stop"] != nil {
+		t.Fatalf("first uninstall hooks = %v, want only the changed SessionStart", hooks)
+	}
+	current := configBytes(t, path)
+	owned := bytes.Replace(current, []byte(`"hooks":{`), []byte(`"hooks":{"Stop":[],`), 1)
+	if bytes.Equal(owned, current) {
+		t.Fatalf("fixture has no compact hooks object: %s", current)
+	}
+	writeConfigFixture(t, path, owned, 0600)
+	if hooks := uninstall(); hooks["Stop"] == nil {
+		t.Fatalf("retry removed the owner's empty Stop list: %v", hooks)
+	}
+}
+
+func TestPruneRejectsAnEmptySlot(t *testing.T) {
+	if _, err := pruneSlots([]byte(`{"hooks":{}}`), [][]string{{}}); err == nil {
+		t.Fatal("an empty slot path from the journal was accepted")
+	}
 }

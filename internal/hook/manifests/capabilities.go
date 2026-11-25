@@ -141,7 +141,7 @@ func SetupOrder() []string {
 
 var (
 	readMu sync.Mutex
-	reader = func(adapter string) ([]byte, error) { return FS.ReadFile(adapter + ".json") }
+	reader = readSource
 	loaded func() map[string]record
 )
 

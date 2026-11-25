@@ -66,3 +66,5 @@ func (agyInstaller) memberRules(adapter, executable string) ([]Entry, []byte, er
 	entries, err := jsonMemberRules(adapter, executable, "command(%s %s)")
 	return entries, nil, err
 }
+
+func (agyInstaller) hasMemberRules() bool { return true }

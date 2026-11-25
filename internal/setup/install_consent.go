@@ -11,6 +11,8 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hook"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -85,7 +87,7 @@ func (d installDisclosure) write(out io.Writer) error {
 		fmt.Fprintln(&text, "- Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.")
 	}
 	if d.prompt {
-		fmt.Fprintln(&text, "- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
+		fmt.Fprintln(&text, "- Prompt line ("+strings.Join(promptLineAgents(), ", ")+"). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.")
 	}
 	pickup := "its next crosshall read."
 	if d.prompt {
@@ -153,4 +155,16 @@ func (d installDisclosure) turnEnd() string {
 		return "- Turn-end check. Not available for these builds."
 	}
 	return "- Turn-end check (Claude Code, " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
+}
+
+// promptLineAgents names, in setup order, the agents whose hooks show the
+// prompt line.
+func promptLineAgents() []string {
+	var names []string
+	for _, adapter := range manifests.SetupOrder() {
+		if caps, _ := manifests.CapabilitiesOf(adapter); caps.PromptLine {
+			names = append(names, ident.Identity{Vendor: adapter}.CLIName())
+		}
+	}
+	return names
 }

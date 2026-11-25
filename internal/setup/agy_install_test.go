@@ -86,7 +86,7 @@ func TestAgySetupOwnsOnlyItsNamedSessionStartGroup(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := groups["crosshall"]["SessionStart"]
-			if len(groups["crosshall"]) != 1 || len(start) != 1 || start[0].Type != "command" || start[0].Timeout != 1 {
+			if len(groups["crosshall"]) != 3 || len(start) != 1 || start[0].Type != "command" || start[0].Timeout != 1 {
 				t.Fatalf("native named SessionStart group = %+v", groups["crosshall"])
 			}
 			command := exec.CommandContext(ctx, "/bin/sh", "-c", start[0].Command)

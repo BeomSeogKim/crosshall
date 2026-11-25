@@ -56,7 +56,7 @@ func TestAntigravitySetupInstallsAndInvokesOnlyCLIStartup(t *testing.T) {
 	}
 	var hooks []setupHook
 	if err := json.Unmarshal(installed["crosshall"]["SessionStart"], &hooks); err != nil || len(hooks) != 1 ||
-		len(installed["crosshall"]) != 1 || hooks[0].Timeout != 1 || len(hooks[0].Args) != 0 {
+		len(installed["crosshall"]) != 3 || hooks[0].Timeout != 1 || len(hooks[0].Args) != 0 {
 		t.Fatalf("installed hooks: %s, error %v", installed["crosshall"], err)
 	}
 	repo := f.enrollmentRepo()

@@ -22,8 +22,8 @@ func (agyInstaller) statePinned() bool { return true }
 
 func (agyInstaller) hookGroup() string { return agyHookGroup }
 
-// recognizeHooks counts the crosshall group and any SessionStart handler of
-// another group that runs crosshall.
+// recognizeHooks counts the crosshall group and any installed event's
+// handler of another group that runs crosshall.
 func (agyInstaller) recognizeHooks(doc *configNode, spec hook.InstallSpec) int {
 	if doc == nil {
 		return 0
@@ -34,13 +34,15 @@ func (agyInstaller) recognizeHooks(doc *configNode, spec hook.InstallSpec) int {
 			count++
 			continue
 		}
-		list := group.value.field("SessionStart")
-		if list == nil || list.kind != '[' {
-			continue
-		}
-		for _, handler := range list.items {
-			if recognizableHook(handler, spec, "SessionStart") {
-				count++
+		for _, event := range spec.Events {
+			list := group.value.field(event)
+			if list == nil || list.kind != '[' {
+				continue
+			}
+			for _, handler := range list.items {
+				if recognizableHook(handler, spec, event) {
+					count++
+				}
 			}
 		}
 	}

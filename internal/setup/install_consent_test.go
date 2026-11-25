@@ -29,7 +29,7 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 	for _, tc := range []struct {
 		adapter string
 		prompt  bool
-	}{{"codex", true}, {"agy", false}} {
+	}{{"codex", true}, {"agy", true}} {
 		t.Run(tc.adapter, func(t *testing.T) {
 			f := setuptest.New(t, tc.adapter)
 			out, err := realRun(t, scopedService(f), f, Request{Offer: true, Terminal: true}, "\n")
@@ -37,7 +37,7 @@ func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 			if tc.prompt {
 				pickup = "its next prompt or " + pickup
 			}
-			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI).") != tc.prompt ||
+			if err != nil || strings.Contains(out, "- Prompt line (Claude Code, Codex CLI, Antigravity).") != tc.prompt ||
 				!strings.Contains(out, "- Notices and the turn-end check are not available for these builds. A session sees new work at "+pickup) {
 				t.Fatalf("offer: %v\n%s", err, out)
 			}
@@ -257,7 +257,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			} else if tc.name == "unreadable" {
 				joining = "- Joining. A new session joins its repository's channel when it starts, in repositories that have one. Whether a repository without a channel gets one depends on your setting (crosshall owner channel auto on|off)."
 			}
-			want := joining + "\n- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
+			want := joining + "\n- Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.\n" + notice + "\n"
 			if turnEnd != "" {
 				want += turnEnd + "\n"
 			}

@@ -31,7 +31,7 @@ func inspect(stateRoot, executable string) []InstallStatus {
 	for _, spec := range hook.InstallSpecs() {
 		status := InstallStatus{
 			Adapter: spec.Adapter, Executable: unknown, Version: unknown, InstallState: unknown,
-			Trust: unknown, Intended: len(spec.Events),
+			Trust: unknown, Intended: intendedEntries(spec),
 		}
 		if b, err := currentBuild(spec); err == nil {
 			status.Executable = b.Executable
@@ -232,4 +232,13 @@ func InstalledConfigDir(stateRoot, adapter string) string {
 		return filepath.Dir(f.Path)
 	}
 	return ""
+}
+
+// intendedEntries is how many configuration entries an install writes: one
+// per event, or one named group holding them all.
+func intendedEntries(spec hook.InstallSpec) int {
+	if installerFor(spec.Adapter).hookGroup() != "" {
+		return 1
+	}
+	return len(spec.Events)
 }

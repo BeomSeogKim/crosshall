@@ -27,8 +27,8 @@ func TestAntigravitySessionStartAcceptsOnlySupportedPayload(t *testing.T) {
 	if !ok {
 		t.Fatal("SessionStart unavailable")
 	}
-	if len(m.Events) != 1 || spec.Stop {
-		t.Fatal("Antigravity acquired another hook capability")
+	if len(m.Events) != 3 || spec.Stop {
+		t.Fatal("Antigravity's hook events changed")
 	}
 	if _, sends := publish.Lookup("agy"); sends {
 		t.Fatal("Antigravity acquired a publish adapter")

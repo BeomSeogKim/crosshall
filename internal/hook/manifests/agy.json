@@ -4,7 +4,10 @@
   "display_name": "Antigravity",
   "aliases": ["antigravity"],
   "setup_order": 3,
-  "revision": "agy-1",
+  "revision": "agy-2",
+  "prior_revisions": {
+    "agy-1": []
+  },
   "event_field": "hookEventName",
   "session_field": "conversationId",
   "session_env": "ANTIGRAVITY_CONVERSATION_ID",
@@ -20,13 +23,22 @@
   "cwd_list": true,
   "identity_proof": "antigravity_transcript",
   "empty_output": "{}",
+  "build_from_host": true,
+  "host_modes": {"print": ["-p", "--print", "--prompt"]},
+  "host_mode_default": "interactive",
+  "literal_fields": ["invocationNum", "initialNumSteps", "executionNum", "fullyIdle"],
+  "stop_active": {"field": "executionNum", "inactive": "0"},
   "install": {
     "file": "hooks.json",
     "encoding": "shell",
     "timeout_s": 1,
-    "events": ["SessionStart"]
+    "events": ["SessionStart", "PreInvocation", "Stop"]
   },
   "events": {
-    "SessionStart": {"enroll": true, "source": "startup", "output": "inject_steps"}
+    "SessionStart": {"enroll": true, "source": "startup", "output": "inject_steps"},
+    "PreInvocation": {"fact": "prompt_submitted", "notice": true, "output": "inject_steps", "turn_required": true,
+      "when": {"invocationNum": "0"}, "turn_field": "initialNumSteps", "open_turn": true},
+    "Stop": {"fact": "turn_finishing", "stop": true, "output": "continue", "turn_from_open": true,
+      "ref_fields": ["executionNum"], "stop_require": {"terminationReason": "NO_TOOL_CALL", "fullyIdle": "true"}}
   }
 }

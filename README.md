@@ -52,7 +52,7 @@ The installer downloads the release archive for your machine, checks its SHA-256
 ```text
 Saying yes turns these on for the listed agents:
 - Joining. A new session joins its repository's channel when it starts. A Git repository with no channel gets one, named after its directory. Off for repositories without a channel: crosshall owner channel auto off. A repository that has a channel keeps joining its sessions while the agent's hooks are on.
-- Prompt line (Claude Code, Codex CLI). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
+- Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
 - Turn-end check (Claude Code, interactive sessions and print mode). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off
 A no skips future installer offers for the listed agents. Enter skips this offer.

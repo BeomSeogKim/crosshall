@@ -154,3 +154,28 @@ func TestAntigravityGetsARequestAtItsNextPromptsFirstModelCall(t *testing.T) {
 		t.Fatalf("a disabled adapter's prompt offered %q", got)
 	}
 }
+
+// An Antigravity session that joined by hand, whose start never reached
+// the hall (it began before setup), gets a request at the first model call
+// of its next prompt: that prompt opens the launch its start would have.
+func TestAHandJoinedAntigravitySessionGetsARequestAtItsNextPrompt(t *testing.T) {
+	f, commands := newAgyWorld(t)
+	repo := f.enrollmentRepo()
+	member := &participant{w: f.world, extra: []string{"ANTIGRAVITY_CONVERSATION_ID=" + agyConversation, "ANTIGRAVITY_LS_VERSION=cli-1.5.16"}}
+	member.must("join", "setup-check", "--as", "agy1")
+	writer := f.member()
+	writer.must("join", "setup-check", "--as", "writer")
+	id := strconv.FormatInt(num(t, writer.must("ask", "@agy1", "a request for a hand-joined session"), "id"), 10)
+	want := pendingContext([]string{id})
+	deadline := time.Now().Add(fixtureEventTimeout)
+	for steps := 3; ; steps += 2 {
+		got := injected(t, f.invokeAgy(commands["PreInvocation"], repo, "PreInvocation",
+			map[string]any{"invocationNum": 0, "initialNumSteps": steps}))
+		if got == want {
+			break
+		}
+		if got != "" || time.Now().After(deadline) {
+			t.Fatalf("the first model call offered %q, want %q", got, want)
+		}
+	}
+}

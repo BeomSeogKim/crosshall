@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -515,6 +516,25 @@ func okOrErr(out wire.HookResult, err error) (core.Result, error) {
 	return OK(out)
 }
 
+// openMissedSessionLaunch gives a live member without any launch, one that
+// joined by hand while its session's start never reached the hall, the
+// session launch that start would have opened, at its first prompt. Its
+// start time is unknown (0), as for a session recovered from a prompt. The
+// prompt's mode is the session's own unless the vendor can run the session
+// in a shared server whose environment its hooks inherit; then, as for a
+// recovered prompt, only a prompt that names its server keeps it.
+func openMissedSessionLaunch(ctx context.Context, tx store.Tx, principal int64, cmd HookEvent) error {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ?)`, principal).Scan(&exists); err != nil || exists {
+		return err
+	}
+	profile := cmd.Profile
+	if caps, _ := manifests.CapabilitiesOf(profile.Adapter); caps.SharedDaemon && !promptNamesServer(cmd) {
+		profile.Mode = "unverified"
+	}
+	return registerLaunch(ctx, tx, principal, profile, SessionLaunch, false, "", 0)
+}
+
 func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, pidNamespace string, at int64) error {
 	// A newer start of a known launch (a resumed session-scoped launch)
 	// reactivates it; an older or equal one changes nothing.
@@ -724,6 +744,11 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		return OK(out)
 	}
 	live := found && b.state == "live"
+	if live && cmd.Fact == FactPromptSubmitted && cmd.LaunchRef == SessionLaunch {
+		if err := openMissedSessionLaunch(ctx, tx, principal, cmd); err != nil {
+			return core.Result{}, err
+		}
+	}
 	// Launches that can no longer be current are ended first, so a killed
 	// newer launch cannot hide a running older one (#100).
 	otherAlive, settled, err := s.settleLaunches(ctx, tx, principal, cmd.LaunchRef, cmd.HookAtMS, now)

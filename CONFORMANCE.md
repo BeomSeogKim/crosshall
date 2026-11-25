@@ -122,9 +122,31 @@ Claude Code print mode asks first. A neutral prompt in the open Codex app-server
 thread must receive the request ID in developer context before Codex reads and
 answers. Codex then asks while Claude Code has a running member wait. In each direction the asker reads
 the correlated answer, and the ledger verifies native session identity, pickup
-and settlement. The `claude_to_codex_next_prompt` case provides the read and
-reply sequence for a future Codex notice case that starts the receiver turn
-without a harness prompt.
+and settlement.
+
+### Native notices in both directions
+
+Run the native release-gate check on macOS arm64 with Claude Code on `PATH`
+and an unpacked official Codex managed app-server release package:
+
+```sh
+CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-release \
+  go test -tags conformance -count=1 -timeout 3m -run '^TestCrossVendorNativeRoundTrip$' -v ./test/conformance/
+```
+
+The check uses the same candidate binary for both adapters. It starts a Claude
+Code interactive session and a loaded thread on the real Codex managed server
+in separate scratch homes. Both models use loopback endpoints. The fixture
+imports publish evidence for those exact builds into the scratch hall and
+waits for both native routes to activate.
+
+Each direction requires a native request notice, recipient pickup and a
+correlated answer. A native reply notice tells the original sender to read
+the answer. Both notices must be recorded as submitted and observed in their
+own turns. The fixture submits the initiating ask turn and observes the
+receiving turns without entering any further prompts. The release gate has a
+separate row for this scenario and requires both directions. A missing package
+or unsupported host blocks that row.
 
 ## Hall-level checks
 

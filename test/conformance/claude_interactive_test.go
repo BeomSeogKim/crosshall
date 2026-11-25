@@ -197,6 +197,12 @@ func idleTurns(n int) string {
 // for the callback of its start.
 func (c *conformance) interactive(args ...string) *terminal {
 	c.t.Helper()
+	cmd := exec.Command(c.claude, append([]string{"--model", "haiku", "--permission-mode", "default"}, args...)...)
+	return c.startInteractive(cmd, c.claudeEnv())
+}
+
+func (c *conformance) startInteractive(cmd *exec.Cmd, env []string) *terminal {
+	c.t.Helper()
 	control, name, err := openPTY()
 	if err != nil {
 		c.t.Fatalf("open a pseudo-terminal: %v", err)
@@ -210,8 +216,7 @@ func (c *conformance) interactive(args ...string) *terminal {
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, tty.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&size))); errno != 0 {
 		c.t.Fatalf("size the pseudo-terminal: %v", errno)
 	}
-	cmd := exec.Command(c.claude, append([]string{"--model", "haiku", "--permission-mode", "default"}, args...)...)
-	cmd.Dir, cmd.Env = c.repo, append(c.claudeEnv(), "TERM=xterm-256color")
+	cmd.Dir, cmd.Env = c.repo, append(env, "TERM=xterm-256color")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	started := len(c.events())
@@ -265,13 +270,18 @@ func (term *terminal) await(what string, done func() bool) {
 
 func (term *terminal) awaitWithin(timeout time.Duration, what string, done func() bool) {
 	term.c.t.Helper()
+	term.awaitWithinFor(term.c.t, timeout, what, done)
+}
+
+func (term *terminal) awaitWithinFor(t *testing.T, timeout time.Duration, what string, done func() bool) {
+	t.Helper()
 	for deadline := time.Now().Add(timeout); !done(); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			screen := term.text()
 			if len(screen) > 1500 {
 				screen = screen[len(screen)-1500:]
 			}
-			term.c.t.Fatalf("no %s within %s; events %+v\nterminal: %q", what, timeout, term.c.events(), screen)
+			t.Fatalf("no %s within %s; events %+v\nterminal: %q", what, timeout, term.c.events(), screen)
 		}
 	}
 }
@@ -286,18 +296,25 @@ const idleQuiet = 600 * time.Millisecond
 // (TestClaudeCodeInteractiveTypedAheadPrompt).
 func (term *terminal) idle() {
 	term.c.t.Helper()
-	term.await("an idle prompt", func() bool {
-		term.mu.Lock()
-		defer term.mu.Unlock()
-		return time.Since(term.wrote) > idleQuiet
-	})
+	term.await("an idle prompt", term.isIdle)
+}
+
+func (term *terminal) isIdle() bool {
+	term.mu.Lock()
+	defer term.mu.Unlock()
+	return time.Since(term.wrote) > idleQuiet
 }
 
 // keys types into the session's terminal.
 func (term *terminal) keys(text string) {
 	term.c.t.Helper()
+	term.typeKeys(term.c.t, text)
+}
+
+func (term *terminal) typeKeys(t *testing.T, text string) {
+	t.Helper()
 	if _, err := term.control.WriteString(text); err != nil {
-		term.c.t.Fatalf("type into the session: %v", err)
+		t.Fatalf("type into the session: %v", err)
 	}
 }
 

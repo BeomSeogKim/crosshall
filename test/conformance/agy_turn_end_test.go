@@ -338,8 +338,12 @@ func TestAntigravityInteractiveTurnEndConformance(t *testing.T) {
 		term.agyTurn("Reply with just the word hello.", 1)
 		turns := c.storeCount(`SELECT COUNT(*) FROM turn`)
 		sent := make(chan sentAsk, 1)
-		ctx := t.Context()
-		go func() { sent <- c.askDuringNextTurn(ctx, turns) }()
+		done := make(chan struct{})
+		ctx, cancel := context.WithCancel(t.Context())
+		// Registered after the world's own cleanup, so it runs first: the
+		// sender and its command end before the scratch roots go.
+		t.Cleanup(func() { cancel(); <-done })
+		go func() { defer close(done); sent <- c.askDuringNextTurn(ctx, turns) }()
 		// agy runs no later Stop hook once one answers continue, so the
 		// probe logs only the continued turn's own Stop.
 		term.agyTurn("Count from one to five in words, one per line. "+agyRules, 1)
@@ -427,7 +431,8 @@ type sentAsk struct {
 
 // askDuringNextTurn sends the request once the store has more turns than
 // before, that is once the next prompt opened its turn. It runs beside the
-// test, so it reports instead of failing, and gives up when the test ends.
+// test, so it reports instead of failing, and gives up, killing its
+// command, when ctx ends.
 func (c *conformance) askDuringNextTurn(ctx context.Context, before int) sentAsk {
 	deadline := time.Now().Add(time.Minute)
 	for {
@@ -443,8 +448,14 @@ func (c *conformance) askDuringNextTurn(ctx context.Context, before int) sentAsk
 			return sentAsk{err: ctx.Err()}
 		case err != nil:
 			return sentAsk{err: err}
+		case time.Now().After(deadline):
+			return sentAsk{err: fmt.Errorf("no new turn within a minute; nothing sent")}
 		case n > before:
-			out, err := c.crosshallRun(claudeWriterEnv, "--json", "ask", "@agy1", "please answer done")
+			cmd := exec.CommandContext(ctx, c.crosshall, "--json", "ask", "@agy1", "please answer done")
+			cmd.Env, cmd.Dir = append(c.base(), claudeWriterEnv...), c.home
+			cmd.WaitDelay = 2 * time.Second // a child holding the output pipes does not keep it
+			raw, err := cmd.CombinedOutput()
+			out := string(raw)
 			var r struct {
 				ID int64 `json:"id"`
 			}
@@ -452,8 +463,6 @@ func (c *conformance) askDuringNextTurn(ctx context.Context, before int) sentAsk
 				return sentAsk{err: fmt.Errorf("ask: %v: %s", err, out)}
 			}
 			return sentAsk{id: r.ID}
-		case time.Now().After(deadline):
-			return sentAsk{err: fmt.Errorf("no new turn within a minute; nothing sent")}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

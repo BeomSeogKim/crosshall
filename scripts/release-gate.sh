@@ -445,18 +445,28 @@ row_hook_cost() {
       fi
     done
   done
-  median500() { # nanoseconds of the median 500-turn sample of three runs
-    cat "$work"/cost-"$1"-*.log | awk '$2 == "500" && $3 == "turns:" {
+  median_at() { # nanoseconds of the median sample at $2 turns of side $1's three runs
+    cat "$work"/cost-"$1"-*.log | awk -v n="$2" '$2 == n && $3 == "turns:" {
         v = $4; f = 1
         if (v ~ /ms$/) { f = 1e6 } else if (v ~ /µs$/) { f = 1e3 } else if (v ~ /ns$/) { f = 1 } else if (v ~ /s$/) { f = 1e9 }
         gsub(/[^0-9.]/, "", v); print v * f }' | sort -n | sed -n 2p
   }
-  base_ns=$(median500 base)
-  head_ns=$(median500 head)
-  [[ -n $base_ns && -n $head_ns ]] || { detail "could not read the 500-turn medians"; return 1; }
-  awk -v b="$base_ns" -v h="$head_ns" -v l="$hook_cost_limit" 'BEGIN {
-      printf "500 turns: %s %.3f ms, candidate %.3f ms, ratio %.2f (limit %s), median of 3 interleaved runs\n", "base", b / 1e6, h / 1e6, h / b, l
-      exit !(h / b <= l) }' > "$out/$current.detail"
+  local turns failed=0
+  : > "$out/$current.detail"
+  for turns in 500 1000; do
+    base_ns=$(median_at base "$turns")
+    head_ns=$(median_at head "$turns")
+    # A base from before the 1,000-turn sample (#366) has none: show the candidate's.
+    if [[ $turns == 1000 && -z $base_ns && -n $head_ns ]]; then
+      awk -v h="$head_ns" 'BEGIN { printf "1000 turns: candidate %.3f ms; the base has no 1000-turn sample\n", h / 1e6 }' >> "$out/$current.detail"
+      continue
+    fi
+    [[ -n $base_ns && -n $head_ns ]] || { detail "could not read the $turns-turn medians"; return 1; }
+    awk -v n="$turns" -v b="$base_ns" -v h="$head_ns" -v l="$hook_cost_limit" 'BEGIN {
+        printf "%s turns: %s %.3f ms, candidate %.3f ms, ratio %.2f (limit %s), median of 3 interleaved runs\n", n, "base", b / 1e6, h / 1e6, h / b, l
+        exit !(h / b <= l) }' >> "$out/$current.detail" || failed=1
+  done
+  return "$failed"
 }
 
 cross_vendor_test() {

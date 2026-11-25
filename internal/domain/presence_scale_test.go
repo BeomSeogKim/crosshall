@@ -107,7 +107,7 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 		times  []time.Duration
 	}
 	var sessions []*history
-	for _, turns := range []int{250, 400, 500} {
+	for _, turns := range []int{250, 400, 500, 1000} {
 		f, reader, _ := turnEndFixture(t, "launch")
 		h := &history{turns: turns, f: f, reader: reader, at: f.now.UnixMilli() + 10}
 		for i := range turns {
@@ -138,15 +138,19 @@ func TestHookCostStaysBoundedInALongSession(t *testing.T) {
 		t.Logf("%d turns: %v per hook event (median of %d; fastest %v, slowest %v)",
 			h.turns, median(h), samples, h.times[0], h.times[len(h.times)-1])
 	}
-	at250, at500 := median(sessions[0]), median(sessions[len(sessions)-1])
+	at250, at500, at1000 := median(sessions[0]), median(sessions[2]), median(sessions[3])
 	if at500 > 100*time.Millisecond {
 		t.Fatalf("a hook event after 500 turns took %v, want under 100ms", at500)
 	}
 	// The bound alone let a cost six times higher pass on a fast machine.
-	// A hook event reads the session's facts, so its cost may grow with the
-	// turns (about 1.9 times from 250 to 500 turns), but not faster: work
-	// done per earlier fact made it 4.6 times.
+	// Work done per earlier fact made the 500-turn event 4.6 times the
+	// 250-turn one.
 	if ratio := float64(at500) / float64(at250); ratio > 3 {
 		t.Fatalf("a hook event after 500 turns took %v, %.1f times the %v after 250: the cost grows faster than the turns", at500, ratio, at250)
+	}
+	// A hook event reads only the session's recent facts (#366): 1,000 turns
+	// cost what 250 do (ratio 1.0). Folding all turn facts made it 2.2.
+	if ratio := float64(at1000) / float64(at250); ratio > 1.5 {
+		t.Fatalf("a hook event after 1,000 turns took %v, %.1f times the %v after 250: it reads the session's whole history", at1000, ratio, at250)
 	}
 }

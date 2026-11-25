@@ -81,10 +81,12 @@ func ApprovalChecks(ctx context.Context, tx store.Tx, now time.Time) ([]Approval
 // ConfirmApproval records that the member's server shows its approval
 // request waiting on its owner: a copy of the request, stored by the
 // dispatcher with a fresh cap, so the views treat it as an open approval.
-// Nothing is stored when the member's latest fact is no longer that one.
+// Nothing is stored when the member's latest fact is no longer that one,
+// its launch ended, or it ran a crosshall command since: a copy stored after
+// that command would reopen an approval the command closed.
 func ConfirmApproval(ctx context.Context, tx store.Tx, principal, factSeq int64, now time.Time) (bool, error) {
 	f, found, err := store.ReadLatestFact(ctx, tx, principal, futureSlackMS)
-	if err != nil || !found || f.Seq != factSeq || f.Fact != FactApprovalRequested {
+	if err != nil || !found || f.Seq != factSeq || f.Fact != FactApprovalRequested || !f.LaunchLive || f.CommandSince {
 		return false, err
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO observation

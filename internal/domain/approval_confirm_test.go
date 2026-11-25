@@ -83,3 +83,36 @@ func TestCodexApprovalIsOpenOnceItsServerConfirmsIt(t *testing.T) {
 		t.Fatalf("after Stop: %+v", fact)
 	}
 }
+
+// A member that ran a crosshall command after its request was listed is
+// acting again: the confirmation stores nothing, so it cannot reopen an
+// approval the command closed.
+func TestCodexApprovalConfirmedAfterACommandStaysClosed(t *testing.T) {
+	f, _ := adapterChannel(t)
+	f.policy("codex", true, 1)
+	s := f.newSession("codex")
+	at := f.now.UnixMilli()
+	f.hook(s, codexStart("startup", publish.ModeDaemon, at))
+	f.run(s, Join{Channel: "checkout"}, "")
+	approval := event(SessionLaunch, FactApprovalRequested, "t1:approval", "t1", at+1, false)
+	approval.Profile = codexProfile(publish.ModeDaemon)
+	f.hook(s, approval)
+	principal := f.principalOf(s)
+	var checks []ApprovalCheck
+	f.inTx(func(tx store.Tx) (err error) {
+		checks, err = ApprovalChecks(t.Context(), tx, f.now.Add(3*time.Second))
+		return err
+	})
+	if len(checks) != 1 {
+		t.Fatalf("checks %+v", checks)
+	}
+	f.run(s, Inbox{}, "")
+	var stored bool
+	f.inTx(func(tx store.Tx) (err error) {
+		stored, err = ConfirmApproval(t.Context(), tx, principal, checks[0].FactSeq, f.now.Add(3*time.Second))
+		return err
+	})
+	if fact, _ := latestFact(t.Context(), f.db, principal); stored || fact == nil || fact.ApprovalOpen {
+		t.Fatalf("stored %v after a command; fact %+v", stored, fact)
+	}
+}

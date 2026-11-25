@@ -30,16 +30,28 @@ type WithdrawCandidate struct {
 	Reason   string
 }
 
+// withdrawCandidatesQuery reads only open notices, through the partial
+// index publish_attempt_binding: the publisher runs it in every tick of the
+// writer. No ORDER BY, which would scan the whole table.
+var withdrawCandidatesQuery = `SELECT a.id, a.adapter, a.lane, a.reserved_at_ms, a.process_pid, a.process_start_ms,
+		NOT EXISTS (SELECT 1 FROM publish_route r WHERE r.binding_id = a.binding_id AND r.state = 'active'
+			AND r.thread_id IS NOT NULL AND r.vendor_home IS NOT NULL AND ` + store.PublishThreadLane() + ` = a.lane)
+		FROM publish_attempt a
+		WHERE ` + openPublishLane + ` AND a.state IN ('submitted', 'uncertain') AND a.lane LIKE 'thread:%'`
+
+// stillDueItem is an item of attempt i the notice still carries: for a
+// notice, unread work (pendingPublishItem); for a resume notice, whose
+// items were read or told of before and which announces none of them, a
+// request the member still owes (openResumeItem).
+const stillDueItem = `CASE WHEN EXISTS (SELECT 1 FROM announcement n WHERE n.principal_id = i.principal_id
+		AND n.message_id = i.message_id AND n.via = 'publish' AND n.ref = i.attempt_id)
+	THEN ` + pendingPublishItem + ` ELSE ` + openResumeItem + ` END`
+
 // WithdrawCandidates lists the submitted or uncertain notices on thread
 // lanes whose route has ended or whose items are no longer pending. A
 // process lane is never listed: its queue ends with its process (Retired).
 func WithdrawCandidates(ctx context.Context, tx store.Tx) ([]WithdrawCandidate, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.adapter, a.lane, a.reserved_at_ms, a.process_pid, a.process_start_ms,
-		NOT EXISTS (SELECT 1 FROM publish_route r WHERE r.binding_id = a.binding_id AND r.state = 'active'
-			AND r.thread_id IS NOT NULL AND r.vendor_home IS NOT NULL AND `+store.PublishThreadLane()+` = a.lane)
-		FROM publish_attempt a
-		WHERE `+openPublishLane+` AND a.state IN ('submitted', 'uncertain') AND a.lane LIKE 'thread:%'
-		ORDER BY a.id`)
+	rows, err := tx.QueryContext(ctx, withdrawCandidatesQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +86,7 @@ func WithdrawCandidates(ctx context.Context, tx store.Tx) ([]WithdrawCandidate, 
 			pending, err := selectIDs(ctx, tx, `SELECT x.message_id FROM publish_attempt_item i
 				JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
 				JOIN message m ON m.id = x.message_id
-				WHERE i.attempt_id = ? AND `+pendingPublishItem, c.ID)
+				WHERE i.attempt_id = ? AND `+stillDueItem, c.ID)
 			if err != nil {
 				return nil, err
 			}

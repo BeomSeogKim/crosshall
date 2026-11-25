@@ -92,12 +92,12 @@ func reachWake(status store.PublishState, found bool) Wake {
 		w.Adapter = adapter
 		return w
 	}
-	switch status.Reason {
-	// A Codex session outside a confirmed managed app server has no route a
-	// notice could take.
-	case publish.CodexNoDaemon, publish.CodexDaemonUnverified:
+	// A session its adapter's sender cannot reach at all (such as a Codex
+	// session outside a confirmed managed app server) has no route a notice
+	// could take.
+	if adapter, ok := publish.ReachReason(status.Reason); ok {
 		w := none(WhyNoRoute)
-		w.Adapter = "codex"
+		w.Adapter = adapter
 		return w
 	}
 	return none(WhyUnproven)

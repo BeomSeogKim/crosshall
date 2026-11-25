@@ -184,6 +184,21 @@ type Adapter interface {
 	BackgroundWakes() bool
 }
 
+// reachReasons maps each reason an adapter's Reach gives to that adapter.
+// The words are adapter-owned and stored as they are; the core reads them
+// as one class: the adapter's sender cannot reach the session at all.
+var reachReasons = map[string]string{
+	CodexNoDaemon:         "codex",
+	CodexDaemonUnverified: "codex",
+}
+
+// ReachReason reports whether reason is a shipped adapter's Reach reason,
+// and whose.
+func ReachReason(reason string) (adapter string, ok bool) {
+	adapter, ok = reachReasons[reason]
+	return adapter, ok
+}
+
 // Registry maps an adapter name to its Adapter.
 type Registry map[string]Adapter
 

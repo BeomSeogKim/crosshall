@@ -16,6 +16,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/testreap"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -46,7 +47,7 @@ func TestMain(m *testing.M) {
 	// A diagnostic test may only inspect a vendor home it sets itself.
 	os.Unsetenv("CLAUDE_CONFIG_DIR")
 	os.Unsetenv("CODEX_HOME")
-	os.Exit(m.Run())
+	os.Exit(testreap.Check(m.Run()))
 }
 
 func TestFirstContactChecksExpiryBeforeRegistration(t *testing.T) {
@@ -180,6 +181,7 @@ func TestDispatcherRestartRecoversClaim(t *testing.T) {
 		DefaultStateRoot: filepath.Join(root, "default"), Rendezvous: filepath.Join(root, "rendezvous"), Owner: true,
 	}
 	ctx := t.Context()
+	testreap.Arm(t)
 	t.Cleanup(func() {
 		marker := readReady(cfg.Rendezvous)
 		if marker.PID > 0 {

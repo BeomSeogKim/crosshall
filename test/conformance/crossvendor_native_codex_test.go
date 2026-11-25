@@ -107,7 +107,7 @@ func newNativeCodex(t *testing.T, release nativeCodexRelease, root, repo, exe st
 	}
 	codexMust(t, os.Symlink(installed, filepath.Join(packages, "current")))
 	bin := filepath.Join(installed, release.Entrypoint)
-	// The outer sandbox also encloses tools. Docker's default policy blocks nested bwrap namespaces.
+	// The Linux container encloses the tools because Docker's default policy blocks nested bwrap namespaces.
 	const sandboxMode = "danger-full-access"
 	config := fmt.Sprintf(`model = "fixture"
 model_provider = "fixture"

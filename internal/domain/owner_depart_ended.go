@@ -28,10 +28,13 @@ func (OwnerDepartEnded) Verb() string { return VerbOwnerDepartEnded }
 
 // EndedMember is a live member whose session ended long ago.
 type EndedMember struct {
-	BindingID    int64   `json:"binding_id"`
-	Channel      string  `json:"channel"`
-	Alias        string  `json:"alias"`
-	EndedAtMS    int64   `json:"ended_at_ms"`
+	BindingID int64  `json:"binding_id"`
+	Channel   string `json:"channel"`
+	Alias     string `json:"alias"`
+	EndedAtMS int64  `json:"ended_at_ms"`
+	// NoStart marks a member whose session start never reached the hall;
+	// EndedAtMS is then the last time anything was seen from it.
+	NoStart      bool    `json:"no_session_start,omitempty"`
 	OpenRequests []int64 `json:"open_request_ids,omitempty"`
 
 	channel, principal int64
@@ -49,21 +52,32 @@ type OwnerDepartEndedResult struct {
 // closed more than endedDepartAfter ago, with no fact or command of theirs
 // since (one in the same millisecond counts as since). A Codex session end is not proof the window closed (an unloaded
 // thread may be idle), so these are reported, never departed unasked.
+// It also lists the live members whose session start never reached the
+// hall (no launch at all) and from which nothing, not even a command, was
+// seen for endedDepartAfter since they joined.
 func endedMembers(ctx context.Context, tx store.Tx, now time.Time) ([]EndedMember, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT b.id, b.channel_id, b.principal_id, c.name, b.alias, p.vendor, r.updated_at_ms
+	rows, err := tx.QueryContext(ctx, `SELECT * FROM (
+		SELECT b.id, b.channel_id, b.principal_id, c.name, b.alias, p.vendor, r.updated_at_ms, 0
 		FROM binding b JOIN channel c ON c.id = b.channel_id JOIN principal p ON p.id = b.principal_id
 		JOIN publish_route r ON r.binding_id = b.id
-		WHERE b.state = 'live' AND r.state = 'ended' AND r.reason = ? AND r.updated_at_ms < ?
+		WHERE b.state = 'live' AND r.state = 'ended' AND r.reason = ?1 AND r.updated_at_ms < ?2
 			AND NOT EXISTS (SELECT 1 FROM observation o WHERE o.principal_id = b.principal_id
 				AND o.observed_at_ms >= r.updated_at_ms AND o.kind <> 'session_ended')
-		ORDER BY c.name, b.alias`, routeSessionEnded, ms(now.Add(-endedDepartAfter)))
+		UNION ALL
+		SELECT * FROM (SELECT b.id, b.channel_id, b.principal_id, c.name, b.alias, p.vendor,
+			max(b.joined_at_ms, coalesce((SELECT max(o.observed_at_ms) FROM observation o WHERE o.principal_id = b.principal_id), 0)) AS seen, 1
+			FROM binding b JOIN channel c ON c.id = b.channel_id JOIN principal p ON p.id = b.principal_id
+			WHERE b.state = 'live' AND NOT EXISTS (SELECT 1 FROM adapter_launch l WHERE l.principal_id = b.principal_id)
+				AND NOT EXISTS (SELECT 1 FROM publish_route r WHERE r.binding_id = b.id AND r.state = 'ended' AND r.reason = ?1))
+		WHERE seen < ?2)
+		ORDER BY 4, 5`, routeSessionEnded, ms(now.Add(-endedDepartAfter)))
 	if err != nil {
 		return nil, err
 	}
 	var out []EndedMember
 	for rows.Next() {
 		var m EndedMember
-		if err := rows.Scan(&m.BindingID, &m.channel, &m.principal, &m.Channel, &m.Alias, &m.vendor, &m.EndedAtMS); err != nil {
+		if err := rows.Scan(&m.BindingID, &m.channel, &m.principal, &m.Channel, &m.Alias, &m.vendor, &m.EndedAtMS, &m.NoStart); err != nil {
 			rows.Close()
 			return nil, err
 		}

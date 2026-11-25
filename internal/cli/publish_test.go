@@ -346,7 +346,7 @@ func TestEndedMembersReachTheOwnerAndDepartEndedSaysWhatItDid(t *testing.T) {
 		{BindingID: 41, Channel: "dev", Alias: "vega", EndedAtMS: at},
 	}
 	want := []string{
-		"Sessions ended over 12 hours ago, no open requests: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.",
+		"Sessions ended, or with no recorded start silent, over 12 hours ago; no open requests: @astra in #dev, @vega in #dev. crosshall owner depart --ended departs them.",
 		"@sol in #dev: session ended " + clock(at) + ", over 12 hours ago; open requests: #7 #9.",
 	}
 	if got := endedLines(ended); !slices.Equal(got, want) {

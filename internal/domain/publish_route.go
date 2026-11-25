@@ -82,6 +82,16 @@ func registerPublishRouteFromEnroll(ctx context.Context, tx store.Tx, bindingID,
 		cmd.Epoch, route, cmd.HookAtMS, now)
 }
 
+// promptNamesServer reports whether a prompt names what its start would
+// have for the route: the adapter's route rests on the session's thread and
+// the server its hooks name, not on a launch, and the prompt names that
+// server. Without one a route would be registered that no sender can reach
+// and no later prompt would replace, so none is.
+func promptNamesServer(cmd HookEvent) bool {
+	a, ok := publish.Lookup(cmd.Profile.Adapter)
+	return ok && a.ThreadRouted() && cmd.Host != nil
+}
+
 // routeHost is the server a session's start named as its host, and the
 // vendor home it serves, when the dispatcher can judge that process later;
 // else none.

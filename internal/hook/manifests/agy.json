@@ -13,9 +13,9 @@
   "session_env": "ANTIGRAVITY_CONVERSATION_ID",
   "identity": {
     "evidence": "observed",
-    "verified_on": ["1.5.11"],
+    "verified_on": ["1.5.16"],
     "agent_markers": ["ANTIGRAVITY_AGENT"],
-    "version": {"env": "ANTIGRAVITY_LS_VERSION", "prefix": "cli-", "indirect": "ls", "indirect_name": "language server"}
+    "version": {"env": "ANTIGRAVITY_LS_VERSION", "prefix": "cli-", "indirect": "ls", "indirect_name": "language server", "cli_build": true}
   },
   "host_names": ["agy"],
   "event_field_optional": true,

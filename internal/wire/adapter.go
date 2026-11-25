@@ -85,6 +85,11 @@ type HookEventArgs struct {
 	// so a launch whose start the dispatcher never saw can be bound late.
 	LaunchAtMS   int64  `json:"launch_at_ms,omitempty"`
 	PIDNamespace string `json:"pid_namespace,omitempty"`
+	// Host and VendorHome come with a prompt as with a start (see
+	// HookEnrollArgs), so a session whose start the dispatcher never saw
+	// gets the notice route that start would have registered.
+	Host       *Host  `json:"host,omitempty"`
+	VendorHome string `json:"vendor_home,omitempty"`
 }
 
 // CanRecoverEnrollment: a prompt callback may enroll a session that missed

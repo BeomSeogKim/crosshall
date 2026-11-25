@@ -47,6 +47,8 @@ type identityRow struct {
 // until, '-' read as '.' when dashesToDots. An indirect source is another
 // component's build, recorded as "<indirect>:<prefix><version>" and never
 // taken for the CLI's own version; indirectName names that component.
+// cliBuild says the build's number is the CLI's own release, so a number in
+// verifiedOn verifies it; other numbers stay an unknown CLI version.
 type versionSource struct {
 	env          string
 	prefix       string
@@ -54,6 +56,7 @@ type versionSource struct {
 	dashesToDots bool
 	indirect     string
 	indirectName string
+	cliBuild     bool
 }
 
 // genericAgentMarkers are set by agents of any vendor.
@@ -148,7 +151,15 @@ func (id Identity) Evidence() (source string, verified bool) {
 	if !ok {
 		return "", false
 	}
-	return row.evidence, slices.Contains(row.verifiedOn, id.Version)
+	return row.evidence, slices.Contains(row.verifiedOn, id.Version) || id.verifiedCLIBuild()
+}
+
+// verifiedCLIBuild reports an indirect build whose number is a verified CLI
+// release (versionSource.cliBuild).
+func (id Identity) verifiedCLIBuild() bool {
+	_, number, _, ok := id.IndirectBuild()
+	row, _ := indexRow(id.Vendor)
+	return ok && row.version.cliBuild && validVersion(number) && slices.Contains(row.verifiedOn, number)
 }
 
 // IndirectVersion reports that the vendor names its version only through
@@ -161,7 +172,7 @@ func (id Identity) IndirectVersion() bool {
 // UnknownCLI distinguishes an indirect build, or none, from a CLI version.
 func (id Identity) UnknownCLI() bool {
 	row, _ := indexRow(id.Vendor)
-	return id.IndirectVersion() &&
+	return id.IndirectVersion() && !id.verifiedCLIBuild() &&
 		(id.Version == "" || id.Version == "unknown" || strings.HasPrefix(id.Version, row.version.indirect+":"))
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 
 	"modernc.org/sqlite"
@@ -197,7 +198,7 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 		}
 	}
 	if version == len(migrations) {
-		return nil
+		return s.ensureReadIndexes(ctx)
 	}
 	var backupPath string
 	if previous {
@@ -227,7 +228,28 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			return fmt.Errorf("store: migrate to v%d: %w", step+1, err)
 		}
 	}
-	return nil
+	return s.ensureReadIndexes(ctx)
+}
+
+// ReadIndexes let the latest fact and a launch's turns be read from the
+// newest rows instead of all of a launch's observations (#366). They are not
+// part of a schema version: an index changes no result, and a binary that
+// does not know them keeps them current on its writes, so going back to it
+// needs no schema step. A migration that wants one of these names must use
+// IF NOT EXISTS.
+const ReadIndexes = `
+CREATE INDEX IF NOT EXISTS observation_launch_hook ON observation(principal_id, launch_ref, hook_at_ms);
+CREATE INDEX IF NOT EXISTS observation_launch_turn ON observation(principal_id, launch_ref, turn_ref);
+CREATE INDEX IF NOT EXISTS turn_launch_opened ON turn(principal_id, launch_ref, opened_hook_at_ms);`
+
+func (s *Store) ensureReadIndexes(ctx context.Context) error {
+	if !slices.Contains(migrations, adapterSchema) {
+		return nil // a schema without launches or turns
+	}
+	return s.Update(ctx, func(tx Tx) error {
+		_, err := tx.ExecContext(ctx, ReadIndexes)
+		return err
+	})
 }
 
 func checkSessionMoveBindings(ctx context.Context, tx Tx) error {

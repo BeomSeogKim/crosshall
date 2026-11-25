@@ -49,6 +49,9 @@ func newFixture(t *testing.T) *fixture {
 			t.Fatalf("migration %s: %v", path, err)
 		}
 	}
+	if _, err := db.Exec(store.ReadIndexes); err != nil {
+		t.Fatal(err)
+	}
 	f := &fixture{t: t, db: db, now: time.UnixMilli(1_800_000_000_000)}
 	f.svc = &Service{Clock: func() time.Time { return f.now }}
 	return f

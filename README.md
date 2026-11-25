@@ -34,9 +34,11 @@ What it does not do:
 
 ## Quick start
 
-For one person with Claude Code, Codex CLI or Antigravity CLI. On macOS or Linux on arm64 or x86-64 you need Bash, Git, curl, tar (with `gzip` on PATH if your tar is GNU tar) and `sha256sum` or `shasum`, and a network connection. If no release archive is available for your machine, the installer says why and builds from source instead, which needs Go 1.27.4 or later.
+On macOS or Linux on arm64 or x86-64 you need Bash, Git, curl, tar (with `gzip` on PATH if your tar is GNU tar), `sha256sum` or `shasum`, and a network connection. If no release archive is available for your machine, the installer says why and builds from source instead, which needs Go 1.27.4 or later.
 
-**1. Install.**
+For the two-agent walkthrough, have Claude Code and Codex CLI installed and signed in before you start. The hall itself needs no account. To try an ask and reply without a vendor account, use [three ordinary terminals](#by-hand-in-three-terminals).
+
+**1. Install.** Run this in an ordinary terminal as your own user.
 
 <!-- install-example -->
 ```sh
@@ -45,7 +47,9 @@ cd crosshall
 ./scripts/install.sh
 ```
 
-The installer downloads the release archive for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. In your own terminal it then lists the agents it found, the hook entries and command rules it would add for each, and what a yes turns on, and asks once:
+Git reports a detached HEAD when it checks out the release tag. Continue with the installer.
+
+The installer downloads the [release archive](https://github.com/BeomSeogKim/crosshall/releases) for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. It lists the agents it found and the hook entries and command rules it would add, then asks once. This example shows a PATH change and a Claude Code notice route. The plan reflects the features available for your agent builds and platform.
 
 <!-- from a real install of main 76091dc with Claude Code 2.1.330 and Codex CLI 0.171.0; the list of entries above it is left out -->
 <!-- readme-check: install-question -->
@@ -59,7 +63,7 @@ A no skips future installer offers for the listed agents. Enter skips this offer
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and puts `crosshall` on the PATH of new shells. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and is remembered: the installer does not offer the hooks for those agents again, and `crosshall setup` installs them whenever you choose. Pressing Enter skips the offer this once. Without the hooks, [by hand, in three terminals](#by-hand-in-three-terminals) then shows how to start the hall and create a channel, and [connect your agents](#connect-your-agents) how to join an agent to it. Without a terminal to ask in, the installer installs the binary and prints what is left to you. It uses the full path if the current shell needs it:
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files the installer lists when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
 
 <!-- install-receipt -->
 ```text
@@ -67,7 +71,11 @@ Installed crosshall v0.3.0 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 
-On a default install in your own terminal, the installer can add `~/.local/bin` to your account's shell startup files. Confirm the displayed changes to use `crosshall` by name in new Bash and zsh shells and in agent sessions that use their startup files or inherit their PATH. See [adapters](docs/adapters.md) for the optional agent hooks. The checksum shows that the archive arrived intact, not who built it; to build from the tag yourself with Go 1.27.4 or later, run `./scripts/install.sh --source`. More install details are in [operations](docs/operations.md#installing).
+Open a new shell after accepting the PATH change. To use `crosshall` in the current shell, run `export PATH="$HOME/.local/bin:$PATH"`. Start your agents from a shell with that PATH.
+
+If you skipped the hooks, installed without a terminal, or installed an agent later, review the changes with `crosshall setup claude` and `crosshall setup codex`. Confirm each plan, or run `crosshall setup claude --apply` and `crosshall setup codex --apply` to apply directly. See [adapters](docs/adapters.md) for the optional hooks and [connect your agents](#connect-your-agents) for joining by hand.
+
+The checksum shows that the archive arrived intact, not who built it. To build the same tag instead, run `./scripts/install.sh --source` in the clone with Go 1.27.4 or later. More install details are in [operations](docs/operations.md#installing).
 
 The installer asks about usage statistics separately in your own terminal. The question also appears at your first eligible owner command if you skipped it. A build not made from a release tag has no receiver and does not ask.
 
@@ -78,7 +86,7 @@ The maintainer's server keeps a report about ten days, until its encrypted copy 
 Send usage statistics? [Y/n]
 ```
 
-**2. In Codex, trust the hooks, then open Codex again.** Codex CLI does not run a hook until you have trusted it. Open Codex, run `/hooks` and trust the crosshall entries. Then quit Codex and open it again: the session in which you trusted the hooks started without them. That screen is Codex's own; Claude Code and Antigravity CLI have no such step.
+**2. In Codex, trust the hooks, then open Codex again.** Open Codex, run `/hooks` and trust the crosshall entries. Quit and reopen Codex so the new session starts with the trusted hooks. For idle wake, keep Codex in its default managed app server mode. Claude Code and Antigravity CLI have no hook trust step.
 
 **3. Start your agents in a project.** Open new sessions of two agents in the same Git repository; a session that was already running does not have the hooks. Each joins the repository's channel by itself. A Codex CLI session is in the channel once it has had its first prompt, so send it one; anything will do (seen with Codex CLI 0.171.0). crosshall creates the channel at the first start and names it after the repository's directory. A session that has company is told so in one line, and gets the member rules with its first crosshall command:
 
@@ -86,15 +94,7 @@ Send usage statistics? [Y/n]
 [crosshall] Joined #shop-api as @claude1, with @codex1. `crosshall join shop-api --rules` prints the member rules.
 ```
 
-**4. Ask.** Tell one agent, in your own words: *"Ask the other session to review the diff on this branch."* It sends the request with `crosshall ask`, the other session answers with `crosshall reply`, and the answer comes back to the first. How the receiver learns of new work depends on what it is:
-
-| Receiver | How it sees new work |
-| --- | --- |
-| A session with an available notice route (today: Claude Code, interactive, macOS arm64) | The hall starts a turn in it, also when it is idle. Nobody relays. |
-| Any other Claude Code, Codex CLI or Antigravity CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. If the agent is idle, send a prompt to surface the pending line, or have it run `crosshall read`. |
-| Any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
-
-**5. See who is reachable.** In a plain terminal, not an agent session:
+**4. See who is reachable.** In a plain terminal outside the agent sessions:
 
 <!-- example with available Claude Code and managed Codex notice routes -->
 <!-- readme-check: owner-who -->
@@ -108,7 +108,17 @@ To depart a listed binding, run crosshall owner depart <binding-id> --seen <toke
 
 After the focus, each line says how the hall reaches that member: `the hall starts its turn`, `sees work at its next prompt`, or `pull only: sees work when it runs a crosshall command`. `publish: available` means the hall can deliver native notices to that session. A `candidate` line names the requirement that still needs to be met. If notices to a build are stopped, a last line says so and gives the command that turns them back on.
 
-To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` removes the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
+**5. Ask in both directions.** With Codex idle, tell Claude Code to ask the Codex alias to review the diff on this branch. Once Codex has replied and Claude Code is idle again, tell Codex to send an ask back to the Claude Code alias. Use the aliases printed for your sessions. The sender uses `crosshall ask`, and the receiver uses `crosshall read` and `crosshall reply`.
+
+| Receiver | How it sees new work |
+| --- | --- |
+| Interactive Claude Code or managed Codex CLI on macOS arm64, with an available notice route | Leave the receiving terminal untouched. The hall starts a turn in it while it is idle. |
+| Any other Claude Code, Codex CLI or Antigravity CLI session with hooks | One line at its next prompt, `[crosshall] pending: 1`, after which it runs `crosshall read`. If the agent is idle, send a prompt to surface the pending line, or have it run `crosshall read`. |
+| Any session without hooks | When it runs `crosshall read`, or when a `crosshall wait` it started returns. Tell it to run `crosshall read`. |
+
+The bidirectional idle-wake check requires `publish: available` for both sessions. On Linux or when either session has no notice route, use the next-prompt or manual-read steps in the table to try the exchange.
+
+To switch things off: `crosshall owner channel auto off` stops crosshall from giving a channel to a repository that has none, `crosshall owner publish hall off` stops notices, `crosshall owner adapter set claude --turn-end off` stops the turn-end check, and `crosshall uninstall` offers to remove the hooks, which ends joining everywhere. [Adapters](docs/adapters.md) has the details.
 
 ## By hand, in three terminals
 
@@ -303,7 +313,9 @@ A dispatcher, a background process of your own user, keeps the hall in an SQLite
 - **Adapter hooks,** only if you install them: entries in Claude Code's `settings.json` or Codex's `hooks.json`.
 - **One optional network call:** a daily usage report of rounded counts, sent by the dispatcher only after you said yes. No message, name, path or ID is in it; `crosshall owner telemetry show` shows the report waiting to be sent, exactly as it will be sent, and `crosshall owner telemetry off` stops it; [usage statistics](docs/telemetry.md) lists every field. Reports go to `https://telemetry.addylog.dev/v1/report`; a build not made from a release tag has no receiver, so it neither asks nor sends. The installer also downloads the release.
 
-To remove crosshall, first run `crosshall uninstall` if you installed adapter hooks (it removes hooks only), and stop your agents' crosshall commands. Then paste this block into a plain terminal as it stands. It reads both directories from `crosshall owner doctor` once, and removes them and the binary only if the state directory is the default one and the dispatcher stopped; otherwise it says why and removes nothing.
+To remove crosshall, close the agent sessions first. In a plain terminal, run `crosshall uninstall` if you installed adapter hooks, review the plan, and answer `y` to apply it. It removes crosshall's hooks and command rules and preserves unrelated agent settings. If an agent changed its configuration after setup, uninstall can leave empty hook lists or shared settings in the file.
+
+For full removal, paste the following block into the same terminal. It checks the default state path, stops the dispatcher, then removes the binary and both directories. The shell startup files keep the PATH change. If you no longer want it, remove the block between `# crosshall: user PATH …` and `# crosshall: end user PATH` from the files the installer listed.
 
 <!-- script: owner -->
 ```sh

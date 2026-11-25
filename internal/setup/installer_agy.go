@@ -61,3 +61,8 @@ func (agyInstaller) recognizeShellCommand(command, event string, spec hook.Insta
 
 func (agyInstaller) checksRelocation() bool { return false }
 func (agyInstaller) ownsConfigDirs() bool   { return true }
+
+func (agyInstaller) memberRules(adapter, executable string) ([]Entry, []byte, error) {
+	entries, err := jsonMemberRules(adapter, executable, "command(%s %s)")
+	return entries, nil, err
+}

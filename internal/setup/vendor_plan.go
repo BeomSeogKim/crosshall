@@ -61,7 +61,7 @@ func (e *PendingScopeError) Error() string {
 func pendingClaudeRules(op operation) ClaudeRules {
 	added := func(send bool) bool {
 		for _, e := range op.Edits {
-			if e.Adapter != "claude" {
+			if !installerFor(e.Adapter).inlineRules() {
 				continue
 			}
 			for _, rule := range claudeRules(send) {
@@ -194,17 +194,12 @@ func (p VendorPlan) resumedLegacyCodex() bool {
 		return false
 	}
 	for _, e := range p.op.Edits {
-		if e.Adapter != "codex" {
-			continue
-		}
 		entries := e.Add
 		if e.Record != nil {
 			entries = e.Record.Entries
 		}
-		for _, entry := range entries {
-			if route, err := recordedCodexRoute(entry); err == nil && route.root == "" {
-				return true
-			}
+		if slices.ContainsFunc(entries, installerFor(e.Adapter).legacyHook) {
+			return true
 		}
 	}
 	return false

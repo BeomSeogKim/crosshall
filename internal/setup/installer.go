@@ -2,6 +2,7 @@ package setup
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -54,6 +55,26 @@ type installer interface {
 	// returns the base to add to, the insertions to restore, the recorded
 	// entries to remove and entries to keep ahead of the wanted ones.
 	upgrade(target installTarget, record ownedFile, known bool) (base []byte, restore [][]span, remove, keep []Entry, err error)
+	// legacyHook reports a recorded hook entry of an earlier layout, which a
+	// resumed setup installs as approved and then asks the owner to upgrade.
+	legacyHook(entry Entry) bool
+
+	// memberRules are the routine member command permissions for an
+	// executable: entries of a JSON rules file, or a whole text rules file.
+	memberRules(adapter, executable string) (entries []Entry, text []byte, err error)
+	// inlineRules keeps member command rules in the hooks file;
+	// addInlineRules adds them to the wanted hook entries, and optionalRules
+	// are the owner's optional rule sets there that relocation leaves alone.
+	inlineRules() bool
+	addInlineRules(target *installTarget, executable string) error
+	optionalRules() []Entry
+	// skipRules leaves the rules file to the owner when setup cannot own
+	// it (owned: setup recorded the file).
+	skipRules(executable string, location configTarget, owned bool) (*retainedFile, error)
+	// textRules owns a text rules file by its rule text, not JSON entries.
+	textRules() bool
+	// rulesChanged refuses an apply whose rules file changed after planning.
+	rulesChanged(path string) error
 }
 
 // hookHandler is one hook command as the vendors' hooks files hold it.
@@ -152,6 +173,21 @@ func (baseInstaller) ownsConfigDirs() bool   { return false }
 func (baseInstaller) upgrade(target installTarget, _ ownedFile, _ bool) ([]byte, [][]span, []Entry, []Entry, error) {
 	return target.Current.Bytes, nil, nil, nil, nil
 }
+
+func (baseInstaller) legacyHook(Entry) bool { return false }
+
+func (baseInstaller) memberRules(adapter, _ string) ([]Entry, []byte, error) {
+	return nil, nil, fmt.Errorf("member command permissions are unsupported for adapter %q", adapter)
+}
+
+func (baseInstaller) inlineRules() bool                           { return false }
+func (baseInstaller) addInlineRules(*installTarget, string) error { return nil }
+func (baseInstaller) optionalRules() []Entry                      { return nil }
+
+func (baseInstaller) skipRules(string, configTarget, bool) (*retainedFile, error) { return nil, nil }
+
+func (baseInstaller) textRules() bool           { return false }
+func (baseInstaller) rulesChanged(string) error { return nil }
 
 // keepFirst returns the recorded entry that matches keep, if any.
 func keepFirst(record ownedFile, keep func(Entry) bool) []Entry {

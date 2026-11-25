@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -48,4 +49,37 @@ func (codexInstaller) upgrade(target installTarget, record ownedFile, _ bool) ([
 		return base, nil, nil, nil, err
 	}
 	return base, record.Undo, record.Entries, nil, nil
+}
+
+// legacyHook is a recorded hook without the state-root pin.
+func (codexInstaller) legacyHook(entry Entry) bool {
+	route, err := recordedCodexRoute(entry)
+	return err == nil && route.root == ""
+}
+
+func (codexInstaller) memberRules(_, executable string) ([]Entry, []byte, error) {
+	text, err := codexMemberRules(executable)
+	return nil, text, err
+}
+
+// skipRules leaves the rules to the owner when the executable is not named
+// crosshall, or when another rule already names a crosshall host executable.
+func (codexInstaller) skipRules(executable string, location configTarget, owned bool) (*retainedFile, error) {
+	if filepath.Base(executable) != "crosshall" {
+		return &retainedFile{"codex", location.Path, "skipped Codex command rules because the installed executable uses a different name"}, nil
+	}
+	return existingCodexHostRule(location.Path, owned)
+}
+
+func (codexInstaller) textRules() bool { return true }
+
+func (codexInstaller) rulesChanged(path string) error {
+	conflict, err := existingCodexHostRule(path, true)
+	if err != nil {
+		return err
+	}
+	if conflict != nil {
+		return fmt.Errorf("Codex rules changed at %q after planning; rerun to review the new plan", conflict.Path)
+	}
+	return nil
 }

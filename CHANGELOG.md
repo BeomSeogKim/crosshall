@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The race detector runs nightly:** a scheduled workflow (also started by hand) runs the tests of `internal/dispatch`, `internal/appserver`, `internal/publish` and `internal/store` with `-race` on main every night. On a pull request it would add about seven minutes, because every store open runs migrations through the pure-Go SQLite, which is 14 to 25 times slower under the race detector.
+
 ## v0.3.0-rc.2 (2026-11-25)
 
 - **The dispatcher recreates a member's removed spool once:** macOS's daily `/tmp` cleaner removes empty directories left unmodified for more than three days, so a quiet member's `in`, `work` and `out` disappeared while its directory stayed. The dispatcher then logged two errors for that member on every pass, about 25 lines a second. It now recreates them and logs one line (#372).

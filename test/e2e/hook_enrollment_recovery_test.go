@@ -23,16 +23,20 @@ import (
 func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 	for _, test := range []struct {
 		name, adapter, turn, env string
-		provisional              bool
+		provisional, server      bool
 	}{
 		{name: "claude missing leaf", adapter: "claude", turn: "prompt_id", env: "CLAUDE_CODE_SESSION_ID"},
 		{name: "claude provisional launch", adapter: "claude", turn: "prompt_id", env: "CLAUDE_CODE_SESSION_ID", provisional: true},
 		{name: "codex provisional leaf", adapter: "codex", turn: "turn_id", env: "CODEX_THREAD_ID", provisional: true},
+		{name: "codex under its server", adapter: "codex", turn: "turn_id", env: "CODEX_THREAD_ID", provisional: true, server: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", test.adapter, "--apply")
 			repo := f.enrollmentRepo()
+			if test.server {
+				f.codexServer = buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
+			}
 			pid := strconv.Itoa(os.Getpid())
 			if test.adapter == "claude" {
 				f.env = append(f.env, "CLAUDE_PID="+pid, "AI_AGENT=claude-code_2-1-327_harness", "CLAUDE_CODE_ENTRYPOINT=cli")
@@ -104,13 +108,19 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 			db := f.db()
 			// #252: a Claude prompt binds its process launch late, with the
 			// time its record was written, its mode and a route. Codex has no
-			// process launch: a session launch with an unknown start, no route.
+			// process launch: a session launch with an unknown start and no
+			// route, or, when the prompt names its server, the start, mode and
+			// route its start would have given.
 			launchRows := `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms = 0 AND json_extract(profile, '$.mode') = 'unverified'`
-			wantRoutes := 0
+			wantRoutes, wantLate := 0, 0
+			if test.server {
+				launchRows = `launch_ref = 'session' AND verified = 0 AND started_hook_at_ms > 0 AND json_extract(profile, '$.mode') = 'daemon'`
+				wantRoutes = 1
+			}
 			if test.adapter == "claude" {
 				launchRows = `launch_ref LIKE 'pid-' || ?4 || '-%' AND verified = 1
 					AND started_hook_at_ms > 0 AND json_extract(profile, '$.mode') = 'interactive'`
-				wantRoutes = 1
+				wantRoutes, wantLate = 1, 1
 			}
 			var bindings, launches, allLaunches, observations, turns, routes int
 			if err := db.QueryRow(`SELECT
@@ -126,8 +136,27 @@ func TestInstalledPromptHookRecoversMissedEnrollment(t *testing.T) {
 				t.Fatalf("recovery wrote bindings %d, launches %d of %d, turns %d, routes %d (%v)", bindings, launches, allLaunches, turns, routes, err)
 			}
 			var bound int
-			if err := db.QueryRow(`SELECT COUNT(*) FROM event WHERE kind = 'launch_bound_late'`).Scan(&bound); err != nil || bound != wantRoutes {
-				t.Fatalf("%d launch_bound_late events, want %d (%v)", bound, wantRoutes, err)
+			if err := db.QueryRow(`SELECT COUNT(*) FROM event WHERE kind = 'launch_bound_late'`).Scan(&bound); err != nil || bound != wantLate {
+				t.Fatalf("%d launch_bound_late events, want %d (%v)", bound, wantLate, err)
+			}
+			if test.server {
+				codexHome, err := filepath.EvalSymlinks(filepath.Dir(f.paths["codex"]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var mode, home string
+				var host int
+				for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(50 * time.Millisecond) {
+					err := db.QueryRow(`SELECT r.mode, COALESCE(r.host_pid, 0), COALESCE(r.vendor_home, '') FROM publish_route r
+						JOIN principal_key k ON k.principal_id = r.principal_id WHERE k.vendor = 'codex' AND k.key = ? AND r.state = 'active'`, key).
+						Scan(&mode, &host, &home)
+					if err == nil && mode == "daemon" && host > 0 && home == codexHome {
+						break
+					}
+					if !time.Now().Before(deadline) {
+						t.Fatalf("codex route mode %q host %d home %q (%v), want daemon under %q", mode, host, home, err, codexHome)
+					}
+				}
 			}
 			// Claude's second callback is its own event unless both hooks
 			// entered in the same millisecond, which gives them one reference.

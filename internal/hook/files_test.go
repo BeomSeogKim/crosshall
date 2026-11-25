@@ -36,6 +36,25 @@ func hookFile(t *testing.T, root *os.Root, name, content string) {
 	}
 }
 
+func TestMarkLaunchRefreshesTheMtimeOfAnExistingMark(t *testing.T) {
+	rv := hookFileRoot(t)
+	const pid = "42"
+	name := filepath.Join(launchMarks, pid)
+	markLaunch(rv, pid)
+	old := time.Now().Add(-5 * 24 * time.Hour)
+	if err := rv.Chtimes(name, old, old); err != nil {
+		t.Fatal(err)
+	}
+	markLaunch(rv, pid)
+	mark, err := rv.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mark.ModTime().After(old) {
+		t.Fatalf("re-marked launch mtime = %s, want newer than %s", mark.ModTime(), old)
+	}
+}
+
 func TestReadHookPolicy(t *testing.T) {
 	rv := hookFileRoot(t)
 	hookFile(t, rv, "policy", "claude 1 0 4\ncodex 1 1 7\n")

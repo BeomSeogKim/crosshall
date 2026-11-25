@@ -16,7 +16,12 @@ const FactFutureSlackMS = 5_000
 
 // LatestFact is a principal's effective adapter fact as stored.
 type LatestFact struct {
-	Fact         string
+	// Seq is the observation's sequence number.
+	Seq  int64
+	Fact string
+	// Source is who stored it: a hook ("adapter:<vendor>@<version>"), or
+	// ApprovalShownSource.
+	Source       string
 	Profile      string
 	Adapter      string
 	AtMS         int64
@@ -65,11 +70,11 @@ func ReadLatestFact(ctx context.Context, tx Tx, principal, slackMS int64) (Lates
 			LIMIT 1)
 		-- The rest is read for the chosen fact only: per candidate it made a
 		-- hook event's cost grow with the square of the session's turns.
-		SELECT p.kind, p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
+		SELECT p.seq, p.kind, (SELECT source FROM observation WHERE seq = p.seq), p.profile, COALESCE(json_extract(p.profile, '$.adapter'), ''), p.hook_at_ms, p.fresh_until_ms,
 		       (SELECT live FROM latest),
 		       EXISTS (SELECT 1 FROM observation k WHERE k.principal_id = ?1 AND k.kind = 'command' AND k.seq > p.seq)
 		FROM pick p`, principal, slackMS).
-		Scan(&f.Fact, &f.Profile, &f.Adapter, &f.AtMS, &f.FreshUntilMS, &f.LaunchLive, &f.CommandSince)
+		Scan(&f.Seq, &f.Fact, &f.Source, &f.Profile, &f.Adapter, &f.AtMS, &f.FreshUntilMS, &f.LaunchLive, &f.CommandSince)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LatestFact{}, false, nil
 	}
@@ -141,9 +146,16 @@ func (f LatestFact) approvalIsDialog() bool {
 	return caps.ApprovalDialog
 }
 
-// ApprovalOpen: the fact is an approval request from an adapter revision
-// whose request means a shown dialog, its launch is not known to have
-// ended, and the member has run no crosshall command since.
+// ApprovalShownSource marks an approval fact the dispatcher stored after
+// the vendor's own server showed the request waiting on its owner, for an
+// adapter whose hook fact alone does not mean a shown dialog.
+const ApprovalShownSource = "appserver"
+
+// ApprovalOpen: the fact is an approval request that is known to wait on
+// the owner (a revision whose request means a shown dialog, or one the
+// vendor's server confirmed), its launch is not known to have ended, and
+// the member has run no crosshall command since.
 func (f LatestFact) ApprovalOpen() bool {
-	return f.Fact == "approval_requested" && f.LaunchLive && !f.CommandSince && f.approvalIsDialog()
+	return f.Fact == "approval_requested" && f.LaunchLive && !f.CommandSince &&
+		(f.Source == ApprovalShownSource || f.approvalIsDialog())
 }

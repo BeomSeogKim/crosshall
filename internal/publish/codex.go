@@ -2,18 +2,21 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/BeomSeogKim/crosshall/internal/appserver"
 	"github.com/BeomSeogKim/crosshall/internal/notice"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
 // codex is Codex: a thread in the managed app server that its terminal
-// client runs against. It stays a candidate until trusted capture is shown
-// (design section 3): its transport proves the server but has no sender.
+// client runs against. A notice is queued on that thread through the
+// server's control socket; it stays a candidate until tested evidence for
+// the build is shipped.
 type codex struct{}
 
 // Owner reasons for a Codex session the sender cannot reach.
@@ -90,8 +93,52 @@ func (codex) Echo(prompt string) (string, bool) {
 	return strings.CutSuffix(body, codexSuffixRC4)
 }
 
-// Transport proves the managed server; it has no sender yet.
-func (codex) Transport() Transport { return Transport{Prove: proveCodexServer} }
+// Transport proves the managed server and queues notices on it. Retired
+// stays nil: the server's exit does not retire a queued notice, which
+// survives in the home and runs when the thread is next loaded (C10).
+func (codex) Transport() Transport {
+	return Transport{Prove: proveCodexServer, Send: sendCodex, Withdraw: withdrawCodex, ConfirmApproval: confirmCodexApproval}
+}
+
+// codexControlSocket is the managed server's control socket in its home.
+var codexControlSocket = filepath.Join("app-server-control", "app-server-control.sock")
+
+// sendCodex queues one notice on the target's thread with
+// thread/queue/add, tagged with the attempt's identity, never with
+// turn/start: on a working thread that steers the running turn. The client
+// writes nothing unless the socket's listener is the proven server. Any
+// failure up to the call is a proven non-submission, an error answer is the
+// server's refusal, and anything else after the call was written is
+// uncertain.
+func sendCodex(ctx context.Context, target Target, line string) Outcome {
+	if !filepath.IsAbs(target.Home) || target.Address == "" || target.Attempt == "" {
+		return NotSubmitted
+	}
+	socket := filepath.Join(realPath(target.Home), codexControlSocket)
+	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: target.Queue.PID, Start: target.Queue.StartMS})
+	if err != nil {
+		return NotSubmitted
+	}
+	defer c.Close()
+	var res struct {
+		QueuedSubmission struct {
+			ID string `json:"id"`
+		} `json:"queuedSubmission"`
+	}
+	err = c.Call("thread/queue/add", map[string]any{
+		"threadId":            target.Address,
+		"clientUserMessageId": target.Attempt,
+		"input":               []map[string]any{{"type": "text", "text": line}},
+	}, &res)
+	var refused *appserver.Error
+	switch {
+	case err == nil && res.QueuedSubmission.ID != "":
+		return Submitted
+	case errors.As(err, &refused):
+		return NotSubmitted
+	}
+	return Uncertain
+}
 
 // The managed server's release tree under its home, and the arguments it
 // runs with, as the Codex hook manifest names them.
@@ -113,29 +160,44 @@ func proveCodexServer(_ context.Context, probe Probe) (Proven, bool) {
 	if probe.Route.Home != home {
 		return Proven{}, false
 	}
+	startedAt, ok := codexServer(home, host)
+	if !ok {
+		return Proven{}, false
+	}
+	return Proven{Queue: host, StartedAtMS: startedAt}, true
+}
+
+// codexServer reports whether host runs as the managed server of home
+// (with links resolved), and its wall-clock start: the same process by PID
+// and start identity, run from the home's release tree with the managed
+// server's arguments. A variable so tests can stand in a server.
+var codexServer = func(home string, host Queue) (startedAtMS int64, ok bool) {
+	if host.PID <= 1 || host.PID > math.MaxInt32 || host.StartMS <= 0 {
+		return 0, false
+	}
 	start, err := proc.StartOf(int(host.PID))
 	if err != nil || start.AtMS <= 0 {
-		return Proven{}, false
+		return 0, false
 	}
 	exe, args, err := proc.Command(int(host.PID))
 	if err != nil || len(args) == 0 {
-		return Proven{}, false
+		return 0, false
 	}
 	rel, err := filepath.Rel(filepath.Join(home, codexReleases), realPath(exe))
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
-		return Proven{}, false
+		return 0, false
 	}
 	for _, want := range codexServerArgs {
 		if !slices.Contains(args[1:], want) {
-			return Proven{}, false
+			return 0, false
 		}
 	}
 	// Start and command were read by PID: after both, the process must
 	// still be the one the start named.
 	if !proc.ProcessAlive(host.PID, host.StartMS) {
-		return Proven{}, false
+		return 0, false
 	}
-	return Proven{Queue: host, StartedAtMS: start.AtMS}, true
+	return start.AtMS, true
 }
 
 // realPath resolves symbolic links where it can, as the hook does: a home
@@ -145,4 +207,125 @@ func realPath(p string) string {
 		return real
 	}
 	return filepath.Clean(p)
+}
+
+// codexListPages bounds the queue pages one withdrawal reads.
+const codexListPages = 8
+
+// withdrawCodex takes a queued notice back. The server it was written to
+// may be gone (its queue survives in the home), so it proves whichever
+// process listens on the home's control socket as that home's managed
+// server, lists the thread's queue, and deletes each item tagged with the
+// attempt's identity.
+func withdrawCodex(ctx context.Context, target Target) Withdrawal {
+	if !filepath.IsAbs(target.Home) || target.Address == "" || target.Attempt == "" {
+		return Unreachable
+	}
+	c, ok := dialCodexHome(ctx, target.Home)
+	if !ok {
+		return Unreachable
+	}
+	defer c.Close()
+	var tagged []string
+	cursor := ""
+	for range codexListPages {
+		params := map[string]any{"threadId": target.Address}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		var page struct {
+			Data []struct {
+				ID                  string `json:"id"`
+				ClientUserMessageID string `json:"clientUserMessageId"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := c.Call("thread/queue/list", params, &page); err != nil {
+			return Unreachable
+		}
+		for _, item := range page.Data {
+			if item.ClientUserMessageID == target.Attempt && item.ID != "" {
+				tagged = append(tagged, item.ID)
+			}
+		}
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if cursor != "" {
+		return Unreachable // the queue is longer than a withdrawal reads
+	}
+	result := NotPending
+	for _, id := range tagged {
+		var res struct {
+			Deleted bool `json:"deleted"`
+		}
+		if err := c.Call("thread/queue/delete", map[string]any{"threadId": target.Address, "queuedSubmissionId": id}, &res); err != nil {
+			return Unreachable
+		}
+		if res.Deleted {
+			result = Deleted
+		}
+	}
+	return result
+}
+
+// dialCodexHome connects to whichever process listens on home's control
+// socket, once it is proven to be that home's managed server: a queued
+// notice and a thread outlive the server a route named.
+func dialCodexHome(ctx context.Context, home string) (*appserver.Client, bool) {
+	home = realPath(home)
+	socket, err := filepath.EvalSymlinks(filepath.Join(home, codexControlSocket))
+	if err != nil {
+		return nil, false
+	}
+	conn, peer, err := proc.DialSocketPeer(ctx, socket)
+	if err != nil {
+		return nil, false
+	}
+	conn.Close()
+	server := Queue{PID: peer.PID, StartMS: peer.Identity}
+	if _, ok := codexServer(home, server); !ok {
+		return nil, false
+	}
+	c, err := appserver.Dial(ctx, socket, appserver.Identity{PID: server.PID, Start: server.StartMS})
+	return c, err == nil
+}
+
+// confirmCodexApproval reads the thread's status: active with
+// waitingOnApproval is an approval the owner has not answered. The flag
+// belongs to the thread, not to a turn. A thread the server has not loaded
+// waits on nothing.
+func confirmCodexApproval(ctx context.Context, target Target) Approval {
+	if !filepath.IsAbs(target.Home) || target.Address == "" {
+		return ApprovalUnknown
+	}
+	c, ok := dialCodexHome(ctx, target.Home)
+	if !ok {
+		return ApprovalUnknown
+	}
+	defer c.Close()
+	var res struct {
+		Thread struct {
+			Status struct {
+				Type        string   `json:"type"`
+				ActiveFlags []string `json:"activeFlags"`
+			} `json:"status"`
+		} `json:"thread"`
+	}
+	err := c.Call("thread/read", map[string]any{"threadId": target.Address}, &res)
+	var refused *appserver.Error
+	switch {
+	case errors.As(err, &refused) && refused.Code == -32600:
+		return ApprovalAbsent // thread not loaded
+	case err != nil:
+		return ApprovalUnknown
+	}
+	switch st := res.Thread.Status; {
+	case st.Type == "active" && slices.Contains(st.ActiveFlags, "waitingOnApproval"):
+		return ApprovalShown
+	case st.Type == "active", st.Type == "idle", st.Type == "notLoaded":
+		return ApprovalAbsent
+	}
+	return ApprovalUnknown
 }

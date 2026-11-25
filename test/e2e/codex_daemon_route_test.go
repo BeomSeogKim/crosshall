@@ -109,8 +109,8 @@ func TestCodexRouteOpensOnlyUnderTheManagedDaemon(t *testing.T) {
 	}
 
 	startUntil("startup", true, true, "daemon")
-	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (no sender for codex)") {
-		t.Fatalf("a daemon session should wait only for a sender:\n%s", out)
+	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (no tested evidence for codex-1 on ") {
+		t.Fatalf("a daemon session should wait only for tested evidence:\n%s", out)
 	}
 	startUntil("resume", false, true, "in_process")
 	if out := f.owner().mustPlain("owner", "who", "--all"); !strings.Contains(out, "publish: candidate (codex runs without its daemon)") {

@@ -88,6 +88,12 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 			}
 		}
 		warnings = append(warnings, approvalWarnings(snapshot.Approvals)...)
+		for _, adapter := range hostBuildAdapters() {
+			if _, recorded, current := effectiveHostBuild(cfg.StateRoot, state, adapter); recorded && !current {
+				warnings = append(warnings, ident.Identity{Vendor: adapter}.CLIName()+
+					" changed since setup recorded it: its turn-end check waits until crosshall reads the new version")
+			}
+		}
 		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
 	} else {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {

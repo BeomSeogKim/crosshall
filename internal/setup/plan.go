@@ -237,7 +237,7 @@ func planJSONInstall(target installTarget, record ownedFile, known, rules bool) 
 		}
 		record.Entries = remainingEntries(entries, remove)
 	}
-	if known && (adapter == "claude" || rules) {
+	if known && (i.inlineRules() || rules) {
 		if err := checkCommandRuleRelocation(target, record.Entries); err != nil {
 			return edit{}, err
 		}
@@ -400,7 +400,7 @@ func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, err
 		return edit{}, errors.New("configuration directory has changed since installation")
 	}
 	e := edit{Adapter: spec.Adapter, Rules: rules, Path: path, Before: stamp(current), After: stamp(current)}
-	if rules && spec.Adapter == "codex" {
+	if rules && installerFor(spec.Adapter).textRules() {
 		return planTextRuleRemoval(e, current, record)
 	}
 	if len(record.Undo) > 0 && e.Before == record.Latest {

@@ -101,7 +101,7 @@ fi
 # owner policy and uninstalling through the normal entry points, and must
 # stay within its own files.
 if ! go vet -tags e2e,testvendorhome,synthadapter ./... ||
-  ! go test -tags synthadapter,testvendorhome -count=1 -run '^(TestABundleAddsItsManifest|TestIdentityIndexCoversEveryManifest|TestIdentityIndexMatchesManifests)$' ./internal/hook/manifests ./internal/ident ||
+  ! go test -tags synthadapter,testvendorhome -count=1 -run '^(TestABundleAddsItsManifest|TestIdentityIndexCoversEveryManifest|TestIdentityIndexMatchesManifests|TestEveryInstallableAdapterRegistersAnInstaller|TestEveryInstallableAdapterHasItsInstaller|TestAHooksOnlyAdapterGetsNoCommandRules)$' ./internal/hook/manifests ./internal/ident ./internal/setup ||
   ! go test -tags e2e,testvendorhome,synthadapter -count=1 -run '^TestSynth' ./test/e2e/; then
   fail=1
 fi

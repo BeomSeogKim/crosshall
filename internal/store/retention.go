@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -73,6 +74,8 @@ var retentionSteps = []struct {
 }{
 	{"ops", RetentionWindow, `DELETE FROM op WHERE rowid IN (SELECT rowid FROM op
 		WHERE at_ms < ?1 AND rowid NOT IN (SELECT value FROM json_each(?2)) LIMIT ?4)`},
+	{"link fences", RetentionWindow, `DELETE FROM link_fence WHERE rowid IN (SELECT rowid FROM link_fence
+		WHERE at_ms < ?1 LIMIT ?4)`},
 	{"observations", RetentionWindow, `DELETE FROM observation WHERE seq IN (SELECT o.seq FROM observation o
 		WHERE o.observed_at_ms < ?1 AND o.seq NOT IN (SELECT value FROM json_each(?3))
 			AND (o.kind = 'command' OR NOT ` + running + `) LIMIT ?4)`},
@@ -124,14 +127,21 @@ func (s *Store) RetentionChunk(ctx context.Context, p *RetentionPass) (bool, err
 
 func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 	step := retentionSteps[p.step]
-	res, err := tx.ExecContext(ctx, step.delete, retentionCut(p.now, step.window), p.keep.ops, p.keep.observations,
-		p.limit, p.keep.running)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
+	var n int64
+	if step.name == "ops" || step.name == "link fences" {
+		var err error
+		if n, err = p.pruneFences(ctx, tx, step.name, step.delete, retentionCut(p.now, step.window)); err != nil {
+			return err
+		}
+	} else {
+		res, err := tx.ExecContext(ctx, step.delete, retentionCut(p.now, step.window), p.keep.ops, p.keep.observations,
+			p.limit, p.keep.running)
+		if err != nil {
+			return err
+		}
+		if n, err = res.RowsAffected(); err != nil {
+			return err
+		}
 	}
 	switch step.name {
 	case "ops":
@@ -144,7 +154,7 @@ func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 	// A launch that lost facts or turns has its turns reassigned from all
 	// its facts again: every launch this pass may delete from, in the same
 	// transaction as the delete.
-	if n > 0 && step.name != "ops" {
+	if n > 0 && step.name != "ops" && step.name != "link fences" {
 		if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET reconciled_seq = NULL, reconciled_at_ms = NULL
 			WHERE reconciled_seq IS NOT NULL AND principal_id || ':' || launch_ref NOT IN (SELECT value FROM json_each(?))`,
 			p.keep.running); err != nil {
@@ -155,6 +165,50 @@ func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 		p.step++
 	}
 	return nil
+}
+
+// pruneFences runs a step that may delete a linked device's request
+// fences (#400): the link-scoped op rows a receipt lookup wrote, or
+// link_fence rows. In the same transaction it raises the admission
+// generation of exactly the devices whose fences it deleted, so a request
+// held on a link accepted before a fence is never admitted after the
+// fence is gone, whatever the wall clock does. Other devices' links stay.
+func (p *RetentionPass) pruneFences(ctx context.Context, tx Tx, name, del string, cut int64) (int64, error) {
+	returning, devices := " RETURNING scope, principal_id", `SELECT device_id FROM principal
+		WHERE id IN (SELECT value FROM json_each(?)) AND device_id IS NOT NULL`
+	if name == "link fences" {
+		returning, devices = " RETURNING 'link', device_id", `SELECT value FROM json_each(?)`
+	}
+	rows, err := tx.QueryContext(ctx, del+returning, cut, p.keep.ops, p.keep.observations, p.limit, p.keep.running)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	fenced := []any{}
+	for rows.Next() {
+		var scope string
+		var owner any
+		if err := rows.Scan(&scope, &owner); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		n++
+		if scope == "link" {
+			fenced = append(fenced, owner)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil || len(fenced) == 0 {
+		return n, err
+	}
+	raw, err := json.Marshal(fenced)
+	if err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE device SET admission_gen = admission_gen + 1 WHERE device_id IN (`+devices+`)`, string(raw))
+	return n, err
 }
 
 // PruneRetentionTx runs a whole pass inside one transaction.

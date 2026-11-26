@@ -149,3 +149,23 @@ func fitLinkResult(r core.Result) core.Result {
 	return domain.Refuse(domain.CodeLinkResultTooLarge, "the answer is too large for the link",
 		"read fewer messages at once, for example crosshall read <id>")
 }
+
+// linkReceipt answers a linked device's lookup of a forwarded request
+// whose answer it lost: the committed receipt, or a fence that keeps the
+// request from ever running (#400). It never runs the command. A refusal
+// before the lookup commits nothing.
+func (s *server) linkReceipt(ctx context.Context, tx store.Tx, req wire.Request) (core.Result, bool, error) {
+	decoded, err := domain.Decode(req.Verb, req.Args)
+	if err != nil {
+		return commandError(core.ExitUsage, "", "invalid link receipt lookup"), false, nil
+	}
+	lookup := decoded.(domain.LinkReceipt)
+	result, err := domain.FindOrFenceLinkReceipt(ctx, tx, lookup.LinkCall, time.Now())
+	if err != nil {
+		return core.Result{}, false, err
+	}
+	if result.Code == domain.CodeLinkStale || result.Status == core.ExitUsage {
+		return result, false, nil
+	}
+	return fitLinkResult(result), true, nil
+}

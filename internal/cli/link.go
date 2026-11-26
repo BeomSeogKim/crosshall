@@ -26,6 +26,9 @@ const (
 	// A member command forwarded by the device, and the hall's answer.
 	linkCallFrame   = "call"
 	linkResultFrame = "result"
+	// The device's lookup of a forwarded command whose answer it lost; the
+	// answer is a result frame.
+	linkReceiptFrame = "receipt"
 )
 
 func runLink(ctx context.Context, env Env, opts options, args []string, stdin io.Reader, stdout, stderr io.Writer) core.ExitCode {
@@ -126,7 +129,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	// The credential generation the link authenticated under; every call
 	// carries it, and the dispatcher refuses it once the device enrolls
 	// again.
-	var credentialGen int64
+	var credentialGen, admission int64
 	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
 		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
@@ -137,7 +140,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 		Verify: func(device, homeNonce, spokeNonce, proof string) (bool, error) {
 			v, err := ownerData[domain.LinkVerifyResult](ctx, env,
 				Call{Command: domain.LinkVerify{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce, Proof: proof}})
-			credentialGen = v.CredentialGen
+			credentialGen, admission = v.CredentialGen, v.Admission
 			return v.OK, err
 		}}
 	session, err := home.Accept(r, w)
@@ -157,15 +160,19 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 			if err := w.Write(linkPong, f.Body); err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
-		case linkCallFrame:
+		case linkCallFrame, linkReceiptFrame:
 			var call domain.LinkCall
 			if err := json.Unmarshal(f.Body, &call); err != nil {
-				return o.fail(core.ExitError, CodeLocalError, "link: malformed call", "")
+				return o.fail(core.ExitError, CodeLocalError, "link: malformed "+f.Type, "")
 			}
 			// The device and credential come from this link's
 			// authentication, never from the device's frame.
-			call.Device, call.CredentialGen = session.Device, credentialGen
-			result, err := ownerCall(ctx, env, Call{Command: call})
+			call.Device, call.CredentialGen, call.Admission = session.Device, credentialGen, admission
+			var cmd domain.Command = call
+			if f.Type == linkReceiptFrame {
+				cmd = domain.LinkReceipt{LinkCall: call}
+			}
+			result, err := ownerCall(ctx, env, Call{Command: cmd})
 			if err != nil {
 				return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
 			}

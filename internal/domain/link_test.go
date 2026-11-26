@@ -61,6 +61,21 @@ func TestEnrollingADeviceGivesItAnIDAndCheckableProofs(t *testing.T) {
 		if v.Known != c.known || v.OK != c.ok {
 			t.Errorf("%s: %+v", name, v)
 		}
+		// A verified proof hands the link the device's admission
+		// generation before the home can send its welcome.
+		if want := map[bool]int64{true: 1, false: 0}[c.ok]; v.Admission != want {
+			t.Errorf("%s: admission %d", name, v.Admission)
+		}
+	}
+	// Reconnects and preflights write nothing: a hall that links often
+	// keeps no admission state but the device's generation.
+	before := f.count(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`)
+	for range 50 {
+		f.owner(LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn, Proof: proof}, "")
+	}
+	if after := f.count(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`); after != before ||
+		f.count(`SELECT admission_gen FROM device WHERE device_id = ?`, got.Device) != 1 {
+		t.Fatalf("verification changed admission state")
 	}
 	// The secret is stored for verification only: no audit or op row holds it.
 	if n := f.count(`SELECT COUNT(*) FROM event WHERE detail LIKE ?`, "%"+secretHex(1)[:16]+"%"); n != 0 {

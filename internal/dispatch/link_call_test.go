@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -47,6 +48,8 @@ type linkReq struct {
 	op               string
 	membership       *core.Membership
 	ack              uint64
+	receipt          bool
+	admission        int64
 }
 
 func (s *server) link(t *testing.T, r linkReq) core.Result {
@@ -66,16 +69,23 @@ func (s *server) link(t *testing.T, r linkReq) core.Result {
 	if r.epoch == 0 {
 		r.epoch = 1
 	}
+	if r.admission == 0 {
+		r.admission = 1 // a device's first admission generation
+	}
 	args, err := json.Marshal(r.args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, Vendor: "claude", Key: r.key,
+	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, Admission: r.admission, Vendor: "claude", Key: r.key,
 		LeafGeneration: r.gen, LeafEpoch: r.epoch, Command: r.command, Args: args, OpKey: r.op, Membership: r.membership, Ack: r.ack})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s.fixtureRequest(t, Arrival{Owner: true}, wire.Request{Verb: domain.VerbLinkCall, Args: call})
+	verb := domain.VerbLinkCall
+	if r.receipt {
+		verb = domain.VerbLinkReceipt
+	}
+	return s.fixtureRequest(t, Arrival{Owner: true}, wire.Request{Verb: verb, Args: call})
 }
 
 func (s *server) count(t *testing.T, query string, args ...any) int {
@@ -378,4 +388,135 @@ func TestALinkedMoveNeedsItsSelection(t *testing.T) {
 	}
 	// A plain rejoin of the same channel needs no selection.
 	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j3"}))
+}
+
+// A lookup returns the committed receipt of a forwarded request, and runs
+// nothing.
+func TestALinkReceiptReturnsTheCommittedReceipt(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	ask := linkReq{command: domain.VerbAsk, args: map[string]any{"all": true, "each": true, "body": "hi"}, op: "a1", membership: m}
+	first := mustLinkOK(t, s.link(t, ask))
+	ask.receipt, ask.epoch = true, 99
+	again := mustLinkOK(t, s.link(t, ask))
+	var a, b struct {
+		ID      int64  `json:"id"`
+		Channel string `json:"channel"`
+	}
+	if json.Unmarshal(first.Data, &a) != nil || json.Unmarshal(again.Data, &b) != nil || a != b || a.ID == 0 {
+		t.Fatalf("receipt %s, original %s", again.Data, first.Data)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM message`); n != 1 {
+		t.Fatalf("%d messages after a lookup", n)
+	}
+	if n := s.count(t, `SELECT leaf_epoch FROM device_key WHERE device_id = 'dev-a'`); n != 1 {
+		t.Fatalf("a lookup moved the leaf epoch to %d", n)
+	}
+	other := ask
+	other.args = map[string]any{"all": true, "each": true, "body": "something else"}
+	mustLinkCode(t, s.link(t, other), core.CodeKeyConflict)
+}
+
+// A lookup that finds nothing fences the key: the request, still queued,
+// never runs afterwards, and a fresh key sends it once.
+func TestALinkReceiptFencesARequestItCannotFind(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	note := linkReq{command: domain.VerbNote, args: map[string]any{"all": true, "body": "hello"}, op: "n1", membership: m}
+	lookup := note
+	lookup.receipt = true
+	mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+	mustLinkCode(t, s.link(t, note), domain.CodeLinkFenced)
+	mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+	if n := s.count(t, `SELECT COUNT(*) FROM message`); n != 0 {
+		t.Fatalf("the fenced note ran: %d messages", n)
+	}
+	note.op = "n2"
+	mustLinkOK(t, s.link(t, note))
+	if n := s.count(t, `SELECT COUNT(*) FROM message`); n != 1 {
+		t.Fatalf("%d messages after a fresh send", n)
+	}
+}
+
+// A fence written before the session was known holds after the session
+// joins under another key, and enrolls nothing.
+func TestALinkReceiptFencesAFirstJoin(t *testing.T) {
+	s := linkServer(t)
+	join := linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"}
+	lookup := join
+	lookup.receipt = true
+	mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+	mustLinkCode(t, s.link(t, join), domain.CodeLinkFenced)
+	if n := s.count(t, `SELECT COUNT(*) FROM device_key`); n != 0 {
+		t.Fatalf("a fenced join enrolled %d keys", n)
+	}
+	other := join
+	other.args = joinChannel("payments")
+	mustLinkCode(t, s.link(t, other), core.CodeKeyConflict)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j2"})).Membership
+	if m == nil {
+		t.Fatal("no membership after the fresh join")
+	}
+	mustLinkCode(t, s.link(t, join), domain.CodeLinkFenced)
+	mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+}
+
+// A lookup under an old credential is refused and writes nothing.
+func TestALinkReceiptNeedsTheCurrentCredential(t *testing.T) {
+	s := linkServer(t)
+	r := s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1", cred: 7, receipt: true})
+	mustLinkCode(t, r, domain.CodeLinkStale)
+	if n := s.count(t, `SELECT COUNT(*) FROM link_fence`); n != 0 {
+		t.Fatalf("a stale lookup fenced")
+	}
+}
+
+// A retention pass that deletes a device's fences raises that device's
+// admission generation in the same transaction: an original held on a
+// link accepted before the fence is refused once the fence is gone, for a
+// member's command and a first join alike, whatever the wall clock reads
+// at admission. A new link works, and another device's link is untouched.
+func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	note := linkReq{command: domain.VerbNote, args: map[string]any{"all": true, "body": "held"}, op: "n1", membership: m}
+	join := linkReq{key: "k9", command: domain.VerbJoin, args: joinChannel("checkout"), op: "j9"}
+	for _, r := range []linkReq{note, join} {
+		lookup := r
+		lookup.receipt = true
+		mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+	}
+	// The daily pass, with the clock moved past the fences' retention,
+	// prunes them; the clock then comes back.
+	later := time.Now().Add(store.RetentionWindow + 48*time.Hour)
+	if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := store.PruneRetentionTx(t.Context(), tx, later)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM op WHERE scope = 'link') + (SELECT COUNT(*) FROM link_fence)`); n != 0 {
+		t.Fatalf("%d fences survived retention", n)
+	}
+	admission := int64(s.count(t, `SELECT admission_gen FROM device WHERE device_id = 'dev-a'`))
+	if admission < 2 {
+		t.Fatalf("admission generation %d after pruning the device's fences", admission)
+	}
+	// dev-b had no fence: its link carries on.
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbWho}))
+	for _, r := range []linkReq{note, join} {
+		mustLinkCode(t, s.link(t, r), domain.CodeLinkStale)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM message`); n != 0 {
+		t.Fatalf("a held note ran")
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM device_key WHERE key = 'k9'`); n != 0 {
+		t.Fatalf("a held first join enrolled")
+	}
+	// The device reconnects: a new link carries new requests.
+	note.admission, note.op = admission, "n2"
+	mustLinkOK(t, s.link(t, note))
 }

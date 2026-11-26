@@ -156,7 +156,12 @@ func serveLink(t *testing.T, w *world, owner *participant, spoke link.Spoke) *se
 
 func (s *servedLink) call(t *testing.T, c domain.LinkCall) core.Result {
 	t.Helper()
-	if err := s.w.Write("call", c); err != nil {
+	return s.send(t, "call", c)
+}
+
+func (s *servedLink) send(t *testing.T, frame string, c domain.LinkCall) core.Result {
+	t.Helper()
+	if err := s.w.Write(frame, c); err != nil {
 		t.Fatal(err)
 	}
 	f, err := s.r.Read()
@@ -254,6 +259,17 @@ func TestLinkServeForwardsMemberCommands(t *testing.T) {
 	inbox.Command, inbox.Membership = "inbox", r.Membership
 	if r := s.call(t, inbox); !strings.Contains(string(r.Data), `"id":3`) {
 		t.Fatalf("the refused read picked messages up: %s", r.Data)
+	}
+
+	// A lookup for a request the hall never stored fences it: sent late,
+	// it does not run.
+	late := base
+	late.Command, late.Args, late.OpKey, late.Membership = "note", json.RawMessage(`{"all":true,"body":"late"}`), "late1", r.Membership
+	if got := s.send(t, "receipt", late); got.Code != domain.CodeLinkFenced {
+		t.Fatalf("lookup: %+v", got)
+	}
+	if got := s.call(t, late); got.Code != domain.CodeLinkFenced {
+		t.Fatalf("a fenced request ran: %+v", got)
 	}
 
 	// Enrolling the device again retires this link's credential.

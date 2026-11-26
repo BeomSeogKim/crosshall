@@ -308,7 +308,7 @@ func TestAReplayedSpokeProofFails(t *testing.T) {
 
 func TestMalformedNoncesAndEmptySecretsProveNothing(t *testing.T) {
 	n := NewNonce()
-	if !ValidNonce(n) || ValidNonce("") || ValidNonce("abc") || ValidNonce(strings.ToUpper(n)) || ValidNonce(n+"00") {
+	if !ValidNonce(n) || ValidNonce("") || ValidNonce("abc") || ValidNonce("ABCDEF0123456789ABCDEF0123456789") || ValidNonce(n+"00") {
 		t.Fatal("ValidNonce")
 	}
 	if CheckProof(nil, RoleSpoke, "h", "d", n, n, Proof(nil, RoleSpoke, "h", "d", n, n)) {

@@ -13,14 +13,15 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-// Wire verbs of the home side of a link (#400). The owner seat runs them:
-// `crosshall link enroll` and `crosshall link serve`, which a spoke starts
-// over the user's own ssh.
+// Wire verbs of the home side of a link (#400). The owner seat runs them
+// for `crosshall link enroll` and `crosshall link serve`, which a spoke
+// starts over the user's own ssh; like every owner verb they go through
+// the owner spool and carry the "owner " prefix.
 const (
-	VerbLinkEnroll = "link enroll"
-	VerbLinkHall   = "link hall"
-	VerbLinkProve  = "link prove"
-	VerbLinkVerify = "link verify"
+	VerbLinkEnroll = "owner link enroll"
+	VerbLinkHall   = "owner link hall"
+	VerbLinkProve  = "owner link prove"
+	VerbLinkVerify = "owner link verify"
 )
 
 // LinkEnroll records a device that links to this hall, or gives a device

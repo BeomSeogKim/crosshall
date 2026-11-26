@@ -30,7 +30,9 @@ const (
 // Both stay behind CROSSHALL_EXPERIMENTAL_LINK until the release gate
 // covers two devices.
 func runLink(ctx context.Context, env Env, opts options, args []string, stdin io.Reader, stdout, stderr io.Writer) core.ExitCode {
-	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	// Stdout carries link frames only, so every message goes to stderr,
+	// with --json too.
+	o := outputs{json: opts.json, stdout: stderr, stderr: stderr}
 	if !env.ExperimentalLink {
 		return o.fail(core.ExitUsage, CodeUsage, "linking devices is experimental",
 			"set CROSSHALL_EXPERIMENTAL_LINK=1 to try it")
@@ -38,7 +40,7 @@ func runLink(ctx context.Context, env Env, opts options, args []string, stdin io
 	if env.OwnerGate != nil {
 		if gate := env.OwnerGate(); gate != "" {
 			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, gate,
-				"run crosshall link from your own shell"), stdout, stderr)
+				"run crosshall link from your own shell"), stderr, stderr)
 		}
 	}
 	if env.Transport == nil {
@@ -49,7 +51,7 @@ func runLink(ctx context.Context, env Env, opts options, args []string, stdin io
 		return linkEnroll(ctx, env, opts, args[2], stdin, stdout, stderr)
 	case len(args) == 1 && args[0] == "serve":
 		// The stream carries frames only: every message goes to stderr.
-		return linkServe(ctx, env, stdin, stdout, outputs{stdout: stderr, stderr: stderr})
+		return linkServe(ctx, env, stdin, stdout, o)
 	}
 	return o.usage("usage: crosshall link enroll --name <device> (the secret on stdin) | crosshall link serve")
 }

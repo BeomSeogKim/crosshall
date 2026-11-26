@@ -147,6 +147,12 @@ func TestLinkIsOptInAndOwnerOnly(t *testing.T) {
 	if _, _, code := run(t, gated, "link", "serve"); code != core.ExitRefused {
 		t.Fatalf("inside a session: exit %d", code)
 	}
+	// Stdout is for link frames: with --json too, refusals go to stderr.
+	for _, env := range []Env{{Transport: ht}, gated} {
+		if stdout, stderr, _ := run(t, env, "--json", "link", "serve"); stdout != "" || stderr == "" {
+			t.Fatalf("--json: stdout %q, stderr %q", stdout, stderr)
+		}
+	}
 	if len(ht.calls) != 0 {
 		t.Fatalf("calls %+v", ht.calls)
 	}

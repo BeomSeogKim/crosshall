@@ -361,3 +361,21 @@ func TestAFirstLinkedJoinMustCarryNoSelection(t *testing.T) {
 		t.Fatalf("a refused first join wrote rows: %d -> %d", before, after)
 	}
 }
+
+// A queued move without the selection it was issued under is refused, as
+// at native ingress: the source stays selected and no op is recorded.
+func TestALinkedMoveNeedsItsSelection(t *testing.T) {
+	s := linkServer(t)
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"}))
+	r := s.link(t, linkReq{command: domain.VerbJoin, args: map[string]any{"channel": "payments", "move": true}, op: "j2"})
+	mustLinkCode(t, r, core.CodeBindingChanged)
+	if n := s.count(t, `SELECT COUNT(*) FROM member_selection s JOIN binding b ON b.id = s.binding_id
+		JOIN channel c ON c.id = b.channel_id WHERE c.name = 'checkout'`); n != 1 {
+		t.Fatalf("the source is no longer selected: %d", n)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM op WHERE op_key = 'j2'`); n != 0 {
+		t.Fatalf("the refused move recorded its op")
+	}
+	// A plain rejoin of the same channel needs no selection.
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j3"}))
+}

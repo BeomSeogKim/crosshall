@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
@@ -139,6 +140,13 @@ func (cfg LaunchConfig) spawn(state *os.Root, executable string, deadline time.T
 	cmd := exec.Command(executable, dispatcherSubcommand())
 	cmd.Dir = cfg.StateRoot
 	cmd.Env = cfg.dispatcherEnv()
+	if cfg.Owner {
+		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+			if _, linked, _ := readLinkConfig(state); linked {
+				cmd.Env = append(cmd.Env, "SSH_AUTH_SOCK="+sock)
+			}
+		}
+	}
 	if !deadline.IsZero() {
 		now, err := monotonicNanos()
 		if err != nil {
@@ -171,7 +179,7 @@ func (cfg LaunchConfig) dispatcherEnv() []string {
 			env = append(env, key+"="+value)
 		}
 	}
-	return appendTestDispatcherEnv(env)
+	return link.AppendSSHTestEnv(appendTestDispatcherEnv(env))
 }
 
 // prepareDaemonProcess is called in the dedicated dispatcher process. The
@@ -209,6 +217,7 @@ type readyMarker struct {
 	PID      int    `json:"pid"`
 	Lease    bool   `json:"lease,omitempty"`
 	Probe    bool   `json:"probe,omitempty"`
+	Spoke    string `json:"spoke,omitempty"`
 	// Hello lists the first-contact intents beyond lookup and join that
 	// this dispatcher accepts, and the hook arguments it accepts beyond
 	// those an older dispatcher knows. A hook sends one only if it is
@@ -218,7 +227,20 @@ type readyMarker struct {
 
 func (r readyMarker) same(o readyMarker) bool {
 	return r.Instance == o.Instance && r.Version == o.Version && r.PID == o.PID &&
-		r.Lease == o.Lease && r.Probe == o.Probe && slices.Equal(r.Hello, o.Hello)
+		r.Lease == o.Lease && r.Probe == o.Probe && r.Spoke == o.Spoke && slices.Equal(r.Hello, o.Hello)
+}
+
+func (cfg LaunchConfig) LinkedTarget() string {
+	if marker := readReady(cfg.Rendezvous); marker.Instance != "" && (marker.Spoke == "" || cfg.readinessCandidate().same(marker)) {
+		return marker.Spoke
+	}
+	state, err := spool.OpenServerRoot(cfg.StateRoot)
+	if err != nil {
+		return ""
+	}
+	defer state.Close()
+	link, _, _ := readLinkConfig(state)
+	return link.Target
 }
 
 func newReadyMarker(instance string) readyMarker {

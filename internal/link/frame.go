@@ -1,7 +1,7 @@
 // Package link carries hall traffic between a spoke device and the hall's
 // home device over a byte stream the user already has, such as the stdio
-// of `ssh -T <home> crosshall link serve` (#400). It knows frames and the
-// handshake only; it opens no connection and holds no hall state.
+// of `ssh -T <home> crosshall link serve` (#400). It provides framing,
+// the handshake, and the spoke's SSH transport.
 package link
 
 import (

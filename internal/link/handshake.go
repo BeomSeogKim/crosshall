@@ -94,6 +94,7 @@ type Challenge struct {
 	Link    Range    `json:"link"`
 	Caps    []string `json:"caps,omitempty"`
 	Nonce   string   `json:"nonce"`
+	TimeMS  int64    `json:"time_ms,omitempty"`
 }
 
 // Hello names the spoke and adds its own nonce. It proves nothing yet: the
@@ -142,6 +143,7 @@ type Session struct {
 	Caps        []string
 	PeerRelease string
 	Device      string
+	PeerTimeMS  int64
 }
 
 // Roles separate the two proofs, so neither can be reflected as the other.
@@ -189,6 +191,7 @@ type Home struct {
 	Hall, Release string
 	Link          Range
 	Caps          []string
+	TimeMS        func() int64
 	// Prove returns the home's proof for the device, or known false for a
 	// device the hall has no record of.
 	Prove func(device, homeNonce, spokeNonce string) (known bool, proof string, err error)
@@ -205,6 +208,9 @@ func (h Home) Accept(r *Reader, w *Writer) (Session, error) {
 		nonce = h.nonce
 	}
 	c := Challenge{Hall: h.Hall, Release: h.Release, Link: h.Link, Caps: h.Caps, Nonce: nonce()}
+	if h.TimeMS != nil {
+		c.TimeMS = h.TimeMS()
+	}
 	if err := w.Write(TypeChallenge, c); err != nil {
 		return Session{}, err
 	}
@@ -318,7 +324,7 @@ func (s Spoke) Connect(r *Reader, w *Writer) (Session, error) {
 		return Session{}, fmt.Errorf("link: %s welcomed link %d with capabilities %q; the agreed terms are link %d with %q",
 			s.Target, wel.Link, Printable(strings.Join(wel.Caps, ",")), v, strings.Join(caps, ","))
 	}
-	return Session{Link: v, Caps: caps, PeerRelease: Printable(c.Release), Device: s.Device}, nil
+	return Session{Link: v, Caps: caps, PeerRelease: Printable(c.Release), Device: s.Device, PeerTimeMS: c.TimeMS}, nil
 }
 
 // expectOrRefused reads the frame t, or turns a refusal into a message

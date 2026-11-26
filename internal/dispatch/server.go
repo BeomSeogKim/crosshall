@@ -116,6 +116,13 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err := prepareNamedSpool(state, "owner"); err != nil {
 		return err
 	}
+	linked, configured, err := readLinkConfig(state)
+	if err != nil {
+		return err
+	}
+	if configured {
+		return serveSpoke(ctx, cancel, cfg, state, linked)
+	}
 	root, err := openRendezvous(cfg.Rendezvous)
 	if err != nil {
 		return err
@@ -243,13 +250,7 @@ func Serve(ctx context.Context, cfg Config) error {
 }
 
 func openRendezvous(path string) (*os.Root, error) {
-	if !filepath.IsAbs(path) {
-		return nil, errors.New("rendezvous path must be absolute")
-	}
-	if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
-	root, err := spool.OpenServerRoot(path)
+	root, err := openRendezvousRoot(path)
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +265,16 @@ func openRendezvous(path string) (*os.Root, error) {
 	}
 	members.Close()
 	return root, nil
+}
+
+func openRendezvousRoot(path string) (*os.Root, error) {
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("rendezvous path must be absolute")
+	}
+	if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	return spool.OpenServerRoot(path)
 }
 
 type memberLeaf struct {
@@ -408,7 +419,11 @@ var adapterSnapshots = []string{adapterPolicyName, adapterRepoSetName, adapterTu
 // access, change and modification times are all more than three days old,
 // and reads after the first do not renew the access time (#378).
 func (s *server) renewRendezvousFiles(root *os.Root, now time.Time) {
-	for _, name := range append([]string{"ready", spool.ReadyLeaseFile}, adapterSnapshots...) {
+	files := []string{"ready", spool.ReadyLeaseFile}
+	if s.db != nil {
+		files = append(files, adapterSnapshots...)
+	}
+	for _, name := range files {
 		if err := root.Chtimes(name, now, now); err != nil && !errors.Is(err, os.ErrNotExist) {
 			s.logFailure(err)
 		}
@@ -428,6 +443,9 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 		sameLease = statErr == nil && pathErr == nil && atPath.Mode() == 0600 && os.SameFile(held, atPath)
 	}
 	if sameLease && readReadyAt(root).same(s.ready) {
+		if s.db == nil {
+			return nil
+		}
 		return s.restoreAdapterFiles(ctx, root)
 	}
 	if err := root.Remove("ready"); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -443,11 +461,12 @@ func (s *server) publishReady(ctx context.Context, root *os.Root) error {
 		}
 		s.readyLease = lease
 	}
-	// After startup or a purge, the snapshots and held lease must be visible
-	// in the same rendezvous before hooks can trust this ready marker.
-	s.logFailure(s.adoptRepoDefaults(ctx))
-	if err := s.publishAdapterFilesAt(ctx, root); err != nil {
-		return err
+	if s.db != nil {
+		// Hooks trust ready only after the local snapshots and lease are present.
+		s.logFailure(s.adoptRepoDefaults(ctx))
+		if err := s.publishAdapterFilesAt(ctx, root); err != nil {
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

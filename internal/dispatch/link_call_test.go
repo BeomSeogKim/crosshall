@@ -596,3 +596,24 @@ func TestALostFirstAnswerAfterReenrollmentIsRecoverable(t *testing.T) {
 	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh",
 		membership: lookup.Membership}))
 }
+
+// A wait forwarded from a linked device is one read-only snapshot per
+// poll, in the link shape: a member's poll answers with its cursor and
+// writes nothing, and an unknown field is refused (#400, 12l).
+func TestALinkedWaitIsOneSnapshotPerPoll(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	before := s.count(t, `SELECT (SELECT COUNT(*) FROM message) + (SELECT COUNT(*) FROM op)`)
+	r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"work_only": true}, membership: m}))
+	var snap domain.WaitSnapshot
+	if err := json.Unmarshal(r.Data, &snap); err != nil || snap.Cursor.BindingID != m.BindingID {
+		t.Fatalf("snapshot %s, %v", r.Data, err)
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"work_only": true, "cursor": snap.Cursor}, membership: m}))
+	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM message) + (SELECT COUNT(*) FROM op)`); n != before {
+		t.Fatalf("%d rows written by wait polls", n-before)
+	}
+	if r := s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"pid": 1}, membership: m}); r.Status == core.ExitOK {
+		t.Fatal("a wait with an unknown field was run")
+	}
+}

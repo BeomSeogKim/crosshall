@@ -34,7 +34,7 @@ func blockSpokeCommand(env Env, o outputs, verb string, args []string) (core.Exi
 	case "link", "unlink", "help", "--help", "-h", "version", "--version", "run":
 		return core.ExitOK, false
 	// The member commands the device forwards to the home (#400).
-	case "join", "who", "inbox", "read", "ask", "reply", "note", "log", "leave", "focus", "retry":
+	case "join", "who", "inbox", "read", "ask", "reply", "note", "log", "leave", "focus", "retry", "wait":
 		return core.ExitOK, false
 	}
 	if verb == "owner" && len(args) > 0 && args[0] == "help" {

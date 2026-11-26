@@ -4,8 +4,9 @@
 -- this one.
 
 -- A session registered on this device: its leaf directory's identity and
--- generation, and an epoch that rises with every new registration of the
--- same session, which the home orders registrations by.
+-- generation, an epoch that rises with every new registration of the same
+-- session, which the home orders registrations by, and the membership the
+-- home last answered with, which the leaf's stamp shows.
 CREATE TABLE spoke_leaf (
     digest TEXT PRIMARY KEY,
     vendor TEXT NOT NULL,
@@ -14,6 +15,8 @@ CREATE TABLE spoke_leaf (
     epoch INTEGER NOT NULL,
     file_identity TEXT NOT NULL,
     vendor_version TEXT NOT NULL DEFAULT '',
+    binding_id INTEGER NOT NULL DEFAULT 0,
+    membership_gen INTEGER NOT NULL DEFAULT 0,
     created_at_ms INTEGER NOT NULL,
     UNIQUE (vendor, key)
 );

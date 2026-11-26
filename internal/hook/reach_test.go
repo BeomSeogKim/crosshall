@@ -62,19 +62,27 @@ func TestReachLineIsPrintedBeforePendingAndRecordedOnlyWhenPrinted(t *testing.T)
 		t.Fatal("a line no longer offered was recorded")
 	}
 
-	offer(ack)
 	for _, tc := range []struct {
 		name       string
 		spec       eventSpec
 		enrollment string
+		warning    bool
 		shown      bool
 	}{
-		{"a turn's end", end, "", false},
-		{"a first join", start, "joined", false},
-		{"a restored start", start, "restored", true},
+		{"a turn's end", end, "", false, false},
+		{"a first join", start, "joined", false, false},
+		{"a first join with wake guidance", start, "joined", true, true},
+		{"a restored start", start, "restored", false, true},
 	} {
 		r := result
 		r.Enrollment = tc.enrollment
+		if tc.warning {
+			offer(lost)
+			r.ReachAck = &lost
+			r.ReachLine = "[crosshall] Reopen Codex in its default managed app server."
+		} else {
+			offer(ack)
+		}
 		if reachShown(tc.spec, r) != tc.shown {
 			t.Fatalf("%s: shown %t", tc.name, !tc.shown)
 		}

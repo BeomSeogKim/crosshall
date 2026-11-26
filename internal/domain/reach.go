@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -24,6 +25,63 @@ const (
 // does, so a member relies on HeldReachBound plus one sweep period.
 const HeldReachBound = 10 * time.Minute
 
+type reachGuide interface {
+	ReachFix(reason string) string
+}
+
+func hasWakeGuidance(adapter string) bool {
+	a, _ := publish.Lookup(adapter)
+	_, ok := a.(reachGuide)
+	return ok
+}
+
+func wakeGuidance(adapter, reason string) string {
+	if adapter == "" || reason == "" {
+		return ""
+	}
+	a, _ := publish.Lookup(adapter)
+	guide, ok := a.(reachGuide)
+	if !ok {
+		return ""
+	}
+	if fix := guide.ReachFix(reason); fix != "" {
+		return fmt.Sprintf("[crosshall] The hall cannot wake this session (%s). %s", reason, fix)
+	}
+	return ""
+}
+
+func unregisteredWakeGuidance(ctx context.Context, tx store.Tx, binding int64, adapter string, route publish.Route) (string, error) {
+	a, ok := publish.Lookup(adapter)
+	if !ok {
+		return "", nil
+	}
+	line := wakeGuidance(adapter, a.Reach(route))
+	if line == "" {
+		return "", nil
+	}
+	var enabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binding b
+		JOIN adapter_policy policy ON policy.adapter = ? WHERE b.id = ? AND b.dnd = 0 AND `+store.PublishSwitchesOn+`)`,
+		adapter, binding).Scan(&enabled); err != nil || !enabled {
+		return "", err
+	}
+	return line, nil
+}
+
+func joinWakeGuidance(ctx context.Context, tx store.Tx, binding int64, adapter string, now time.Time) (string, error) {
+	if !hasWakeGuidance(adapter) {
+		return "", nil
+	}
+	state, found, err := store.ReadPublishState(ctx, tx, binding, now)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return wakeGuidance(state.NoRoute, state.Reason), nil
+	}
+	return unregisteredWakeGuidance(ctx, tx, binding, adapter, publish.Route{})
+}
+
 // ReachesForNewWork holds when the hall starts the member's turn for work
 // that arrives: its route is available, or a notice was queued for it less
 // than HeldReachBound ago.
@@ -40,7 +98,7 @@ func ReachesForNewWork(state store.PublishState, now time.Time) bool {
 // offerReach adds the reach line when what the member was last told no
 // longer holds; after a context reset (restored) a "brings" is said again.
 // The stored value changes only when the hook confirms the line.
-func offerReach(ctx context.Context, tx store.Tx, b hookBinding, restored bool, out *wire.HookResult, now time.Time) error {
+func offerReach(ctx context.Context, tx store.Tx, b hookBinding, restored bool, out *wire.HookResult, now time.Time, prompt *HookEvent) error {
 	if b.dnd {
 		return nil
 	}
@@ -71,6 +129,18 @@ func offerReach(ctx context.Context, tx store.Tx, b hookBinding, restored bool, 
 		if offerHint {
 			out.ReachLine += fmt.Sprintf(" Your user can turn notices back on with crosshall owner publish resume %d.", b.id)
 			out.ReachAck.SuspensionID = hint.SuspensionID
+		}
+	case !reach && !told.Valid:
+		line := wakeGuidance(state.NoRoute, state.Reason)
+		if !found && prompt != nil && prompt.Profile.Mode == publish.ModeInProcess {
+			line, err = unregisteredWakeGuidance(ctx, tx, b.id, prompt.Profile.Adapter, publish.Route{Mode: prompt.Profile.Mode})
+			if err != nil {
+				return err
+			}
+		}
+		if line != "" {
+			out.ReachLine = line
+			out.ReachAck = &wire.HookReachAck{BindingID: b.id, RouteEpoch: epoch, Told: 0}
 		}
 	}
 	return nil

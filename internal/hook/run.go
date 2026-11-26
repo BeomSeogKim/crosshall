@@ -387,8 +387,9 @@ func confirmReach(ctx context.Context, leaf *os.Root, generation string, spec ev
 }
 
 func reachShown(spec eventSpec, result wire.HookResult) bool {
+	joinedWarning := result.Enrollment == "joined" && result.ReachAck != nil && result.ReachAck.Told == 0
 	return result.ReachLine != "" && !spec.Stop && (spec.Output == "context" || spec.Output == "inject_steps") &&
-		(spec.Enroll && result.Enrollment == "restored" || !spec.Enroll && spec.Notice)
+		(spec.Enroll && (result.Enrollment == "restored" || joinedWarning) || !spec.Enroll && spec.Notice)
 }
 
 func withoutJoinHint(result wire.HookResult) wire.HookResult {

@@ -48,6 +48,51 @@ func main() {
 }
 `
 
+const codexInProcessWakeGuidance = "[crosshall] The hall cannot wake this session (codex runs without its daemon). Reopen Codex in its default managed app server."
+
+func TestCodexJoinShowsWakeGuidance(t *testing.T) {
+	t.Run("no hook start", func(t *testing.T) {
+		f := newSetupWorld(t)
+		f.apply("", "setup", "codex", "--apply")
+		f.enrollmentRepo()
+		member := &participant{w: f.world, extra: []string{"CODEX_THREAD_ID=codex-join-without-hook"}}
+		const fix = "Check /hooks and trust the crosshall hooks if needed, then reopen Codex in its default managed app server."
+		if first := member.mustPlain("join", "setup-check", "--as", "codex"); strings.Count(first, fix) != 1 ||
+			!strings.Contains(first, "codex daemon not confirmed") {
+			t.Fatalf("first hand join printed %q, want the reason and how to check hook trust", first)
+		}
+		if again := member.mustPlain("join", "setup-check"); strings.Contains(again, fix) {
+			t.Fatalf("repeated hand join printed the guidance again: %q", again)
+		}
+	})
+	t.Run("installed hook without daemon", func(t *testing.T) {
+		f := newSetupWorld(t)
+		f.apply("", "setup", "codex", "--apply")
+		repo := f.enrollmentRepo()
+		deadline := time.Now().Add(fixtureEventTimeout)
+		for {
+			out := f.invokeHook(repo, "codex", "SessionStart", `"source":"startup"`)
+			if strings.Count(out, codexInProcessWakeGuidance) == 1 {
+				break
+			}
+			if out != "" || !time.Now().Before(deadline) {
+				t.Fatalf("installed start printed %q, want %q; %s", out, codexInProcessWakeGuidance, f.enrollmentEvidence("codex"))
+			}
+			f.waitEnrollmentPackets("codex", "SessionStart", deadline)
+			time.Sleep(20 * time.Millisecond)
+		}
+		f.waitEnrollmentPackets("codex", "SessionStart", deadline)
+		var told int
+		if err := f.db().QueryRow(`SELECT b.reach_told FROM binding b JOIN principal_key k ON k.principal_id = b.principal_id
+			WHERE k.vendor = 'codex' AND k.key = ?`, setupSessionPrefix+"codex").Scan(&told); err != nil || told != 0 {
+			t.Fatalf("the printed wake guidance has receipt %d, %v, want 0", told, err)
+		}
+		if prompt := f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"after-guidance"`); strings.Contains(prompt, codexInProcessWakeGuidance) {
+			t.Fatalf("first prompt repeated the guidance confirmed at start: %q", prompt)
+		}
+	})
+}
+
 // The installed Codex hook opens a route only when Codex's managed app
 // server runs it; a start under any other process records why the session
 // cannot be reached (#236).

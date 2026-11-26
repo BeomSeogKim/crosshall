@@ -35,6 +35,17 @@ type linkFrameRead struct {
 	err   error
 }
 
+// receiveLinkEventFrames reads r until it fails and returns its frames in
+// order. Reading never waits on the loop that consumes them: a page that
+// loop writes to a device that is itself writing cannot stall the link
+// (#400).
+func receiveLinkEventFrames(ctx context.Context, r *link.Reader) <-chan linkFrameRead {
+	received, frames := make(chan linkFrameRead), make(chan linkFrameRead)
+	go link.Relay(ctx, received, frames)
+	go readLinkEventFrames(ctx, r, received)
+	return frames
+}
+
 func readLinkEventFrames(ctx context.Context, r *link.Reader, frames chan<- linkFrameRead) {
 	for {
 		frame, err := r.Read()
@@ -67,8 +78,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 				Call{Command: domain.LinkEvents{LinkEventPeer: peer, Close: true}})
 		}
 	}()
-	frames := make(chan linkFrameRead, 1)
-	go readLinkEventFrames(ctx, r, frames)
+	frames := receiveLinkEventFrames(ctx, r)
 	ticker := time.NewTicker(linkEventPollInterval)
 	defer ticker.Stop()
 	for {

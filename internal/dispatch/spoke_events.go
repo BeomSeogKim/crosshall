@@ -223,7 +223,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 	// the home writes a page before it reads again, so a write of ours
 	// that waits for the home must never wait on our reading too.
 	received, frames := make(chan linkRead), make(chan linkRead)
-	go relayFrames(ctx, received, frames)
+	go link.Relay(ctx, received, frames)
 	go func() {
 		for {
 			f, err := conn.Receive(time.Time{})
@@ -434,27 +434,6 @@ func (e *spokeEvents) sendWakeResult(ctx context.Context, conn spokeConn) (int64
 		return 0, err
 	}
 	return result.AttemptID, e.send(conn, link.TypeWakeResult, result)
-}
-
-// relayFrames passes frames from in to out in order, always ready to
-// take the next from in.
-func relayFrames(ctx context.Context, in <-chan linkRead, out chan<- linkRead) {
-	var queue []linkRead
-	for {
-		var send chan<- linkRead
-		var head linkRead
-		if len(queue) > 0 {
-			send, head = out, queue[0]
-		}
-		select {
-		case r := <-in:
-			queue = append(queue, r)
-		case send <- head:
-			queue = queue[1:]
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 // spokeHookWindow bounds the hook frames sent and not yet answered on a

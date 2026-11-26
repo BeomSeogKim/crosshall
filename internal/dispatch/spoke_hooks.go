@@ -95,7 +95,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 		return unknownOutcome("attempt expired", req.OpKey), nil
 	}
 	capture := req.Capture
-	if capture == nil || req.PublishSeq == 0 || capture.Boot == "" || capture.MonoNS < 0 {
+	if capture == nil || req.PublishSeq == 0 || capture.Boot == "" || capture.MonoNS < 0 || capture.WallMS <= 0 {
 		return commandError(core.ExitUsage, "", "a linked device's hook carries its capture token"), nil
 	}
 	notMember := commandError(core.ExitNotEnrolled, core.CodeNotEnrolled, "hook event requires a live member")
@@ -170,7 +170,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 				return err
 			}
 			queued = true
-			return queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, written)
+			return queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, capture.WallMS, written)
 		}
 		if adapter != leaf.Vendor || req.OpKey != "hook:"+adapter+":"+launch+":"+hookEventRef(req) {
 			r := commandError(core.ExitRefused, "", "hook identity does not match the member exchange")
@@ -192,7 +192,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 		if fact != nil {
 			fact.Member, fact.Token = member, token
 			queued = true
-			if err := queueHookFrame(ctx, tx, "fact", member, leaf.Generation, req.PublishSeq, fact); err != nil {
+			if err := queueHookFrame(ctx, tx, "fact", member, leaf.Generation, req.PublishSeq, capture.WallMS, fact); err != nil {
 				return err
 			}
 		}
@@ -226,7 +226,9 @@ func hookEventRef(req wire.Request) string {
 	return args.EventRef
 }
 
-func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, generation string, leafSeq uint64, frame any) error {
+// The frame's age is the time its hook captured it, which processing
+// the packet again does not change: the send horizon counts from it.
+func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, generation string, leafSeq uint64, capturedMS int64, frame any) error {
 	body, err := json.Marshal(frame)
 	if err != nil {
 		return err
@@ -236,7 +238,7 @@ func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.M
 	// under the same ID if the first was answered meanwhile.
 	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (frame_id, vendor, key, leaf_seq, kind, body, at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (frame_id) DO NOTHING`,
-		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, leafSeq, kind, string(body), time.Now().UnixMilli())
+		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, leafSeq, kind, string(body), capturedMS)
 	return err
 }
 

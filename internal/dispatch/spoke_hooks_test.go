@@ -24,13 +24,14 @@ type hookFixture struct {
 	home     *fakeHome
 	mu       sync.Mutex
 	policies []bool // publish (true) or withdraw (false), in order
+	wallMS   int64  // the hooks' capture time
 }
 
 const hookLaunch = "L1"
 
 func newHookFixture(t *testing.T) *hookFixture {
 	t.Helper()
-	f := &hookFixture{eventFixture: newEventFixture(t), home: newFakeHome()}
+	f := &hookFixture{eventFixture: newEventFixture(t), home: newFakeHome(), wallMS: time.Now().UnixMilli()}
 	f.m.mono = f.e.mono
 	f.m.hooks = make(chan struct{}, 1)
 	f.e.policy = func(_ context.Context, publish bool) error {
@@ -73,7 +74,7 @@ func (f *hookFixture) hook(t *testing.T, verb string, args any, seq uint64, stam
 	req := wire.Request{Version: wire.Version, Attempt: id, OpKey: "hook:codex:" + ref.LaunchRef + ":" + ref.EventRef,
 		KeyDigest: f.digest, Generation: f.generation, Verb: verb, Args: raw, PublishSeq: seq, OfferReceipts: true,
 		ExpiresAtMS: time.Now().Add(2 * time.Second).UnixMilli(),
-		Capture:     &wire.HookCapture{Boot: "boot-1", MonoNS: 5, WallMS: 6, Membership: stamp}}
+		Capture:     &wire.HookCapture{Boot: "boot-1", MonoNS: 5, WallMS: f.wallMS, Membership: stamp}}
 	if verb == wire.VerbHookJoinHintAck {
 		no := false
 		req.Reply = &no
@@ -128,7 +129,7 @@ func TestASpokeServesAHookFromItsCache(t *testing.T) {
 	if kind != "fact" || json.Unmarshal([]byte(body), &fact) != nil || json.Unmarshal(fact.Body, &args) != nil {
 		t.Fatalf("queued %s %s", kind, body)
 	}
-	want := link.HookToken{Boot: "boot-1", LeafSeq: 5, MonoNS: 5, WallMS: 6, LeafGeneration: f.generation,
+	want := link.HookToken{Boot: "boot-1", LeafSeq: 5, MonoNS: 5, WallMS: f.wallMS, LeafGeneration: f.generation,
 		Membership: link.Membership{BindingID: 2, Generation: 2}}
 	if fact.Member != eventMember || fact.Kind != wire.VerbHookEvent || fact.Token != want {
 		t.Fatalf("fact %+v", fact)
@@ -650,4 +651,28 @@ func TestASpokeKeepsReadingWhileItSendsHookFrames(t *testing.T) {
 		t.Fatal("the event client did not stop")
 	}
 	toHome.Close()
+}
+
+// A retained written acknowledgement processed again, after the home
+// answered it and its row went, keeps the age of its capture: past the
+// home's receipts it is not sent again.
+func TestASpokeAgesAHookFrameFromItsCapture(t *testing.T) {
+	f := newHookFixture(t)
+	f.wallMS = time.Now().Add(-store.RetentionWindow - time.Hour).UnixMilli()
+	f.hook(t, wire.VerbHookJoinHintAck, wire.HookOutputAckArgs{Offer: &wire.HookOfferReceipt{OfferID: 7, Nonce: "nonce-7"},
+		WrittenAtMS: f.wallMS}, 9, stamp22)
+	f.wallMS = time.Now().UnixMilli()
+	f.hook(t, wire.VerbHookEvent, prompt("now", 3), 10, stamp22)
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	waitFacts(t, f.home, 1)
+	time.Sleep(50 * time.Millisecond)
+	for _, fr := range f.home.frames() {
+		if fr.Type == link.TypeWritten {
+			t.Fatalf("a week-old written acknowledgement was sent: %s", fr.Body)
+		}
+	}
+	f.end(t, f.home)
 }

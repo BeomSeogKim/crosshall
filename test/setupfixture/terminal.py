@@ -12,13 +12,15 @@ import time
 
 
 def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
-        timeout=30):
+        timeout=30, queued_input=b"", answer_after=b""):
     """Return (exit code, combined output). The caller supplies the fixture env."""
     master, slave = os.openpty()
     try:
         attrs = termios.tcgetattr(slave)
         attrs[3] &= ~termios.ECHO
         termios.tcsetattr(slave, termios.TCSANOW, attrs)
+        if queued_input:
+            os.write(master, queued_input)
         process = subprocess.Popen(
             command, cwd=cwd, env=env, start_new_session=True,
             stdin=slave if tty_in else subprocess.PIPE,
@@ -32,9 +34,9 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
     output = bytearray()
     deadline = time.monotonic() + timeout
     try:
-        if tty_in:
+        if tty_in and not answer_after:
             os.write(master, answers + b"\x04")
-        else:
+        elif not tty_in:
             try:
                 process.stdin.write(answers)
             except BrokenPipeError:
@@ -44,7 +46,7 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
                     process.stdin.close()
                 except BrokenPipeError:
                     pass
-        if not tty_out:
+        if not tty_out and not answer_after:
             os.close(slave)
             slave = None
         with selectors.DefaultSelector() as poll:
@@ -72,6 +74,9 @@ def run(command, *, env=None, cwd=None, answers=b"", tty_in=True, tty_out=True,
                         chunk = b""  # Linux PTY after slave close.
                     if chunk:
                         output.extend(chunk)
+                        if tty_in and answer_after and answer_after in output:
+                            os.write(master, answers + b"\x04")
+                            answer_after = b""
                     else:
                         poll.unregister(key.fileobj)
         code = process.wait(timeout=max(0, deadline - time.monotonic()))
@@ -100,11 +105,14 @@ if __name__ == "__main__":
     parser.add_argument("--pipe-in", action="store_true")
     parser.add_argument("--pipe-out", action="store_true")
     parser.add_argument("--answers", default="")
+    parser.add_argument("--queued-input", default="")
+    parser.add_argument("--answer-after", default="")
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("command", nargs="+")
     args = parser.parse_args()
     code, output = run(args.command, answers=args.answers.encode(),
                        tty_in=not args.pipe_in, tty_out=not args.pipe_out,
-                       timeout=args.timeout)
+                       timeout=args.timeout, queued_input=args.queued_input.encode(),
+                       answer_after=args.answer_after.encode())
     sys.stdout.buffer.write(output)
     sys.exit(code if code >= 0 else 128 - code)

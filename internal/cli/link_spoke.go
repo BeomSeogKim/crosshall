@@ -80,14 +80,18 @@ func runLinkSpoke(ctx context.Context, env Env, o outputs, args []string, stdin 
 		if stdin == nil {
 			return errors.New("link needs confirmation; use --yes to confirm explicitly")
 		}
+		if env.FlushTerminalInput != nil {
+			if err := env.FlushTerminalInput(); err != nil {
+				return fmt.Errorf("cannot clear pending terminal input: %w", err)
+			}
+		}
 		fmt.Fprint(o.stderr, "Link and enroll this device? [y/N] ")
 		answer, _ := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
-		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "y", "yes":
+		answer = strings.TrimSpace(answer)
+		if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
 			return nil
-		default:
-			return errors.New("link canceled")
 		}
+		return fmt.Errorf("link canceled (answer: %q)", answer)
 	})
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")

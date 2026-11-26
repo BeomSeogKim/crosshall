@@ -94,7 +94,12 @@ func (c Client) DispatcherRunning() bool {
 // memberRendezvous returns where member spools are: the rendezvous
 // itself, or the member rendezvous a linked device's dispatcher names in
 // its ready marker (#400).
-func memberRendezvous(rendezvous string) string {
+func memberRendezvous(rendezvous string) string { return MemberRendezvous(rendezvous) }
+
+// MemberRendezvous is the rendezvous whose m/ and first/ hold the member
+// leaves: rendezvous itself, or the one a linked device's dispatcher
+// names in its ready marker (#400).
+func MemberRendezvous(rendezvous string) string {
 	root, err := ident.OpenPrivateDir(rendezvous)
 	if err != nil {
 		return rendezvous

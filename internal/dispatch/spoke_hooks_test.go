@@ -3,6 +3,9 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -259,4 +262,50 @@ func TestASpokeKeepsTheHallsAdapterPolicy(t *testing.T) {
 	if n := f.count(t, `SELECT eligible FROM spoke_event_cursor`); n != 0 {
 		t.Fatal("the cache still counts")
 	}
+}
+
+// A membership change the device stamped from a command answer before the
+// home's event arrived is cut where the stamp changed: a hook published
+// after the stamp (it carries the new membership) is after the cut, and one
+// published before it (it carries the old one) is not. A route change
+// alone is cut where it applies.
+func TestASpokeCutsAMembershipChangeWhereItsStampChanged(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(1, 1)}}})
+	home.ack(t, 10)
+	publish := func(seq int) {
+		if err := os.WriteFile(filepath.Join(f.path, "hook-publish-seq"), []byte(strconv.Itoa(seq)+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(3) // hooks 1-3 carry 1/1
+	f.exec(t, `UPDATE spoke_leaf SET binding_id = 2, membership_gen = 2`)
+	if err := stampLeaf(t.Context(), f.m.db, f.m.members, eventMember.Vendor, eventMember.Key); err != nil {
+		t.Fatal(err) // the join's answer
+	}
+	publish(5) // hooks 4-5 carry 2/2
+	// A move arrives as an invalidate, then the membership event of the
+	// same scope: both cut where the stamp changed.
+	home.push(t, link.TypeEvent, event(t, 11, link.EventInvalidate, link.Invalidate{Member: eventMember, Reason: link.InvalidateMove, Scope: f.scope(2, 2)}))
+	if cuts := home.ack(t, 11); len(cuts) != 1 || cuts[0].LeafSeq != 3 {
+		t.Fatalf("membership change cut %+v, want leaf seq 3", cuts)
+	}
+	home.push(t, link.TypeEvent, event(t, 12, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: f.scope(2, 2)}))
+	if cuts := home.ack(t, 12); len(cuts) != 1 || cuts[0].LeafSeq != 3 {
+		t.Fatalf("the same scope again cut %+v, want leaf seq 3", cuts)
+	}
+	scope := f.scope(2, 2)
+	scope.RouteEpoch = 2
+	home.push(t, link.TypeEvent, event(t, 13, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: scope}))
+	if cuts := home.ack(t, 13); len(cuts) != 1 || cuts[0].LeafSeq != 5 {
+		t.Fatalf("route change cut %+v, want leaf seq 5", cuts)
+	}
+	// The same route scope again never cuts earlier than that.
+	home.push(t, link.TypeEvent, event(t, 14, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: scope}))
+	if cuts := home.ack(t, 14); len(cuts) != 1 || cuts[0].LeafSeq != 5 {
+		t.Fatalf("the same route scope again cut %+v, want leaf seq 5", cuts)
+	}
+	f.end(t, home)
 }

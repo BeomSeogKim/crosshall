@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hostclock"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
@@ -508,6 +509,7 @@ type heldLeaf struct {
 	scope                        link.MemberScope
 	rendezvous, digest, identity string
 	seq                          uint64
+	cutSeq                       uint64 // the cut's leaf publish sequence (see hold)
 	dir                          *os.Root
 	unlock                       func()
 	absent                       bool
@@ -523,7 +525,7 @@ func (h *heldLeaf) release() {
 func (h *heldLeaf) cut(seq uint64) link.LeafCut {
 	c := link.LeafCut{Member: h.member, Seq: seq, Scope: h.scope, Absent: h.absent}
 	if !h.absent {
-		c.LeafSeq = h.seq
+		c.LeafSeq = h.cutSeq
 	}
 	return c
 }
@@ -561,6 +563,44 @@ func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.M
 		return nil, err
 	}
 	h.dir, h.seq, h.unlock, h.absent = dir, seq, unlock, false
+	h.cutSeq = seq
+	// Where the change is cut (design 6a, #3617). A membership the leaf's
+	// stamp already carries (a command answer stamped it before the
+	// home's event arrived) is cut where the stamp changed: hooks after it
+	// carry the new membership. A route change alone is cut here. The
+	// same scope again never cuts earlier than before.
+	var stamp core.Membership
+	var stampSeq uint64
+	var prior link.MemberScope
+	var priorCut uint64
+	known := true
+	err = e.db.View(ctx, func(tx store.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT stamp_binding, stamp_gen, stamp_seq FROM spoke_leaf WHERE vendor = ? AND key = ?`,
+			member.Vendor, member.Key).Scan(&stamp.BindingID, &stamp.Generation, &stampSeq); err != nil {
+			return err
+		}
+		err := tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen, route_epoch, cut_seq FROM spoke_member_scope
+			WHERE vendor = ? AND key = ?`, member.Vendor, member.Key).
+			Scan(&prior.Membership.BindingID, &prior.Membership.Generation, &prior.RouteEpoch, &priorCut)
+		if errors.Is(err, sql.ErrNoRows) {
+			known = false
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		h.release()
+		return nil, err
+	}
+	sameMembership := known && prior.Membership == scope.Membership
+	switch {
+	case sameMembership && prior.RouteEpoch != scope.RouteEpoch:
+	case stamp.Generation > 0 && link.Membership(stamp) == scope.Membership && stampSeq <= seq:
+		h.cutSeq = stampSeq
+		if sameMembership && priorCut > h.cutSeq && priorCut <= seq {
+			h.cutSeq = priorCut
+		}
+	}
 	return h, nil
 }
 
@@ -606,10 +646,11 @@ func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 		return err
 	}
 	s := h.scope
-	if _, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch)
-		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, key) DO UPDATE SET leaf_generation = excluded.leaf_generation,
-			binding_id = excluded.binding_id, membership_gen = excluded.membership_gen, route_epoch = excluded.route_epoch`,
-		h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.BindingID, s.Membership.Generation, s.RouteEpoch); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, key) DO UPDATE SET leaf_generation = excluded.leaf_generation,
+			binding_id = excluded.binding_id, membership_gen = excluded.membership_gen, route_epoch = excluded.route_epoch,
+			cut_seq = excluded.cut_seq`,
+		h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.BindingID, s.Membership.Generation, s.RouteEpoch, h.cutSeq); err != nil {
 		return err
 	}
 	if h.absent || s.Membership.BindingID == 0 {
@@ -627,7 +668,7 @@ func (e *spokeEvents) stamp(ctx context.Context, h *heldLeaf) error {
 	if h.absent {
 		return nil
 	}
-	return stampLocked(ctx, e.db, h.dir, h.digest, h.identity)
+	return stampLocked(ctx, e.db, h.dir, h.digest, h.identity, h.seq)
 }
 
 // applyEvent applies one event, read at monotonic time at, and advances

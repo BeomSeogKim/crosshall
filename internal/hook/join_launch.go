@@ -57,7 +57,12 @@ func BindJoinLaunch(rendezvous string, id ident.Identity, l domain.JoinLaunch) e
 		return err
 	}
 	defer rv.Close()
-	leaf, gen, err := spool.OpenHookLeaf(rv, id)
+	members, done, err := memberRoot(rv)
+	if err != nil {
+		return err
+	}
+	defer done()
+	leaf, gen, err := spool.OpenHookLeaf(members, id)
 	if err != nil {
 		return err
 	}

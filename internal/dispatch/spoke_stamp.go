@@ -37,18 +37,19 @@ func stampLeaf(ctx context.Context, db *store.Store, rendezvous, vendor, key str
 		return err
 	}
 	defer dir.Close()
-	_, unlock, err := spool.LockLeafPublish(ctx, dir)
+	seq, unlock, err := spool.LockLeafPublish(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return stampLocked(ctx, db, dir, digest, identity)
+	return stampLocked(ctx, db, dir, digest, identity, seq)
 }
 
 // stampLocked writes the stamp of the registration (digest, identity) into
-// dir, whose publish lock the caller holds. A directory or registration
-// that changed meanwhile is left alone.
-func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, identity string) error {
+// dir, whose publish lock the caller holds at leaf publish sequence seq,
+// and records seq when the stamp changes: hooks published after seq carry
+// it. A directory or registration that changed meanwhile is left alone.
+func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, identity string, seq uint64) error {
 	if got, err := ident.FileIdentity(dir); err != nil || got != identity {
 		return err
 	}
@@ -63,5 +64,15 @@ func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, ide
 	if err != nil {
 		return err
 	}
-	return ident.RepublishMembership(dir, m)
+	if current, err := ident.LookupMembership(dir); err == nil && current != nil && *current == m {
+		return nil
+	}
+	if err := ident.RepublishMembership(dir, m); err != nil {
+		return err
+	}
+	return db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET stamp_binding = ?, stamp_gen = ?, stamp_seq = ?
+			WHERE digest = ? AND file_identity = ?`, m.BindingID, m.Generation, seq, digest, identity)
+		return err
+	})
 }

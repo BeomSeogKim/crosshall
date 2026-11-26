@@ -20,3 +20,15 @@ CREATE TABLE spoke_hook_outbox (
     body TEXT NOT NULL,
     at_ms INTEGER NOT NULL
 );
+
+-- The membership a leaf's stamp file carries and the leaf publish sequence
+-- at which it started carrying it: a membership change is cut there, so a
+-- hook that captured the new stamp before the home's event arrived is
+-- after the cut.
+ALTER TABLE spoke_leaf ADD COLUMN stamp_binding INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE spoke_leaf ADD COLUMN stamp_gen INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE spoke_leaf ADD COLUMN stamp_seq INTEGER NOT NULL DEFAULT 0;
+
+-- The leaf publish sequence of the last cut acknowledged for the member's
+-- scope: a repeated change of the same scope never cuts earlier.
+ALTER TABLE spoke_member_scope ADD COLUMN cut_seq INTEGER NOT NULL DEFAULT 0;

@@ -228,19 +228,19 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 	}
 	defer members.Close()
 	type leaf struct {
-		digest, identity, generation string
-		membership                   core.Membership
+		digest, identity, generation, vendor, key string
+		membership                                core.Membership
 	}
 	var leaves []leaf
 	err = m.db.Update(ctx, func(tx store.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT digest, file_identity, generation, binding_id, membership_gen FROM spoke_leaf`)
+		rows, err := tx.QueryContext(ctx, `SELECT digest, file_identity, generation, vendor, key, binding_id, membership_gen FROM spoke_leaf`)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var l leaf
-			if err := rows.Scan(&l.digest, &l.identity, &l.generation, &l.membership.BindingID, &l.membership.Generation); err != nil {
+			if err := rows.Scan(&l.digest, &l.identity, &l.generation, &l.vendor, &l.key, &l.membership.BindingID, &l.membership.Generation); err != nil {
 				return err
 			}
 			leaves = append(leaves, l)
@@ -275,7 +275,11 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		if err := ident.RepublishGeneration(dir, l.generation); !errors.Is(err, ident.ErrDirectoryBusy) {
 			s.logFailure(err)
 		}
-		s.logFailure(ident.RepublishMembership(dir, l.membership))
+		// Only a stamp that differs takes the leaf's lock: the locked
+		// write reads the store again, so it never puts back l.
+		if current, err := ident.LookupMembership(dir); err != nil || current == nil || *current != l.membership {
+			s.logFailure(stampLeaf(ctx, m.db, m.members, l.vendor, l.key))
+		}
 		if reap {
 			s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), true))
 		}
@@ -308,9 +312,10 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 		s.logFailure(err)
 		return commandError(core.ExitError, "", "first contact failed; see dispatcher.log"), nil
 	}
-	if err := reg.Publish(); err != nil {
+	if err := reg.PublishLeaf(); err != nil {
 		return core.Result{}, err // the next pass finishes a committed registration
 	}
+	s.logFailure(stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, hello.Vendor, hello.Key))
 	return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}, nil
 }
 
@@ -431,7 +436,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			return lostAnswer(req.OpKey), nil
 		}
 		s.settleOutbox(ctx, rec.id, &answer)
-		s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
+		s.publishSelection(ctx, leaf.Vendor, leaf.Key)
 		return answer, nil
 	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
@@ -446,7 +451,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		return lostAnswer(req.OpKey), nil
 	}
 	s.settleOutbox(ctx, rec.id, &result)
-	s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
+	s.publishSelection(ctx, leaf.Vendor, leaf.Key)
 	if retried && result.Status == core.ExitOK {
 		if data, err := json.Marshal(domain.RetryResult{Command: req.Verb, Result: result.Data}); err == nil {
 			result.Data = data
@@ -573,15 +578,8 @@ func adoptMembershipTx(ctx context.Context, tx store.Tx, id int64, m *core.Membe
 
 // publishSelection writes the session's current selection to its leaf
 // before an answer returns, so the member's next command carries it.
-func (s *server) publishSelection(ctx context.Context, dir *os.Root, vendor, key string) {
-	var m core.Membership
-	err := s.spokeMembers.db.Update(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE vendor = ? AND key = ?`,
-			vendor, key).Scan(&m.BindingID, &m.Generation)
-	})
-	if err == nil && m.Generation > 0 {
-		s.logFailure(ident.RepublishMembership(dir, m))
-	}
+func (s *server) publishSelection(ctx context.Context, vendor, key string) {
+	s.logFailure(stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, vendor, key))
 }
 
 func (s *server) markUnknown(ctx context.Context, id int64) {
@@ -720,7 +718,7 @@ func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req 
 				// A stored answer's move is applied again, in case its
 				// first application failed; never backwards.
 				s.logFailure(m.db.Update(ctx, func(tx store.Tx) error { return adoptMembershipTx(ctx, tx, id, answer.Membership) }))
-				s.publishSelection(ctx, dir, call.Vendor, call.Key)
+				s.publishSelection(ctx, call.Vendor, call.Key)
 				return answer, nil
 			}
 		}
@@ -735,7 +733,7 @@ func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req 
 			return answer, &r
 		}
 		s.settleOutbox(ctx, id, &answer)
-		s.publishSelection(ctx, dir, call.Vendor, call.Key)
+		s.publishSelection(ctx, call.Vendor, call.Key)
 		return answer, nil
 	}
 	shown := func(command string, answer core.Result) *core.Result {

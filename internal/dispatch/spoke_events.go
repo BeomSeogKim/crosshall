@@ -11,7 +11,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/hostclock"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
@@ -25,8 +24,9 @@ const (
 	eventKeepalive = time.Hour
 	// eventWriteTimeout bounds one frame to a home that stopped reading.
 	eventWriteTimeout = 30 * time.Second
-	// cutsPerAck keeps an Ack frame far below link.MaxFrame.
-	cutsPerAck = 1000
+	// ackBudget bounds the serialized cuts of one Ack frame, leaving room
+	// for the frame's envelope under link.MaxFrame.
+	ackBudget = link.MaxFrame - 64<<10
 	// snapshotParts bounds the parts one snapshot may buffer.
 	snapshotParts = 256
 	// maxLeaseMS bounds a lease the home grants (it grants about a minute).
@@ -49,12 +49,24 @@ type spokeEvents struct {
 	mono    func() (int64, error)
 }
 
-func newSpokeEvents(db *store.Store, members string) (*spokeEvents, error) {
+// newSpokeEvents starts the client of a new dispatcher process: what the
+// store cached is not served until this process applies a snapshot.
+func newSpokeEvents(ctx context.Context, db *store.Store, members string) (*spokeEvents, error) {
 	boot, err := hostclock.Boot()
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono}, nil
+	e := &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono}
+	return e, e.ineligible(ctx)
+}
+
+// ineligible records that nothing cached may be served until a snapshot
+// applies.
+func (e *spokeEvents) ineligible(ctx context.Context) error {
+	return e.db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 0 WHERE eligible = 1`)
+		return err
+	})
 }
 
 type eventCursor struct {
@@ -73,6 +85,19 @@ func (e *spokeEvents) cursor(ctx context.Context, tx store.Tx) (eventCursor, err
 	return c, err
 }
 
+// linkRead is a frame with the monotonic time it was read at: a lease
+// runs from its frame's arrival, not from when it was applied.
+type linkRead struct {
+	frame link.Frame
+	at    int64
+	err   error
+}
+
+type snapshotPart struct {
+	link.Snapshot
+	at int64
+}
+
 // run serves one event connection until it ends: subscribe, then apply
 // and acknowledge what the home sends.
 func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
@@ -87,7 +112,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 		if cur, err = e.cursor(ctx, tx); err != nil {
 			return err
 		}
-		if cur.boot != e.boot || cur.acked == 0 {
+		if cur.boot != e.boot || cur.acked == 0 || !cur.eligible {
 			snapshot = true
 		}
 		if !snapshot {
@@ -101,6 +126,9 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	if err != nil {
 		return err
 	}
+	if snapshot {
+		e.resumed = false
+	}
 	if err := e.send(conn, link.TypeSubscribe, link.Subscribe{FromSeq: cur.acked, Boot: e.boot, Snapshot: snapshot}); err != nil {
 		return err
 	}
@@ -109,8 +137,12 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	go func() {
 		for {
 			f, err := conn.Receive(time.Time{})
+			var at int64
+			if err == nil {
+				at, err = e.mono()
+			}
 			select {
-			case frames <- linkRead{f, err}:
+			case frames <- linkRead{f, at, err}:
 			case <-ctx.Done():
 				return
 			}
@@ -122,13 +154,13 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	keepalive := time.NewTicker(eventKeepalive)
 	defer keepalive.Stop()
 	acked := cur.acked
-	var parts []link.Snapshot
+	var parts []snapshotPart
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-keepalive.C:
-			if e.resumed {
+			if e.resumed && len(parts) == 0 {
 				if err := e.send(conn, link.TypeAck, link.Ack{Seq: acked, Boot: e.boot}); err != nil {
 					return err
 				}
@@ -146,7 +178,15 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 				if part.Part != len(parts) || len(parts) > 0 && part.Seq != parts[0].Seq || len(parts) == snapshotParts {
 					return errors.New("link: snapshot parts out of order")
 				}
-				parts = append(parts, part)
+				if len(parts) == 0 {
+					// The home replaces the cache: until the whole
+					// snapshot applies, nothing cached is served.
+					if err := e.ineligible(ctx); err != nil {
+						return err
+					}
+					e.resumed = false
+				}
+				parts = append(parts, snapshotPart{part, r.at})
 				if !part.Last {
 					continue
 				}
@@ -159,7 +199,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 					return err
 				}
 			case link.TypeEvent:
-				if !e.resumed {
+				if !e.resumed || len(parts) > 0 {
 					return errors.New("link: an event before the snapshot")
 				}
 				var ev link.Event
@@ -171,9 +211,12 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 				}
 				if ev.Seq != acked+1 {
 					e.resumed = false
+					if err := e.ineligible(ctx); err != nil {
+						return err
+					}
 					return errEventGap
 				}
-				cuts, err := e.applyEvent(ctx, ev)
+				cuts, err := e.applyEvent(ctx, ev, r.at)
 				if err != nil {
 					return err
 				}
@@ -190,11 +233,6 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	}
 }
 
-type linkRead struct {
-	frame link.Frame
-	err   error
-}
-
 func (e *spokeEvents) send(conn spokeConn, frame string, v any) error {
 	if _, err := conn.Send(frame, v, time.Now().Add(eventWriteTimeout)); err != nil {
 		conn.Close()
@@ -203,10 +241,21 @@ func (e *spokeEvents) send(conn spokeConn, frame string, v any) error {
 	return nil
 }
 
-// ack acknowledges seq with its cuts, in frames of at most cutsPerAck.
+// ack acknowledges seq with its cuts, split into frames by their
+// serialized size.
 func (e *spokeEvents) ack(conn spokeConn, seq uint64, cuts []link.LeafCut) error {
 	for {
-		n := min(len(cuts), cutsPerAck)
+		n, size := 0, 0
+		for ; n < len(cuts); n++ {
+			raw, err := json.Marshal(cuts[n])
+			if err != nil {
+				return err
+			}
+			if n > 0 && size+len(raw)+1 > ackBudget {
+				break
+			}
+			size += len(raw) + 1
+		}
 		a := link.Ack{Seq: seq, Boot: e.boot, Cuts: cuts[:n], More: n < len(cuts)}
 		if err := e.send(conn, link.TypeAck, a); err != nil {
 			return err
@@ -220,12 +269,13 @@ func (e *spokeEvents) ack(conn spokeConn, seq uint64, cuts []link.LeafCut) error
 // heldLeaf is a member's leaf held under its publish lock while a change
 // to it commits.
 type heldLeaf struct {
-	member link.Member
-	scope  link.MemberScope
-	seq    uint64
-	dir    *os.Root
-	unlock func()
-	absent bool
+	member           link.Member
+	scope            link.MemberScope
+	digest, identity string
+	seq              uint64
+	dir              *os.Root
+	unlock           func()
+	absent           bool
 }
 
 func (h *heldLeaf) release() {
@@ -236,41 +286,74 @@ func (h *heldLeaf) release() {
 }
 
 func (h *heldLeaf) cut(seq uint64) link.LeafCut {
-	return link.LeafCut{Member: h.member, Seq: seq, LeafSeq: h.seq, Scope: h.scope, Absent: h.absent}
+	c := link.LeafCut{Member: h.member, Seq: seq, Scope: h.scope, Absent: h.absent}
+	if !h.absent {
+		c.LeafSeq = h.seq
+	}
+	return c
 }
 
-// hold takes the publish lock of the member's leaf when its current
-// generation is the scope's; otherwise the change finds it absent.
+// hold takes the publish lock of the member's leaf when its registration
+// is of the scope's generation and the directory at its path is the
+// registered one; otherwise the change finds the leaf absent.
 func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.MemberScope) (*heldLeaf, error) {
-	h := &heldLeaf{member: member, scope: scope}
-	var digest, generation string
+	h := &heldLeaf{member: member, scope: scope, absent: true}
+	var generation string
 	err := e.db.View(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT digest, generation FROM spoke_leaf WHERE vendor = ? AND key = ?`,
-			member.Vendor, member.Key).Scan(&digest, &generation)
+		return tx.QueryRowContext(ctx, `SELECT digest, file_identity, generation FROM spoke_leaf WHERE vendor = ? AND key = ?`,
+			member.Vendor, member.Key).Scan(&h.digest, &h.identity, &generation)
 	})
 	if errors.Is(err, sql.ErrNoRows) || err == nil && generation != scope.LeafGeneration {
-		h.absent = true
 		return h, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if h.dir, err = ident.OpenSpokeLeaf(e.members, digest); errors.Is(err, os.ErrNotExist) {
-		h.absent = true
+	dir, err := ident.OpenSpokeLeaf(e.members, h.digest)
+	if errors.Is(err, os.ErrNotExist) {
 		return h, nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return nil, err
 	}
-	if h.seq, h.unlock, err = spool.LockLeafPublish(ctx, h.dir); err != nil {
-		h.dir.Close()
+	if identity, err := ident.FileIdentity(dir); err != nil || identity != h.identity {
+		dir.Close()
+		return h, err
+	}
+	seq, unlock, err := spool.LockLeafPublish(ctx, dir)
+	if err != nil {
+		dir.Close()
 		return nil, err
 	}
+	h.dir, h.seq, h.unlock, h.absent = dir, seq, unlock, false
 	return h, nil
 }
 
-// applyScope records a member's scope, and its membership on the leaf
-// when newer than the device's (as command answers do).
+// confirm checks, in the applying transaction, that the held leaf is
+// still the registration of the scope's generation: a registration that
+// changed after hold turns the cut absent.
+func confirm(ctx context.Context, tx store.Tx, h *heldLeaf) error {
+	if h.absent {
+		return nil
+	}
+	var generation, identity string
+	err := tx.QueryRowContext(ctx, `SELECT generation, file_identity FROM spoke_leaf WHERE vendor = ? AND key = ?`,
+		h.member.Vendor, h.member.Key).Scan(&generation, &identity)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err != nil || generation != h.scope.LeafGeneration || identity != h.identity {
+		h.absent = true
+	}
+	return nil
+}
+
+// applyScope records a member's scope, and its membership on the held
+// leaf when newer than the device's (as command answers do).
 func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
+	if err := confirm(ctx, tx, h); err != nil {
+		return err
+	}
 	s := h.scope
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch)
 		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, key) DO UPDATE SET leaf_generation = excluded.leaf_generation,
@@ -282,32 +365,24 @@ func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ?
-		WHERE vendor = ? AND key = ? AND generation = ? AND membership_gen < ?`,
-		s.Membership.BindingID, s.Membership.Generation, h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.Generation)
+		WHERE digest = ? AND file_identity = ? AND membership_gen < ?`,
+		s.Membership.BindingID, s.Membership.Generation, h.digest, h.identity, s.Membership.Generation)
 	return err
 }
 
-// stamp republishes the leaf's membership stamp from the store, before
-// its lock is released.
+// stamp republishes the held leaf's membership stamp before its lock is
+// released.
 func (e *spokeEvents) stamp(ctx context.Context, h *heldLeaf) error {
 	if h.absent {
 		return nil
 	}
-	var m core.Membership
-	err := e.db.View(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE vendor = ? AND key = ?`,
-			h.member.Vendor, h.member.Key).Scan(&m.BindingID, &m.Generation)
-	})
-	if err != nil || m.Generation == 0 {
-		return err
-	}
-	return ident.RepublishMembership(h.dir, m)
+	return stampLocked(ctx, e.db, h.dir, h.digest, h.identity)
 }
 
-// applyEvent applies one event and advances the cursor in one
-// transaction; a membership or invalidate event is applied under its
-// leaf's publish lock and returns that leaf's cut.
-func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event) ([]link.LeafCut, error) {
+// applyEvent applies one event, read at monotonic time at, and advances
+// the cursor in one transaction; a membership or invalidate event is
+// applied under its leaf's publish lock and returns that leaf's cut.
+func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) ([]link.LeafCut, error) {
 	var h *heldLeaf
 	var offer link.Offer
 	switch ev.Kind {
@@ -328,14 +403,10 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event) ([]link.Lea
 	default:
 		return nil, fmt.Errorf("link: unknown event kind %q", link.Printable(ev.Kind))
 	}
-	now, err := e.mono()
-	if err != nil {
-		return nil, err
-	}
-	err = e.db.Update(ctx, func(tx store.Tx) error {
+	err := e.db.Update(ctx, func(tx store.Tx) error {
 		switch {
 		case ev.Kind == link.EventOffer:
-			if err := e.putOffer(ctx, tx, offer, now, false); err != nil {
+			if err := e.putOffer(ctx, tx, offer, at, false); err != nil {
 				return err
 			}
 		default:
@@ -370,10 +441,11 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event) ([]link.Lea
 	return []link.LeafCut{h.cut(ev.Seq)}, nil
 }
 
-// putOffer records an offer under the lease rules of link.Offer. A
-// snapshot keeps the earlier of an offer's two deadlines and its
-// suppression; an event's newer lease epoch starts a fresh deadline.
-func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, now int64, snapshot bool) error {
+// putOffer records an offer received at monotonic time at, under the
+// lease rules of link.Offer. A snapshot keeps the earlier of an offer's
+// two deadlines and its suppression; an event's newer lease epoch starts
+// a fresh deadline.
+func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, at int64, snapshot bool) error {
 	var epoch uint64
 	var deadline int64
 	var boot string
@@ -390,7 +462,7 @@ func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, n
 		_, err := tx.ExecContext(ctx, `DELETE FROM spoke_offer WHERE vendor = ? AND key = ? AND offer_id = ?`, o.Vendor, o.Key, o.OfferID)
 		return err
 	}
-	next := now + min(o.LeaseMS, maxLeaseMS)*int64(time.Millisecond)
+	next := at + min(o.LeaseMS, maxLeaseMS)*int64(time.Millisecond)
 	if held && (snapshot || o.LeaseEpoch == epoch) {
 		next = min(next, deadline)
 	}
@@ -407,11 +479,18 @@ func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, n
 
 // applySnapshot replaces the cache with the snapshot's members and offers
 // in one transaction, every present leaf held under its publish lock, and
-// returns a cut for every member.
-func (e *spokeEvents) applySnapshot(ctx context.Context, parts []link.Snapshot) ([]link.LeafCut, error) {
-	var members []link.SnapshotMember
+// returns a cut for every member. Each offer's lease runs from the time
+// its part was read.
+func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) ([]link.LeafCut, error) {
+	type member struct {
+		link.SnapshotMember
+		at int64
+	}
+	var members []member
 	for _, p := range parts {
-		members = append(members, p.Members...)
+		for _, m := range p.Members {
+			members = append(members, member{m, p.at})
+		}
 	}
 	// Leaves are locked in one order; a hook holds only its own. A member
 	// listed twice would wait for its own lock.
@@ -439,12 +518,8 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []link.Snapshot) 
 		}
 		held = append(held, h)
 	}
-	now, err := e.mono()
-	if err != nil {
-		return nil, err
-	}
 	seq := parts[0].Seq
-	err = e.db.Update(ctx, func(tx store.Tx) error {
+	err := e.db.Update(ctx, func(tx store.Tx) error {
 		// Offers the snapshot no longer lists are retired; one it lists
 		// keeps its earlier deadline and its suppression.
 		type offerKey struct {
@@ -493,7 +568,7 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []link.Snapshot) 
 				return err
 			}
 			for _, o := range m.Offers {
-				if err := e.putOffer(ctx, tx, o, now, true); err != nil {
+				if err := e.putOffer(ctx, tx, o, m.at, true); err != nil {
 					return err
 				}
 			}

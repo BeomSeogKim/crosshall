@@ -4,7 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +32,9 @@ type fakeHome struct {
 func newFakeHome() *fakeHome { return &fakeHome{in: make(chan link.Frame, 16)} }
 
 func (h *fakeHome) Send(frame string, v any, _ time.Time) (bool, error) {
+	if err := link.NewWriter(io.Discard).Write(frame, v); err != nil {
+		return false, err // the link's own limits
+	}
 	body, err := json.Marshal(v)
 	if err != nil {
 		return false, err
@@ -90,14 +99,15 @@ func (h *fakeHome) ack(t *testing.T, seq uint64) []link.LeafCut {
 type eventFixture struct {
 	*spokeFixture
 	e    *spokeEvents
-	now  int64
+	now  atomic.Int64
 	done chan error
 }
 
 func newEventFixture(t *testing.T) *eventFixture {
 	t.Helper()
-	f := &eventFixture{spokeFixture: newSpokeFixture(t), now: int64(time.Hour)}
-	f.e = &spokeEvents{db: f.m.db, members: f.m.members, boot: "boot-1", mono: func() (int64, error) { return f.now, nil }}
+	f := &eventFixture{spokeFixture: newSpokeFixture(t)}
+	f.now.Store(int64(time.Hour))
+	f.e = &spokeEvents{db: f.m.db, members: f.m.members, boot: "boot-1", mono: func() (int64, error) { return f.now.Load(), nil }}
 	if err := f.dir.WriteFile("hook-publish-seq", []byte("5\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +182,7 @@ func TestASpokeKeepsTheEventStream(t *testing.T) {
 	}
 	home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
 	// The same lease epoch keeps the earlier deadline; a newer one renews.
-	f.now += int64(10 * time.Second)
+	f.now.Add(int64(10 * time.Second))
 	home.push(t, link.TypeEvent, event(t, 11, link.EventOffer, offer(1, 0, 60_000)))
 	home.ack(t, 11)
 	if n := f.count(t, `SELECT deadline_mono / 1000000000 FROM spoke_offer`); n != 3660 {
@@ -214,7 +224,7 @@ func TestASpokeKeepsOfferLeases(t *testing.T) {
 	f := newEventFixture(t)
 	put := func(o link.Offer) int {
 		t.Helper()
-		if err := f.m.db.Update(t.Context(), func(tx store.Tx) error { return f.e.putOffer(t.Context(), tx, o, f.now, false) }); err != nil {
+		if err := f.m.db.Update(t.Context(), func(tx store.Tx) error { return f.e.putOffer(t.Context(), tx, o, f.now.Load(), false) }); err != nil {
 			t.Fatal(err)
 		}
 		return f.count(t, `SELECT COALESCE(MAX(lease_epoch * 100000 + deadline_mono / 1000000000), -1) FROM spoke_offer`)
@@ -222,7 +232,7 @@ func TestASpokeKeepsOfferLeases(t *testing.T) {
 	if got := put(offer(1, 2, 60_000)); got != 2*100000+3660 {
 		t.Fatalf("first lease %d", got)
 	}
-	f.now += int64(time.Minute)
+	f.now.Add(int64(time.Minute))
 	if got := put(offer(1, 1, 60_000)); got != 2*100000+3660 {
 		t.Fatalf("an older epoch moved the lease: %d", got)
 	}
@@ -339,26 +349,177 @@ func TestASpokeCutsALeafUnderItsPublishLock(t *testing.T) {
 		t.Fatalf("cut %+v", cuts)
 	}
 	// While a change commits, the leaf stays locked: a hook waits for it.
-	paused, resume := make(chan struct{}), make(chan struct{})
-	f.e.mono = func() (int64, error) {
-		close(paused)
-		<-resume
-		return f.now, nil
-	}
+	// Another writer holds the store, so the change waits to commit.
+	writing, done := make(chan struct{}), make(chan struct{})
+	go f.m.db.Update(t.Context(), func(store.Tx) error {
+		close(writing)
+		<-done
+		return nil
+	})
+	<-writing
 	home.push(t, link.TypeEvent, event(t, 12, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: f.scope(9, 5)}))
-	<-paused
+	time.Sleep(50 * time.Millisecond) // the client holds the leaf, waiting for the store
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	if _, unlock, err := spool.LockLeafPublish(ctx, f.dir); err == nil {
 		unlock()
 		t.Fatal("a hook took the leaf while a change was applying")
 	}
-	close(resume)
+	close(done)
 	home.ack(t, 12)
 	if _, unlock, err := spool.LockLeafPublish(t.Context(), f.dir); err != nil {
 		t.Fatalf("the leaf stayed locked: %v", err)
 	} else {
 		unlock()
+	}
+	f.end(t, home)
+}
+
+// A directory that replaced the registered one at its path, with the
+// store still naming the old one, is cut absent and keeps no new stamp.
+func TestASpokeCutsAReplacedLeafAbsent(t *testing.T) {
+	f := newEventFixture(t)
+	if err := os.Rename(f.path, f.path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(f.path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.path, "hook-publish-seq"), []byte("99\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(7, 3)}}})
+	if cuts := home.ack(t, 10); len(cuts) != 1 || !cuts[0].Absent || cuts[0].LeafSeq != 0 {
+		t.Fatalf("cut %+v", cuts)
+	}
+	if n := f.count(t, `SELECT membership_gen FROM spoke_leaf`); n != 0 {
+		t.Fatalf("a replaced leaf took membership generation %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(f.path, "membership")); !os.IsNotExist(err) {
+		t.Fatalf("the replacement got a stamp: %v", err)
+	}
+	f.end(t, home)
+}
+
+// A stamp is written under the leaf's lock from the store as it is then,
+// never from an older read.
+func TestASpokeStampsALeafUnderItsLock(t *testing.T) {
+	f := newEventFixture(t)
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `UPDATE spoke_leaf SET binding_id = 8, membership_gen = 4`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, unlock, err := spool.LockLeafPublish(t.Context(), f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+	if err := stampLeaf(ctx, f.m.db, f.m.members, "codex", "session"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a stamp while a hook held the leaf: %v", err)
+	}
+	unlock()
+	if err := stampLeaf(t.Context(), f.m.db, f.m.members, "codex", "session"); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := ident.LookupMembership(f.dir); err != nil || m == nil || *m != (core.Membership{BindingID: 8, Generation: 4}) {
+		t.Fatalf("stamp %+v, %v", m, err)
+	}
+}
+
+// The cache stops counting the moment it is known stale: a new process, a
+// gap, the first part of a snapshot the home sends unasked; and while it
+// does not count, every subscribe asks for a snapshot.
+func TestASpokeCacheIsIneligibleUntilASnapshotApplies(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.ack(t, 10)
+	eligible := func() int { return f.count(t, `SELECT eligible FROM spoke_event_cursor`) }
+	// A gap.
+	home.push(t, link.TypeEvent, event(t, 12, link.EventOffer, offer(1, 0, 60_000)))
+	if err := f.end(t, home); !errors.Is(err, errEventGap) || eligible() != 0 {
+		t.Fatalf("after a gap: %v, eligible %d", err, eligible())
+	}
+	home = newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 12, Last: true})
+	home.ack(t, 12)
+	// A snapshot the home sends on a resumed stream, cut off midway.
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 20, Part: 0})
+	f.end(t, home)
+	if eligible() != 0 {
+		t.Fatal("a cache stayed eligible through a cut-off snapshot")
+	}
+	home = newFakeHome()
+	f.start(t, home)
+	for len(home.frames()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	var sub link.Subscribe
+	if err := json.Unmarshal(home.frames()[0].Body, &sub); err != nil || !sub.Snapshot {
+		t.Fatalf("subscribe while ineligible %+v, %v", sub, err)
+	}
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 20, Last: true})
+	home.ack(t, 20)
+	f.end(t, home)
+	// A new process.
+	if _, err := newSpokeEvents(t.Context(), f.m.db, f.m.members); err != nil {
+		t.Fatal(err)
+	}
+	if eligible() != 0 {
+		t.Fatal("a new process found the cache eligible")
+	}
+}
+
+// A lease runs from the arrival of the part that carried it.
+func TestASpokeLeaseRunsFromItsFrame(t *testing.T) {
+	f := newEventFixture(t)
+	times := make(chan int64, 2)
+	f.e.mono = func() (int64, error) { return <-times, nil }
+	times <- int64(10 * time.Second)
+	times <- int64(20 * time.Second)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Part: 0, Members: []link.SnapshotMember{
+		{Member: eventMember, Scope: f.scope(7, 3), Offers: []link.Offer{offer(1, 0, 5_000)}}}})
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Part: 1, Last: true})
+	home.ack(t, 10)
+	if n := f.count(t, `SELECT deadline_mono / 1000000000 FROM spoke_offer`); n != 15 {
+		t.Fatalf("deadline %d s", n)
+	}
+	f.end(t, home)
+}
+
+// Cuts that do not fit one frame are split by their serialized size.
+func TestASpokeSplitsALargeAck(t *testing.T) {
+	f := newEventFixture(t)
+	var members []link.SnapshotMember
+	for i := range 1000 {
+		key := strings.Repeat("k", 1020) + fmt.Sprintf("%04d", i)
+		members = append(members, link.SnapshotMember{Member: link.Member{Vendor: "claude", Key: key},
+			Scope: link.MemberScope{LeafGeneration: "g", Membership: link.Membership{BindingID: 1, Generation: 1}}})
+	}
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Part: 0, Members: members[:500]})
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Part: 1, Last: true, Members: members[500:]})
+	if cuts := home.ack(t, 10); len(cuts) != 1000 {
+		t.Fatalf("%d cuts", len(cuts))
+	}
+	frames := 0
+	for _, fr := range home.frames() {
+		if fr.Type == link.TypeAck {
+			frames++
+		}
+	}
+	if frames < 2 {
+		t.Fatalf("%d ack frames", frames)
 	}
 	f.end(t, home)
 }

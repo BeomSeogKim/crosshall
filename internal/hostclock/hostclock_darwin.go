@@ -1,17 +1,22 @@
 package hostclock
 
 import (
-	"fmt"
+	"errors"
 
 	"golang.org/x/sys/unix"
 )
 
+// kern.bootsessionuuid is fixed for one boot; kern.boottime moves when
+// the calendar clock is set.
 func boot() (string, error) {
-	tv, err := unix.SysctlTimeval("kern.boottime")
+	id, err := unix.Sysctl("kern.bootsessionuuid")
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("darwin-%d.%06d", tv.Sec, tv.Usec), nil
+	if id == "" {
+		return "", errors.New("hostclock: empty boot session")
+	}
+	return "darwin-" + id, nil
 }
 
 // CLOCK_MONOTONIC on darwin counts time asleep (mach_continuous_time).

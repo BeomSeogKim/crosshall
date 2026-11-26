@@ -871,8 +871,8 @@ func continuesMember(rv *os.Root, e event) bool {
 // or a linked device's member rendezvous (#400). The ready marker, the
 // policy and the counters stay in rv.
 func memberRoot(rv *os.Root) (*os.Root, func(), error) {
-	path := spool.MemberRendezvous(rv.Name())
-	if path == rv.Name() {
+	path := spool.LinkedMembers(rv)
+	if path == "" || path == rv.Name() {
 		return rv, func() {}, nil
 	}
 	members, err := ident.OpenPrivateDir(path)

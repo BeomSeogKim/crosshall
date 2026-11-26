@@ -94,26 +94,30 @@ func (c Client) DispatcherRunning() bool {
 // memberRendezvous returns where member spools are: the rendezvous
 // itself, or the member rendezvous a linked device's dispatcher names in
 // its ready marker (#400).
-func memberRendezvous(rendezvous string) string { return MemberRendezvous(rendezvous) }
-
-// MemberRendezvous is the rendezvous whose m/ and first/ hold the member
-// leaves: rendezvous itself, or the one a linked device's dispatcher
-// names in its ready marker (#400).
-func MemberRendezvous(rendezvous string) string {
+func memberRendezvous(rendezvous string) string {
 	root, err := ident.OpenPrivateDir(rendezvous)
 	if err != nil {
 		return rendezvous
 	}
 	defer root.Close()
+	if members := LinkedMembers(root); members != "" {
+		return members
+	}
+	return rendezvous
+}
+
+// LinkedMembers returns the member rendezvous the ready marker in the open
+// rendezvous root names, or "" when it names none (a native hall).
+func LinkedMembers(root *os.Root) string {
 	raw, err := ident.ReadPrivateFile(root, "ready", 4096)
 	if err != nil {
-		return rendezvous
+		return ""
 	}
 	var marker struct {
 		Members string `json:"members"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || marker.Members == "" || !filepath.IsAbs(marker.Members) {
-		return rendezvous
+		return ""
 	}
 	return marker.Members
 }

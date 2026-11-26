@@ -267,3 +267,24 @@ func SelectedMembership(ctx context.Context, tx store.Tx, principal int64) (core
 	}
 	return m, err
 }
+
+// onADevice reports whether any of the principals works on a linked
+// device. Restore, takeover and session moves fence a key and a leaf in
+// one transaction, and a device member's leaf is on its device, so the
+// home refuses them for device members in v1 (#400).
+func onADevice(ctx context.Context, tx store.Tx, principals ...int64) (bool, error) {
+	for _, p := range principals {
+		if p == 0 {
+			continue
+		}
+		var device sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT device_id FROM principal WHERE id = ?`, p).Scan(&device)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil || device.Valid {
+			return device.Valid, err
+		}
+	}
+	return false, nil
+}

@@ -243,6 +243,9 @@ func (s *Service) requestTakeover(ctx context.Context, tx store.Tx, caller core.
 	if caller.PrincipalID != nil {
 		principal = *caller.PrincipalID
 	}
+	if device, err := onADevice(ctx, tx, b.principal, principal); err != nil || device {
+		return notOnADeviceYet("taking over a member of a linked device"), 0, err
+	}
 	if principal == b.principal {
 		// Already this session's: the join goes on as a plain join.
 		return core.Result{}, principal, nil
@@ -322,6 +325,9 @@ func auditSeq(ctx context.Context, tx store.Tx, kind, subject string, actor int6
 // completeTakeover attaches a never-enrolled session's key to the binding
 // the owner granted it, the way owner restore does.
 func (s *Service) completeTakeover(ctx context.Context, tx store.Tx, req Request, b takenBinding, request int64, now time.Time) (core.Result, int64, error) {
+	if device, err := onADevice(ctx, tx, b.principal); err != nil || device {
+		return notOnADeviceYet("taking over a member of a linked device"), 0, err
+	}
 	if _, ended, err := endedSession(ctx, tx, b.id, b.principal); err != nil || !ended {
 		if err != nil {
 			return core.Result{}, 0, err
@@ -425,6 +431,9 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 	if state != "live" {
 		return Refuse(core.CodeBindingChanged, fmt.Sprintf("@%s in #%s is no longer a member", ask.Alias, ask.Channel), "crosshall owner who --all"), nil
 	}
+	if device, err := onADevice(ctx, tx, b.principal, ask.Principal); err != nil || device {
+		return notOnADeviceYet("taking over a member of a linked device"), err
+	}
 	if _, ended, err := endedSession(ctx, tx, b.id, b.principal); err != nil || !ended {
 		if err != nil {
 			return core.Result{}, err
@@ -465,6 +474,10 @@ func (s *Service) ownerTakeover(ctx context.Context, tx store.Tx, caller core.Ca
 // its own membership closes as a departure.
 func (s *Service) moveSession(ctx context.Context, tx store.Tx, owner, request int64, ask takeoverAsk, b takenBinding, now time.Time) (*core.Result, error) {
 	from := ask.Principal
+	if device, err := onADevice(ctx, tx, from, b.principal); err != nil || device {
+		r := notOnADeviceYet("moving a session of a linked device")
+		return &r, err
+	}
 	var live int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM principal_key WHERE principal_id = ? AND state = 'live' AND vendor = ?`,
 		from, b.vendor).Scan(&live); err != nil {

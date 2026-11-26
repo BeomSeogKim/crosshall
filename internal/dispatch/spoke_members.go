@@ -287,6 +287,16 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			"hook facts of a linked device reach the hall in a later release", ""), nil
 	}
 	m := s.spokeMembers
+	if req.Verb == domain.VerbRetry {
+		resend, done, err := s.spokeRetry(ctx, path, dir, req)
+		if err != nil || done != nil {
+			if done != nil {
+				return *done, nil
+			}
+			return core.Result{}, err
+		}
+		req = resend
+	}
 	var leaf ident.SpokeLeaf
 	var outbox int64
 	err := m.db.Update(ctx, func(tx store.Tx) error {
@@ -329,7 +339,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	}
 	if err != nil {
 		s.markUnknown(ctx, outbox)
-		return unknownOutcome("the link to the home ended before its answer", req.OpKey), nil
+		return lostAnswer(req.OpKey), nil
 	}
 	s.settleOutbox(ctx, outbox, &result)
 	if result.Membership != nil {
@@ -420,4 +430,91 @@ func (s *server) recoverOutbox(ctx context.Context) {
 		}
 		s.settleOutbox(ctx, r.id, &result)
 	}
+}
+
+// lostAnswer reports a forwarded command whose answer never came: the
+// device looks it up on the next connection, and the member may send it
+// again as a new request.
+func lostAnswer(key string) core.Result {
+	if key == "" {
+		return unknownOutcome("the link to the home ended before its answer", "")
+	}
+	return domain.Fail(core.ExitUnavailable, core.CodeOutcomeUnknown, "the link to the home ended before its answer",
+		"crosshall retry "+key+" shows what the hall did with it, or sends it again as a new request")
+}
+
+// spokeRetry answers crosshall retry from the outbox (#400): an outcome
+// the home answered is shown as it is; a record without one is looked up
+// receipt-only first; only a request the home fenced, which never ran
+// and never will under its key, is sent again under the retry's own new
+// key with its original bytes and the member's current selection. The
+// returned request is that resend; done ends the retry with its answer.
+func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req wire.Request) (wire.Request, *core.Result, error) {
+	var retry domain.Retry
+	if err := json.Unmarshal(req.Args, &retry); err != nil || retry.Key == "" || retry.Key == req.OpKey {
+		r := commandError(core.ExitUsage, "", "usage: crosshall retry <key>")
+		return req, &r, nil
+	}
+	m := s.spokeMembers
+	var id int64
+	var call domain.LinkCall
+	var state string
+	var stored sql.NullString
+	err := m.db.Update(ctx, func(tx store.Tx) error {
+		leaf, err := ident.ResolveSpokeMember(ctx, tx, m.members, ident.Ingress{Path: path, Dir: dir},
+			ident.Proof{KeyDigest: req.KeyDigest, Generation: req.Generation})
+		if err != nil {
+			return err
+		}
+		var args string
+		var membership sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT id, command, args, membership, state, result FROM link_outbox
+			WHERE vendor = ? AND key = ? AND op_key = ?`, leaf.Vendor, leaf.Key, retry.Key).
+			Scan(&id, &call.Command, &args, &membership, &state, &stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		call.Vendor, call.Key, call.OpKey, call.Args = leaf.Vendor, leaf.Key, retry.Key, json.RawMessage(args)
+		if err == nil && membership.Valid {
+			call.Membership = new(core.Membership)
+			err = json.Unmarshal([]byte(membership.String), call.Membership)
+		}
+		return err
+	})
+	var env *ident.EnvironmentError
+	if errors.As(err, &env) {
+		r := domain.Fail(core.ExitNotEnrolled, env.Code, env.Message, "crosshall join <channel>")
+		return req, &r, nil
+	}
+	if err != nil {
+		return req, nil, err
+	}
+	if id == 0 {
+		r := domain.Refuse(core.CodeNotFound, "this device has no command of this session under that key",
+			"crosshall log shows what the hall stored")
+		return req, &r, nil
+	}
+	var answer core.Result
+	if state == "done" && stored.Valid {
+		if err := json.Unmarshal([]byte(stored.String), &answer); err != nil {
+			return req, nil, err
+		}
+	} else {
+		answer, err = m.exchange(ctx, "receipt", call, time.UnixMilli(req.ExpiresAtMS))
+		if errors.Is(err, errNotSent) {
+			r := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
+				"run crosshall link status, then crosshall retry "+retry.Key+" again")
+			return req, &r, nil
+		}
+		if err != nil {
+			r := lostAnswer(retry.Key)
+			return req, &r, nil
+		}
+		s.settleOutbox(ctx, id, &answer)
+	}
+	if answer.Code != domain.CodeLinkFenced {
+		return req, &answer, nil
+	}
+	req.Verb, req.Args = call.Command, call.Args
+	return req, nil, nil
 }

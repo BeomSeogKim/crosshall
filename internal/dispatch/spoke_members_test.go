@@ -118,9 +118,14 @@ func (f *spokeFixture) count(t *testing.T, query string, args ...any) int {
 
 func (f *spokeFixture) send(t *testing.T, verb, key string) core.Result {
 	t.Helper()
+	return f.sendArgs(t, verb, key, `{"all":true,"body":"hi"}`)
+}
+
+func (f *spokeFixture) sendArgs(t *testing.T, verb, key, args string) core.Result {
+	t.Helper()
 	id := wire.NewID()
 	raw, err := json.Marshal(wire.Request{Version: wire.Version, Attempt: id, OpKey: key, KeyDigest: f.digest,
-		Generation: f.generation, Verb: verb, Args: json.RawMessage(`{"all":true,"body":"hi"}`),
+		Generation: f.generation, Verb: verb, Args: json.RawMessage(args),
 		Membership: &core.Membership{BindingID: 4, Generation: 2}, ExpiresAtMS: time.Now().Add(2 * time.Second).UnixMilli()})
 	if err != nil {
 		t.Fatal(err)
@@ -231,5 +236,56 @@ func TestASpokeClosesALinkTheHomeClosed(t *testing.T) {
 	fake.answer(t, domain.Refuse(domain.CodeLinkStale, "stale", "reconnect the link"))
 	if r := f.send(t, "who", ""); r.Code != core.CodeOutcomeUnknown || !fake.closed || f.m.conn != nil {
 		t.Fatalf("result %+v, closed %v", r, fake.closed)
+	}
+}
+
+// crosshall retry shows an outcome the home answered, looks a lost one up
+// first, and sends again only what the home fenced, under its own new key
+// with the original bytes.
+func TestASpokeRetrySendsAgainOnlyWhatNeverRan(t *testing.T) {
+	f := newSpokeFixture(t)
+	// k1: answered. k2: answer lost, and the home has it. k3: answer lost,
+	// and the home fences it.
+	fake := newFakeLink()
+	f.m.attach(fake)
+	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":1}`)})
+	f.send(t, "note", "k1")
+	for _, key := range []string{"k2", "k3"} {
+		ended := newFakeLink()
+		close(ended.answers)
+		f.m.attach(ended)
+		if r := f.send(t, "note", key); r.Code != core.CodeOutcomeUnknown {
+			t.Fatalf("%s: %+v", key, r)
+		}
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	retry := func(key, newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"`+key+`"}`)
+	}
+	if r := retry("k1", "r1"); r.Status != core.ExitOK || string(r.Data) != `{"id":1}` || len(link.frames) != 0 {
+		t.Fatalf("answered retry %+v, frames %v", r, link.frames)
+	}
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":2}`)})
+	if r := retry("k2", "r2"); r.Status != core.ExitOK || string(r.Data) != `{"id":2}` ||
+		len(link.frames) != 1 || link.frames[0] != "receipt" || link.written[0].OpKey != "k2" {
+		t.Fatalf("lost retry %+v, frames %v", r, link.frames)
+	}
+	link.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":3}`)})
+	if r := retry("k3", "r3"); r.Status != core.ExitOK || string(r.Data) != `{"id":3}` {
+		t.Fatalf("fenced retry %+v", r)
+	}
+	resend := link.written[2]
+	if link.frames[1] != "receipt" || link.frames[2] != "call" || resend.OpKey != "r3" || resend.Command != "note" ||
+		string(resend.Args) != `{"all":true,"body":"hi"}` {
+		t.Fatalf("resend %v %+v", link.frames, resend)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r3' AND state = 'done'`); n != 1 {
+		t.Fatalf("the resend has no record of its own")
+	}
+	if r := retry("k9", "r9"); r.Code != core.CodeNotFound {
+		t.Fatalf("unknown key %+v", r)
 	}
 }

@@ -239,6 +239,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[Leave](args)
 	case VerbFocus:
 		return decodeLedgerCommand[Focus](args)
+	case VerbRetry:
+		return decodeLedgerCommand[Retry](args)
 	// end note-log
 	default:
 		return nil, fmt.Errorf("unknown verb %q", verb)

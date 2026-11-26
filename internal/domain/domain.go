@@ -200,6 +200,10 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[LinkFact](args)
 	case VerbLinkWritten:
 		return decodeLedgerCommand[LinkWritten](args)
+	case VerbLinkWakeReady:
+		return decodeLedgerCommand[LinkWakeReady](args)
+	case VerbLinkWakeResult:
+		return decodeLedgerCommand[LinkWakeResult](args)
 	case VerbCreateChannel:
 		var c CreateChannel
 		if err := strictUnmarshal(args, &c); err != nil {

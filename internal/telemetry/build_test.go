@@ -176,6 +176,9 @@ var fixtureSQL = []string{
 		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 'zqxmarker')`,
 	`INSERT INTO device_offer (device_id, vendor, key, offer_id, expires_at_ms, body)
 		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 1, 0, '{"key":"zqxmarker-device-key"}')`,
+	`INSERT INTO link_wake_attempt
+		(device_id, credential_gen, principal_id, binding_id, vendor, lane, route, message_ids, event_seq, state, dispatched_at_ms)
+		VALUES ('zqxmarker-device', 1, 3, 2, 'codex', 'zqxmarker-lane', '{"marker":"zqxmarker-route"}', '[1]', 1, 'dispatching', 0)`,
 	`INSERT INTO link_event_input
 		(device_id, credential_gen, id, vendor, key, boot, leaf_generation, leaf_seq, kind, payload, status, code, recorded_at_ms)
 		VALUES ('zqxmarker-device', 1, 1, 'codex', 'zqxmarker-device-key', 'zqxmarker-boot', 'zqxmarker-leaf', 1,

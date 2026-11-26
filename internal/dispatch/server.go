@@ -740,7 +740,8 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			return nil
 		}
 		switch req.Verb {
-		case domain.VerbLinkEvents, domain.VerbLinkAck, domain.VerbLinkFact, domain.VerbLinkWritten:
+		case domain.VerbLinkEvents, domain.VerbLinkAck, domain.VerbLinkFact, domain.VerbLinkWritten,
+			domain.VerbLinkWakeReady, domain.VerbLinkWakeResult:
 			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
 				result = domain.Refuse(core.CodeOwnerOnly, "link events require owner ingress", "run crosshall link serve on the home device")
 				return errRefusalRollback

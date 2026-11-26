@@ -148,6 +148,10 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.linkFact(ctx, tx, caller, cmd, now)
 	case LinkWritten:
 		return s.linkWritten(ctx, tx, caller, cmd, now)
+	case LinkWakeReady:
+		return s.linkWakeReady(ctx, tx, caller, cmd, now)
+	case LinkWakeResult:
+		return s.linkWakeResult(ctx, tx, caller, cmd, now)
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)
 	case Restore:

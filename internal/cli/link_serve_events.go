@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -16,6 +17,7 @@ const linkEventPollInterval = 250 * time.Millisecond
 
 type servedLinkEvents struct {
 	peer         domain.LinkEventPeer
+	allowWake    bool
 	boot         string
 	sent         uint64
 	catchThrough uint64
@@ -58,7 +60,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 	go readLinkEventFrames(ctx, r, frames)
 	ticker := time.NewTicker(linkEventPollInterval)
 	defer ticker.Stop()
-	stream := servedLinkEvents{peer: peer}
+	stream := servedLinkEvents{peer: peer, allowWake: slices.Contains(session.Caps, link.CapWake)}
 	for {
 		var received linkFrameRead
 		poll := false
@@ -136,6 +138,11 @@ func (s *servedLinkEvents) handleFrame(ctx context.Context, env Env, w *link.Wri
 			return true, errors.New("link: malformed fact")
 		}
 		return true, writeLinkRecorded(ctx, env, w, domain.LinkFact{LinkEventPeer: s.peer, Fact: in}, in.ID)
+	case link.TypeWakeReady, link.TypeWakeResult:
+		if !s.allowWake {
+			return false, nil
+		}
+		return true, s.handleWakeFrame(ctx, env, w, f)
 	case link.TypeWritten:
 		var in link.Written
 		if err := json.Unmarshal(f.Body, &in); err != nil {
@@ -151,7 +158,7 @@ func (s *servedLinkEvents) subscribe(ctx context.Context, env Env, w *link.Write
 	if s.ackMore || s.snapshotPart != 0 {
 		return errors.New("link: subscribe interrupted a multipart transfer")
 	}
-	page, err := ownerData[domain.LinkEventsResult](ctx, env, Call{Command: domain.LinkEvents{LinkEventPeer: s.peer, Subscribe: &in, Resubscribe: s.boot != ""}})
+	page, err := ownerData[domain.LinkEventsResult](ctx, env, Call{Command: domain.LinkEvents{LinkEventPeer: s.peer, Subscribe: &in, Resubscribe: s.boot != "", AllowWake: s.allowWake}})
 	if err != nil {
 		return err
 	}

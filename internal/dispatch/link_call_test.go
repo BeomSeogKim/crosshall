@@ -596,3 +596,92 @@ func TestALostFirstAnswerAfterReenrollmentIsRecoverable(t *testing.T) {
 	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh",
 		membership: lookup.Membership}))
 }
+
+// A wait forwarded from a linked device is one read-only snapshot per
+// poll, in the link shape: a member's poll answers with its cursor and
+// writes nothing, and an unknown field is refused (#400, 12l).
+func TestALinkedWaitIsOneSnapshotPerPoll(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	before := s.count(t, `SELECT (SELECT COUNT(*) FROM message) + (SELECT COUNT(*) FROM op)`)
+	r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"work_only": true}, membership: m}))
+	var snap domain.WaitSnapshot
+	if err := json.Unmarshal(r.Data, &snap); err != nil || snap.Cursor.BindingID != m.BindingID {
+		t.Fatalf("snapshot %s, %v", r.Data, err)
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"work_only": true, "cursor": snap.Cursor}, membership: m}))
+	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM message) + (SELECT COUNT(*) FROM op)`); n != before {
+		t.Fatalf("%d rows written by wait polls", n-before)
+	}
+	// A wait acknowledges no roster, whatever cursor it carries (Sol #3684).
+	mustLinkOK(t, s.link(t, linkReq{key: "other", command: domain.VerbJoin, args: joinChannel("checkout"), op: "j2"}))
+	acked := func() int {
+		return s.count(t, `SELECT roster_ack_seq FROM binding WHERE id = `+fmt.Sprint(m.BindingID))
+	}
+	ackBefore := acked()
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{}, membership: m, ack: ^uint64(0)}))
+	if got := acked(); got != ackBefore {
+		t.Fatalf("a linked wait moved the roster acknowledgement %d -> %d", ackBefore, got)
+	}
+	if r := s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"pid": 1}, membership: m}); r.Status == core.ExitOK {
+		t.Fatal("a wait with an unknown field was run")
+	}
+}
+
+// A linked wait counts as running only once a poll carries the cursor
+// the home gave it (Sol #3693): if the first answer is lost, an ask stored
+// before the retry is not told the wait will wake its recipient, and the
+// recipient still finds it in its inbox.
+func TestALinkedWaitIsPresentOnlyWithItsCursor(t *testing.T) {
+	s := linkServer(t)
+	join := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"}))
+	m := join.Membership
+	var joined domain.JoinResult
+	if err := json.Unmarshal(join.Data, &joined); err != nil {
+		t.Fatal(err)
+	}
+	asker := mustLinkOK(t, s.link(t, linkReq{key: "other", command: domain.VerbJoin, args: joinChannel("checkout"), op: "j2"})).Membership
+	ask := func(op string) domain.Delivery {
+		t.Helper()
+		r := mustLinkOK(t, s.link(t, linkReq{key: "other", command: domain.VerbAsk, membership: asker, op: op,
+			args: map[string]any{"to": []string{joined.Alias}, "body": "work"}}))
+		var out domain.AskResult
+		if err := json.Unmarshal(r.Data, &out); err != nil || len(out.Recipients) != 1 {
+			t.Fatalf("ask %s, %v", r.Data, err)
+		}
+		return out.Recipients[0]
+	}
+	wait := func(cursor *domain.WaitCursor) domain.WaitSnapshot {
+		t.Helper()
+		args := map[string]any{"work_only": true}
+		if cursor != nil {
+			args["cursor"] = cursor
+		}
+		var snap domain.WaitSnapshot
+		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: args, membership: m}))
+		if err := json.Unmarshal(r.Data, &snap); err != nil {
+			t.Fatal(err)
+		}
+		return snap
+	}
+	wait(nil) // its answer is lost on the way back
+	if d := ask("a1"); d.Wake.Wake == domain.WakeWait {
+		t.Fatalf("an ask was told a wait without a baseline wakes %+v", d)
+	}
+	retry := wait(nil) // the retry's baseline is past the ask
+	inbox := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbInbox, args: map[string]any{}, membership: m}))
+	var items domain.InboxResult
+	if err := json.Unmarshal(inbox.Data, &items); err != nil || len(items.Unread)+len(items.Owed) == 0 {
+		t.Fatalf("the ask is not in the inbox: %s, %v", inbox.Data, err)
+	}
+	wait(&retry.Cursor) // the client holds its baseline: now the wait runs
+	if d := ask("a2"); d.Wake.Wake != domain.WakeWait {
+		t.Fatalf("an ask after a cursor poll %+v", d)
+	}
+	// A new wait starts over: its first poll takes a new baseline, and
+	// the earlier wait's presence no longer vouches for it.
+	wait(nil)
+	if d := ask("a3"); d.Wake.Wake == domain.WakeWait {
+		t.Fatalf("a new wait's first poll kept the earlier presence: %+v", d)
+	}
+}

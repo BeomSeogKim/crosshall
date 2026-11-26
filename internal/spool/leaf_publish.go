@@ -3,9 +3,12 @@ package spool
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // LockLeafPublish takes a leaf's hook publish lock, waiting until ctx
@@ -41,4 +44,17 @@ func LockLeafPublish(ctx context.Context, leaf *os.Root) (seq uint64, unlock fun
 		return 0, nil, err
 	}
 	return seq, func() { lock.Close() }, nil
+}
+
+// ReserveLeafPublishSeq advances the shared hook counter while the caller
+// holds the publish lock at last. A spare reservation can leave a gap.
+func ReserveLeafPublishSeq(ctx context.Context, leaf *os.Root, last uint64) (uint64, error) {
+	if last >= math.MaxInt64 {
+		return 0, errors.New("hook publication sequence exhausted")
+	}
+	seq := last + 1
+	if err := writeLeafPublishSeq(ctx, leaf, wire.NewID(), seq); err != nil {
+		return 0, err
+	}
+	return seq, nil
 }

@@ -68,10 +68,15 @@ func publishHookRequest(ctx context.Context, leaf, in *os.Root, req wire.Request
 	}
 	// Reserve the sequence on disk before publication so an interrupted writer
 	// can leave a gap but cannot reuse a previously published sequence.
-	if err := publishFile(ctx, leaf, counter+"-"+req.Attempt+".part", counter, []byte(strconv.FormatUint(req.PublishSeq, 10)+"\n")); err != nil {
+	if err := writeLeafPublishSeq(ctx, leaf, req.Attempt, req.PublishSeq); err != nil {
 		return err
 	}
 	return publishFile(ctx, in, req.Attempt+".part", req.Attempt+".json", data)
+}
+
+func writeLeafPublishSeq(ctx context.Context, leaf *os.Root, attempt string, seq uint64) error {
+	const counter = "hook-publish-seq"
+	return publishFile(ctx, leaf, counter+"-"+attempt+".part", counter, []byte(strconv.FormatUint(seq, 10)+"\n"))
 }
 
 func captureHook(leaf *os.Root) (wire.HookCapture, error) {

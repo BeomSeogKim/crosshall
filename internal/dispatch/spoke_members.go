@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/hostclock"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -454,6 +456,13 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 	if req.Verb == domain.VerbJoin {
 		req.Args = withoutLocalLaunch(req.Args)
 	}
+	// A wait poll is a read-only snapshot: it is not journaled (the spool
+	// gave it a fresh key, and a poll a second runs all day), changes no
+	// selection, and a lost answer is just a poll to make again.
+	observe := req.Verb == domain.VerbWait && !retried
+	if observe {
+		req.OpKey, req.Ack = "", 0
+	}
 	deadline := time.UnixMilli(req.ExpiresAtMS)
 	unsent := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
 		"run crosshall link status, then send the command again")
@@ -537,7 +546,16 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 		s.publishSelection(ctx, leaf.Vendor, leaf.Key)
 		return answer, nil
 	}
+	if ssh, ok := conn.(sshSpokeConn); ok && slices.Contains(ssh.c.Caps, link.CapWake) && call.Command == (domain.Read{}).Verb() {
+		call.WakePickup = captureWakePickup(journal, dir, call.LeafGeneration, call.Membership)
+	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
+	if observe {
+		if err != nil {
+			return unsent, nil // the CLI polls again
+		}
+		return result, nil
+	}
 	if errors.Is(err, errNotSent) {
 		if rec.fresh {
 			s.settleOutbox(ctx, rec.id, nil) // this command's own record, and nothing left
@@ -556,6 +574,32 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 		}
 	}
 	return result, nil
+}
+
+func captureWakePickup(ctx context.Context, leaf *os.Root, generation string, expected *core.Membership) *link.HookToken {
+	if expected == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	last, unlock, err := spool.LockLeafPublish(ctx, leaf)
+	if err != nil {
+		return nil
+	}
+	defer unlock()
+	stamp, err := ident.LookupMembership(leaf)
+	if err != nil || stamp == nil || *stamp != *expected {
+		return nil
+	}
+	boot, err := hostclock.Boot()
+	if err != nil {
+		return nil
+	}
+	seq, err := spool.ReserveLeafPublishSeq(ctx, leaf, last)
+	if err != nil {
+		return nil
+	}
+	return &link.HookToken{Boot: boot, LeafGeneration: generation, LeafSeq: seq, Membership: link.Membership(*stamp)}
 }
 
 // withoutLocalLaunch drops the launch a member client adds to a join on

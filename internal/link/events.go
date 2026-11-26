@@ -22,11 +22,16 @@ const (
 	TypeRecorded = "recorded"
 )
 
-// Subscribe asks the home for every event after FromSeq. A FromSeq the
-// home no longer keeps gets a Snapshot instead. Either way the home then
-// sends CaughtUp, also when there was nothing to send.
+// Subscribe asks the home for every event after FromSeq, under the
+// device's boot incarnation Boot. The home sends a Snapshot instead when
+// Snapshot is set, when FromSeq is 0 or no longer kept, or when Boot is
+// not the boot of the device's last acknowledged snapshot. A device sets
+// Snapshot on its first subscribe after it starts. Either way the home
+// then sends CaughtUp, also when there was nothing to send.
 type Subscribe struct {
-	FromSeq uint64 `json:"from_seq"`
+	FromSeq  uint64 `json:"from_seq"`
+	Boot     string `json:"boot"`
+	Snapshot bool   `json:"snapshot,omitempty"`
 }
 
 // CaughtUp says the home has sent every event up to Seq; later events
@@ -42,18 +47,37 @@ type CaughtUp struct {
 // it, under that leaf's publish lock: facts with a higher LeafSeq were
 // captured after the change. The Ack of a Snapshot carries a cut for
 // every member in it, the applied baseline after a resync.
+//
+// Cuts for one Seq may span several Ack frames, each within one link
+// frame: every frame but the last sets More, and the home applies the
+// cuts of a Seq only once it has the frame without More.
 type Ack struct {
 	Seq  uint64    `json:"seq"`
 	Boot string    `json:"boot"`
 	Cuts []LeafCut `json:"cuts,omitempty"`
+	More bool      `json:"more,omitempty"`
 }
 
 // LeafCut is the leaf publish sequence at which the device applied the
-// event Seq to Member.
+// event Seq to Member, with the scope that event carried. The device cuts
+// only a leaf whose current generation is Scope.LeafGeneration; the home
+// installs a cut only when Scope equals the scope it recorded for that
+// event, so a cut never moves to another registration of the same key.
 type LeafCut struct {
 	Member
-	Seq     uint64 `json:"seq"`
-	LeafSeq uint64 `json:"leaf_seq"`
+	Seq     uint64      `json:"seq"`
+	LeafSeq uint64      `json:"leaf_seq"`
+	Scope   MemberScope `json:"scope"`
+}
+
+// MemberScope is what a membership-changing event applies to: the leaf
+// registration, the selected membership and the route epoch the home
+// recorded. A same-binding rejoin keeps the membership generation but
+// not the route epoch or leaf generation.
+type MemberScope struct {
+	LeafGeneration string     `json:"leaf_generation"`
+	Membership     Membership `json:"membership"`
+	RouteEpoch     int64      `json:"route_epoch"`
 }
 
 // Event is one member-visible fact for a member on the device, in the
@@ -111,10 +135,12 @@ type Offer struct {
 }
 
 // Invalidate retires what the device holds for a member before any newer
-// event: its offers, and its membership stamp when Reason says so.
+// event: its offers, and its membership stamp when Reason says so. Scope
+// is the member's scope after the change.
 type Invalidate struct {
 	Member
-	Reason string `json:"reason"`
+	Reason string      `json:"reason"`
+	Scope  MemberScope `json:"scope"`
 }
 
 // Invalidation reasons.
@@ -128,25 +154,32 @@ const (
 	InvalidateOfferSet = "offer_set"
 )
 
-// MembershipChange carries a member's current selection.
+// MembershipChange carries a member's current scope.
 type MembershipChange struct {
 	Member
-	Membership Membership `json:"membership"`
+	Scope MemberScope `json:"scope"`
 }
 
 // Snapshot replaces everything the device holds: every member's current
-// selection and every offer prepared and not retired as of Seq. Events
-// after Seq follow it. The device drops its cache first.
+// scope and every offer prepared and not retired as of Seq. Events after
+// Seq follow it.
+//
+// A snapshot spans one or more frames with the same Seq and Part 0, 1, 2
+// and so on, each within one link frame; the frame with Last ends it.
+// The device applies it atomically once it has every part, dropping its
+// cache first; a link that ends before Last leaves the cache as it was.
 type Snapshot struct {
 	Seq     uint64           `json:"seq"`
+	Part    int              `json:"part"`
+	Last    bool             `json:"last,omitempty"`
 	Members []SnapshotMember `json:"members"`
 }
 
 // SnapshotMember is one member's state in a snapshot.
 type SnapshotMember struct {
 	Member
-	Membership Membership `json:"membership"`
-	Offers     []Offer    `json:"offers,omitempty"`
+	Scope  MemberScope `json:"scope"`
+	Offers []Offer     `json:"offers,omitempty"`
 }
 
 // HookToken is the causal token a hook takes at capture, under its leaf's
@@ -166,6 +199,14 @@ type HookToken struct {
 // Fact is a hook fact of a member's session, forwarded with its token.
 // ID is the device's outbox entry; the device retires it only on a
 // Recorded with that ID, never on the socket write.
+//
+// Kind is the local hook verb, wire.VerbHookEnroll or wire.VerbHookEvent,
+// and Body its arguments, wire.HookEnrollArgs or wire.HookEventArgs, as
+// the hook sent them to its device's dispatcher. The device judges the
+// process itself and sends its judgment as LaunchVerified and
+// LaunchHosted; it clears what names only the device: PIDNamespace, Host,
+// VendorHome and every repository path. The home identifies the host as
+// the link's device and the token's Boot, and never probes a process.
 type Fact struct {
 	ID uint64 `json:"id"`
 	Member

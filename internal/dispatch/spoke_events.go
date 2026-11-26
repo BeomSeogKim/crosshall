@@ -219,7 +219,11 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 			_ = e.ineligible(ctx) // until a snapshot applies; run again invalidates if this failed
 		}
 	}()
-	frames := make(chan linkRead, 1)
+	// The reader keeps draining the connection while this loop writes:
+	// the home writes a page before it reads again, so a write of ours
+	// that waits for the home must never wait on our reading too.
+	received, frames := make(chan linkRead), make(chan linkRead)
+	go relayFrames(ctx, received, frames)
 	go func() {
 		for {
 			f, err := conn.Receive(time.Time{})
@@ -228,7 +232,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 				at, err = e.mono()
 			}
 			select {
-			case frames <- linkRead{f, at, err}:
+			case received <- linkRead{f, at, err}:
 			case <-ctx.Done():
 				return
 			}
@@ -432,10 +436,35 @@ func (e *spokeEvents) sendWakeResult(ctx context.Context, conn spokeConn) (int64
 	return result.AttemptID, e.send(conn, link.TypeWakeResult, result)
 }
 
+// relayFrames passes frames from in to out in order, always ready to
+// take the next from in.
+func relayFrames(ctx context.Context, in <-chan linkRead, out chan<- linkRead) {
+	var queue []linkRead
+	for {
+		var send chan<- linkRead
+		var head linkRead
+		if len(queue) > 0 {
+			send, head = out, queue[0]
+		}
+		select {
+		case r := <-in:
+			queue = append(queue, r)
+		case send <- head:
+			queue = queue[1:]
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // spokeHookWindow bounds the hook frames sent and not yet answered on a
 // connection: the home answers each with a Recorded, which this loop reads
 // only between sends.
 const spokeHookWindow = 64
+
+// spokeHookHorizon is how long a hook frame is sent again: the home's
+// receipt retention less a day for the two clocks' difference.
+const spokeHookHorizon = store.RetentionWindow - 24*time.Hour
 
 // sendHooks sends queued hook frames this connection has not sent, each
 // leaf's in the order of its publish sequence, up to the window. Only the
@@ -450,7 +479,14 @@ func (e *spokeEvents) sendHooks(ctx context.Context, conn spokeConn, sent map[in
 		kind, body string
 	}
 	var queue []queued
-	err := e.db.View(ctx, func(tx store.Tx) error {
+	err := e.db.Update(ctx, func(tx store.Tx) error {
+		// The home answers a frame sent again from the receipt it keeps
+		// for its retention window; past that, the same frame would read
+		// as a rewound leaf, so it is dropped before then.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_hook_outbox WHERE at_ms < ?`,
+			time.Now().Add(-spokeHookHorizon).UnixMilli()); err != nil {
+			return err
+		}
 		rows, err := tx.QueryContext(ctx, `SELECT frame_id, kind, body FROM spoke_hook_outbox WHERE id <= ?
 			ORDER BY vendor, key, leaf_seq, id`, e.stop.released.Load())
 		if err != nil {

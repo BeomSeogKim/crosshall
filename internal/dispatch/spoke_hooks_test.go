@@ -538,3 +538,116 @@ func TestASpokeReleasesLeftoverHookFramesAfterItsFirstPass(t *testing.T) {
 	}
 	f.end(t, f.home)
 }
+
+// A frame older than the home keeps receipts for is dropped, not sent
+// again: the home would no longer know its ID and would take its sequence
+// for a rewound leaf.
+func TestASpokeDropsHookFramesPastTheHomesReceipts(t *testing.T) {
+	f := newHookFixture(t)
+	f.hook(t, wire.VerbHookEvent, prompt("old", 3), 4, stamp22)
+	f.hook(t, wire.VerbHookEvent, prompt("new", 3), 5, stamp22)
+	f.exec(t, `UPDATE spoke_hook_outbox SET at_ms = ? WHERE leaf_seq = 4`, time.Now().Add(-spokeHookHorizon-time.Minute).UnixMilli())
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	got := waitFacts(t, f.home, 1)
+	time.Sleep(50 * time.Millisecond)
+	if got = sentFacts(f.home); len(got) != 1 || got[0].Token.LeafSeq != 5 {
+		t.Fatalf("sent %+v", got)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE leaf_seq = 4`); n != 0 {
+		t.Fatal("the old frame is still queued")
+	}
+	f.end(t, f.home)
+}
+
+// pipeConn is an event connection over a pair of OS pipes, as bounded as
+// the SSH stdio it stands for; a write that waits 3 s fails.
+type pipeConn struct {
+	r      *link.Reader
+	w      *link.Writer
+	rf, wf *os.File
+}
+
+func (c *pipeConn) Send(frame string, v any, _ time.Time) (bool, error) {
+	if err := c.wf.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return false, err
+	}
+	return true, c.w.Write(frame, v)
+}
+func (c *pipeConn) Receive(time.Time) (link.Frame, error) { return c.r.Read() }
+func (c *pipeConn) Close()                                { c.rf.Close(); c.wf.Close() }
+
+// The home writes a page of events before it reads again, while the device
+// has a window of hook frames to send: the device keeps reading, so
+// neither side's write waits on the other forever.
+func TestASpokeKeepsReadingWhileItSendsHookFrames(t *testing.T) {
+	f := newHookFixture(t)
+	f.end(t, f.home)
+	for seq := 1; seq <= spokeHookWindow; seq++ {
+		f.hook(t, wire.VerbHookEvent, prompt("d"+strconv.Itoa(seq), 3), uint64(seq), stamp22)
+	}
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	toHome, fromSpoke, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	toSpoke, fromHome, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &pipeConn{r: link.NewReader(toSpoke), w: link.NewWriter(fromSpoke), rf: toSpoke, wf: fromSpoke}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- f.e.run(ctx, conn, false) }()
+	hr, hw := link.NewReader(toHome), link.NewWriter(fromHome)
+	if first, err := hr.Read(); err != nil || first.Type != link.TypeSubscribe {
+		t.Fatalf("first frame %+v, %v", first, err)
+	}
+	const page = 1200 // the acknowledgements alone outgrow a pipe buffer
+	// Each frame gets 5 s: slow progress passes, a stall does not.
+	write := func(frame string, v any) error {
+		if err := fromHome.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return err
+		}
+		return hw.Write(frame, v)
+	}
+	if err := write(link.TypeCaughtUp, link.CaughtUp{Seq: 10}); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint64(1); i <= page; i++ {
+		o := offer(int64(100+i), 0, 60_000)
+		o.LeafGeneration, o.Membership = f.generation, link.Membership{BindingID: 2, Generation: 2}
+		if err := write(link.TypeEvent, event(t, 10+i, link.EventOffer, o)); err != nil {
+			t.Fatalf("the home's page stalled at event %d: %v", i, err)
+		}
+	}
+	facts, acked := 0, uint64(0)
+	for facts < spokeHookWindow || acked < 10+page {
+		if err := toHome.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		fr, err := hr.Read()
+		if err != nil {
+			t.Fatalf("after %d facts and ack %d: %v", facts, acked, err)
+		}
+		var a link.Ack
+		switch {
+		case fr.Type == link.TypeFact:
+			facts++
+		case fr.Type == link.TypeAck && json.Unmarshal(fr.Body, &a) == nil:
+			acked = max(acked, a.Seq)
+		}
+	}
+	fromHome.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event client did not stop")
+	}
+	toHome.Close()
+}

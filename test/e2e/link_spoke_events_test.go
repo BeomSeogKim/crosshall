@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
@@ -118,11 +119,23 @@ func TestSpokeLinkWorkSurvivesReconnectAcrossWakeVersions(t *testing.T) {
 		askID := num(t, sender.must("ask", "@receiver", "Check the linked work."), "id")
 		ask := strconv.FormatInt(askID, 10)
 		killSpokeSSH(t, f.ssh)
-		waitSpokeLink(t, spoke, "connected")
 		eventually(t, "the event stream reconnected with the expected wake capability", func() bool {
 			var stream string
 			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE wake_capable = ?`, wantWake).Scan(&stream) == nil &&
 				stream != originalStream
+		})
+		waitSpokeLink(t, spoke, "connected")
+		// The event stream reconnects independently, and the command link
+		// can still be recovering its outbox after the handshake.
+		eventually(t, "the reconnected command link accepts who", func() bool {
+			got := receiver.run("who")
+			if got.exit == 0 {
+				return true
+			}
+			if got.obj["code"] != string(core.CodeUnsent) {
+				t.Fatalf("checking the reconnected command link: %s", got.stdout)
+			}
+			return false
 		})
 		if got := receiver.must("read", ask); !strings.Contains(got.stdout, "Check the linked work.") {
 			t.Fatalf("reconnected recipient could not read request %s: %s", ask, got.stdout)

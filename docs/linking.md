@@ -80,6 +80,6 @@ In the device's state directory: `link.json` (the link), `link-status.json` (wha
 ## Limits
 
 - A device links to one home. A home takes several devices, each under its own name.
-- **Restoring the home from a backup.** A device notices when the home's events go back to before what it already received. It then refuses every command with `the home device was restored from an older state` until you run `crosshall link <home>` again. The new link starts a new device store and keeps the old one beside it, named `-rolled-back-<time>`. Sessions on the device join again. Restoring the home also loses whatever the device sent after the backup was made.
+- **Restoring the home from a backup.** A device the restored home no longer knows, because the backup predates its enrollment, cannot connect: run `crosshall unlink` on it and link it again. Otherwise the device notices when the home's events go back to before what it already received. It then refuses every command with `the home device was restored from an older state` until you run `crosshall link <home>` again. The new link starts a new device store and keeps the old one beside it, named `-rolled-back-<time>`. Sessions on the device join again. Restoring the home also loses whatever the device sent after the backup was made.
 - After 7 days the home prunes a device's old receipts, which closes the device's current links; the device reconnects by itself.
 - The home and the device must keep a common link version: upgrade both, the home first.

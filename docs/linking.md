@@ -27,7 +27,7 @@ CROSSHALL_EXPERIMENTAL_LINK=1 crosshall link <ssh-target> [--name <device>] [--y
 3. asks `Link and enroll this device? [y/N]`, unless you pass `--yes` (a run with no terminal needs `--yes`);
 4. enrolls the device on the home with a new secret, then starts the device's dispatcher, which connects and stays connected.
 
-The device name defaults to the first label of the device's host name, lowercased. A name is 1 to 32 lowercase letters, digits or hyphens; use `--name` when the host name does not fit. Linking a device under a name the home already knows replaces that device's secret and closes its earlier links.
+The device name defaults to the first label of the device's host name, lowercased. A name is 1 to 32 lowercase letters, digits or hyphens; use `--name` when the host name does not fit. Give each machine its own name. Linking under a name the home already knows replaces that name's secret and closes its links: if another machine held the name, it can no longer connect, and reconnecting does not help. That machine has to run `crosshall unlink` and link again under an unused name.
 
 Run the same `link` again to restart the device's dispatcher. To link to a different home, unlink first.
 
@@ -51,11 +51,11 @@ These stay on the home, and the device refuses them with a hint:
 
 Adapter hooks run on the device. They answer from what the home last sent the device, so they do not wait for the network, and they go quiet while that copy is out of date. The hall's adapter settings come from the home. Repository auto-join, turn-end checks, and reach and join hints are off for linked sessions.
 
-An idle session on the device can be woken by a [notice](adapters.md#publish-notices) when both builds support linked wakes: the device checks the session's route itself and sends the notice there. With a build that does not, the session sees new work at its next prompt or crosshall command. A message to a member on a disconnected device is stored, and the sender's line says `device offline`.
+An idle session on the device can be woken by a [notice](adapters.md#publish-notices) when both builds support linked wakes: the device checks the session's route itself and sends the notice there. With a build that does not, the session sees new work at its next prompt or crosshall command. A message to a member on a disconnected device is stored and waits for the session. When the message would otherwise have woken that session, the sender's line says `device offline`.
 
 ## When the link is down
 
-Nothing waits on the device to be sent later. A command run while the device is disconnected fails with `the link to the home is down; nothing was sent`; run it again once `crosshall link status` says `connected`.
+Nothing waits on the device to be sent later. A command run while the device is disconnected fails with `the link to the home is down; nothing was sent`. Run it again once `crosshall link status` says `connected`; right after a reconnect the device may still be checking its earlier commands, so a command that again says nothing was sent can be run again a moment later.
 
 Every command that changes the hall is recorded on the device before it is sent, under its `--key` or a generated one. If the link ends before the home answers, the command says so and names its key. Then:
 
@@ -71,7 +71,7 @@ shows what the hall did with it. If the hall has no receipt for it, `retry` send
 CROSSHALL_EXPERIMENTAL_LINK=1 crosshall unlink
 ```
 
-removes the device's link record and restarts its dispatcher alone. The home keeps the device's enrollment and history; there is no home command to remove a device yet. Sessions on the device are no longer members of the home's hall.
+removes the device's link record and restarts its dispatcher alone. Sessions on the device then lose access to the home's hall. The home does not end their memberships: they stay listed in `crosshall who` and keep their aliases until the owner removes them on the home (`crosshall owner depart`). The home also keeps the device's enrollment and history; there is no home command to remove a device yet.
 
 ## Where the device keeps its state
 
@@ -81,5 +81,5 @@ In the device's state directory: `link.json` (the link), `link-status.json` (wha
 
 - A device links to one home. A home takes several devices, each under its own name.
 - **Restoring the home from a backup.** A device notices when the home's events go back to before what it already received. It then refuses every command with `the home device was restored from an older state` until you run `crosshall link <home>` again. The new link starts a new device store and keeps the old one beside it, named `-rolled-back-<time>`. Sessions on the device join again. Restoring the home also loses whatever the device sent after the backup was made.
-- A device whose receipts the home pruned after 7 days of silence, or that enrolled again elsewhere, is closed by the home and reconnects under its current enrollment.
+- After 7 days the home prunes a device's old receipts, which closes the device's current links; the device reconnects by itself.
 - The home and the device must keep a common link version: upgrade both, the home first.

@@ -50,7 +50,7 @@ func TestCoreDoesNotBranchOnAdapterNames(t *testing.T) {
 		value, err := strconv.Unquote(lit.Value)
 		return err == nil && sqlNamesAdapter(value, names)
 	}
-	for _, dir := range []string{".", "../wire", "../cli", "../hook", "../setup", "../telemetry", "../dispatch", "../publish", "../ident", "../store"} {
+	for _, dir := range []string{".", "../wire", "../cli", "../hook", "../setup", "../telemetry", "../dispatch", "../publish", "../ident", "../store", "../link"} {
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {
 			t.Fatal(err)

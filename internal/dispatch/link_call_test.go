@@ -492,15 +492,16 @@ func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
 		lookup.receipt = true
 		mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
 	}
-	// Retention passes: the fences are gone.
+	// The daily pass after the fences' retention prunes them.
+	later := time.Now().Add(store.RetentionWindow + 48*time.Hour)
 	if err := s.db.Update(t.Context(), func(tx store.Tx) error {
-		if _, err := tx.ExecContext(t.Context(), `DELETE FROM op WHERE scope = 'link'`); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(t.Context(), `DELETE FROM link_fence`)
+		_, err := store.PruneRetentionTx(t.Context(), tx, later)
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM op WHERE scope = 'link') + (SELECT COUNT(*) FROM link_fence)`); n != 0 {
+		t.Fatalf("%d fences survived retention", n)
 	}
 	for _, r := range []linkReq{note, join} {
 		r.linkAt = old

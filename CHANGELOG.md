@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.3.1 (2026-11-26)
+
+- **Release of v0.3.1-rc.2:** no product change since rc.2.
+- **Upgrade:** from v0.3.1-rc.2 the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, the first start backs up the store and runs migration 030 (schema 29 to 30); see [UPGRADING.md](UPGRADING.md#to-v031).
+
 ## v0.3.1-rc.2 (2026-11-26)
 
 - **Upgrade from v0.3.1-rc.1:** the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, follow the v0.3.1-rc.1 steps (migration 030). See [UPGRADING.md](UPGRADING.md#to-v031-rc2).

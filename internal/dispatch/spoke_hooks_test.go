@@ -309,3 +309,66 @@ func TestASpokeCutsAMembershipChangeWhereItsStampChanged(t *testing.T) {
 	}
 	f.end(t, home)
 }
+
+// What else keeps a hook quiet or refused: an enrollment loses its
+// repository; a disabled policy refuses; a stamp without a binding or
+// generation is not a live member; an offer of another leaf generation or
+// policy epoch is not shown.
+func TestASpokeHookChecksEveryField(t *testing.T) {
+	f := newHookFixture(t)
+	enroll := wire.HookEnrollArgs{Profile: wire.HookProfile{Adapter: "codex"}, LaunchRef: hookLaunch, EventRef: "s1",
+		RepoRoot: "/repo", Repository: "/repo", CreateChannel: true, Epoch: 3}
+	if r := f.hook(t, wire.VerbHookEnroll, enroll, 4, stamp22); r.Status != core.ExitOK {
+		t.Fatalf("enroll %+v", r)
+	}
+	var body string
+	if err := f.m.db.View(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT body FROM spoke_hook_outbox WHERE kind = 'fact'`).Scan(&body)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var fact link.Fact
+	var args wire.HookEnrollArgs
+	if json.Unmarshal([]byte(body), &fact) != nil || json.Unmarshal(fact.Body, &args) != nil ||
+		args.RepoRoot != "" || args.Repository != "" || args.CreateChannel || args.LaunchRef != hookLaunch {
+		t.Fatalf("enrollment repository left in %s", body)
+	}
+	for _, s := range []*core.Membership{{BindingID: 0, Generation: 2}, {BindingID: 2, Generation: 0}} {
+		if r := f.hook(t, wire.VerbHookEvent, prompt("z", 3), 5, s); r.Code != core.CodeNotEnrolled {
+			t.Fatalf("stamp %+v: %+v", s, r)
+		}
+	}
+	quiet := func(what string, seq uint64) {
+		t.Helper()
+		if r := f.hook(t, wire.VerbHookEvent, prompt(what, 3), seq, stamp22); r.Status != core.ExitOK ||
+			strings.Contains(string(r.Data), "pending") {
+			t.Fatalf("%s: %+v", what, r)
+		}
+	}
+	f.exec(t, `UPDATE spoke_offer SET body = json_set(body, '$.leaf_generation', 'other')`)
+	quiet("another leaf generation", 6)
+	f.exec(t, `UPDATE spoke_offer SET body = json_set(body, '$.leaf_generation', ?, '$.policy_epoch', 2)`, f.generation)
+	quiet("another policy epoch", 7)
+	f.exec(t, `UPDATE spoke_policy SET enabled = 0`)
+	if r := f.hook(t, wire.VerbHookEvent, prompt("off", 3), 8, stamp22); r.Status == core.ExitOK ||
+		!strings.Contains(string(r.Data), "adapter policy") {
+		t.Fatalf("a disabled policy: %+v", r)
+	}
+	f.end(t, f.home)
+}
+
+// A snapshot replaces the device's policies: one it no longer carries is
+// gone.
+func TestASpokeSnapshotReplacesThePolicies(t *testing.T) {
+	f := newEventFixture(t)
+	f.exec(t, `INSERT INTO spoke_policy (adapter, enabled, reminder, epoch) VALUES ('claude', 1, 0, 4)`)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true,
+		Policies: []link.AdapterPolicy{{Adapter: "codex", Enabled: true, Epoch: 3}}})
+	home.ack(t, 10)
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_policy`); n != 1 {
+		t.Fatalf("%d policies after the snapshot, want codex alone", n)
+	}
+	f.end(t, home)
+}

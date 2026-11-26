@@ -214,6 +214,9 @@ func TestAnAdapterPolicyChangeReachesLinkedDevices(t *testing.T) {
 	if json.Unmarshal([]byte(body), &p) != nil || p.Adapter != "codex" || !p.Enabled || p.Epoch == 0 {
 		t.Fatalf("policy event %s", body)
 	}
+	// The link rule: a device of the previous release lists no events
+	// capability, never subscribes and so has no cursor; no policy event
+	// or snapshot reaches it.
 	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, quiet); n != 0 {
 		t.Fatal("a device without a stream got an event")
 	}

@@ -14,9 +14,8 @@ CREATE TABLE link_wake_attempt (
     dispatched_at_ms INTEGER NOT NULL,
     submission_seq INTEGER NOT NULL DEFAULT 0,
     activity_seq INTEGER NOT NULL DEFAULT 0,
-    uncertain_at_ms INTEGER,
     released_at_ms INTEGER,
-    resolved_at_ms INTEGER
+    first_result_at_ms INTEGER
 );
 
 CREATE UNIQUE INDEX link_wake_attempt_lane ON link_wake_attempt(device_id, vendor, lane)
@@ -24,7 +23,7 @@ CREATE UNIQUE INDEX link_wake_attempt_lane ON link_wake_attempt(device_id, vendo
 CREATE UNIQUE INDEX link_wake_attempt_member ON link_wake_attempt(principal_id)
     WHERE state <> 'not_submitted' AND released_at_ms IS NULL;
 CREATE INDEX link_wake_attempt_member_time ON link_wake_attempt(principal_id, dispatched_at_ms);
-CREATE INDEX link_wake_attempt_uncertain ON link_wake_attempt(device_id, uncertain_at_ms)
-    WHERE state = 'uncertain' AND released_at_ms IS NULL;
+CREATE INDEX link_wake_attempt_held ON link_wake_attempt(device_id, first_result_at_ms)
+    WHERE state IN ('submitted', 'uncertain') AND released_at_ms IS NULL;
 
 ALTER TABLE link_event_stream ADD COLUMN wake_capable INTEGER NOT NULL DEFAULT 0 CHECK (wake_capable IN (0, 1));

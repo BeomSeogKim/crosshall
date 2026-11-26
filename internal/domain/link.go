@@ -164,6 +164,9 @@ func (s *Service) linkEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 		if err := store.InstallLinkOfferTriggers(ctx, tx); err != nil {
 			return core.Result{}, err
 		}
+		if err := store.InstallLinkWakeTriggers(ctx, tx); err != nil {
+			return core.Result{}, err
+		}
 	}
 	// The audit names the device, never the secret.
 	detail := map[string]any{"device": device, "name": cmd.Name, "rotated": rotated}

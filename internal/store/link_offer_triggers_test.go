@@ -32,6 +32,9 @@ func TestLinkOfferTriggerMigrationChecksExistingEnrollment(t *testing.T) {
 				AND name IN ('device_offer_pickup', 'device_offer_pending_insert')`); tc.enrolled && n != 2 || !tc.enrolled && n != 0 {
 				t.Fatalf("enrolled %t: found %d hot-path offer triggers", tc.enrolled, n)
 			}
+			if n := after.count(t, `SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND name GLOB 'link_wake_*'`); tc.enrolled && n == 0 || !tc.enrolled && n != 0 {
+				t.Fatalf("enrolled %t: found %d wake scope triggers", tc.enrolled, n)
+			}
 		})
 	}
 }

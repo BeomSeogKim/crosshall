@@ -9,12 +9,12 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
-const linkWakeUncertainWindow = publishHeldAlertAfter
+const linkWakeHeldWindow = publishHeldAlertAfter
 
-func expireUncertainLinkWakes(ctx context.Context, tx store.Tx, device string, now time.Time) error {
+func expireHeldLinkWakes(ctx context.Context, tx store.Tx, device string, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `UPDATE link_wake_attempt SET released_at_ms = ?
-		WHERE device_id = ? AND released_at_ms IS NULL AND state = 'uncertain' AND uncertain_at_ms <= ?`,
-		ms(now), device, ms(now.Add(-linkWakeUncertainWindow)))
+		WHERE device_id = ? AND released_at_ms IS NULL AND state IN ('submitted', 'uncertain') AND first_result_at_ms <= ?`,
+		ms(now), device, ms(now.Add(-linkWakeHeldWindow)))
 	return err
 }
 

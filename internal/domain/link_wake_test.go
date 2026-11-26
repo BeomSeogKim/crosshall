@@ -8,12 +8,16 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 func linkWakeFixture(t *testing.T) (*linkedHookFixture, link.WakeRoute) {
 	t.Helper()
 	usePublishSender(t)
 	h := newLinkedHookFixture(t)
+	if err := store.InstallLinkWakeTriggers(t.Context(), h.db); err != nil {
+		t.Fatal(err)
+	}
 	const launch = "pid-42-wake"
 	h.fact(1, 2, linkedStart(launch, ms(h.now)), link.RecordedApplied)
 	h.sql(`INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms)
@@ -100,7 +104,7 @@ func TestLinkWakeHeldLaneAndResultScope(t *testing.T) {
 	}
 	h.now = h.now.Add(time.Minute)
 	if got := record(result); got.Status != link.RecordedApplied ||
-		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND resolved_at_ms < ?`, wake.AttemptID, ms(h.now)) != 1 {
+		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND first_result_at_ms < ?`, wake.AttemptID, ms(h.now)) != 1 {
 		t.Fatalf("uncertain result replay = %+v", got)
 	}
 	foreign := h.peer
@@ -245,7 +249,7 @@ func TestLinkWakeUncertaintyWindowClosesOldAuthority(t *testing.T) {
 		t.Fatalf("wake result = %+v", got)
 	}
 	next := h.turnEndAsk(h.writer, "reader", "next")
-	h.now = h.now.Add(linkWakeUncertainWindow - time.Millisecond)
+	h.now = h.now.Add(linkWakeHeldWindow - time.Millisecond)
 	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied {
 		t.Fatalf("duplicate uncertainty = %+v", got)
 	}
@@ -290,5 +294,125 @@ func TestLinkWakeAcceptsExactHistoricalResultAfterCredentialRotation(t *testing.
 	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied ||
 		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND credential_gen = 1 AND state = 'not_submitted'`, wake.AttemptID) != 1 {
 		t.Fatalf("rotated device could not settle exact original attempt: %+v", got)
+	}
+}
+
+func TestLinkWakeReleasesOnSupersessionOrFirstResultDeadline(t *testing.T) {
+	cases := []struct {
+		name, result, update string
+		refine               bool
+	}{
+		{name: "new boot", result: link.WakeSubmitted, update: `UPDATE link_event_cursor SET boot = 'new-boot' WHERE device_id = (SELECT device_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "new leaf", result: link.WakeSubmitted,
+			update: `UPDATE device_key SET leaf_generation = 'new-leaf' WHERE principal_id = (SELECT principal_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "absent leaf", result: link.WakeSubmitted,
+			update: `UPDATE link_event_cut SET absent = 1 WHERE binding_id = (SELECT binding_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "new membership", result: link.WakeSubmitted,
+			update: `UPDATE member_selection SET generation = generation + 1 WHERE principal_id = (SELECT principal_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "new credential", result: link.WakeSubmitted,
+			update: `UPDATE device SET credential_gen = credential_gen + 1 WHERE device_id = (SELECT device_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "unclaimed at credential rotation",
+			update: `UPDATE device SET credential_gen = credential_gen + 1 WHERE device_id = (SELECT device_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "depart", result: link.WakeSubmitted,
+			update: `UPDATE binding SET state = 'departed', departed_at_ms = 12345 WHERE id = (SELECT binding_id FROM link_wake_attempt WHERE id = ?)`},
+		{name: "submitted deadline", result: link.WakeSubmitted},
+		{name: "uncertain deadline", result: link.WakeUncertain},
+		{name: "refined deadline", result: link.WakeUncertain, refine: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, route := linkWakeFixture(t)
+			id := h.turnEndAsk(h.writer, "reader", "first")
+			wake, seq := dispatchTestLinkWake(t, h, route, id)
+			result := LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{
+				AttemptID: wake.AttemptID, Route: route, Outcome: tc.result, SubmissionSeq: 2}}
+			if tc.result != "" {
+				wantOK(t, h.owner(result, ""))
+			}
+			if tc.update == "" {
+				assertLinkWakeDeadline(t, h, route, result, tc.refine)
+				return
+			}
+			tx, err := h.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), tc.update, wake.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			var released bool
+			if err := tx.QueryRowContext(t.Context(), `SELECT released_at_ms IS NOT NULL FROM link_wake_attempt WHERE id = ?`,
+				wake.AttemptID).Scan(&released); err != nil || !released {
+				t.Fatalf("scope change did not release in its writer: released=%t err=%v", released, err)
+			}
+			if tc.result == "" {
+				r, err := linkEventPage(t.Context(), tx, h.peer.Device, seq-1, seq, h.now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				page := decodeAs[LinkEventsResult](t, r)
+				if len(page.Events) != 1 || page.Events[0].Seq != seq || page.Events[0].Kind != link.EventWakeClosed {
+					t.Fatalf("superseded dispatch remained executable: %+v", page)
+				}
+				raw, err := json.Marshal(route)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var channel int64
+				if err := tx.QueryRowContext(t.Context(), `SELECT channel_id FROM binding WHERE id = ?`,
+					route.Scope.Membership.BindingID).Scan(&channel); err != nil {
+					t.Fatal(err)
+				}
+				scope := linkOfferScope{principal: h.principal, binding: hookBinding{channel: channel}}
+				ids, err := pendingLinkWakeIDs(t.Context(), tx, scope, string(raw))
+				if err != nil || slices.Contains(ids, id) {
+					t.Fatalf("superseded dispatch admitted the same item: %v, %v", ids, err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func assertLinkWakeDeadline(t *testing.T, h *linkedHookFixture, route link.WakeRoute, result LinkWakeResult, refine bool) {
+	t.Helper()
+	until := h.now.Add(linkWakeHeldWindow)
+	next := h.turnEndAsk(h.writer, "reader", "next")
+	h.now = until.Add(-time.Millisecond)
+	if refine {
+		result.Result.Outcome = link.WakeSubmitted
+	}
+	wantOK(t, h.owner(result, ""))
+	if got := decodeAs[LinkWakeReadyResult](t, h.owner(LinkWakeReady{LinkEventPeer: h.peer, Route: route}, "")); got.Seq != 0 {
+		t.Fatalf("wake escaped before its deadline: %+v", got)
+	}
+	h.now = until
+	dispatchTestLinkWake(t, h, route, next)
+}
+
+func TestLinkWakeNewBootReleasesOnlyAfterSnapshotAck(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "wake")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	wantOK(t, h.owner(LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{
+		AttemptID: wake.AttemptID, Route: route, Outcome: link.WakeSubmitted, SubmissionSeq: 3}}, ""))
+	h.peer.Stream = link.NewNonce()
+	const boot = "restarted"
+	page := decodeAs[LinkEventsResult](t, h.owner(LinkEvents{LinkEventPeer: h.peer, AllowWake: true,
+		Subscribe: &link.Subscribe{Boot: boot}}, ""))
+	if page.Snapshot == nil || !page.Snapshot.Last || len(page.Snapshot.Members) != 1 {
+		t.Fatalf("new boot snapshot = %+v", page)
+	}
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL`, wake.AttemptID) != 1 {
+		t.Fatal("an unacknowledged boot released the existing scope")
+	}
+	wantOK(t, h.owner(LinkAck{LinkEventPeer: h.peer, Ack: link.Ack{Boot: boot, Seq: page.Snapshot.Seq,
+		Cuts: []link.LeafCut{{Member: h.member, Scope: page.Snapshot.Members[0].Scope, Seq: page.Snapshot.Seq}}}}, ""))
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NOT NULL`, wake.AttemptID) != 1 {
+		t.Fatal("the new acknowledged boot left the earlier scope held")
 	}
 }

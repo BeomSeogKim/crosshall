@@ -73,7 +73,7 @@ func (s *Service) linkWakeReady(ctx context.Context, tx store.Tx, caller core.Ca
 	if !validWakeRoute(route) {
 		return Fail(core.ExitUsage, "", "invalid linked wake route", "check the linked device's local notice route"), nil
 	}
-	if err := expireUncertainLinkWakes(ctx, tx, peer.Device, now); err != nil {
+	if err := expireHeldLinkWakes(ctx, tx, peer.Device, now); err != nil {
 		return core.Result{}, err
 	}
 	if stream.snapshotSeq.Valid || route.Boot != stream.boot {
@@ -157,13 +157,15 @@ func linkWakeRouteEligible(ctx context.Context, tx store.Tx, peer LinkEventPeer,
 	return ready, err
 }
 
+// An attempt that may have submitted keeps its original IDs out of later wakes.
 func pendingLinkWakeIDs(ctx context.Context, tx store.Tx, scope linkOfferScope, route string) ([]int64, error) {
 	return selectIDs(ctx, tx, `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 		WHERE x.principal_id = ?1 AND m.channel_id = ?2 AND `+pendingPublishItem+`
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
 			WHERE a.principal_id = ?1 AND item.value = x.message_id
-				AND (a.state IN ('submitted', 'uncertain') OR (a.state = 'not_submitted' AND a.route = ?3)))
+				AND (a.state IN ('submitted', 'uncertain') OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL)
+					OR (a.state = 'not_submitted' AND a.route = ?3)))
 		ORDER BY x.message_id LIMIT ?4`, scope.principal, scope.binding.channel, route, OfferCap)
 }
 
@@ -246,7 +248,7 @@ func (s *Service) linkWakeResult(ctx context.Context, tx store.Tx, caller core.C
 	default:
 		return OK(rejected)
 	}
-	if err := expireUncertainLinkWakes(ctx, tx, peer.Device, now); err != nil {
+	if err := expireHeldLinkWakes(ctx, tx, peer.Device, now); err != nil {
 		return core.Result{}, err
 	}
 	raw, err := json.Marshal(result.Route)
@@ -272,10 +274,9 @@ func (s *Service) linkWakeResult(ctx context.Context, tx store.Tx, caller core.C
 	}
 	if state != result.Outcome || seq == 0 && result.SubmissionSeq > 0 {
 		_, err := tx.ExecContext(ctx, `UPDATE link_wake_attempt SET state = ?1, submission_seq = max(submission_seq, ?2),
-			uncertain_at_ms = CASE WHEN ?1 = 'uncertain' THEN COALESCE(uncertain_at_ms, ?3) ELSE uncertain_at_ms END,
 			released_at_ms = CASE WHEN ?1 IN ('submitted', 'uncertain') AND max(submission_seq, ?2) > 0
 				AND activity_seq > max(submission_seq, ?2) THEN COALESCE(released_at_ms, ?3) ELSE released_at_ms END,
-			resolved_at_ms = ?3 WHERE id = ?4`, result.Outcome, result.SubmissionSeq, ms(now), result.AttemptID)
+			first_result_at_ms = COALESCE(first_result_at_ms, ?3) WHERE id = ?4`, result.Outcome, result.SubmissionSeq, ms(now), result.AttemptID)
 		if err != nil {
 			return core.Result{}, err
 		}

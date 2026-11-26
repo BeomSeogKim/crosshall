@@ -121,6 +121,9 @@ var linkEventsSchema string
 //go:embed migrations/035_link_wakes.sql
 var linkWakesSchema string
 
+//go:embed link_wake_triggers.sql
+var linkWakeTriggers string
+
 //go:embed link_offer_triggers.sql
 var linkOfferTriggers string
 
@@ -260,13 +263,20 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			if _, err := tx.ExecContext(ctx, s.schema[step]); err != nil {
 				return err
 			}
-			if s.schema[step] == linkEventsSchema {
+			var installLinkedTriggers func(context.Context, Tx) error
+			switch s.schema[step] {
+			case linkEventsSchema:
+				installLinkedTriggers = InstallLinkOfferTriggers
+			case linkWakesSchema:
+				installLinkedTriggers = InstallLinkWakeTriggers
+			}
+			if installLinkedTriggers != nil {
 				var enrolled bool
 				if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device)`).Scan(&enrolled); err != nil {
 					return err
 				}
 				if enrolled {
-					if err := InstallLinkOfferTriggers(ctx, tx); err != nil {
+					if err := installLinkedTriggers(ctx, tx); err != nil {
 						return err
 					}
 				}
@@ -309,6 +319,13 @@ func (s *Store) ensureReadIndexes(ctx context.Context) error {
 // with enrolled devices. Migration 034 calls it for existing enrollments.
 func InstallLinkOfferTriggers(ctx context.Context, tx Tx) error {
 	_, err := tx.ExecContext(ctx, linkOfferTriggers)
+	return err
+}
+
+// InstallLinkWakeTriggers records scope supersession in the writer that
+// changes it. Only enrolled halls install these triggers.
+func InstallLinkWakeTriggers(ctx context.Context, tx Tx) error {
+	_, err := tx.ExecContext(ctx, linkWakeTriggers)
 	return err
 }
 

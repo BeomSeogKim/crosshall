@@ -64,6 +64,9 @@ Owner commands (from a separate owner terminal):
   setup status                                      Inspect installed hooks and adapter policy
   setup off                                         Disable adapter effects
   uninstall [--dry-run|--apply] [names]             Preview or remove hooks installed by Crosshall
+  link <ssh-target> [--name <device>] [--yes]       Link this device to a hall over SSH
+  link status                                       Show the device's current link state
+  unlink                                            Return this device to its local hall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
   owner channel create <name> [--topic "..."]         Create a channel
@@ -165,12 +168,10 @@ type Env struct {
 	ResolveTelemetryPolicyPath func(string) string
 	// SetupAdapters lists the shipped hook adapters a setup may name.
 	SetupAdapters []string
-	// ExperimentalLink enables crosshall link (CROSSHALL_EXPERIMENTAL_LINK=1).
-	ExperimentalLink bool
-	LinkSpoke        func(context.Context, string, string, func(link.Preview) error) (link.Status, error)
-	LinkStatus       func() (link.Status, error)
-	UnlinkSpoke      func(context.Context) error
-	LinkedTarget     func() string
+	LinkSpoke     func(context.Context, string, string, func(link.Preview) error) (link.Status, error)
+	LinkStatus    func() (link.Status, error)
+	UnlinkSpoke   func(context.Context) error
+	LinkedTarget  func() string
 }
 
 // Run executes the command line with the default environment.

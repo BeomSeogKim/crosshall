@@ -41,7 +41,7 @@ func (c claudeSession) fire(event string, fields map[string]any) string {
 	if err != nil {
 		c.w.t.Fatal(err)
 	}
-	cmd := exec.CommandContext(c.w.t.Context(), binary, "hook", "claude", event)
+	cmd := exec.CommandContext(c.w.t.Context(), c.w.binaryPath(), "hook", "claude", event)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = bytes.NewReader(raw), &stdout, &stderr
 	cmd.Dir = c.repo
@@ -382,14 +382,14 @@ func TestM2HookFailuresPrintNothingAndAreCounted(t *testing.T) {
 	// Conflicting identity: the environment names another session.
 	other := c
 	other.key = "synthetic-other"
-	cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
+	cmd := exec.CommandContext(t.Context(), w.binaryPath(), "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"UserPromptSubmit","session_id":"synthetic-m2-session","prompt_id":"x"}`)
 	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID=synthetic-other", "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {
 		t.Fatalf("conflicting identity: %q, %v", out, err)
 	}
 	// Malformed input.
-	cmd = exec.CommandContext(t.Context(), binary, "hook", "claude", "UserPromptSubmit")
+	cmd = exec.CommandContext(t.Context(), w.binaryPath(), "hook", "claude", "UserPromptSubmit")
 	cmd.Stdin = strings.NewReader(`{"broken"`)
 	cmd.Dir, cmd.Env = c.repo, append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key, "CLAUDE_PID="+c.pid)
 	if out, err := cmd.Output(); err != nil || len(out) != 0 {

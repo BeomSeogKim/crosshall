@@ -32,8 +32,11 @@ The repository is trunk-based.
   recurring gate checks on the candidate commit (reproducible build, release
   dating, migrations, install, setup and uninstall, upgrade and rollback of a
   copy of your store, hook cost against the previous tag, a Claude Code and
-  Codex round trip and one locked full run) and prints a summary table. Checks for the release's new features
-  stay manual, and so does row content: the gate checks that a migration
+  Codex round trip, two devices on one machine against the base tag, and one
+  locked full run) and prints a summary table. The link check pairs the
+  candidate with the base in both directions and checks that an incompatible
+  link version is refused. Checks for the release's new features stay manual,
+  and so does row content: the gate checks that a migration
   runs, matches a fresh store's schema and rolls back, while whether it
   changes rows correctly stays with the tier-2 review of the migration.
 

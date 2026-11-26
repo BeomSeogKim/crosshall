@@ -27,11 +27,6 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if got := member.run("link", "status"); got.exit == 0 {
 		t.Fatalf("member could inspect owner link status: %+v", got)
 	}
-	disabled := f.spoke.owner()
-	disabled.extra = []string{"CROSSHALL_EXPERIMENTAL_LINK=0"}
-	if got := disabled.run("link", "status"); got.exit == 0 {
-		t.Fatalf("link status was enabled without opt-in: %+v", got)
-	}
 
 	link := []string{"link", linkFixtureTarget, "--name", "fixture-spoke"}
 	enrollLog := f.ssh + ".enrolls"

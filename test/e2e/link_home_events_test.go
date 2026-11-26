@@ -47,7 +47,6 @@ func writeHomeEventFrame(t *testing.T, s *servedLink, kind string, value any) {
 func TestLinkHomeStreamsAndConfirmsPreparedOffer(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
-	owner.extra = []string{"CROSSHALL_EXPERIMENTAL_LINK=1"}
 	owner.must("owner", "start")
 	owner.must("owner", "channel", "create", "checkout")
 	policy := owner.must("owner", "adapter", "set", "claude", "--enabled", "on")

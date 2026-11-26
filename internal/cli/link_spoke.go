@@ -13,14 +13,10 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/link"
 )
 
-func linkDenied(env Env, o outputs) (core.ExitCode, bool) {
-	if !env.ExperimentalLink {
-		return o.fail(core.ExitUsage, CodeUsage, "linking devices is experimental",
-			"set CROSSHALL_EXPERIMENTAL_LINK=1 to try it"), true
-	}
+func linkOwnerDenied(env Env, o outputs) (core.ExitCode, bool) {
 	if env.OwnerGate != nil {
 		if gate := env.OwnerGate(); gate != "" {
-			return o.fail(core.ExitRefused, core.CodeOwnerOnly, gate, "run crosshall link from your own shell"), true
+			return o.fail(core.ExitRefused, core.CodeOwnerOnly, gate, "rerun this command from your separate owner terminal"), true
 		}
 	}
 	return core.ExitOK, false
@@ -111,7 +107,7 @@ func runLinkStatus(env Env, o outputs) core.ExitCode {
 }
 
 func runUnlink(ctx context.Context, env Env, o outputs, args []string) core.ExitCode {
-	if code, denied := linkDenied(env, o); denied {
+	if code, denied := linkOwnerDenied(env, o); denied {
 		return code
 	}
 	if len(args) != 0 {

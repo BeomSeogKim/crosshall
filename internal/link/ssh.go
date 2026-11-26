@@ -52,6 +52,7 @@ func (e Endpoint) remoteCommand(args ...string) (string, error) {
 		return "", errors.New("link: the home crosshall executable must have an absolute path")
 	}
 	var command strings.Builder
+	// Earlier homes require this setting before accepting link requests.
 	command.WriteString("CROSSHALL_EXPERIMENTAL_LINK=1")
 	for _, arg := range append([]string{e.Path}, args...) {
 		command.WriteString(" '")

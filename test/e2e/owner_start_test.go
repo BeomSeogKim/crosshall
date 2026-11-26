@@ -83,7 +83,7 @@ func TestOwnerStartTimesOutWhenIncumbentIsSilent(t *testing.T) {
 
 func ownerStartAtReadinessProbe(t *testing.T, w *world) (*os.Process, *bytes.Buffer, <-chan error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), binary, "--json", "owner", "start")
+	cmd := exec.CommandContext(t.Context(), w.binaryPath(), "--json", "owner", "start")
 	cmd.Dir, cmd.Env = w.home, w.owner().env()
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
@@ -259,7 +259,7 @@ func TestDispatcherStartupDistinguishesSharedObserversFromAnIncumbent(t *testing
 
 			// One guardian launches exactly one candidate; a replacement
 			// cannot hide that candidate's loss of a shared-lock race.
-			cmd := exec.Command(binary, "__test_dispatch_guardian")
+			cmd := exec.Command(w.binaryPath(), "__test_dispatch_guardian")
 			cmd.Dir, cmd.Env = w.home, w.owner().env()
 			var output bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &output, &output

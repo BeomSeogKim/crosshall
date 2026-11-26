@@ -38,7 +38,7 @@ func runLink(ctx context.Context, env Env, opts options, args []string, stdin io
 		// The SSH entry points reserve stdout for frames, including with --json.
 		o.stdout = stderr
 	}
-	if code, denied := linkDenied(env, o); denied {
+	if code, denied := linkOwnerDenied(env, o); denied {
 		return code
 	}
 	switch {

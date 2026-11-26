@@ -39,13 +39,19 @@ type setupWorld struct {
 func newSetupWorld(t *testing.T) *setupWorld {
 	t.Helper()
 	w := newWorld(t)
+	return installSetupWorld(w, w.binaryPath())
+}
+
+func installSetupWorld(w *world, source string) *setupWorld {
+	t := w.t
+	t.Helper()
 	f := &setupWorld{world: w, paths: make(map[string]string)}
 	binDir := filepath.Join(w.home, "owner's binaries")
 	if err := os.Mkdir(binDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	f.executable = filepath.Join(binDir, "crosshall")
-	content, err := os.ReadFile(binary)
+	content, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}

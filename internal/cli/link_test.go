@@ -96,7 +96,7 @@ func TestLinkCommandPreservesPickupOnlyWithWakeCapability(t *testing.T) {
 
 func TestLinkServeShakesHandsThenAnswersPings(t *testing.T) {
 	ht := &homeTransport{}
-	stderr, code := serve(t, Env{Version: "v9", Transport: ht, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Version: "v9", Transport: ht}, func(r *link.Reader, w *link.Writer) {
 		s, err := spokeConfig("dev-1").Connect(r, w)
 		if err != nil || s.Link != link.Version || s.PeerRelease != "v9" {
 			t.Errorf("connect %+v, %v", s, err)
@@ -123,7 +123,7 @@ func TestLinkServeShakesHandsThenAnswersPings(t *testing.T) {
 // A refused spoke gets a refusal frame; the reason goes to stderr, and
 // nothing but frames reaches stdout.
 func TestLinkServeRefusesAnUnknownDevice(t *testing.T) {
-	stderr, code := serve(t, Env{Transport: &homeTransport{}, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: &homeTransport{}}, func(r *link.Reader, w *link.Writer) {
 		_, err := spokeConfig("dev-2").Connect(r, w)
 		if err == nil || !strings.Contains(err.Error(), "not linked") {
 			t.Errorf("connect: %v", err)
@@ -135,7 +135,7 @@ func TestLinkServeRefusesAnUnknownDevice(t *testing.T) {
 }
 
 func TestLinkServeStopsAtAFrameItDoesNotKnow(t *testing.T) {
-	stderr, code := serve(t, Env{Transport: &homeTransport{}, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: &homeTransport{}}, func(r *link.Reader, w *link.Writer) {
 		if _, err := spokeConfig("dev-1").Connect(r, w); err != nil {
 			t.Error(err)
 		}
@@ -149,7 +149,7 @@ func TestLinkServeStopsAtAFrameItDoesNotKnow(t *testing.T) {
 func TestLinkEnrollReadsTheSecretFromStdinAndAnswersWithAFrame(t *testing.T) {
 	ht := &homeTransport{}
 	secret := strings.Repeat("ab", 32)
-	env := Env{Transport: ht, ExperimentalLink: true, Stdin: strings.NewReader(secret + "\n")}
+	env := Env{Transport: ht, Stdin: strings.NewReader(secret + "\n")}
 	stdout, stderr, code := run(t, env, "link", "enroll", "--name", "macbook")
 	if code != core.ExitOK || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -165,20 +165,16 @@ func TestLinkEnrollReadsTheSecretFromStdinAndAnswersWithAFrame(t *testing.T) {
 	}
 }
 
-func TestLinkIsOptInAndOwnerOnly(t *testing.T) {
+func TestLinkCommandsRequireOwnerIngress(t *testing.T) {
 	ht := &homeTransport{}
-	if _, stderr, code := run(t, Env{Transport: ht}, "link", "serve"); code != core.ExitUsage ||
-		!strings.Contains(stderr, "CROSSHALL_EXPERIMENTAL_LINK=1") {
-		t.Fatalf("without the opt-in: exit %d, stderr %q", code, stderr)
-	}
-	gated := Env{Transport: ht, ExperimentalLink: true, OwnerGate: func() string { return "inside an agent session" }}
-	if _, _, code := run(t, gated, "link", "serve"); code != core.ExitRefused {
-		t.Fatalf("inside a session: exit %d", code)
-	}
-	// Stdout is for link frames: with --json too, refusals go to stderr.
-	for _, env := range []Env{{Transport: ht}, gated} {
-		if stdout, stderr, _ := run(t, env, "--json", "link", "serve"); stdout != "" || stderr == "" {
-			t.Fatalf("--json: stdout %q, stderr %q", stdout, stderr)
+	gated := Env{Transport: ht, OwnerGate: func() string { return "inside an agent session" }}
+	for _, args := range [][]string{{"link", "serve"}, {"link", "enroll", "--name", "macbook"}, {"link", "status"}, {"link", "home"}, {"unlink"}} {
+		stdout, stderr, code := run(t, gated, append([]string{"--json"}, args...)...)
+		if code != core.ExitRefused || !strings.Contains(stdout+stderr, string(core.CodeOwnerOnly)) {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q", args, code, stdout, stderr)
+		}
+		if len(args) > 1 && (args[1] == "serve" || args[1] == "enroll") && (stdout != "" || stderr == "") {
+			t.Fatalf("%v: link frame stream contains a refusal: stdout %q, stderr %q", args, stdout, stderr)
 		}
 	}
 	if len(ht.calls) != 0 {

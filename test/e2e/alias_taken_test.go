@@ -17,7 +17,7 @@ func TestATakenAliasNextStepPutsNewMemberFirst(t *testing.T) {
 	owner.must("owner", "channel", "create", "checkout")
 	w.member().must("join", "checkout", "--as", "form")
 	fresh := w.member()
-	cmd := exec.Command(binary, "join", "checkout", "--as", "form")
+	cmd := exec.Command(w.binaryPath(), "join", "checkout", "--as", "form")
 	cmd.Dir, cmd.Env = w.home, fresh.env()
 	out, err := cmd.CombinedOutput()
 	exit, _ := err.(*exec.ExitError)

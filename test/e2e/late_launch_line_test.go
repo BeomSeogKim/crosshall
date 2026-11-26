@@ -46,7 +46,7 @@ func TestALatePromptShowsWorkThatCameWithoutALaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `CLAUDE_PID=$$ "$0" hook claude UserPromptSubmit; status=$?; exit $status`, binary)
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `CLAUDE_PID=$$ "$0" hook claude UserPromptSubmit; status=$?; exit $status`, w.binaryPath())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Dir = bytes.NewReader(payload), &stdout, &stderr, c.repo
 	cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)

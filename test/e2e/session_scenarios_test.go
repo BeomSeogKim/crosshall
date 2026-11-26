@@ -95,7 +95,7 @@ func TestRunStartsChildWithOnlyFreshRouteIdentity(t *testing.T) {
 	for _, name := range vendors {
 		parent.extra = append(parent.extra, name+"=fixture")
 	}
-	cmd := exec.Command(binary, "run", "--", "env")
+	cmd := exec.Command(w.binaryPath(), "run", "--", "env")
 	cmd.Dir, cmd.Env = w.home, parent.env()
 	output, err := cmd.Output()
 	if err != nil {
@@ -139,7 +139,7 @@ func TestRunAnnouncesMemberShellAndNestedIdentity(t *testing.T) {
 		{"scripted", []string{"sh", "-c", "printf 'command output\\n'; exit 17"}, parent.env(), nestedNotice, 17},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(binary, append([]string{"run", "--"}, tc.args...)...)
+			cmd := exec.Command(w.binaryPath(), append([]string{"run", "--"}, tc.args...)...)
 			cmd.Dir, cmd.Env = w.home, tc.env
 			cmd.Stdin = strings.NewReader("printf 'command output\\n'\nexit\n")
 			var stderr bytes.Buffer
@@ -186,7 +186,7 @@ func TestAFormerMemberAndANewSessionGetTheSameEnrollmentMessage(t *testing.T) {
 func TestDevBinaryRefusesDefaultStateDirectory(t *testing.T) {
 	w := newWorld(t)
 	w.state = filepath.Join(w.home, ".local", "state", "crosshall")
-	cmd := exec.Command(binary, "--json", "owner", "start")
+	cmd := exec.Command(w.binaryPath(), "--json", "owner", "start")
 	cmd.Dir = w.home
 	cmd.Env = []string{"HOME=" + w.home, "PATH=/usr/bin:/bin", "TMPDIR=" + w.home}
 	output, err := cmd.CombinedOutput()
@@ -312,7 +312,7 @@ func TestAntigravityJoinReplayAfterLeafRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer readOnly.Close()
-	cmd := exec.Command(binary, join...)
+	cmd := exec.Command(w.binaryPath(), join...)
 	cmd.Dir, cmd.Env, cmd.Stdout = w.home, member.env(), readOnly
 	var exit *exec.ExitError
 	if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != int(core.ExitError) {

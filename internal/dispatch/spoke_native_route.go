@@ -203,8 +203,18 @@ const spokeNativeRoutesSQL = `SELECT r.vendor, r.key, r.boot, r.leaf_generation,
 	JOIN spoke_event_cursor c ON c.id = 1 AND c.boot = r.boot AND c.eligible = 1 AND c.rolled_back = 0
 	WHERE r.boot = ? AND s.route_epoch > 0 AND r.policy_epoch > 0 AND r.capture_seq > 0`
 
-func readSpokeNativeRoutes(ctx context.Context, tx store.Tx, boot string) ([]spokeNativeRoute, error) {
-	return querySpokeNativeRoutes(ctx, tx, spokeNativeRoutesSQL+` ORDER BY r.vendor, r.key`, boot)
+func readSpokeNativeRoutes(ctx context.Context, tx store.Tx, boot string, mono int64) ([]spokeNativeRoute, error) {
+	return querySpokeNativeRoutes(ctx, tx, spokeNativeRoutesSQL+`
+		AND EXISTS (SELECT 1 FROM spoke_offer o WHERE o.vendor = r.vendor AND o.key = r.key
+			AND o.boot = r.boot AND o.suppressed = 0 AND o.deadline_mono > ?
+			AND json_extract(o.body, '$.leaf_generation') = r.leaf_generation
+			AND json_extract(o.body, '$.membership.binding_id') = r.binding_id
+			AND json_extract(o.body, '$.membership.generation') = r.membership_gen
+			AND json_extract(o.body, '$.route_epoch') = s.route_epoch
+			AND json_extract(o.body, '$.launch') = r.launch
+			AND json_extract(o.body, '$.policy_epoch') = r.policy_epoch
+			AND json_array_length(o.body, '$.ids') > 0)
+		ORDER BY r.vendor, r.key`, boot, mono)
 }
 
 func readSpokeNativeRoute(ctx context.Context, tx store.Tx, boot string, member link.Member) (spokeNativeRoute, bool, error) {

@@ -44,6 +44,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 	o := offer(7, 0, 60_000)
 	o.IDs, o.Nonce, o.Launch, o.PolicyEpoch = []int64{41, 42}, "nonce-7", hookLaunch, 3
 	o.LeafGeneration, o.Membership = f.generation, link.Membership{BindingID: 2, Generation: 2}
+	o.RouteEpoch = f.scope(2, 2).RouteEpoch
 	f.home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true,
 		Members:  []link.SnapshotMember{{Member: eventMember, Scope: f.scope(2, 2), Offers: []link.Offer{o}}},
 		Policies: []link.AdapterPolicy{{Adapter: "codex", Enabled: true, Epoch: 3}}})

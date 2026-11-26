@@ -15,10 +15,11 @@ import (
 )
 
 func TestSpokeNativeWakeNeedsFreshAuthorization(t *testing.T) {
-	var sends atomic.Int32
+	var sends, proofs atomic.Int32
 	queue := publish.Queue{PID: 19, StartMS: 29}
 	t.Cleanup(publish.Swap(publish.Shipped().WithTransport("codex", publish.Transport{
 		Prove: func(_ context.Context, probe publish.Probe) (publish.Proven, bool) {
+			proofs.Add(1)
 			return publish.Proven{Queue: queue, StartedAtMS: 10}, probe.Route.Host == queue
 		},
 		Send: func(_ context.Context, _ publish.Target, _ string) publish.Outcome {
@@ -37,6 +38,12 @@ func TestSpokeNativeWakeNeedsFreshAuthorization(t *testing.T) {
 	if result := f.hook(t, wire.VerbHookEnroll, args, 7, stamp22); result.Status != core.ExitOK {
 		t.Fatalf("route capture: %+v", result)
 	}
+	f.exec(t, `UPDATE spoke_offer SET suppressed = 1`)
+	worker := spokeWakeWorker{e: f.e, stateRoot: t.TempDir()}
+	if routes, err := worker.readyRoutes(t.Context()); err != nil || len(routes) != 0 || proofs.Load() != 0 {
+		t.Fatalf("idle route poll: %+v, %v, %d proofs", routes, err, proofs.Load())
+	}
+	f.exec(t, `UPDATE spoke_offer SET suppressed = 0`)
 	f.e.nativeWakeRoot, f.e.nativeEnrollment = t.TempDir(), "test-link"
 	f.e.wakeResultReady = make(chan struct{}, 1)
 	f.allowWake = true

@@ -31,7 +31,11 @@ func TestSpokeNativeRouteKeepsCodexAddressLocalAndFenced(t *testing.T) {
 	read := func(boot string, want bool) {
 		t.Helper()
 		if err := f.m.db.View(t.Context(), func(tx store.Tx) error {
-			routes, err := readSpokeNativeRoutes(t.Context(), tx, boot)
+			mono, err := f.e.mono()
+			if err != nil {
+				return err
+			}
+			routes, err := readSpokeNativeRoutes(t.Context(), tx, boot, mono)
 			if err != nil {
 				return err
 			}

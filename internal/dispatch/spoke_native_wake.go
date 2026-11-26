@@ -53,10 +53,14 @@ func (w *spokeWakeWorker) run(ctx context.Context) {
 }
 
 func (w *spokeWakeWorker) readyRoutes(ctx context.Context) ([]link.WakeRoute, error) {
+	mono, err := w.e.mono()
+	if err != nil {
+		return nil, err
+	}
 	var local []spokeNativeRoute
 	if err := w.e.db.View(ctx, func(tx store.Tx) error {
 		var err error
-		local, err = readSpokeNativeRoutes(ctx, tx, w.e.boot)
+		local, err = readSpokeNativeRoutes(ctx, tx, w.e.boot, mono)
 		return err
 	}); err != nil {
 		return nil, err
@@ -188,7 +192,7 @@ func (w *spokeWakeWorker) execute(ctx context.Context, wake link.Wake) error {
 	target.Attempt = "link-" + w.enrollment + "-" + strconv.FormatInt(wake.AttemptID, 10)
 	outcome := publish.NotSubmitted
 	if !w.e.stop.halted.Load() {
-		outcome = (&publisher{}).send(ctx, adapter.Transport().Send, target, line)
+		outcome = (&publisher{}).send(w.dispatcher, adapter.Transport().Send, target, line)
 	}
 	for {
 		shutdown := w.dispatcher.Err() != nil

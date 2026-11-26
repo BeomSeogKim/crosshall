@@ -147,6 +147,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
+	linkAt := time.Now().UnixMilli()
 	for {
 		f, err := r.Read()
 		if errors.Is(err, io.EOF) {
@@ -167,7 +168,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 			}
 			// The device and credential come from this link's
 			// authentication, never from the device's frame.
-			call.Device, call.CredentialGen = session.Device, credentialGen
+			call.Device, call.CredentialGen, call.LinkAtMS = session.Device, credentialGen, linkAt
 			var cmd domain.Command = call
 			if f.Type == linkReceiptFrame {
 				cmd = domain.LinkReceipt{LinkCall: call}

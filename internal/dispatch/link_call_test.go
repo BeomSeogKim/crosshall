@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -48,6 +49,7 @@ type linkReq struct {
 	membership       *core.Membership
 	ack              uint64
 	receipt          bool
+	linkAt           time.Time
 }
 
 func (s *server) link(t *testing.T, r linkReq) core.Result {
@@ -67,11 +69,14 @@ func (s *server) link(t *testing.T, r linkReq) core.Result {
 	if r.epoch == 0 {
 		r.epoch = 1
 	}
+	if r.linkAt.IsZero() {
+		r.linkAt = time.Now()
+	}
 	args, err := json.Marshal(r.args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, Vendor: "claude", Key: r.key,
+	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, LinkAtMS: r.linkAt.UnixMilli(), Vendor: "claude", Key: r.key,
 		LeafGeneration: r.gen, LeafEpoch: r.epoch, Command: r.command, Args: args, OpKey: r.op, Membership: r.membership, Ack: r.ack})
 	if err != nil {
 		t.Fatal(err)
@@ -465,5 +470,46 @@ func TestALinkReceiptNeedsTheCurrentCredential(t *testing.T) {
 	mustLinkCode(t, r, domain.CodeLinkStale)
 	if n := s.count(t, `SELECT COUNT(*) FROM link_fence`); n != 0 {
 		t.Fatalf("a stale lookup fenced")
+	}
+}
+
+// A fence lives longer than any link may carry requests: once the fence's
+// retention has passed, an original held on an old link since before the
+// fence is refused with the link, for a member's command and a first join
+// alike.
+func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
+	if store.RetentionWindow <= domain.LinkSessionLimit+time.Hour {
+		t.Fatalf("retention %v does not outlive a link session %v", store.RetentionWindow, domain.LinkSessionLimit)
+	}
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	old := time.Now().Add(-store.RetentionWindow - time.Hour)
+	note := linkReq{command: domain.VerbNote, args: map[string]any{"all": true, "body": "held"}, op: "n1", membership: m}
+	join := linkReq{key: "k9", command: domain.VerbJoin, args: joinChannel("checkout"), op: "j9"}
+	for _, r := range []linkReq{note, join} {
+		lookup := r
+		lookup.receipt = true
+		mustLinkCode(t, s.link(t, lookup), domain.CodeLinkFenced)
+	}
+	// Retention passes: the fences are gone.
+	if err := s.db.Update(t.Context(), func(tx store.Tx) error {
+		if _, err := tx.ExecContext(t.Context(), `DELETE FROM op WHERE scope = 'link'`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(t.Context(), `DELETE FROM link_fence`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []linkReq{note, join} {
+		r.linkAt = old
+		mustLinkCode(t, s.link(t, r), domain.CodeLinkStale)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM message`); n != 0 {
+		t.Fatalf("a held note ran")
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM device_key WHERE key = 'k9'`); n != 0 {
+		t.Fatalf("a held first join enrolled")
 	}
 }

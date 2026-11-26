@@ -19,14 +19,17 @@ import (
 const VerbLinkCall = "owner link call"
 
 // LinkCall is a member command that a linked device's dispatcher
-// authenticated against its own leaf and forwarded over the link. Device
-// and CredentialGen come from the link's authenticated session, never
-// from the device's frame.
+// authenticated against its own leaf and forwarded over the link. Device,
+// CredentialGen and LinkAtMS come from the link's authenticated session,
+// never from the device's frame.
 type LinkCall struct {
 	Device        string `json:"device"`
 	CredentialGen int64  `json:"credential_gen"`
-	Vendor        string `json:"vendor"`
-	Key           string `json:"key"`
+	// LinkAtMS is when the home accepted the link that carried this
+	// request.
+	LinkAtMS int64  `json:"link_at_ms"`
+	Vendor   string `json:"vendor"`
+	Key      string `json:"key"`
 	// LeafGeneration and LeafEpoch name the device's leaf registration
 	// the command was authenticated against.
 	LeafGeneration string           `json:"leaf_generation"`
@@ -118,7 +121,7 @@ type LinkMember struct {
 // transaction, in order: the link's credential generation, then the
 // device's key and leaf registration. A refusal commits nothing.
 func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time.Time) (LinkMember, *core.Result, error) {
-	if refusal, err := linkCredential(ctx, tx, call); err != nil || refusal != nil {
+	if refusal, err := linkCredential(ctx, tx, call, now); err != nil || refusal != nil {
 		return LinkMember{}, refusal, err
 	}
 	if call.Vendor == "" || call.Key == "" || call.LeafGeneration == "" || call.LeafEpoch <= 0 {

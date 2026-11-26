@@ -47,16 +47,20 @@ type spokeEvents struct {
 	// subscribe asks for one.
 	resumed bool
 	mono    func() (int64, error)
+	// turn is the member commands' turn on the link: a replacement of
+	// everything holds it, so no command leaves with a selection it is
+	// about to drop.
+	turn chan struct{}
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
 // already made the cache ineligible (invalidateEvents).
-func newSpokeEvents(db *store.Store, members string) (*spokeEvents, error) {
+func newSpokeEvents(db *store.Store, members string, turn chan struct{}) (*spokeEvents, error) {
 	boot, err := hostclock.Boot()
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono}, nil
+	return &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono, turn: turn}, nil
 }
 
 // invalidateEvents records that nothing cached may be served until a
@@ -93,6 +97,15 @@ type linkRead struct {
 	at    int64
 	err   error
 }
+
+// offerMode says how an offer meets the one the device holds.
+type offerMode int
+
+const (
+	offerEvent    offerMode = iota // the lease rules of link.Offer
+	offerSnapshot                  // also keep the earlier deadline
+	offerReplace                   // the home went back: take its lease as it is
+)
 
 type snapshotPart struct {
 	link.Snapshot
@@ -399,15 +412,19 @@ func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf, exact bool) error
 		h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.BindingID, s.Membership.Generation, s.RouteEpoch); err != nil {
 		return err
 	}
+	if exact {
+		// A replacement sets the home's selection on the registration of
+		// the scope's generation, whether or not its directory is here.
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ?
+			WHERE vendor = ? AND key = ? AND generation = ?`,
+			s.Membership.BindingID, s.Membership.Generation, h.member.Vendor, h.member.Key, s.LeafGeneration)
+		return err
+	}
 	if h.absent || s.Membership.BindingID == 0 {
 		return nil
 	}
-	newer := `AND membership_gen < ?`
-	if exact {
-		newer = `AND ? >= 0` // a rollback sets the home's selection as it is
-	}
 	_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ?
-		WHERE digest = ? AND file_identity = ? `+newer,
+		WHERE digest = ? AND file_identity = ? AND membership_gen < ?`,
 		s.Membership.BindingID, s.Membership.Generation, h.digest, h.identity, s.Membership.Generation)
 	return err
 }
@@ -448,7 +465,7 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 	err := e.db.Update(ctx, func(tx store.Tx) error {
 		switch {
 		case ev.Kind == link.EventOffer:
-			if err := e.putOffer(ctx, tx, offer, at, false); err != nil {
+			if err := e.putOffer(ctx, tx, offer, at, offerEvent); err != nil {
 				return err
 			}
 		default:
@@ -489,7 +506,7 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 // lease rules of link.Offer. A snapshot keeps the earlier of an offer's
 // two deadlines and its suppression; an event's newer lease epoch starts
 // a fresh deadline.
-func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, at int64, snapshot bool) error {
+func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, at int64, mode offerMode) error {
 	var epoch uint64
 	var deadline int64
 	var boot string
@@ -499,6 +516,9 @@ func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, a
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	if mode == offerReplace {
+		held, epoch = false, 0 // the home's lease as it is now; suppression stays
+	}
 	if held && o.LeaseEpoch < epoch {
 		return nil // an older lease
 	}
@@ -507,7 +527,7 @@ func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, a
 		return err
 	}
 	next := at + min(o.LeaseMS, maxLeaseMS)*int64(time.Millisecond)
-	if held && (snapshot || o.LeaseEpoch == epoch) {
+	if held && (mode == offerSnapshot || o.LeaseEpoch == epoch) {
 		next = min(next, deadline)
 	}
 	body, err := json.Marshal(o)
@@ -550,14 +570,24 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 	// events (it was restored to an older store): its selections replace
 	// the device's even when older, a session it does not list keeps no
 	// selection, and no offer of the newer state is kept.
+	// A replacement that did not finish is done again.
 	var acked uint64
+	var pending bool
 	err := e.db.View(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT acked_seq FROM spoke_event_cursor WHERE id = 1`).Scan(&acked)
+		return tx.QueryRowContext(ctx, `SELECT acked_seq, rebaseline FROM spoke_event_cursor WHERE id = 1`).Scan(&acked, &pending)
 	})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	rollback := seq < acked
+	rollback := seq < acked || pending
+	if rollback && e.turn != nil {
+		select {
+		case e.turn <- struct{}{}:
+			defer func() { <-e.turn }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	held := make([]*heldLeaf, 0, len(members))
 	var omitted []*heldLeaf
 	defer func() {
@@ -585,28 +615,31 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 			link.Member
 			id int64
 		}
-		listed := map[offerKey]bool{}
+		listed := map[offerKey]string{} // the nonce
 		for _, m := range members {
 			for _, o := range m.Offers {
 				if o.Member != m.Member {
 					return errors.New("link: a snapshot offer names another member")
 				}
-				listed[offerKey{o.Member, o.OfferID}] = true
+				listed[offerKey{o.Member, o.OfferID}] = o.Nonce
 			}
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT vendor, key, offer_id, boot FROM spoke_offer`)
+		rows, err := tx.QueryContext(ctx, `SELECT vendor, key, offer_id, boot, json_extract(body, '$.nonce') FROM spoke_offer`)
 		if err != nil {
 			return err
 		}
 		var retired []offerKey
 		for rows.Next() {
 			var k offerKey
-			var boot string
-			if err := rows.Scan(&k.Vendor, &k.Key, &k.id, &boot); err != nil {
+			var boot, nonce string
+			if err := rows.Scan(&k.Vendor, &k.Key, &k.id, &boot, &nonce); err != nil {
 				rows.Close()
 				return err
 			}
-			if boot != e.boot || !listed[k] || rollback {
+			// After a rollback, only the very offer (its nonce) carries
+			// over, with its suppression.
+			want, ok := listed[k]
+			if boot != e.boot || !ok || rollback && want != nonce {
 				retired = append(retired, k)
 			}
 		}
@@ -622,15 +655,19 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_member_scope`); err != nil {
 			return err
 		}
-		for _, h := range omitted {
-			if err := confirm(ctx, tx, h); err != nil {
+		if rollback {
+			// Nothing of the newer history counts: every selection, and
+			// every command answer a retry could adopt one from. The
+			// snapshot's selections follow.
+			if _, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = 0, membership_gen = 0`); err != nil {
 				return err
 			}
-			if h.absent {
-				continue
+			if _, err := tx.ExecContext(ctx, `DELETE FROM link_outbox WHERE state = 'done'`); err != nil {
+				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = 0, membership_gen = 0
-				WHERE digest = ? AND file_identity = ?`, h.digest, h.identity); err != nil {
+		}
+		for _, h := range omitted {
+			if err := confirm(ctx, tx, h); err != nil {
 				return err
 			}
 		}
@@ -639,13 +676,18 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 				return err
 			}
 			for _, o := range m.Offers {
-				if err := e.putOffer(ctx, tx, o, m.at, true); err != nil {
+				mode := offerSnapshot
+				if rollback {
+					mode = offerReplace
+				}
+				if err := e.putOffer(ctx, tx, o, m.at, mode); err != nil {
 					return err
 				}
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO spoke_event_cursor (id, boot, acked_seq, eligible) VALUES (1, ?, ?, 0)
-			ON CONFLICT (id) DO UPDATE SET boot = excluded.boot, acked_seq = excluded.acked_seq, eligible = 0`, e.boot, seq)
+		_, err = tx.ExecContext(ctx, `INSERT INTO spoke_event_cursor (id, boot, acked_seq, eligible, rebaseline) VALUES (1, ?, ?, 0, ?)
+			ON CONFLICT (id) DO UPDATE SET boot = excluded.boot, acked_seq = excluded.acked_seq, eligible = 0,
+				rebaseline = excluded.rebaseline`, e.boot, seq, rollback)
 		return err
 	})
 	if err != nil {
@@ -665,7 +707,7 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 	}
 	// The cache counts only once every stamp is out, the leaves still held.
 	err = e.db.Update(ctx, func(tx store.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 1 WHERE id = 1 AND acked_seq = ?`, seq)
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 1, rebaseline = 0 WHERE id = 1 AND acked_seq = ?`, seq)
 		return err
 	})
 	return cuts, err

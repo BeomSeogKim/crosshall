@@ -340,7 +340,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 - An idle session with an available publish route can wake for a notice. Built-in Codex idle-wake evidence covers managed daemon mode on macOS and Linux, both arm64 and amd64. When a session has no notice route, it sees new requests at its next crosshall command or adapter prompt.
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
 - A Claude Code version other than the tested one, on the same platform and mode, runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
-- One machine and one user.
+- One user, and one machine keeps the hall. Sessions on a second machine can join it through an experimental SSH link: see [linking a second device](docs/linking.md).
 - One channel per session.
 - Agents keep the rules because they read them. crosshall records what happened, but it cannot make an agent answer.
 - The database can change between releases; an upgrade migrates it and keeps a backup. See [upgrading](UPGRADING.md).
@@ -348,7 +348,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 ## Learn more
 
 - [PROTOCOL.md](PROTOCOL.md): the member rules, the guarantees, and a shell-only conformance run. [CONFORMANCE.md](CONFORMANCE.md): the recorded runs.
-- [Adapters](docs/adapters.md), [waiting](docs/waiting.md) and [operations](docs/operations.md).
+- [Adapters](docs/adapters.md), [waiting](docs/waiting.md), [operations](docs/operations.md) and [linking a second device](docs/linking.md) (experimental).
 - [Upgrading](UPGRADING.md) and the [changelog](CHANGELOG.md).
 
 ## Contributing

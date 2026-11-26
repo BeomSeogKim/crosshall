@@ -17,12 +17,50 @@ const WaitRunning = "its wait is running"
 // count as running. A wait polls at most one second apart.
 const waitFresh = 3 * time.Second
 
+const waitBaselineLimit = 256
+
 // waitPresence remembers, in memory only, each binding's last wait poll that
 // left its wait running. A dispatcher restart ends every wait, so nothing is
 // stored.
 type waitPresence struct {
-	mu    sync.Mutex
-	polls map[int64]waitPoll
+	mu        sync.Mutex
+	polls     map[int64]waitPoll
+	baselines map[waitInvocation]waitBaseline
+	order     [waitBaselineLimit]waitInvocation
+	next      int
+}
+
+type waitInvocation struct {
+	principal int64
+	id        string
+}
+
+type waitBaseline struct {
+	cursor      WaitCursor
+	fingerprint string
+	mode        Wait
+}
+
+func (w *waitPresence) baseline(invocation waitInvocation) (waitBaseline, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	baseline, found := w.baselines[invocation]
+	return baseline, found
+}
+
+func (w *waitPresence) rememberBaseline(invocation waitInvocation, baseline waitBaseline) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.baselines == nil {
+		w.baselines = make(map[waitInvocation]waitBaseline)
+	}
+	if _, found := w.baselines[invocation]; found {
+		return
+	}
+	delete(w.baselines, w.order[w.next])
+	w.baselines[invocation] = baseline
+	w.order[w.next] = invocation
+	w.next = (w.next + 1) % len(w.order)
 }
 
 type waitPoll struct {

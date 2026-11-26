@@ -642,7 +642,7 @@ func TestASpokeWaitPollIsObservational(t *testing.T) {
 	defer unlock()
 	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
 	done := make(chan core.Result, 1)
-	go func() { done <- f.sendArgs(t, domain.VerbWait, "spool-key", `{"work_only":true}`, 2*time.Second) }()
+	go func() { done <- f.sendArgs(t, domain.VerbWait, wire.NewID(), `{"work_only":true}`, 2*time.Second) }()
 	select {
 	case r := <-done:
 		if r.Status != core.ExitOK {
@@ -670,5 +670,33 @@ func TestASpokeWaitPollIsObservational(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 {
 		t.Fatalf("%d journal rows after a lost poll", n)
+	}
+}
+
+func TestASpokeForwardsAnInitialWaitWithoutJournalingIt(t *testing.T) {
+	f := newSpokeFixture(t)
+	fake := newFakeLink()
+	f.m.attach(fake)
+	key := wire.WaitAttemptPrefix + wire.NewID()
+	close(fake.answers)
+	if r := f.sendArgs(t, domain.VerbWait, key, `{}`, 2*time.Second); r.Code != core.CodeOutcomeUnknown {
+		t.Fatalf("an initial wait sent without an answer: %+v", r)
+	}
+	if len(fake.written) != 1 || fake.written[0].OpKey != key || fake.written[0].Ack != 0 {
+		t.Fatalf("forwarded %+v", fake.written)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 {
+		t.Fatalf("%d journal rows after an initial wait", n)
+	}
+}
+
+func TestASpokeRefusesAnUnconfirmedInitialWaitRetry(t *testing.T) {
+	f := newSpokeFixture(t)
+	fake := newFakeLink()
+	f.m.attach(fake)
+	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"cursor":{"binding_id":4,"message_id":9}}`)})
+	key := wire.WaitRetryPrefix + wire.NewID()
+	if r := f.sendArgs(t, domain.VerbWait, key, `{}`, 2*time.Second); r.Code != domain.CodeWaitCursorInvalidated {
+		t.Fatalf("an older home silently rebased the wait: %+v", r)
 	}
 }

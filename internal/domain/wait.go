@@ -11,6 +11,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 const (
@@ -41,22 +42,33 @@ type WaitSnapshot struct {
 	// Older dispatchers strictly decode wait requests, so fingerprints stay in replies.
 	CursorFingerprint      string `json:"cursor_fingerprint,omitempty"`
 	PriorCursorFingerprint string `json:"prior_cursor_fingerprint,omitempty"`
+	InitialCursorRecovered bool   `json:"initial_cursor_recovered,omitempty"`
 	InboxResult
 	*MemberInboxSummary
 }
 
-// waitSnapshot also records in waits whether the caller's wait keeps
-// running: it does unless the snapshot holds something that ends it. A
-// linked device's first poll can lose its answer on the way back, and its
-// retry would take a newer baseline: its wait counts as running only once
-// a poll carries a cursor, proof that the client holds its baseline
-// (Sol #3693).
-func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, linked bool, now time.Time) (core.Result, error) {
-	result, poll, err := s.waitSnapshotOf(ctx, tx, caller, cmd, now)
+func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, linked bool, key string, now time.Time) (core.Result, error) {
+	var attempt waitInvocation
+	var baseline *waitBaseline
+	if linked && caller.Role == core.RoleMember && caller.PrincipalID != nil && cmd.Cursor == nil {
+		if id, retry := wire.WaitAttempt(key); id != "" {
+			attempt = waitInvocation{principal: *caller.PrincipalID, id: id}
+			if prior, found := s.waits.baseline(attempt); found && prior.mode == cmd {
+				baseline = &prior
+			} else if found || retry {
+				return waitFailure(core.ExitRefused, CodeWaitCursorInvalidated, "the initial wait cursor is unavailable", "crosshall inbox", nil)
+			}
+		}
+	}
+	result, poll, err := s.waitSnapshotOf(ctx, tx, caller, cmd, baseline, now)
 	switch {
 	case err != nil || poll.cursor.BindingID == 0:
 	case linked && cmd.Cursor == nil:
-		s.waits.forget(poll.cursor.BindingID) // a new baseline: no earlier poll vouches for it
+		// Do not report presence until the linked client has the cursor.
+		s.waits.forget(poll.cursor.BindingID)
+		if attempt.id != "" && baseline == nil {
+			s.waits.rememberBaseline(attempt, waitBaseline{cursor: poll.cursor, fingerprint: poll.fingerprint, mode: cmd})
+		}
 	case poll.ends:
 		s.waits.forget(poll.cursor.BindingID)
 	default:
@@ -68,11 +80,12 @@ func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Cal
 // snapshotPoll names the binding a successful snapshot answered, zero for a
 // refusal, and whether the snapshot ends the wait.
 type snapshotPoll struct {
-	cursor WaitCursor
-	ends   bool
+	cursor      WaitCursor
+	fingerprint string
+	ends        bool
 }
 
-func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, snapshotPoll, error) {
+func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, baseline *waitBaseline, now time.Time) (core.Result, snapshotPoll, error) {
 	if caller.Role != core.RoleMember {
 		return notEnrolled(), snapshotPoll{}, nil
 	}
@@ -83,8 +96,12 @@ func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.C
 	if !ok {
 		return notEnrolled(), snapshotPoll{}, nil
 	}
-	if cmd.Cursor != nil && (cmd.Cursor.BindingID != member.binding ||
-		cmd.Cursor.Generation != member.generation && (cmd.Cursor.Generation != 0 || member.generation > 1)) {
+	cursor := cmd.Cursor
+	if baseline != nil {
+		cursor = &baseline.cursor
+	}
+	if cursor != nil && (cursor.BindingID != member.binding ||
+		cursor.Generation != member.generation && (cursor.Generation != 0 || member.generation > 1)) {
 		return noPoll(waitFailure(core.ExitRefused, core.CodeDeparted, "membership changed while waiting", "run crosshall wait again", nil))
 	}
 	summary, err := memberInboxSummary(ctx, tx, member.principal, member.channel)
@@ -108,10 +125,14 @@ func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.C
 		InboxResult:        InboxResult{Unread: []InboxItem{}, Owed: []InboxItem{}, Delivers: delivers, AtNextPrompt: atPrompt},
 		MemberInboxSummary: &summary,
 	}
-	// Message IDs increase across channels. Use the indexed high-water mark
-	// so empty polls do not repeatedly scan other channels' messages.
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&out.Cursor.MessageID); err != nil {
-		return core.Result{}, snapshotPoll{}, err
+	if baseline != nil {
+		out.Cursor = baseline.cursor
+		out.InitialCursorRecovered = true
+	} else {
+		// Use the indexed high-water mark without scanning other channels.
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM message`).Scan(&out.Cursor.MessageID); err != nil {
+			return core.Result{}, snapshotPoll{}, err
+		}
 	}
 	if cmd.Cursor != nil && cmd.Cursor.MessageID > out.Cursor.MessageID {
 		return noPoll(WaitCursorInvalidated(&summary))
@@ -119,6 +140,9 @@ func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.C
 	out.CursorFingerprint, err = waitMessageFingerprint(ctx, tx, out.Cursor.MessageID)
 	if err != nil {
 		return core.Result{}, snapshotPoll{}, err
+	}
+	if baseline != nil && out.CursorFingerprint != baseline.fingerprint {
+		return noPoll(WaitCursorInvalidated(&summary))
 	}
 	if cmd.Cursor == nil {
 		if cmd.Existing {
@@ -179,7 +203,7 @@ func (s *Service) waitSnapshotOf(ctx context.Context, tx store.Tx, caller core.C
 // wait.
 func (out WaitSnapshot) polled() (core.Result, snapshotPoll, error) {
 	r, err := OK(out)
-	return r, snapshotPoll{cursor: out.Cursor, ends: len(out.Unread) != 0}, err
+	return r, snapshotPoll{cursor: out.Cursor, fingerprint: out.CursorFingerprint, ends: len(out.Unread) != 0}, err
 }
 
 func noPoll(r core.Result, err error) (core.Result, snapshotPoll, error) {

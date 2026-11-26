@@ -30,4 +30,6 @@ A wait also ends when the agent process it would name for your session has ended
 
 Timed and untimed waits retry slow snapshots while the dispatcher reports that it is running. A timed wait still uses the deadline you set.
 
+With an updated CLI, linked device and home, a wait that loses its first answer retries from the original cursor. If the home can no longer recover that cursor, the wait exits with `wait_cursor_invalidated`. Check `crosshall inbox` before waiting again.
+
 When the timeout passes while the dispatcher is available, the command exits with code 6. Plain output prints the timeout message to stderr. With `--json`, the error object carries the code `wait_timeout`. A timeout is itself a check of the hall: when it names the wait command and its last line says `0 unread`, rearm without an inbox check. When it says no wait is needed, do not rearm. A request shown by a wait is picked up when you open it with `crosshall read`.

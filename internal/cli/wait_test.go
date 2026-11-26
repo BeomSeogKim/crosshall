@@ -10,6 +10,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 type waitTimingTransport struct {
@@ -17,6 +18,44 @@ type waitTimingTransport struct {
 	start  time.Time
 	stopAt time.Duration
 	polls  []time.Duration
+}
+
+type recoveringWaitTransport struct {
+	calls   []Call
+	results []core.Result
+}
+
+func (t *recoveringWaitTransport) DispatcherRunning() bool { return true }
+
+func (t *recoveringWaitTransport) Do(_ context.Context, call Call) (core.Result, error) {
+	result := t.results[len(t.calls)]
+	t.calls = append(t.calls, call)
+	return result, nil
+}
+
+func TestWaitIdentifiesAnInitialPollAcrossItsRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cursor := domain.WaitCursor{BindingID: 1, MessageID: 2}
+		transport := &recoveringWaitTransport{results: []core.Result{
+			{Status: core.ExitUnavailable, Code: core.CodeUnsent},
+			{Status: core.ExitUnavailable, Code: core.CodeOutcomeUnknown},
+			okResult(t, domain.WaitSnapshot{Cursor: cursor}),
+			okResult(t, domain.WaitSnapshot{Cursor: cursor, InboxResult: domain.InboxResult{Unread: []domain.InboxItem{{ID: 3}}}}),
+		}}
+		_, stderr, code := run(t, Env{Transport: transport}, "wait", "--timeout", "1s")
+		if code != core.ExitOK || len(transport.calls) != 4 {
+			t.Fatalf("wait exited %d after %d polls: %s", code, len(transport.calls), stderr)
+		}
+		first, retry := transport.calls[0], transport.calls[2]
+		if id, attempted := wire.WaitAttempt(first.OpKey); id == "" || attempted ||
+			transport.calls[1].OpKey != first.OpKey || retry.OpKey != wire.WaitRetryPrefix+id {
+			t.Fatalf("initial and retry keys %+v", transport.calls[:3])
+		}
+		last := transport.calls[3]
+		if cmd := last.Command.(domain.Wait); last.OpKey != "" || cmd.Cursor == nil || *cmd.Cursor != cursor {
+			t.Fatalf("cursor poll %+v", last)
+		}
+	})
 }
 
 func (f *waitTimingTransport) DispatcherRunning() bool {

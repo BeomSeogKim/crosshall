@@ -459,12 +459,17 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 	if req.Verb == domain.VerbJoin {
 		req.Args = withoutLocalLaunch(req.Args)
 	}
-	// A wait poll is a read-only snapshot: it is not journaled (the spool
-	// gave it a fresh key, and a poll a second runs all day), changes no
-	// selection, and a lost answer is just a poll to make again.
+	// A wait poll is a read-only snapshot. Its initial poll can carry
+	// an invocation ID without entering the command journal.
 	observe := req.Verb == domain.VerbWait && !retried
+	var retryInitialWait bool
 	if observe {
-		req.OpKey, req.Ack = "", 0
+		req.Ack = 0
+		id, retry := wire.WaitAttempt(req.OpKey)
+		retryInitialWait = retry
+		if id == "" {
+			req.OpKey = ""
+		}
 	}
 	deadline := time.UnixMilli(req.ExpiresAtMS)
 	unsent := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
@@ -486,7 +491,7 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 		var err error
 		leaf, err = ident.ResolveSpokeMember(ctx, tx, m.members, ident.Ingress{Path: path, Dir: dir},
 			ident.Proof{KeyDigest: req.KeyDigest, Generation: req.Generation})
-		if err != nil || req.OpKey == "" {
+		if err != nil || observe || req.OpKey == "" {
 			return err
 		}
 		rec, err = recordOutbox(ctx, tx, leaf, req)
@@ -535,7 +540,7 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 			"crosshall retry "+req.OpKey+" shows what the hall did with the original"), nil
 	case rec.answer != nil:
 		return *rec.answer, nil
-	case !rec.fresh && req.OpKey != "":
+	case !observe && !rec.fresh && req.OpKey != "":
 		// The same request, still unresolved: look it up, never resend.
 		call.Command, call.Args, call.Membership = rec.command, rec.args, rec.membership
 		answer, err := m.roundTrip(ctx, conn, "receipt", call, deadline)
@@ -555,7 +560,16 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
 	if observe {
 		if err != nil {
-			return unsent, nil // the CLI polls again
+			if req.OpKey != "" && !errors.Is(err, errNotSent) {
+				return domain.Fail(core.ExitUnavailable, core.CodeOutcomeUnknown, "the link ended before the initial wait answer", ""), nil
+			}
+			return unsent, nil
+		}
+		if retryInitialWait && result.Status == core.ExitOK {
+			var snapshot domain.WaitSnapshot
+			if err := json.Unmarshal(result.Data, &snapshot); err != nil || !snapshot.InitialCursorRecovered {
+				return domain.WaitCursorInvalidated(nil)
+			}
 		}
 		return result, nil
 	}

@@ -291,14 +291,36 @@ func nativeCrossVendorNotice(vendor string, messageID func(context.Context) (int
 
 func assertCrossVendorNativeDelivery(t *testing.T, db *sql.DB, member *crossVendorSession, id int64) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	vendor := member.model.vendor
 	var attempts, observed int
-	codexMust(t, db.QueryRowContext(t.Context(), `SELECT COUNT(*),
-		COALESCE(SUM(a.state = 'submitted' AND a.observation = 'own_turn' AND a.observed_at_ms IS NOT NULL), 0)
-		FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
-		WHERE a.adapter = ? AND a.session_ref = ? AND i.message_id = ?`,
-		member.model.vendor, member.id, id).Scan(&attempts, &observed))
-	if attempts != 1 || observed != 1 {
-		t.Fatalf("%s native message #%d: %d attempts and %d submitted own turns, want one each",
-			member.model.vendor, id, attempts, observed)
+	var state, observation, observedAt, unknownCause string
+	for {
+		err := db.QueryRowContext(ctx, `SELECT COUNT(*),
+			COALESCE(SUM(a.state = 'submitted' AND a.observation = 'own_turn' AND a.observed_at_ms IS NOT NULL), 0),
+			COALESCE(MAX(a.state), ''), COALESCE(MAX(a.observation), ''),
+			COALESCE(CAST(MAX(a.observed_at_ms) AS TEXT), 'null'), COALESCE(MAX(a.unknown_cause), '')
+			FROM publish_attempt a JOIN publish_attempt_item i ON i.attempt_id = a.id
+			WHERE a.adapter = ? AND a.session_ref = ? AND i.message_id = ?`,
+			vendor, member.id, id).Scan(&attempts, &observed, &state, &observation, &observedAt, &unknownCause)
+		if err == nil {
+			if attempts > 1 {
+				t.Fatalf("%s native message #%d: %d attempts, want exactly one", vendor, id, attempts)
+			}
+			if attempts == 1 && observed == 1 {
+				return
+			}
+		} else if ctx.Err() == nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("%s native message #%d: %d attempts and %d submitted own turns, want one each (state %q, observation %q, observed_at_ms %s, unknown cause %q): %v",
+				vendor, id, attempts, observed, state, observation, observedAt, unknownCause, fmt.Sprintf("%v (last query error: %v)", ctx.Err(), err))
+		}
 	}
 }

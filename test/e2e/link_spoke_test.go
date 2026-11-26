@@ -94,7 +94,7 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	waitSpokeLink(t, spoke, "connected")
 	flapAt := time.Now()
 	second := killSpokeSSH(t, f.ssh)
-	if second == first {
+	if overlaps(first, second) {
 		t.Fatal("the spoke did not start another SSH child")
 	}
 	waitSpokeLink(t, spoke, "disconnected")
@@ -102,13 +102,9 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if delay := time.Since(flapAt); delay < 2*time.Second {
 		t.Fatalf("the short-lived connection reset reconnect backoff: %v", delay)
 	}
-	next := spokeLinkSSHPID(t, f.ssh)
-	if next == second {
+	next := liveSpokeSSH(t, f.ssh)
+	if len(next) == 0 || overlaps(next, second) {
 		t.Fatal("the spoke did not start another SSH child")
-	}
-	reconnected, err := proc.StartOf(next)
-	if err != nil {
-		t.Fatal(err)
 	}
 
 	// After reconnecting, a keyed command reaches the home again.
@@ -116,8 +112,10 @@ func TestSpokeLinkRealHome(t *testing.T) {
 
 	spoke.must("unlink")
 	waitSpokeLink(t, spoke, "unlinked")
-	if proc.ProcessAlive(int64(next), reconnected.Identity) {
-		t.Fatal("unlink left its SSH child active")
+	for pid, start := range next {
+		if proc.ProcessAlive(int64(pid), start.Identity) {
+			t.Fatal("unlink left its SSH child active")
+		}
 	}
 	member.must("who")
 	if got := f.spoke.member().run("join", "wrong-device"); got.obj["code"] != "not_found" {
@@ -142,28 +140,47 @@ func waitSpokeLink(t *testing.T, spoke *participant, state string) {
 	}
 }
 
-func spokeLinkSSHPID(t *testing.T, ssh string) int {
+// liveSpokeSSH lists the fixture SSH children alive now: the command
+// connection and the event stream each have one.
+func liveSpokeSSH(t *testing.T, ssh string) map[int]proc.Start {
 	t.Helper()
-	data, err := os.ReadFile(ssh + ".pid")
+	data, err := os.ReadFile(ssh + ".pids")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 1 {
-		t.Fatalf("invalid SSH fixture PID: %q", data)
+	live := map[int]proc.Start{}
+	for _, field := range strings.Fields(string(data)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil || pid <= 1 {
+			t.Fatalf("invalid SSH fixture PID: %q", field)
+		}
+		if start, err := proc.StartOf(pid); err == nil && proc.ProcessAlive(int64(pid), start.Identity) {
+			live[pid] = start
+		}
 	}
-	return pid
+	return live
 }
 
-func killSpokeSSH(t *testing.T, ssh string) int {
+// killSpokeSSH kills every live fixture SSH child.
+func killSpokeSSH(t *testing.T, ssh string) map[int]proc.Start {
 	t.Helper()
-	pid := spokeLinkSSHPID(t, ssh)
-	start, err := proc.StartOf(pid)
-	if err != nil || !proc.ProcessAlive(int64(pid), start.Identity) {
-		t.Fatalf("fixture SSH child %d is not active: %v", pid, err)
+	live := liveSpokeSSH(t, ssh)
+	if len(live) == 0 {
+		t.Fatal("no fixture SSH child is active")
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
+	for pid := range live {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return pid
+	return live
+}
+
+func overlaps(a, b map[int]proc.Start) bool {
+	for pid, start := range a {
+		if other, ok := b[pid]; ok && other.Identity == start.Identity {
+			return true
+		}
+	}
+	return false
 }

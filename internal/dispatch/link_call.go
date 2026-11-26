@@ -64,8 +64,24 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 		}
 	}
 	// Admission for every caller: an unknown key joins only with an empty
-	// selection.
-	if !matchesMembership(call.Membership, caller.Membership) {
+	// selection. The first call of a key after its device enrolled again
+	// may come without a stamp (a fresh device store, #400): it is
+	// admitted against the home's selection, once; a stamp it does carry
+	// must still match.
+	stamp := call.Membership
+	if stamp == nil && member.Reenrolled {
+		stamp = caller.Membership
+		if selected := caller.Membership; selected != nil {
+			// The bootstrap is spent on this call whatever its outcome:
+			// a refusal too carries the selection for the device to stamp.
+			defer func() {
+				if err == nil && result.Membership == nil {
+					result.Membership = selected
+				}
+			}()
+		}
+	}
+	if !matchesMembership(stamp, caller.Membership) {
 		return membershipChanged(wire.Request{Membership: call.Membership}), true, nil
 	}
 	if linkOpVerbs[call.Command] && call.OpKey == "" {
@@ -115,7 +131,7 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 			}
 			// As native ingress: a join that changes a selected member's
 			// channel needs the selection it was issued under.
-			if call.Command == domain.VerbJoin && call.Membership == nil && caller.Membership != nil &&
+			if call.Command == domain.VerbJoin && stamp == nil && caller.Membership != nil &&
 				caller.Membership.BindingID != 0 && selected.BindingID != caller.Membership.BindingID {
 				return undo(domain.Fail(core.ExitRefused, core.CodeBindingChanged, "moving channels requires a current membership selection",
 					"update crosshall on the linked device or retry the command once the link is ready"))
@@ -169,6 +185,25 @@ func (s *server) linkReceipt(ctx context.Context, tx store.Tx, req wire.Request)
 	}
 	if result.Code == domain.CodeLinkStale || result.Status == core.ExitUsage {
 		return result, false, nil
+	}
+	if lookup.Membership == nil && result.Membership == nil {
+		// A lost answer to a call without a stamp (the first after its
+		// device enrolled again) may have been the device's only way to
+		// learn its selection: the lookup hands over the key's current
+		// one, read only.
+		principal, err := domain.LinkMemberPrincipal(ctx, tx, lookup.LinkCall)
+		if err != nil {
+			return core.Result{}, false, err
+		}
+		if principal != 0 {
+			selected, err := domain.SelectedMembership(ctx, tx, principal)
+			if err != nil {
+				return core.Result{}, false, err
+			}
+			if selected.BindingID != 0 {
+				result.Membership = &selected
+			}
+		}
 	}
 	return fitLinkResult(result), true, nil
 }

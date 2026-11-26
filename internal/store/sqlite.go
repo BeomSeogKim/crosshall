@@ -133,8 +133,11 @@ var spokeSchema string
 //go:embed migrations/spoke/002_retry.sql
 var spokeRetrySchema string
 
+//go:embed migrations/spoke/003_events.sql
+var spokeEventsSchema string
+
 // spokeMigrations is the schema of a linked device's spoke store.
-var spokeMigrations = []string{spokeSchema, spokeRetrySchema}
+var spokeMigrations = []string{spokeSchema, spokeRetrySchema, spokeEventsSchema}
 
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,

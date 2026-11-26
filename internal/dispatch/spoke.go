@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -35,11 +36,17 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 
 	var instance [16]byte
 	rand.Read(instance[:])
+	consumeEnrollment(state, linked)
 	members, err := openSpokeMembers(ctx, state, cfg.StateRoot, linked)
 	if err != nil {
 		return err
 	}
 	defer members.db.Close()
+	// What the event stream cached counts again only after this process
+	// applies a snapshot.
+	if err := invalidateEvents(ctx, members.db); err != nil {
+		return err
+	}
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
 	ready.Hello = nil
 	ready.Spoke = linked.Target
@@ -55,9 +62,15 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 		defer close(workerDone)
 		s.reconnectSpoke(ctx, linked)
 	}()
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		s.reconnectEvents(ctx, linked)
+	}()
 	defer func() {
 		cancel()
 		<-workerDone
+		<-eventsDone
 	}()
 
 	tick := time.NewTicker(100 * time.Millisecond)
@@ -152,6 +165,14 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 	spoke := cfg.spoke(s.cfg.Version)
 	backoff := time.Second
 	for ctx.Err() == nil {
+		if s.spokeMembers.halted.Load() {
+			// Commands refuse until crosshall link runs again; the home
+			// is not dialed meanwhile.
+			status.Error = "the home device was restored from an older state; run crosshall link " + cfg.Target + " again"
+			publish("disconnected")
+			<-ctx.Done()
+			return
+		}
 		publish("connecting")
 		started := time.Now()
 		connection, err := link.DialSSH(ctx, cfg.Endpoint, spoke)
@@ -184,6 +205,70 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 			return
 		case <-time.After(backoff):
 			backoff = min(2*backoff, time.Minute)
+		}
+	}
+}
+
+// reconnectEvents keeps the home's event stream on a connection of its
+// own (#400, design 12j), so the command connection stays a plain call
+// and result exchange. A home that serves no events is asked again rarely.
+func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
+	events, err := newSpokeEvents(s.spokeMembers)
+	if err != nil {
+		log.Printf("dispatcher: the event stream is off: %v", err)
+		return
+	}
+	spoke := cfg.spoke(s.cfg.Version)
+	spoke.Caps = []string{link.CapEvents}
+	backoff := time.Second
+	for ctx.Err() == nil {
+		if s.spokeMembers.halted.Load() {
+			// Until crosshall link runs again; the stop is recorded until
+			// a write holds.
+			for wait := time.Second; events.persistStop(ctx) != nil; wait = min(2*wait, time.Minute) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
+			return
+		}
+		limit := time.Minute
+		connection, err := link.DialSSH(ctx, cfg.Endpoint, spoke)
+		if err == nil {
+			started := time.Now()
+			if slices.Contains(connection.Caps, link.CapEvents) {
+				err = events.run(ctx, sshSpokeConn{connection})
+			} else {
+				err, limit = errors.New("the home serves no event stream"), 10*time.Minute
+			}
+			connection.Close()
+			_ = connection.Wait()
+			if time.Since(started) >= 30*time.Second {
+				backoff = time.Second
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errHomeRolledBack) {
+			if err != errHomeRolledBack {
+				log.Printf("dispatcher: event stream: %v", err)
+			}
+			continue
+		}
+		if err != nil && !errors.Is(err, errEventGap) {
+			log.Printf("dispatcher: event stream: %v", err)
+		}
+		if errors.Is(err, errEventGap) {
+			continue // resubscribe at once, for a snapshot
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+			backoff = min(2*backoff, limit)
 		}
 	}
 }

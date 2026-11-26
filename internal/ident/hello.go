@@ -174,12 +174,32 @@ func (reg Registration) stageName() string { return ".register-" + reg.digest }
 // Publish installs the committed directory and generation before the hello reply.
 // Repeating it also completes publication interrupted by a dispatcher restart.
 func (reg Registration) Publish() error {
+	leaf, err := reg.publishLeaf()
+	if err != nil {
+		return err
+	}
+	defer leaf.Close()
+	return RepublishMembership(leaf, reg.membership)
+}
+
+// PublishLeaf publishes the registration as Publish does except for the
+// membership stamp, which a linked device publishes under the leaf's
+// publish lock from a fresh read (#400).
+func (reg Registration) PublishLeaf() error {
+	leaf, err := reg.publishLeaf()
+	if err == nil {
+		leaf.Close()
+	}
+	return err
+}
+
+func (reg Registration) publishLeaf() (*os.Root, error) {
 	if !validRoute(reg.generation) || len(reg.digest) != 64 {
-		return fmt.Errorf("invalid directory registration")
+		return nil, fmt.Errorf("invalid directory registration")
 	}
 	members, err := openMembers(reg.rendezvous)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer members.Close()
 	leafName := reg.digest[:16]
@@ -189,9 +209,16 @@ func (reg Registration) Publish() error {
 		leaf, err = OpenPrivateChild(members, reg.stageName())
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer leaf.Close()
+	if err := reg.publishInto(members, leaf, leafName, staging); err != nil {
+		leaf.Close()
+		return nil, err
+	}
+	return leaf, nil
+}
+
+func (reg Registration) publishInto(members, leaf *os.Root, leafName string, staging bool) error {
 	identity, err := FileIdentity(leaf)
 	if err != nil {
 		return err
@@ -209,10 +236,7 @@ func (reg Registration) Publish() error {
 			return err
 		}
 	}
-	if err := publishGeneration(leaf, reg.generation, true); err != nil {
-		return err
-	}
-	return RepublishMembership(leaf, reg.membership)
+	return publishGeneration(leaf, reg.generation, true)
 }
 
 func publishMetadata(leaf *os.Root, name, value string) error {

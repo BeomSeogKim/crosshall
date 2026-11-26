@@ -336,6 +336,10 @@ func (c *sshChild) close() { _ = c.cmd.Cancel() }
 
 func (c *sshChild) wait() error {
 	err := c.cmd.Wait()
+	// The parent ends are this process's own pipes: cmd.Wait closes only
+	// the child's.
+	_ = c.stdin.Close()
+	_ = c.stdout.Close()
 	if c.ctx.Err() != nil {
 		return c.ctx.Err()
 	}

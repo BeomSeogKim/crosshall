@@ -29,9 +29,13 @@ type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
 	// hooks says the hook outbox has frames to send (#400, 12k);
-	// hooksQueued, that the drain pass in progress queued some.
+	// hooksQueued, that the drain pass in progress queued some; released,
+	// the last outbox row a finished pass queued (see endHookPass);
+	// passed, that this process finished a pass (the drain's own).
 	hooks       chan struct{}
 	hooksQueued atomic.Bool
+	released    atomic.Int64
+	passed      bool
 	// mono is the clock offer leases are kept on; nil is hostclock.Mono.
 	mono func() (int64, error)
 	// halted is set once the home was restored to an older store: no
@@ -345,11 +349,13 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		}))
 		dir.Close()
 	}
-	// A pass's hook frames go out together, so a leaf's are sent in the
-	// order of their publish sequence even when the drain ordered them by
-	// time.
-	if m.hooksQueued.Swap(false) {
-		s.spokeHookQueued()
+	if m.hooksQueued.Swap(false) || !m.passed {
+		if err := s.endHookPass(ctx); err != nil {
+			m.hooksQueued.Store(true)
+			s.logFailure(err)
+		} else {
+			m.passed = true
+		}
 	}
 }
 

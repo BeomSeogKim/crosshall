@@ -55,6 +55,11 @@ func publishHookRequest(ctx context.Context, leaf, in *os.Root, req wire.Request
 		if err != nil {
 			return err
 		}
+		// The request was prepared for the membership it pins; a stamp
+		// that changed before this lock is another membership's turn.
+		if req.Membership != nil && (capture.Membership == nil || *capture.Membership != *req.Membership) {
+			return errors.New("membership changed before hook publication")
+		}
 		req.Capture = &capture
 	}
 	data, err := json.Marshal(req)

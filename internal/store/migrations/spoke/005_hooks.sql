@@ -8,11 +8,15 @@ CREATE TABLE spoke_policy (
     epoch INTEGER NOT NULL CHECK (epoch >= 0)
 );
 
--- One row per Fact or Written, by the ID the home records it under; the
--- body is the frame without its ID. A row goes once the home answered it.
--- They go out per leaf in the order of their leaf publish sequence.
+-- One row per Fact or Written; the body is the frame without its ID. The
+-- home records it under frame_id, derived from the member, leaf
+-- generation and publish sequence, so a packet processed again gets the
+-- same ID and the home's stored outcome. A row goes once the home
+-- answered it. They go out per leaf in the order of their publish
+-- sequence.
 CREATE TABLE spoke_hook_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    frame_id INTEGER NOT NULL UNIQUE CHECK (frame_id > 0),
     vendor TEXT NOT NULL,
     key TEXT NOT NULL,
     leaf_seq INTEGER NOT NULL CHECK (leaf_seq > 0),

@@ -46,17 +46,21 @@ func stampLeaf(ctx context.Context, db *store.Store, rendezvous, vendor, key str
 }
 
 // stampLocked writes the stamp of the registration (digest, identity) into
-// dir, whose publish lock the caller holds at leaf publish sequence seq,
-// and records seq when the stamp changes: hooks published after seq carry
-// it. A directory or registration that changed meanwhile is left alone.
+// dir, whose publish lock the caller holds at leaf publish sequence seq.
+// Where the stamp changes is recorded before the file changes: hooks
+// published after seq carry it. A boundary recorded for a file that was
+// never written (the process stopped between the two) moves to where the
+// file does change. A directory or registration that changed meanwhile is
+// left alone.
 func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, identity string, seq uint64) error {
 	if got, err := ident.FileIdentity(dir); err != nil || got != identity {
 		return err
 	}
-	var m core.Membership
+	var m, recorded core.Membership
 	err := db.View(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE digest = ? AND file_identity = ?`,
-			digest, identity).Scan(&m.BindingID, &m.Generation)
+		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen, stamp_binding, stamp_gen FROM spoke_leaf
+			WHERE digest = ? AND file_identity = ?`, digest, identity).
+			Scan(&m.BindingID, &m.Generation, &recorded.BindingID, &recorded.Generation)
 	})
 	if errors.Is(err, sql.ErrNoRows) || err == nil && m.Generation == 0 {
 		return nil
@@ -64,15 +68,17 @@ func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, ide
 	if err != nil {
 		return err
 	}
-	if current, err := ident.LookupMembership(dir); err == nil && current != nil && *current == m {
+	current, err := ident.LookupMembership(dir) // an unreadable stamp is written again
+	written := err == nil && current != nil && *current == m
+	if written && recorded == m {
 		return nil
 	}
-	if err := ident.RepublishMembership(dir, m); err != nil {
-		return err
-	}
-	return db.Update(ctx, func(tx store.Tx) error {
+	if err := db.Update(ctx, func(tx store.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET stamp_binding = ?, stamp_gen = ?, stamp_seq = ?
 			WHERE digest = ? AND file_identity = ?`, m.BindingID, m.Generation, seq, digest, identity)
 		return err
-	})
+	}); err != nil || written {
+		return err
+	}
+	return ident.RepublishMembership(dir, m)
 }

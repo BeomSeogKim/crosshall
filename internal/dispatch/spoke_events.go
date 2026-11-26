@@ -399,14 +399,20 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 				if err := json.Unmarshal(r.frame.Body, &rec); err != nil {
 					return fmt.Errorf("link: malformed recorded: %w", err)
 				}
-				// Applied, stale or quarantined: the home holds it now.
+				// Applied, stale or quarantined: the home holds it now,
+				// and the window has room for the next.
 				if err := e.db.Update(ctx, func(tx store.Tx) error {
-					_, err := tx.ExecContext(ctx, `DELETE FROM spoke_hook_outbox WHERE id = ?`, rec.ID)
+					_, err := tx.ExecContext(ctx, `DELETE FROM spoke_hook_outbox WHERE frame_id = ?`, int64(rec.ID))
 					return err
 				}); err != nil {
 					return err
 				}
 				delete(sent, int64(rec.ID))
+				if hooksReady {
+					if err := e.sendHooks(ctx, conn, sent); err != nil {
+						return err
+					}
+				}
 			default:
 				return fmt.Errorf("link: unexpected %q frame on the event stream", link.Printable(r.frame.Type))
 			}
@@ -426,21 +432,32 @@ func (e *spokeEvents) sendWakeResult(ctx context.Context, conn spokeConn) (int64
 	return result.AttemptID, e.send(conn, link.TypeWakeResult, result)
 }
 
-// sendHooks sends the queued hook frames this connection has not sent,
-// each leaf's in the order of its publish sequence.
+// spokeHookWindow bounds the hook frames sent and not yet answered on a
+// connection: the home answers each with a Recorded, which this loop reads
+// only between sends.
+const spokeHookWindow = 64
+
+// sendHooks sends queued hook frames this connection has not sent, each
+// leaf's in the order of its publish sequence, up to the window. Only the
+// frames of finished drain passes go (endHookPass).
 func (e *spokeEvents) sendHooks(ctx context.Context, conn spokeConn, sent map[int64]bool) error {
+	room := spokeHookWindow - len(sent)
+	if room <= 0 {
+		return nil
+	}
 	type queued struct {
 		id         int64
 		kind, body string
 	}
 	var queue []queued
 	err := e.db.View(ctx, func(tx store.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT id, kind, body FROM spoke_hook_outbox ORDER BY vendor, key, leaf_seq, id`)
+		rows, err := tx.QueryContext(ctx, `SELECT frame_id, kind, body FROM spoke_hook_outbox WHERE id <= ?
+			ORDER BY vendor, key, leaf_seq, id`, e.stop.released.Load())
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
-		for rows.Next() {
+		for len(queue) < room && rows.Next() {
 			var q queued
 			if err := rows.Scan(&q.id, &q.kind, &q.body); err != nil {
 				return err
@@ -694,7 +711,9 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 			return nil, fmt.Errorf("link: malformed offer: %w", err)
 		}
 	case link.EventPolicy:
-		if err := json.Unmarshal(ev.Body, &policy); err != nil || !domain.ValidAdapterName(policy.Adapter) {
+		// A well-formed adapter this installation lacks is kept too: the
+		// policy files name only the local ones.
+		if err := json.Unmarshal(ev.Body, &policy); err != nil || !domain.ValidName(policy.Adapter) {
 			return nil, fmt.Errorf("link: malformed policy: %v", err)
 		}
 	case link.EventInvalidate, link.EventMembership:
@@ -903,7 +922,7 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 			return err
 		}
 		for _, p := range parts[0].Policies {
-			if !domain.ValidAdapterName(p.Adapter) {
+			if !domain.ValidName(p.Adapter) {
 				return errors.New("link: a snapshot names an invalid adapter")
 			}
 			if err := putPolicy(ctx, tx, p); err != nil {

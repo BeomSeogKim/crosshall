@@ -202,6 +202,14 @@ func TestASpokeSendsHookFramesInLeafOrder(t *testing.T) {
 		}
 		return out
 	}
+	// Nothing goes before the drain pass that queued them ends.
+	time.Sleep(50 * time.Millisecond)
+	if got := facts(f.home); len(got) != 0 {
+		t.Fatalf("sent before the pass ended: %+v", got)
+	}
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for len(facts(f.home)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -219,7 +227,9 @@ func TestASpokeSendsHookFramesInLeafOrder(t *testing.T) {
 	}
 	// A frame queued later goes out on the wake of its drain pass.
 	f.hook(t, wire.VerbHookEvent, prompt("late", 3), 13, stamp22)
-	f.s.spokeHookQueued()
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	for len(facts(f.home)) < 3 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -371,4 +381,160 @@ func TestASpokeSnapshotReplacesThePolicies(t *testing.T) {
 		t.Fatalf("%d policies after the snapshot, want codex alone", n)
 	}
 	f.end(t, home)
+}
+
+func sentFacts(h *fakeHome) []link.Fact {
+	var out []link.Fact
+	for _, fr := range h.frames() {
+		var fact link.Fact
+		if fr.Type == link.TypeFact && json.Unmarshal(fr.Body, &fact) == nil {
+			out = append(out, fact)
+		}
+	}
+	return out
+}
+
+func waitFacts(t *testing.T, h *fakeHome, n int) []link.Fact {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); len(sentFacts(h)) < n && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return sentFacts(h)
+}
+
+// A backlog goes out a window at a time: the home's Recorded for one
+// frame makes room for the next, so neither side's buffer fills with
+// frames nobody reads.
+func TestASpokeSendsAHookBacklogAWindowAtATime(t *testing.T) {
+	f := newHookFixture(t)
+	n := spokeHookWindow + 6
+	for seq := 1; seq <= n; seq++ {
+		f.hook(t, wire.VerbHookEvent, prompt("w"+strconv.Itoa(seq), 3), uint64(seq), stamp22)
+	}
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	got := waitFacts(t, f.home, spokeHookWindow)
+	time.Sleep(50 * time.Millisecond)
+	if got = sentFacts(f.home); len(got) != spokeHookWindow || got[spokeHookWindow-1].Token.LeafSeq != uint64(spokeHookWindow) {
+		t.Fatalf("%d frames in flight, want the window %d", len(got), spokeHookWindow)
+	}
+	f.home.push(t, link.TypeRecorded, link.Recorded{ID: got[0].ID, Status: link.RecordedApplied})
+	if got := waitFacts(t, f.home, spokeHookWindow+1); len(got) != spokeHookWindow+1 || got[spokeHookWindow].Token.LeafSeq != uint64(spokeHookWindow+1) {
+		t.Fatalf("after a Recorded: %d frames", len(got))
+	}
+	f.end(t, f.home)
+}
+
+// A packet processed again, before or after the home answered it, is the
+// same frame under the same ID, so the home returns what it recorded
+// instead of taking the sequence for a rewound leaf.
+func TestASpokeHookProcessedAgainKeepsItsFrameID(t *testing.T) {
+	f := newHookFixture(t)
+	f.hook(t, wire.VerbHookEvent, prompt("r1", 3), 4, stamp22)
+	f.hook(t, wire.VerbHookEvent, prompt("r1", 3), 4, stamp22)
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox`); n != 1 {
+		t.Fatalf("%d rows for one packet processed twice", n)
+	}
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	first := waitFacts(t, f.home, 1)
+	if len(first) != 1 {
+		t.Fatalf("sent %+v", first)
+	}
+	f.home.push(t, link.TypeRecorded, link.Recorded{ID: first[0].ID, Status: link.RecordedApplied})
+	for deadline := time.Now().Add(5 * time.Second); f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox`) != 0 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	f.hook(t, wire.VerbHookEvent, prompt("r1", 3), 4, stamp22)
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitFacts(t, f.home, 2); len(got) != 2 || got[1].ID != first[0].ID {
+		t.Fatalf("processed again after its Recorded: %+v", got)
+	}
+	f.end(t, f.home)
+}
+
+// A policy for an adapter this installation lacks (the home has another
+// bundle) is well formed: the event and the snapshot apply and the cursor
+// moves.
+func TestASpokeAcceptsAPolicyForAnAdapterItLacks(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true,
+		Policies: []link.AdapterPolicy{{Adapter: "elsewhere", Enabled: true, Epoch: 2}}})
+	home.ack(t, 10)
+	home.push(t, link.TypeEvent, event(t, 11, link.EventPolicy, link.AdapterPolicy{Adapter: "elsewhere-too", Enabled: true, Epoch: 1}))
+	home.ack(t, 11)
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_policy`); n != 2 {
+		t.Fatalf("%d policies kept", n)
+	}
+	f.end(t, home)
+}
+
+// The boundary of a stamp is recorded before its file. A process that
+// stopped after recording it and before writing the file left hooks that
+// still carried the old stamp: the boundary moves to where the file does
+// change.
+func TestASpokeStampBoundarySurvivesAStopBeforeTheFile(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(1, 1)}}})
+	home.ack(t, 10)
+	publish := func(seq int) {
+		if err := os.WriteFile(filepath.Join(f.path, "hook-publish-seq"), []byte(strconv.Itoa(seq)+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(3)
+	// The file write fails after the boundary is recorded at 3, as a stop
+	// between the two would leave it; hooks 4-5 still carry 1/1.
+	f.exec(t, `UPDATE spoke_leaf SET binding_id = 2, membership_gen = 2`)
+	stampFile := filepath.Join(f.path, "membership")
+	if err := os.Chmod(stampFile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := stampLeaf(t.Context(), f.m.db, f.m.members, eventMember.Vendor, eventMember.Key)
+	if chmod := os.Chmod(stampFile, 0600); err == nil || chmod != nil {
+		t.Fatalf("the stamp file was written: %v, %v", err, chmod)
+	}
+	if n := f.count(t, `SELECT stamp_seq FROM spoke_leaf WHERE stamp_binding = 2 AND stamp_gen = 2`); n != 3 {
+		t.Fatalf("boundary %d recorded before the file, want 3", n)
+	}
+	publish(5)
+	if err := stampLeaf(t.Context(), f.m.db, f.m.members, eventMember.Vendor, eventMember.Key); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT stamp_seq FROM spoke_leaf`); n != 5 {
+		t.Fatalf("boundary %d, want 5", n)
+	}
+	home.push(t, link.TypeEvent, event(t, 11, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: f.scope(2, 2)}))
+	if cuts := home.ack(t, 11); len(cuts) != 1 || cuts[0].LeafSeq != 5 {
+		t.Fatalf("cut %+v, want leaf seq 5", cuts)
+	}
+	f.end(t, home)
+}
+
+// Frames a stopped process left queued wait for this process's first drain
+// pass, which handles what that process left claimed; then they go.
+func TestASpokeReleasesLeftoverHookFramesAfterItsFirstPass(t *testing.T) {
+	f := newHookFixture(t)
+	f.hook(t, wire.VerbHookEvent, prompt("left", 3), 4, stamp22)
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	time.Sleep(50 * time.Millisecond)
+	if got := sentFacts(f.home); len(got) != 0 {
+		t.Fatalf("sent before a pass: %+v", got)
+	}
+	f.m.hooksQueued.Store(false) // as a new process starts
+	f.s.scanSpokeMembers(t.Context(), false, time.Now())
+	if got := waitFacts(t, f.home, 1); len(got) != 1 || got[0].Token.LeafSeq != 4 {
+		t.Fatalf("after the first pass: %+v", got)
+	}
+	f.end(t, f.home)
 }

@@ -2,11 +2,14 @@ package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,7 +170,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 				return err
 			}
 			queued = true
-			return queueHookFrame(ctx, tx, "written", member, req.PublishSeq, written)
+			return queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, written)
 		}
 		if adapter != leaf.Vendor || req.OpKey != "hook:"+adapter+":"+launch+":"+hookEventRef(req) {
 			r := commandError(core.ExitRefused, "", "hook identity does not match the member exchange")
@@ -189,7 +192,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 		if fact != nil {
 			fact.Member, fact.Token = member, token
 			queued = true
-			if err := queueHookFrame(ctx, tx, "fact", member, req.PublishSeq, fact); err != nil {
+			if err := queueHookFrame(ctx, tx, "fact", member, leaf.Generation, req.PublishSeq, fact); err != nil {
 				return err
 			}
 		}
@@ -223,14 +226,25 @@ func hookEventRef(req wire.Request) string {
 	return args.EventRef
 }
 
-func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, leafSeq uint64, frame any) error {
+func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, generation string, leafSeq uint64, frame any) error {
 	body, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (vendor, key, leaf_seq, kind, body, at_ms) VALUES (?, ?, ?, ?, ?, ?)`,
-		member.Vendor, member.Key, leafSeq, kind, string(body), time.Now().UnixMilli())
+	// A packet processed again (the dispatcher stopped before it removed
+	// the claimed file) is the same frame: queued once, and sent again
+	// under the same ID if the first was answered meanwhile.
+	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (frame_id, vendor, key, leaf_seq, kind, body, at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (frame_id) DO NOTHING`,
+		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, leafSeq, kind, string(body), time.Now().UnixMilli())
 	return err
+}
+
+// hookFrameID is the ID the home records a hook frame under: one per
+// member, leaf generation and publish sequence.
+func hookFrameID(member link.Member, generation string, leafSeq uint64) int64 {
+	sum := sha256.Sum256([]byte(member.Vendor + "\x00" + member.Key + "\x00" + generation + "\x00" + strconv.FormatUint(leafSeq, 10)))
+	return int64(binary.BigEndian.Uint64(sum[:8])>>1) | 1
 }
 
 // spokeOffer sets the pending line from the member's cached offer, when the
@@ -280,10 +294,22 @@ func (s *server) spokeOffer(ctx context.Context, tx store.Tx, leaf ident.SpokeLe
 	return rows.Err()
 }
 
-// spokeHookQueued wakes the event client to send what the hook outbox holds.
-func (s *server) spokeHookQueued() {
+// endHookPass releases the hook frames queued so far to the sender and
+// wakes it. A drain pass's frames go out together, so a leaf's are sent
+// in the order of their publish sequence even when the drain ordered them
+// by time; and nothing goes out before this process's first pass handled
+// what a stopped one left claimed.
+func (s *server) endHookPass(ctx context.Context) error {
+	var last int64
+	if err := s.spokeMembers.db.View(ctx, func(tx store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM spoke_hook_outbox`).Scan(&last)
+	}); err != nil {
+		return err
+	}
+	s.spokeMembers.released.Store(last)
 	select {
 	case s.spokeMembers.hooks <- struct{}{}:
 	default:
 	}
+	return nil
 }

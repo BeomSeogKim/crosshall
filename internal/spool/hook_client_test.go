@@ -141,3 +141,59 @@ func TestHookCallMissingLeafNeverInitiatesContact(t *testing.T) {
 		}
 	}
 }
+
+// A hook whose dispatcher is a linked device's takes the causal token
+// under its leaf's publish lock: the boot, its clocks and the leaf's stamp
+// at that sequence (#400, design 6a). A native hook takes none.
+func TestALinkedHookTakesItsTokenUnderThePublishLock(t *testing.T) {
+	f := setup(t)
+	f.member = ident.Identity{Vendor: "codex", Key: "sample-c"}
+	input := wire.Request{Verb: "hook.event", OpKey: "stop-7", Args: json.RawMessage(`{"fact":"turn_finishing","want_output":false}`)}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	native := f.leaf(t)
+	if _, err := f.client.HookCall(ctx, f.member, "generation-a", input, true); err != nil {
+		t.Fatal(err)
+	}
+	var packet wire.Request
+	claim(t, native, &packet)
+	if packet.Capture != nil {
+		t.Fatalf("a native hook took a token: %+v", packet.Capture)
+	}
+
+	// The dispatcher names a linked member rendezvous.
+	linked := f
+	linked.rv = filepath.Join(filepath.Dir(f.rv), "linked")
+	if err := os.Mkdir(linked.rv, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(linked.rv, "m"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	leaf := linked.leaf(t)
+	if err := os.WriteFile(filepath.Join(f.rv, "ready"), []byte(`{"members":"`+linked.rv+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	stamp := core.Membership{BindingID: 4, Generation: 2}
+	if err := ident.RepublishMembership(root, stamp); err != nil {
+		t.Fatal(err)
+	}
+	for seq := uint64(1); seq <= 2; seq++ {
+		if _, err := f.client.HookCall(ctx, f.member, "generation-a", input, true); err != nil {
+			t.Fatal(err)
+		}
+		packet = wire.Request{}
+		claim(t, leaf, &packet)
+		c := packet.Capture
+		if c == nil || c.Boot == "" || c.MonoNS <= 0 || c.WallMS <= 0 || c.Membership == nil || *c.Membership != stamp ||
+			packet.PublishSeq != seq {
+			t.Fatalf("token %d: %+v (seq %d)", seq, c, packet.PublishSeq)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -191,5 +192,44 @@ func TestLinkOffersRefreshOneDevicePageAtATime(t *testing.T) {
 		if n := f.count(`SELECT COUNT(*) FROM device_offer_dirty WHERE device_id = ?`, id); n != 1 {
 			t.Fatalf("device %q: %d dirty rows left, want one", id, n)
 		}
+	}
+}
+
+// An adapter policy change reaches every linked device with an event
+// stream as a policy event, in order with its offers, and a snapshot
+// carries every adapter's policy on its first part (#400, 12k).
+func TestAnAdapterPolicyChangeReachesLinkedDevices(t *testing.T) {
+	f := newFixture(t)
+	device := decodeAs[LinkEnrollResult](t, f.owner(LinkEnroll{Name: "spoke", Secret: secretHex(1)}, "enroll")).Device
+	quiet := decodeAs[LinkEnrollResult](t, f.owner(LinkEnroll{Name: "quiet", Secret: secretHex(2)}, "quiet")).Device
+	execArgs(f, `INSERT INTO link_event_cursor (device_id, head) VALUES (?, 0)`, device)
+	on := true
+	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "codex", Enabled: &on}}, "codex-on"))
+	var body string
+	if err := f.db.QueryRowContext(t.Context(), `SELECT body FROM device_event WHERE device_id = ? AND kind = ?`,
+		device, link.EventPolicy).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var p link.AdapterPolicy
+	if json.Unmarshal([]byte(body), &p) != nil || p.Adapter != "codex" || !p.Enabled || p.Epoch == 0 {
+		t.Fatalf("policy event %s", body)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, quiet); n != 0 {
+		t.Fatal("a device without a stream got an event")
+	}
+	// A switch that keeps the epoch sends nothing.
+	before := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, device)
+	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "codex", Enabled: &on}}, "codex-again"))
+	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, device); n != before {
+		t.Fatal("an unchanged policy was sent again")
+	}
+	tx, err := f.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	policies, err := linkAdapterPolicies(t.Context(), tx, "")
+	if err != nil || len(policies) != 1 || policies[0] != p {
+		t.Fatalf("snapshot policies %+v, %v", policies, err)
 	}
 }

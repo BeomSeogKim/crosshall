@@ -105,7 +105,19 @@ const (
 	EventOffer      = "offer"
 	EventInvalidate = "invalidate"
 	EventMembership = "membership"
+	EventPolicy     = "policy"
 )
+
+// AdapterPolicy is the hall's policy for one adapter, as the hook checks
+// it: whether hooks run, whether reminders do, and the epoch that output
+// and offers are bound to. The home sends a policy event whenever one
+// changes, ordered with the offers that carry its epoch.
+type AdapterPolicy struct {
+	Adapter  string `json:"adapter"`
+	Enabled  bool   `json:"enabled"`
+	Reminder bool   `json:"reminder"`
+	Epoch    uint64 `json:"epoch"`
+}
 
 // Member names a member on the device by the session key its dispatcher
 // authenticates; the device itself comes from the link.
@@ -176,8 +188,8 @@ type MembershipChange struct {
 }
 
 // Snapshot replaces everything the device holds: every member's current
-// scope and every offer prepared and not retired as of Seq. Events after
-// Seq follow it.
+// scope, every offer prepared and not retired, and the policy of every
+// adapter, as of Seq. Events after Seq follow it.
 //
 // A snapshot spans one or more frames with the same Seq and Part 0, 1, 2
 // and so on, each within one link frame; the frame with Last ends it.
@@ -196,6 +208,8 @@ type Snapshot struct {
 	Part    int              `json:"part"`
 	Last    bool             `json:"last,omitempty"`
 	Members []SnapshotMember `json:"members"`
+	// Policies is set on part 0 only.
+	Policies []AdapterPolicy `json:"policies,omitempty"`
 }
 
 // SnapshotMember is one member's state in a snapshot.

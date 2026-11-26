@@ -15,17 +15,21 @@ func OpenHookLeaf(rv *os.Root, id ident.Identity) (*os.Root, string, error) {
 	return openLeaf(rv, id.Digest())
 }
 
-func (c Client) hookRoot(ctx context.Context, id ident.Identity) (*os.Root, error) {
+// hookRoot opens the member rendezvous, a linked device's when its
+// dispatcher names one (#400); linked says which.
+func (c Client) hookRoot(ctx context.Context, id ident.Identity) (*os.Root, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, ok := ctx.Deadline(); !ok {
-		return nil, errors.New("hook deadline is required")
+		return nil, false, errors.New("hook deadline is required")
 	}
 	if id.Vendor == "" || id.Vendor == "route" || id.Key == "" {
-		return nil, errors.New("hook requires a vendor session identity")
+		return nil, false, errors.New("hook requires a vendor session identity")
 	}
-	return ident.OpenPrivateDir(c.Rendezvous)
+	members := memberRendezvous(c.Rendezvous)
+	rv, err := ident.OpenPrivateDir(members)
+	return rv, members != c.Rendezvous, err
 }
 
 // HookLookup performs exactly one first contact. Only a dispatcher refusal
@@ -34,7 +38,7 @@ func (c Client) HookLookup(ctx context.Context, id ident.Identity, intent string
 	if intent != "lookup" && intent != "join" && intent != wire.HelloStart {
 		return "", wire.Response{}, errors.New("invalid hook hello intent")
 	}
-	rv, err := c.hookRoot(ctx, id)
+	rv, _, err := c.hookRoot(ctx, id)
 	if err != nil {
 		return "", wire.Response{}, err
 	}
@@ -70,7 +74,7 @@ func (c Client) HookCall(ctx context.Context, id ident.Identity, generation stri
 	if generation == "" || req.OpKey == "" {
 		return Reply{}, errors.New("hook requires generation and operation key")
 	}
-	rv, err := c.hookRoot(ctx, id)
+	rv, linked, err := c.hookRoot(ctx, id)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -94,6 +98,10 @@ func (c Client) HookCall(ctx context.Context, id ident.Identity, generation stri
 	}
 	req = prepare(ctx, req)
 	req.KeyDigest, req.Generation, req.VendorVersion = id.Digest(), generation, id.Version
+	req.Capture = nil
+	if linked {
+		req.Capture = &wire.HookCapture{} // filled under the publish lock
+	}
 	req.Ack = 0
 	req.Reply = nil
 	if oneWay {

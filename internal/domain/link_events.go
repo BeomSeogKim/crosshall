@@ -216,7 +216,11 @@ func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, b
 	if err != nil {
 		return err
 	}
-	snapshot := link.Snapshot{Seq: seq, Members: []link.SnapshotMember{}}
+	policies, err := linkAdapterPolicies(ctx, tx, "")
+	if err != nil {
+		return err
+	}
+	snapshot := link.Snapshot{Seq: seq, Members: []link.SnapshotMember{}, Policies: policies}
 	save := func(last bool) error {
 		snapshot.Last = last
 		data, err := json.Marshal(snapshot)
@@ -241,7 +245,7 @@ func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, b
 				return err
 			}
 			snapshot.Part++
-			snapshot.Members = snapshot.Members[:0]
+			snapshot.Members, snapshot.Policies = snapshot.Members[:0], nil
 			size = 128
 		}
 		snapshot.Members = append(snapshot.Members, member)
@@ -279,3 +283,56 @@ func remainingLinkLease(lease, at int64, now time.Time) int64 {
 }
 
 func validLinkInteger(n uint64) bool { return n <= math.MaxInt64 }
+
+// linkAdapterPolicies reads the hall's adapter policies as a linked
+// device's hooks check them: one adapter, or every one with a policy.
+func linkAdapterPolicies(ctx context.Context, tx store.Tx, adapter string) ([]link.AdapterPolicy, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT adapter, enabled, reminder, epoch FROM adapter_policy
+		WHERE ? = '' OR adapter = ? ORDER BY adapter`, adapter, adapter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []link.AdapterPolicy
+	for rows.Next() {
+		var p link.AdapterPolicy
+		if err := rows.Scan(&p.Adapter, &p.Enabled, &p.Reminder, &p.Epoch); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// appendLinkPolicy sends an adapter's new policy to every linked device
+// with an event stream, in order with the offers that carry its epoch.
+// A device without a stream yet gets it in its first snapshot.
+func appendLinkPolicy(ctx context.Context, tx store.Tx, adapter string, now time.Time) error {
+	policies, err := linkAdapterPolicies(ctx, tx, adapter)
+	if err != nil || len(policies) != 1 {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT device_id FROM link_event_cursor ORDER BY device_id`)
+	if err != nil {
+		return err
+	}
+	var devices []string
+	for rows.Next() {
+		var device string
+		if err := rows.Scan(&device); err != nil {
+			rows.Close()
+			return err
+		}
+		devices = append(devices, device)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, device := range devices {
+		if _, err := appendLinkEvent(ctx, tx, device, link.EventPolicy, policies[0], now); err != nil {
+			return err
+		}
+	}
+	return nil
+}

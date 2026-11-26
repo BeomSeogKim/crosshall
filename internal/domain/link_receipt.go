@@ -35,17 +35,16 @@ func linkFenced() core.Result {
 }
 
 // linkCredential refuses a request whose link the home no longer admits
-// (its session row is gone: a retention pass that pruned fences removed
-// it, so a request held on that link can never outlive its fence), or
-// whose device credential no longer holds.
+// (a retention pass that deleted one of the device's fences raised its
+// admission generation, so a request held on a link accepted before the
+// fence never outlives it), or whose device credential no longer holds.
 func linkCredential(ctx context.Context, tx store.Tx, call LinkCall) (*core.Result, error) {
-	var open int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM link_session WHERE id = ? AND device_id = ? AND credential_gen = ?`,
-		call.LinkSession, call.Device, call.CredentialGen).Scan(&open)
-	if err != nil {
+	var admission int64
+	err := tx.QueryRowContext(ctx, `SELECT admission_gen FROM device WHERE device_id = ?`, call.Device).Scan(&admission)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	if open == 0 {
+	if admission == 0 || admission != call.Admission {
 		r := Refuse(CodeLinkStale, "the hall no longer admits requests from this link", "reconnect the link")
 		return &r, nil
 	}

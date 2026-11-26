@@ -20,16 +20,16 @@ const VerbLinkCall = "owner link call"
 
 // LinkCall is a member command that a linked device's dispatcher
 // authenticated against its own leaf and forwarded over the link. Device,
-// CredentialGen and LinkSession come from the link's authenticated session,
+// CredentialGen and Admission come from the link's authenticated session,
 // never from the device's frame.
 type LinkCall struct {
 	Device        string `json:"device"`
 	CredentialGen int64  `json:"credential_gen"`
-	// LinkSession is the home's admission record of the link that
-	// carried this request.
-	LinkSession int64  `json:"link_session"`
-	Vendor      string `json:"vendor"`
-	Key         string `json:"key"`
+	// Admission is the device's admission generation the link that
+	// carried this request was accepted under.
+	Admission int64  `json:"admission"`
+	Vendor    string `json:"vendor"`
+	Key       string `json:"key"`
 	// LeafGeneration and LeafEpoch name the device's leaf registration
 	// the command was authenticated against.
 	LeafGeneration string           `json:"leaf_generation"`

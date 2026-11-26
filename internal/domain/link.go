@@ -97,13 +97,13 @@ type LinkProveResult struct {
 // and under which credential generation: the link carries it on every
 // call and is refused once the device enrolls again.
 //
-// Session is the link's admission record, written before the home
+// Admission is the device's admission generation, read before the home
 // welcomes the device: every request the link carries names it.
 type LinkVerifyResult struct {
 	Known         bool  `json:"known"`
 	OK            bool  `json:"ok"`
 	CredentialGen int64 `json:"credential_gen,omitempty"`
-	Session       int64 `json:"session,omitempty"`
+	Admission     int64 `json:"admission,omitempty"`
 }
 
 const minLinkSecret = 32
@@ -227,8 +227,8 @@ func (s *Service) linkVerify(ctx context.Context, tx store.Tx, caller core.Calle
 	r := LinkVerifyResult{Known: known, OK: ok}
 	if ok {
 		r.CredentialGen = gen
-		if err := tx.QueryRowContext(ctx, `INSERT INTO link_session (device_id, credential_gen, opened_at_ms)
-			VALUES (?, ?, ?) RETURNING id`, cmd.Device, gen, ms(s.now())).Scan(&r.Session); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT admission_gen FROM device WHERE device_id = ?`, cmd.Device).
+			Scan(&r.Admission); err != nil {
 			return core.Result{}, err
 		}
 	}

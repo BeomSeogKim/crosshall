@@ -1,13 +1,9 @@
--- A link the home accepted (#400). A forwarded request is admitted only
--- while its link's row exists. Before a retention pass prunes any fence,
--- it deletes every row, so no link that could hold a fenced request
--- outlives its fence, whatever the wall clock does.
-CREATE TABLE link_session (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT NOT NULL REFERENCES device(device_id),
-    credential_gen INTEGER NOT NULL,
-    opened_at_ms INTEGER NOT NULL
-);
+-- A device's admission generation (#400): the handshake hands a link the
+-- current value, and a forwarded request is admitted only while it
+-- holds. A retention pass that deletes a device's fences raises it in the
+-- same transaction, so no link accepted before a fence outlives the
+-- fence, whatever the wall clock does.
+ALTER TABLE device ADD COLUMN admission_gen INTEGER NOT NULL DEFAULT 1;
 
 -- A linked device's receipt lookup for a request of a session the home
 -- does not know yet (#400): the fence makes the request's absence final,

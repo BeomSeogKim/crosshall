@@ -457,6 +457,12 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 			return true, endSession(ctx, tx, scope.binding, scope.principal, now)
 		}
 	}
+	if cmd.Fact == FactPromptSubmitted || cmd.Fact == FactTurnFinishing {
+		if err := recordLinkWakeActivity(ctx, tx, scope.principal, peer.Device, peer.CredentialGen, in.member, in.token,
+			cmd.LaunchRef, cmd.Epoch, scope.RouteEpoch, now); err != nil {
+			return false, err
+		}
+	}
 	return true, presenceChanged(ctx, tx, scope.binding.channel, scope.principal, before, now)
 }
 

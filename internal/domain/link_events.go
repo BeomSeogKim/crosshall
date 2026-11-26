@@ -191,6 +191,11 @@ func linkEventPage(ctx context.Context, tx store.Tx, device string, from, head u
 				return core.Result{}, err
 			}
 		}
+		if event.Kind == link.EventWake {
+			if err := checkLinkWakeEvent(ctx, tx, device, &event); err != nil {
+				return core.Result{}, err
+			}
+		}
 		size += len(event.Body) + 128
 		if size > linkEventPageBytes {
 			break

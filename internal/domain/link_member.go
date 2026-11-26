@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
@@ -39,6 +40,7 @@ type LinkCall struct {
 	OpKey          string           `json:"op_key,omitempty"`
 	Membership     *core.Membership `json:"membership,omitempty"`
 	Ack            uint64           `json:"ack,omitempty"`
+	WakePickup     *link.HookToken  `json:"wake_pickup,omitempty"`
 }
 
 func (LinkCall) command() {}

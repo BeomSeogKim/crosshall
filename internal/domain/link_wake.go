@@ -73,6 +73,9 @@ func (s *Service) linkWakeReady(ctx context.Context, tx store.Tx, caller core.Ca
 	if !validWakeRoute(route) {
 		return Fail(core.ExitUsage, "", "invalid linked wake route", "check the linked device's local notice route"), nil
 	}
+	if err := expireUncertainLinkWakes(ctx, tx, peer.Device, now); err != nil {
+		return core.Result{}, err
+	}
 	if stream.snapshotSeq.Valid || route.Boot != stream.boot {
 		return OK(LinkWakeReadyResult{})
 	}
@@ -159,7 +162,8 @@ func pendingLinkWakeIDs(ctx context.Context, tx store.Tx, scope linkOfferScope, 
 		WHERE x.principal_id = ?1 AND m.channel_id = ?2 AND `+pendingPublishItem+`
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
-			WHERE a.principal_id = ?1 AND a.route = ?3 AND a.state = 'not_submitted' AND item.value = x.message_id)
+			WHERE a.principal_id = ?1 AND item.value = x.message_id
+				AND (a.state IN ('submitted', 'uncertain') OR (a.state = 'not_submitted' AND a.route = ?3)))
 		ORDER BY x.message_id LIMIT ?4`, scope.principal, scope.binding.channel, route, OfferCap)
 }
 
@@ -170,7 +174,8 @@ func replayLinkWake(ctx context.Context, tx store.Tx, peer LinkEventPeer, princi
 	var credential int64
 	var seq uint64
 	err := tx.QueryRowContext(ctx, `SELECT id, credential_gen, route, message_ids, event_seq, state FROM link_wake_attempt
-		WHERE device_id = ? AND (principal_id = ? OR (vendor = ? AND lane = ?)) AND state <> 'not_submitted' ORDER BY id LIMIT 1`,
+		WHERE device_id = ? AND (principal_id = ? OR (vendor = ? AND lane = ?))
+			AND state <> 'not_submitted' AND released_at_ms IS NULL ORDER BY id LIMIT 1`,
 		peer.Device, principal, route.Vendor, route.Lane).Scan(&wake.AttemptID, &credential, &original, &ids, &seq, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LinkWakeReadyResult{}, false, nil
@@ -233,13 +238,16 @@ func (s *Service) linkWakeResult(ctx context.Context, tx store.Tx, caller core.C
 	}
 	rejected := link.WakeRecorded{AttemptID: result.AttemptID, Status: link.RecordedStale, Code: "invalid_input"}
 	if result.AttemptID <= 0 || !validWakeRoute(result.Route) || !validLinkInteger(result.SubmissionSeq) ||
-		(result.Outcome == link.WakeSubmitted && result.SubmissionSeq == 0) {
+		(result.Outcome != link.WakeNotSubmitted && result.SubmissionSeq == 0) {
 		return OK(rejected)
 	}
 	switch result.Outcome {
 	case link.WakeNotSubmitted, link.WakeSubmitted, link.WakeUncertain:
 	default:
 		return OK(rejected)
+	}
+	if err := expireUncertainLinkWakes(ctx, tx, peer.Device, now); err != nil {
+		return core.Result{}, err
 	}
 	raw, err := json.Marshal(result.Route)
 	if err != nil {
@@ -248,7 +256,7 @@ func (s *Service) linkWakeResult(ctx context.Context, tx store.Tx, caller core.C
 	var state string
 	var seq uint64
 	err = tx.QueryRowContext(ctx, `SELECT state, submission_seq FROM link_wake_attempt
-		WHERE id = ? AND device_id = ? AND credential_gen = ? AND route = ?`,
+		WHERE id = ? AND device_id = ? AND credential_gen <= ? AND route = ?`,
 		result.AttemptID, peer.Device, peer.CredentialGen, string(raw)).Scan(&state, &seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		rejected.Code = "wake_scope"
@@ -263,8 +271,11 @@ func (s *Service) linkWakeResult(ctx context.Context, tx store.Tx, caller core.C
 		return OK(rejected)
 	}
 	if state != result.Outcome || seq == 0 && result.SubmissionSeq > 0 {
-		_, err := tx.ExecContext(ctx, `UPDATE link_wake_attempt SET state = ?, submission_seq = max(submission_seq, ?),
-			resolved_at_ms = ? WHERE id = ?`, result.Outcome, result.SubmissionSeq, ms(now), result.AttemptID)
+		_, err := tx.ExecContext(ctx, `UPDATE link_wake_attempt SET state = ?1, submission_seq = max(submission_seq, ?2),
+			uncertain_at_ms = CASE WHEN ?1 = 'uncertain' THEN COALESCE(uncertain_at_ms, ?3) ELSE uncertain_at_ms END,
+			released_at_ms = CASE WHEN ?1 IN ('submitted', 'uncertain') AND max(submission_seq, ?2) > 0
+				AND activity_seq > max(submission_seq, ?2) THEN COALESCE(released_at_ms, ?3) ELSE released_at_ms END,
+			resolved_at_ms = ?3 WHERE id = ?4`, result.Outcome, result.SubmissionSeq, ms(now), result.AttemptID)
 		if err != nil {
 			return core.Result{}, err
 		}

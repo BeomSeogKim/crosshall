@@ -9,6 +9,7 @@ const (
 	TypeWakeResult   = "wake_result"
 	TypeWakeRecorded = "wake_recorded"
 	EventWake        = "wake"
+	EventWakeClosed  = "wake_closed"
 )
 
 // WakeRoute is a spoke's current route evidence. Lane is an opaque token for
@@ -39,7 +40,8 @@ const (
 )
 
 // WakeResult uses the original scope, including on a new spoke boot.
-// SubmissionSeq is the original leaf cut, when the spoke has one.
+// SubmissionSeq is the original leaf cut from a durable execution claim.
+// Submitted and uncertain results both require that cut.
 // NotSubmitted requires durable proof that the spoke cannot later execute
 // this attempt and that the transport made no submission.
 type WakeResult struct {
@@ -47,6 +49,12 @@ type WakeResult struct {
 	Route         WakeRoute `json:"route"`
 	Outcome       string    `json:"outcome"`
 	SubmissionSeq uint64    `json:"submission_seq,omitempty"`
+}
+
+// WakeClosed occupies the original event sequence after that wake stops
+// giving execution authority. A waiting claim can still report its result.
+type WakeClosed struct {
+	AttemptID int64 `json:"attempt_id"`
 }
 
 type WakeRecorded struct {

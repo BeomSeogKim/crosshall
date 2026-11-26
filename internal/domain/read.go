@@ -163,11 +163,11 @@ func (s *Service) read(ctx context.Context, tx store.Tx, caller core.Caller, req
 	// Check every requested ID before recording a pickup. A refusal commits
 	// none of the preceding requested messages.
 	for _, msg := range out.Messages {
-		if err := recordPickup(ctx, tx, member, msg, now); err != nil {
+		if err := recordPickup(ctx, tx, member, msg, req.LinkPickup, now); err != nil {
 			return core.Result{}, err
 		}
 		for _, reply := range msg.Replies {
-			if err := recordPickup(ctx, tx, member, reply, now); err != nil {
+			if err := recordPickup(ctx, tx, member, reply, req.LinkPickup, now); err != nil {
 				return core.Result{}, err
 			}
 		}
@@ -228,7 +228,7 @@ func readBody(ctx context.Context, tx store.Tx, member memberView, id int64) (Re
 	return msg, err
 }
 
-func recordPickup(ctx context.Context, tx store.Tx, member memberView, msg ReadMessage, now time.Time) error {
+func recordPickup(ctx context.Context, tx store.Tx, member memberView, msg ReadMessage, pickup *LinkCall, now time.Time) error {
 	update, err := tx.ExecContext(ctx, `UPDATE recipient SET picked_up_at_ms = ?
 		WHERE message_id = ? AND principal_id = ? AND picked_up_at_ms IS NULL`, ms(now), msg.ID, member.principal)
 	if err != nil {
@@ -241,6 +241,11 @@ func recordPickup(ctx context.Context, tx store.Tx, member memberView, msg ReadM
 	if _, err := tx.ExecContext(ctx, `INSERT INTO receipt(message_id, principal_id, stage, seq, at_ms, evidence)
 		VALUES (?, ?, 'picked_up', 1, ?, 'cli')`, msg.ID, member.principal, ms(now)); err != nil {
 		return err
+	}
+	if pickup != nil {
+		if err := recordLinkWakePickup(ctx, tx, member, pickup, now); err != nil {
+			return err
+		}
 	}
 	origin := msg.ID
 	if msg.InReplyTo != nil {

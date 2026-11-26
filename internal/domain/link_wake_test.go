@@ -181,3 +181,114 @@ func TestLinkWakeWaitsForCurrentRouteCut(t *testing.T) {
 	}
 	t.Fatalf("no route invalidation in %+v", page)
 }
+
+func TestLinkWakeReleasesOnTurnCapturedBeforeResult(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "first")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	h.fact(2, 4, prompt(route.Launch, "wake-turn", ms(h.now)), link.RecordedApplied)
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL AND activity_seq = 4`, wake.AttemptID) != 1 {
+		t.Fatal("an early fact did not preserve causal evidence while dispatch was unresolved")
+	}
+	result := LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{AttemptID: wake.AttemptID,
+		Route: route, Outcome: link.WakeSubmitted, SubmissionSeq: 3}}
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied {
+		t.Fatalf("wake result = %+v", got)
+	}
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NOT NULL`, wake.AttemptID) != 1 {
+		t.Fatal("result did not reconcile the later turn")
+	}
+	h.fact(3, 5, stop(route.Launch, "wake-turn", ms(h.now)+1), link.RecordedApplied)
+	next := h.turnEndAsk(h.writer, "reader", "second")
+	dispatchTestLinkWake(t, h, route, next)
+}
+
+func TestLinkWakeReleasesOnPickupAboveSubmissionCut(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "wake")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	result := LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{AttemptID: wake.AttemptID,
+		Route: route, Outcome: link.WakeSubmitted, SubmissionSeq: 3}}
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied {
+		t.Fatalf("wake result = %+v", got)
+	}
+	note := decodeAs[NoteResult](t, h.exec(h.caller(h.writer), Request{OpKey: "note",
+		Command: Note{To: []string{"reader"}, Body: "another item"}}))
+	pickup := func(id int64, seq uint64) {
+		t.Helper()
+		token := h.token
+		token.LeafSeq = seq
+		call := &LinkCall{Device: h.peer.Device, CredentialGen: h.peer.CredentialGen, LeafGeneration: token.LeafGeneration,
+			Vendor: h.member.Vendor, Key: h.member.Key, WakePickup: &token}
+		wantOK(t, h.exec(core.Caller{Role: core.RoleMember, PrincipalID: &h.principal},
+			Request{Command: Read{IDs: []int64{id}}, LinkPickup: call}))
+	}
+	pickup(note.ID, 3)
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL`, wake.AttemptID) != 1 {
+		t.Fatal("a pickup at the submission cut released the attempt")
+	}
+	pickup(id, 4)
+	if h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NOT NULL`, wake.AttemptID) != 1 {
+		t.Fatal("a later pickup did not release the attempt")
+	}
+	next := h.turnEndAsk(h.writer, "reader", "next")
+	dispatchTestLinkWake(t, h, route, next)
+}
+
+func TestLinkWakeUncertaintyWindowClosesOldAuthority(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "wake")
+	wake, seq := dispatchTestLinkWake(t, h, route, id)
+	result := LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{AttemptID: wake.AttemptID,
+		Route: route, Outcome: link.WakeUncertain, SubmissionSeq: 2}}
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied {
+		t.Fatalf("wake result = %+v", got)
+	}
+	next := h.turnEndAsk(h.writer, "reader", "next")
+	h.now = h.now.Add(linkWakeUncertainWindow - time.Millisecond)
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied {
+		t.Fatalf("duplicate uncertainty = %+v", got)
+	}
+	ready := LinkWakeReady{LinkEventPeer: h.peer, Route: route}
+	if got := decodeAs[LinkWakeReadyResult](t, h.owner(ready, "")); got.Seq != 0 {
+		t.Fatalf("uncertain lane freed before its deadline: %+v", got)
+	}
+	h.now = h.now.Add(time.Millisecond)
+	successor, _ := dispatchTestLinkWake(t, h, route, next)
+	page := decodeAs[LinkEventsResult](t, h.owner(LinkEvents{LinkEventPeer: h.peer, FromSeq: seq - 1}, ""))
+	var closed link.WakeClosed
+	if len(page.Events) < 2 || page.Events[0].Seq != seq || page.Events[0].Kind != link.EventWakeClosed ||
+		json.Unmarshal(page.Events[0].Body, &closed) != nil || closed.AttemptID != wake.AttemptID ||
+		page.Events[1].Seq != seq+1 || page.Events[1].Kind != link.EventWake {
+		t.Fatalf("closed wake changed the stream sequence: %+v", page)
+	}
+	result.Result.Outcome = link.WakeSubmitted
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied ||
+		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL`, successor.AttemptID) != 1 ||
+		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NOT NULL`, wake.AttemptID) != 1 {
+		t.Fatalf("late result re-held the expired attempt: %+v", got)
+	}
+}
+
+func TestLinkWakeAcceptsExactHistoricalResultAfterCredentialRotation(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "wake")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	rotated := decodeAs[LinkEnrollResult](t, h.owner(LinkEnroll{Name: "macbook", Secret: secretHex(4)}, "rotate"))
+	if !rotated.Rotated || rotated.Device != h.peer.Device {
+		t.Fatalf("rotation = %+v", rotated)
+	}
+	result := LinkWakeResult{LinkEventPeer: h.peer, Result: link.WakeResult{AttemptID: wake.AttemptID,
+		Route: route, Outcome: link.WakeNotSubmitted}}
+	wantCode(t, h.owner(result, ""), core.ExitRefused, CodeLinkStale)
+	peer := h.peer
+	peer.CredentialGen++
+	peer.Stream = link.NewNonce()
+	wantOK(t, h.owner(LinkEvents{LinkEventPeer: peer, AllowWake: true,
+		Subscribe: &link.Subscribe{Boot: "after-rotation"}}, ""))
+	result.LinkEventPeer = peer
+	if got := decodeAs[link.WakeRecorded](t, h.owner(result, "")); got.Status != link.RecordedApplied ||
+		h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND credential_gen = 1 AND state = 'not_submitted'`, wake.AttemptID) != 1 {
+		t.Fatalf("rotated device could not settle exact original attempt: %+v", got)
+	}
+}

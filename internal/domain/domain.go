@@ -39,6 +39,8 @@ type Request struct {
 	Adapter *AdapterContext
 	// Host is the agent process the client named for a member command.
 	Host *wire.Host
+	// LinkPickup is the authenticated linked read with a leaf capture token.
+	LinkPickup *LinkCall
 	// OwnerAlerts says the client prints the owner line, so an owner
 	// request may mark the stops it carries as shown.
 	OwnerAlerts bool

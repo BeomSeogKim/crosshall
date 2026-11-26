@@ -2,9 +2,9 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.4.0-rc.1, a release candidate. New since v0.3.1, sessions on a second machine can join a hall over SSH, Codex managed-daemon notices work on Intel macOS, and Codex says at join when the hall cannot wake it. Builds after rc.1 enable [linking a second device](docs/linking.md) by default. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.4.0-rc.2, a release candidate. [Linking a second device](docs/linking.md) over SSH is available by default. Since v0.3.1, Codex managed-daemon notices work on Intel macOS, and Codex says at join when the hall cannot wake it. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
-Install: `git clone --branch v0.4.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Install: `git clone --branch v0.4.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
 
 ## What it looks like
 
@@ -42,7 +42,7 @@ For the two-agent walkthrough, have Claude Code and Codex CLI installed and sign
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.4.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.4.0-rc.2 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -67,7 +67,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.4.0-rc.1 at /home/you/.local/bin/crosshall
+Installed crosshall v0.4.0-rc.2 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 

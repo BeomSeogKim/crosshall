@@ -79,14 +79,22 @@ func NewReader(r io.Reader) *Reader { return &Reader{r: bufio.NewReader(r)} }
 // frame cut short.
 func (r *Reader) Read() (Frame, error) {
 	var head [8]byte
-	n, err := io.ReadFull(r.r, head[:])
-	if err != nil && n == 0 {
-		return Frame{}, err
+	// The magic is checked byte by byte as it arrives, so a short prefix of
+	// something else fails at once instead of waiting for a full header.
+	for i := range magic {
+		b, err := r.r.ReadByte()
+		if err != nil {
+			if i == 0 {
+				return Frame{}, err
+			}
+			return Frame{}, io.ErrUnexpectedEOF
+		}
+		head[i] = b
+		if b != magic[i] {
+			return Frame{}, r.stray(head[:i+1])
+		}
 	}
-	if !bytes.Equal(head[:min(n, 4)], magic[:min(n, 4)]) {
-		return Frame{}, r.stray(head[:n])
-	}
-	if err != nil {
+	if _, err := io.ReadFull(r.r, head[4:]); err != nil {
 		return Frame{}, io.ErrUnexpectedEOF
 	}
 	size := binary.BigEndian.Uint32(head[4:])

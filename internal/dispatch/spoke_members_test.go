@@ -79,7 +79,7 @@ func newSpokeFixture(t *testing.T) *spokeFixture {
 		t.Fatal(err)
 	}
 	root.Close()
-	m := &spokeMembers{db: db, members: members}
+	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}
 	f := &spokeFixture{s: &server{spokeMembers: m}, m: m}
 	var reg ident.Registration
 	if err := db.Update(t.Context(), func(tx store.Tx) error {
@@ -118,15 +118,15 @@ func (f *spokeFixture) count(t *testing.T, query string, args ...any) int {
 
 func (f *spokeFixture) send(t *testing.T, verb, key string) core.Result {
 	t.Helper()
-	return f.sendArgs(t, verb, key, `{"all":true,"body":"hi"}`)
+	return f.sendArgs(t, verb, key, `{"all":true,"body":"hi"}`, 2*time.Second)
 }
 
-func (f *spokeFixture) sendArgs(t *testing.T, verb, key, args string) core.Result {
+func (f *spokeFixture) sendArgs(t *testing.T, verb, key, args string, within time.Duration) core.Result {
 	t.Helper()
 	id := wire.NewID()
 	raw, err := json.Marshal(wire.Request{Version: wire.Version, Attempt: id, OpKey: key, KeyDigest: f.digest,
 		Generation: f.generation, Verb: verb, Args: json.RawMessage(args),
-		Membership: &core.Membership{BindingID: 4, Generation: 2}, ExpiresAtMS: time.Now().Add(2 * time.Second).UnixMilli()})
+		Membership: &core.Membership{BindingID: 4, Generation: 2}, ExpiresAtMS: time.Now().Add(within).UnixMilli()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,11 +201,12 @@ func TestASpokeLooksUpALostAnswerReceiptOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := newFakeLink()
-	f.m.attach(next)
 	fenced := domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again")
 	next.answer(t, fenced)
 	next.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
-	f.s.recoverOutbox(t.Context())
+	if !f.s.recoverOutbox(t.Context(), next) {
+		t.Fatal("recovery failed")
+	}
 	if len(next.frames) != 2 || next.frames[0] != "receipt" || next.frames[1] != "receipt" ||
 		next.written[0].OpKey != "k1" || string(next.written[0].Args) != `{"all":true,"body":"hi"}` ||
 		next.written[0].Membership == nil || next.written[0].Membership.Generation != 2 ||
@@ -262,7 +263,7 @@ func TestASpokeRetrySendsAgainOnlyWhatNeverRan(t *testing.T) {
 	f.m.attach(link)
 	retry := func(key, newKey string) core.Result {
 		t.Helper()
-		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"`+key+`"}`)
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"`+key+`"}`, 2*time.Second)
 	}
 	if r := retry("k1", "r1"); r.Status != core.ExitOK || string(r.Data) != `{"id":1}` || len(link.frames) != 0 {
 		t.Fatalf("answered retry %+v, frames %v", r, link.frames)
@@ -288,4 +289,92 @@ func TestASpokeRetrySendsAgainOnlyWhatNeverRan(t *testing.T) {
 	if r := retry("k9", "r9"); r.Code != core.CodeNotFound {
 		t.Fatalf("unknown key %+v", r)
 	}
+}
+
+// A key already in the outbox is never reset or dropped: with the link
+// down the record stays for recovery, other bytes are a conflict, and the
+// same request is looked up, never sent again.
+func TestASpokeNeverResetsAKeyInItsOutbox(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	f.send(t, "note", "k1")
+	f.m.attach(nil)
+	if r := f.send(t, "note", "k1"); r.Code != core.CodeUnsent {
+		t.Fatalf("same key, link down: %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k1' AND state = 'unknown'`); n != 1 {
+		t.Fatalf("the unresolved record is gone or changed")
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	if r := f.sendArgs(t, "note", "k1", `{"all":true,"body":"other"}`, 2*time.Second); r.Code != core.CodeKeyConflict || len(link.frames) != 0 {
+		t.Fatalf("other bytes under the key: %+v, frames %v", r, link.frames)
+	}
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":7}`)})
+	if r := f.send(t, "note", "k1"); r.Status != core.ExitOK || len(link.frames) != 1 || link.frames[0] != "receipt" {
+		t.Fatalf("same request: %+v, frames %v", r, link.frames)
+	}
+	if r := f.send(t, "note", "k1"); string(r.Data) != `{"id":7}` || len(link.frames) != 1 {
+		t.Fatalf("answered request: %+v, frames %v", r, link.frames)
+	}
+}
+
+// Recovery runs on a new link before it is published: a fresh command
+// meanwhile sends nothing and leaves no record, so recovery never fences
+// it; once recovery is done, the link carries fresh commands.
+func TestASpokeRecoversBeforeItSendsFreshCommands(t *testing.T) {
+	f := newSpokeFixture(t)
+	next := newFakeLink()
+	release := make(chan struct{})
+	next.onWrite = func(string, any) { <-release }
+	next.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `INSERT INTO link_outbox (vendor, key, op_key, command, args, state, at_ms)
+			VALUES ('codex', 'session', 'old', 'note', '{}', 'unknown', 1)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool)
+	go func() { done <- f.s.recoverOutbox(t.Context(), next) }()
+	for len(f.m.turn) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if r := f.sendArgs(t, "note", "fresh", `{"all":true,"body":"hi"}`, 50*time.Millisecond); r.Code != core.CodeUnsent {
+		t.Fatalf("a fresh command during recovery: %+v", r)
+	}
+	close(release)
+	if !<-done {
+		t.Fatal("recovery failed")
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'fresh'`); n != 0 || len(next.frames) != 1 {
+		t.Fatalf("recovery saw a fresh record: %d, frames %v", n, next.frames)
+	}
+	next.onWrite = nil
+	f.m.attach(next)
+	next.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
+	if r := f.send(t, "note", "fresh"); r.Status != core.ExitOK || next.frames[1] != "call" {
+		t.Fatalf("after recovery: %+v, frames %v", r, next.frames)
+	}
+}
+
+// A join's launch, which a member client adds on its own, names a process
+// on this device: it is not forwarded. Nothing is written once the
+// command's deadline has passed waiting for the link.
+func TestASpokeForwardsAJoinWithoutItsLocalLaunch(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
+	f.sendArgs(t, "join", "j1", `{"channel":"checkout","launch":{"ref":"x"}}`, 2*time.Second)
+	if got := string(link.written[0].Args); got != `{"channel":"checkout"}` {
+		t.Fatalf("forwarded join %s", got)
+	}
+	f.m.turn <- struct{}{} // another exchange holds the link past the deadline
+	if r := f.sendArgs(t, "note", "late", `{"all":true,"body":"hi"}`, 30*time.Millisecond); r.Code != core.CodeUnsent || len(link.frames) != 1 {
+		t.Fatalf("an expired command: %+v, frames %v", r, link.frames)
+	}
+	<-f.m.turn
 }

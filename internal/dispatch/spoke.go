@@ -162,8 +162,9 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 			status.Error = ""
 			publish("connected")
 			connectedAt := time.Now()
-			s.spokeMembers.setConn(connection)
-			s.recoverOutbox(ctx)
+			if s.recoverOutbox(ctx, sshSpokeConn{connection}) {
+				s.spokeMembers.setConn(connection)
+			}
 			err = connection.Wait()
 			s.spokeMembers.setConn(nil)
 			if time.Since(connectedAt) >= 30*time.Second {

@@ -28,8 +28,11 @@ type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
 
+	// turn admits one frame exchange at a time; waiting for it is bounded
+	// by the caller's deadline.
+	turn chan struct{}
 	mu   sync.Mutex
-	conn spokeConn // nil while the link is down
+	conn spokeConn // nil while the link is down or recovering
 }
 
 // spokeConn is the link the member commands go over.
@@ -94,10 +97,12 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 		return nil, err
 	}
 	root.Close()
-	return &spokeMembers{db: db, members: members}, nil
+	return &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}, nil
 }
 
-// setConn installs or clears the link the member commands go over.
+// setConn installs or clears the link the member commands go over. A new
+// link is published only after recovery, so no fresh command is sent
+// before every record the previous link left behind is resolved.
 func (m *spokeMembers) setConn(c *link.SSHConnection) {
 	if c == nil {
 		m.attach(nil)
@@ -112,50 +117,91 @@ func (m *spokeMembers) attach(c spokeConn) {
 	m.mu.Unlock()
 }
 
+func (m *spokeMembers) current() spokeConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conn
+}
+
+// drop closes a link whose exchange failed, so a late answer is never read
+// as the next command's, and the reconnect loop dials again.
+func (m *spokeMembers) drop(c spokeConn) {
+	c.Close()
+	m.mu.Lock()
+	if m.conn == c {
+		m.conn = nil
+	}
+	m.mu.Unlock()
+}
+
 // errNotSent says no byte of the frame reached the link.
 var errNotSent = errors.New("the link to the home is down")
 
-// exchange writes one frame and reads its result, under the link's lock,
-// by the deadline. A failure after the write closes the link, so a late
-// answer can never be read as the next command's.
+// take waits for the exchange turn until the deadline.
+func (m *spokeMembers) take(ctx context.Context, deadline time.Time) bool {
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case m.turn <- struct{}{}:
+		return true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	return false
+}
+
+func (m *spokeMembers) give() { <-m.turn }
+
+// exchange sends one frame over the published link and reads its result,
+// all by the deadline. Nothing is written once the deadline has passed,
+// or while the link is down or recovering: that is errNotSent.
 func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	conn := m.conn
-	if conn == nil {
+	if !m.take(ctx, deadline) {
 		return core.Result{}, errNotSent
 	}
-	fail := func(err error) (core.Result, error) {
-		conn.Close()
-		m.conn = nil
-		return core.Result{}, err
+	defer m.give()
+	conn := m.current()
+	if conn == nil || !time.Now().Before(deadline) {
+		return core.Result{}, errNotSent
 	}
-	if err := conn.Write(frame, call); err != nil {
-		return fail(err)
-	}
-	type read struct {
+	return m.roundTrip(ctx, conn, frame, call, deadline)
+}
+
+// roundTrip writes and reads with the caller holding the turn. The write
+// and the read both run against the deadline; on any failure the link is
+// closed.
+func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
+	type answer struct {
 		f   link.Frame
 		err error
 	}
-	got := make(chan read, 1)
+	got := make(chan answer, 1)
 	go func() {
+		if err := conn.Write(frame, call); err != nil {
+			got <- answer{err: err}
+			return
+		}
 		f, err := conn.Read()
-		got <- read{f, err}
+		got <- answer{f, err}
 	}()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return fail(ctx.Err())
+		m.drop(conn)
+		return core.Result{}, ctx.Err()
 	case <-timer.C:
-		return fail(errors.New("the home did not answer in time"))
-	case r := <-got:
+		m.drop(conn)
+		return core.Result{}, errors.New("the home did not answer in time")
+	case a := <-got:
 		var result core.Result
-		if r.err != nil || r.f.Type != "result" || json.Unmarshal(r.f.Body, &result) != nil {
-			return fail(fmt.Errorf("link: no result frame: %v", r.err))
+		if a.err != nil || a.f.Type != "result" || json.Unmarshal(a.f.Body, &result) != nil {
+			m.drop(conn)
+			return core.Result{}, fmt.Errorf("link: no result frame: %v", a.err)
 		}
 		if result.Code == domain.CodeLinkStale {
-			return fail(errors.New("the home closed this link")) // the reconnect loop dials again
+			m.drop(conn)
+			return core.Result{}, errors.New("the home closed this link")
 		}
 		return result, nil
 	}
@@ -271,9 +317,12 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 	return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}, nil
 }
 
-// spokeCommand forwards one member command to the home. A keyed command
-// is written to the outbox, committed, before the first byte can reach
-// the link, so its outcome can always be looked up receipt-only.
+// spokeCommand forwards one member command to the home. It takes the
+// link's turn first, so a recovery never sees its record; then a keyed
+// command is written to the outbox, committed, before its first byte can
+// reach the link. A key already in the outbox is never reset: other bytes
+// are a conflict, an answered one shows its answer, and an unresolved one
+// is looked up receipt-only.
 func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
@@ -297,8 +346,22 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		}
 		req = resend
 	}
+	if req.Verb == domain.VerbJoin {
+		req.Args = withoutLocalLaunch(req.Args)
+	}
+	deadline := time.UnixMilli(req.ExpiresAtMS)
+	unsent := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
+		"run crosshall link status, then send the command again")
+	if !m.take(ctx, deadline) {
+		return unsent, nil
+	}
+	defer m.give()
+	conn := m.current()
+	if conn == nil || !time.Now().Before(deadline) {
+		return unsent, nil
+	}
 	var leaf ident.SpokeLeaf
-	var outbox int64
+	var rec outboxRecord
 	err := m.db.Update(ctx, func(tx store.Tx) error {
 		var err error
 		leaf, err = ident.ResolveSpokeMember(ctx, tx, m.members, ident.Ingress{Path: path, Dir: dir},
@@ -306,19 +369,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		if err != nil || req.OpKey == "" {
 			return err
 		}
-		var membership any
-		if req.Membership != nil {
-			raw, err := json.Marshal(req.Membership)
-			if err != nil {
-				return err
-			}
-			membership = string(raw)
-		}
-		// A key used again resends the same record; its bytes decide.
-		err = tx.QueryRowContext(ctx, `INSERT INTO link_outbox (vendor, key, op_key, command, args, membership, state, at_ms)
-			VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)
-			ON CONFLICT (vendor, key, op_key) DO UPDATE SET state = 'sent' RETURNING id`,
-			leaf.Vendor, leaf.Key, req.OpKey, req.Verb, string(req.Args), membership, time.Now().UnixMilli()).Scan(&outbox)
+		rec, err = recordOutbox(ctx, tx, leaf, req)
 		return err
 	})
 	var env *ident.EnvironmentError
@@ -331,17 +382,28 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	}
 	call := domain.LinkCall{Vendor: leaf.Vendor, Key: leaf.Key, LeafGeneration: leaf.Generation, LeafEpoch: leaf.Epoch,
 		Command: req.Verb, Args: req.Args, OpKey: req.OpKey, Membership: req.Membership, Ack: req.Ack}
-	result, err := m.exchange(ctx, "call", call, time.UnixMilli(req.ExpiresAtMS))
-	if errors.Is(err, errNotSent) {
-		s.settleOutbox(ctx, outbox, nil)
-		return domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
-			"run crosshall link status, then send the command again"), nil
+	switch {
+	case rec.conflict:
+		return domain.Refuse(core.CodeKeyConflict, "this operation key was already used for a different command",
+			"crosshall retry "+req.OpKey+" shows what the hall did with the original"), nil
+	case rec.answer != nil:
+		return *rec.answer, nil
+	case !rec.fresh && req.OpKey != "":
+		// The same request, still unresolved: look it up, never resend.
+		call.Command, call.Args, call.Membership = rec.command, rec.args, rec.membership
+		answer, err := m.roundTrip(ctx, conn, "receipt", call, deadline)
+		if err != nil {
+			return lostAnswer(req.OpKey), nil
+		}
+		s.settleOutbox(ctx, rec.id, &answer)
+		return answer, nil
 	}
+	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
 	if err != nil {
-		s.markUnknown(ctx, outbox)
+		s.markUnknown(ctx, rec.id)
 		return lostAnswer(req.OpKey), nil
 	}
-	s.settleOutbox(ctx, outbox, &result)
+	s.settleOutbox(ctx, rec.id, &result)
 	if result.Membership != nil {
 		s.logFailure(m.db.Update(ctx, func(tx store.Tx) error {
 			_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ? WHERE vendor = ? AND key = ?`,
@@ -351,6 +413,81 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		s.logFailure(ident.RepublishMembership(dir, *result.Membership))
 	}
 	return result, nil
+}
+
+// withoutLocalLaunch drops the launch a member client adds to a join on
+// its own: it names a process on this device, which the home never binds
+// (#400). Anything else in the join stays as the member wrote it.
+func withoutLocalLaunch(args json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(args, &fields) != nil {
+		return args
+	}
+	if _, ok := fields["launch"]; !ok {
+		return args
+	}
+	delete(fields, "launch")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return args
+	}
+	return out
+}
+
+// outboxRecord is a keyed command's record as recordOutbox found or wrote it.
+type outboxRecord struct {
+	id         int64
+	fresh      bool
+	conflict   bool
+	answer     *core.Result
+	command    string
+	args       json.RawMessage
+	membership *core.Membership
+}
+
+// recordOutbox writes a new keyed command's record, or reads the existing
+// one under that key without changing it.
+func recordOutbox(ctx context.Context, tx store.Tx, leaf ident.SpokeLeaf, req wire.Request) (outboxRecord, error) {
+	var membership sql.NullString
+	if req.Membership != nil {
+		raw, err := json.Marshal(req.Membership)
+		if err != nil {
+			return outboxRecord{}, err
+		}
+		membership = sql.NullString{String: string(raw), Valid: true}
+	}
+	var rec outboxRecord
+	var args, state string
+	var storedMembership, stored sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, command, args, membership, state, result FROM link_outbox
+		WHERE vendor = ? AND key = ? AND op_key = ?`, leaf.Vendor, leaf.Key, req.OpKey).
+		Scan(&rec.id, &rec.command, &args, &storedMembership, &state, &stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		rec.fresh = true
+		err = tx.QueryRowContext(ctx, `INSERT INTO link_outbox (vendor, key, op_key, command, args, membership, state, at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, 'sent', ?) RETURNING id`,
+			leaf.Vendor, leaf.Key, req.OpKey, req.Verb, string(req.Args), membership, time.Now().UnixMilli()).Scan(&rec.id)
+		return rec, err
+	}
+	if err != nil {
+		return rec, err
+	}
+	if rec.command != req.Verb || args != string(req.Args) || storedMembership != membership {
+		rec.conflict = true
+		return rec, nil
+	}
+	rec.args = json.RawMessage(args)
+	if storedMembership.Valid {
+		rec.membership = new(core.Membership)
+		if err := json.Unmarshal([]byte(storedMembership.String), rec.membership); err != nil {
+			return rec, err
+		}
+	}
+	if state == "done" && stored.Valid {
+		rec.answer = new(core.Result)
+		return rec, json.Unmarshal([]byte(stored.String), rec.answer)
+	}
+	return rec, nil
 }
 
 // settleOutbox closes a record: removed when nothing was sent, done with
@@ -384,11 +521,19 @@ func (s *server) markUnknown(ctx context.Context, id int64) {
 }
 
 // recoverOutbox looks up, receipt-only, every record that may have left
-// the device without an answer: those the link ended on, and those a
-// crash left as sent. A lookup never runs a command; the home fences what
-// it has no receipt for.
-func (s *server) recoverOutbox(ctx context.Context) {
+// the device without an answer (those a link ended on, and those a crash
+// left as sent), on a new link before it is published: the set is fixed
+// while recovery holds the turn, so no fresh command's record is in it
+// and none is sent until recovery is done. A lookup never runs a command;
+// the home fences what it has no receipt for. It reports whether the
+// link may be published.
+func (s *server) recoverOutbox(ctx context.Context, conn spokeConn) bool {
 	m := s.spokeMembers
+	if !m.take(ctx, time.Now().Add(time.Minute)) {
+		conn.Close()
+		return false
+	}
+	defer m.give()
 	type record struct {
 		id   int64
 		call domain.LinkCall
@@ -421,15 +566,18 @@ func (s *server) recoverOutbox(ctx context.Context) {
 	})
 	if err != nil {
 		s.logFailure(err)
-		return
+		conn.Close()
+		return false
 	}
 	for _, r := range pending {
-		result, err := m.exchange(ctx, "receipt", r.call, time.Now().Add(10*time.Second))
+		result, err := m.roundTrip(ctx, conn, "receipt", r.call, time.Now().Add(10*time.Second))
 		if err != nil {
-			return // the next connection tries again
+			conn.Close()
+			return false // the next connection tries again
 		}
 		s.settleOutbox(ctx, r.id, &result)
 	}
+	return true
 }
 
 // lostAnswer reports a forwarded command whose answer never came: the

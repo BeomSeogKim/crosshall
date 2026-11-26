@@ -154,7 +154,7 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 			}
 		}
 		if !stopped {
-			consumeEnrollment(state, c)
+			removeDoneEnrollment(state, c)
 			return cfg.startSpoke(ctx)
 		}
 		// The home went back to an older store: the device enrolls again
@@ -201,6 +201,11 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	}
 	if !fresh && (endpoint != pending.Endpoint || challenge.Hall != pending.Hall) {
 		return link.Status{}, errors.New("the home changed after enrollment began; run crosshall unlink before linking again")
+	}
+	if replacing != nil && challenge.Hall != replacing.Hall {
+		// Nothing is confirmed or set aside: the stopped profile and its
+		// store stay as they are.
+		return link.Status{}, fmt.Errorf("%s now serves another hall; run crosshall unlink before linking to it", target)
 	}
 	if err := confirm(link.Preview{Target: target, Name: name, LocalRelease: cfg.Version, HomeRelease: link.Printable(challenge.Release),
 		Version: chosen, ClockOffsetMS: link.EstimateClockOffset(started, challenge.TimeMS)}); err != nil {
@@ -415,8 +420,25 @@ func (cfg LaunchConfig) archiveSpokeStore(state *os.Root, c linkConfig) error {
 }
 
 // consumeEnrollment removes an enrollment record whose result the profile
-// already holds: it is done and never resumed.
+// already holds, unless a link change is running: that change may be
+// writing a new record at the same path (#418), and removes a finished
+// one itself.
 func consumeEnrollment(state *os.Root, c linkConfig) {
+	guard, err := spool.OpenServerFile(state, "link.lock", os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		return
+	}
+	defer guard.Close()
+	if syscall.Flock(int(guard.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return
+	}
+	removeDoneEnrollment(state, c)
+}
+
+// removeDoneEnrollment removes an enrollment record whose result the
+// profile already holds: it is done and never resumed. The caller holds
+// the link lock.
+func removeDoneEnrollment(state *os.Root, c linkConfig) {
 	var done linkEnrollment
 	if readLinkJSON(state, spokeEnrollFile, &done) == nil && done.ID == c.ID {
 		_ = state.Remove(spokeEnrollFile)

@@ -84,6 +84,7 @@ func (f *setupWorld) command(env []string, input string, args ...string) outcome
 	defer cancel()
 	result, err := f.runCommand(ctx, env, input, args...)
 	if err != nil {
+		f.logSetupDispatcher()
 		f.t.Fatalf("crosshall %v: %v", args, err)
 	}
 	return result
@@ -164,9 +165,17 @@ func (f *setupWorld) apply(input string, args ...string) outcome {
 	f.t.Helper()
 	result := f.command(f.env, input, args...)
 	if result.exit != 0 {
+		f.logSetupDispatcher()
 		f.t.Fatalf("crosshall %v: exit %d, stdout %s, stderr %s", args, result.exit, result.stdout, result.stderr)
 	}
 	return result
+}
+
+func (f *setupWorld) logSetupDispatcher() {
+	f.t.Helper()
+	ready, err := os.ReadFile(filepath.Join(f.rendezvous(), "ready"))
+	f.t.Logf("dispatcher ready marker %q (read error: %v)", ready, err)
+	f.logDispatcher()
 }
 
 type setupFile struct {
@@ -457,12 +466,14 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 		leaf := filepath.Join(f.rendezvous(), "m", digest[:16])
 		deadline := time.Now().Add(fixtureEventTimeout)
 		var got string
-		for attempt := 0; time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-			if len(fixtureQueuedPackets(t, leaf)) != 0 {
+		var attempts, queued int
+		for ; time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			queued = len(fixtureQueuedPackets(t, leaf))
+			if queued != 0 {
 				continue
 			}
-			attempt++
-			turn := fmt.Sprintf("turn-on-%d", attempt)
+			attempts++
+			turn := fmt.Sprintf("turn-on-%d", attempts)
 			fields := fmt.Sprintf(`"prompt_id":%q,"turn_id":%q`, turn, turn)
 			if prompt := f.invokeHook(repo, adapter, "UserPromptSubmit", fields); prompt != "" {
 				got = hostContext(t, prompt)
@@ -471,8 +482,8 @@ func TestAdapterSetupLifecycle(t *testing.T) {
 		}
 		if got != pendingContext(ids) {
 			f.logDispatcher()
-			t.Fatalf("%s installed hook pending mail %q, want %q; %s",
-				adapter, got, pendingContext(ids), f.enrollmentEvidence(adapter))
+			t.Fatalf("%s installed hook pending mail %q, want %q after %d prompt attempts and %d queued packets at the last check; UserPromptSubmit counter %q, %s",
+				adapter, got, pendingContext(ids), attempts, queued, f.hookCounter(adapter, "UserPromptSubmit"), f.enrollmentEvidence(adapter))
 		}
 		notes(t, writer, alias, 1)
 	}

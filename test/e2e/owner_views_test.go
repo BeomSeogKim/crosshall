@@ -70,7 +70,7 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 				return
 			}
 		}
-		t.Fatalf("%s: owner who omitted Claude prompt pickup: %s", stage, out)
+		t.Fatalf("%s: owner who omitted Claude prompt pickup: %s\n%s", stage, out, f.enrollmentEvidence("claude"))
 	}
 	checkReach("before the next prompt")
 
@@ -79,7 +79,8 @@ func TestOwnerWhoKeepsClaudePromptPickupAcrossAnUpgrade(t *testing.T) {
 	id := num(t, writer.must("ask", "@claude1", "Check this after the upgrade"), "id")
 	got := f.invokeHook(repo, "claude", "UserPromptSubmit", `"prompt_id":"after-upgrade"`)
 	if !strings.Contains(got, "[crosshall] pending: "+strconv.FormatInt(id, 10)) {
-		t.Fatalf("the current hook did not show the pending request: %s", got)
+		t.Fatalf("post-upgrade UserPromptSubmit omitted request #%d: hook output %q, prompt counter %q, %s",
+			id, got, f.hookCounter("claude", "UserPromptSubmit"), f.enrollmentEvidence("claude"))
 	}
 	checkReach("after the next prompt")
 }

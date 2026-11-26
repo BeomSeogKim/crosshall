@@ -36,6 +36,9 @@ const fixtureEventTimeout = 10 * time.Second
 var binaryTags = "testvendorhome"
 
 func TestMain(m *testing.M) {
+	if mode := os.Getenv(linkFixturePeerEnv); mode != "" && len(os.Args) == 3 && os.Args[1] == "link" && os.Args[2] == "serve" {
+		os.Exit(runLinkFixturePeer(mode))
+	}
 	os.Exit(runSuite(m))
 }
 

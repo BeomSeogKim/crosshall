@@ -24,11 +24,11 @@ type linkFixture struct {
 	ssh         string
 }
 
-func newLinkFixture(t *testing.T, homeBinary, spokeBinary string) *linkFixture {
+func newLinkFixture(t *testing.T, homeBinary, spokeBinary string, homeEnv ...string) *linkFixture {
 	t.Helper()
 	f := &linkFixture{home: newWorld(t), spoke: newWorld(t)}
 	f.home.executable, f.spoke.executable = homeBinary, spokeBinary
-	f.home.extraEnv = []string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1"}
+	f.home.extraEnv = append([]string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1"}, homeEnv...)
 	f.ssh = writeLocalSSH(t, f.home)
 	f.spoke.extraEnv = []string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1", "CROSSHALL_LINK_SSH=" + f.ssh}
 	return f

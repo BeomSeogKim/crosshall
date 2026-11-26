@@ -16,6 +16,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -45,6 +46,11 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 	// What the event stream cached counts again only after this process
 	// applies a snapshot.
 	if err := invalidateEvents(ctx, members.db); err != nil {
+		return err
+	}
+	if err := members.db.Update(ctx, func(tx store.Tx) error {
+		return recoverSpokeWakeClaims(ctx, tx)
+	}); err != nil {
 		return err
 	}
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
@@ -239,7 +245,7 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 		if err == nil {
 			started := time.Now()
 			if slices.Contains(connection.Caps, link.CapEvents) {
-				err = events.run(ctx, sshSpokeConn{connection})
+				err = events.run(ctx, sshSpokeConn{connection}, slices.Contains(connection.Caps, link.CapWake))
 			} else {
 				err, limit = errors.New("the home serves no event stream"), 10*time.Minute
 			}

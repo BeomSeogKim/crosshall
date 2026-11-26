@@ -108,6 +108,9 @@ func (e *spokeEvents) persistStop(ctx context.Context) error {
 // snapshot applies. A dispatcher calls it before it is ready.
 func invalidateEvents(ctx context.Context, db *store.Store) error {
 	return db.Update(ctx, func(tx store.Tx) error {
+		if err := suspendSpokeWakes(ctx, tx); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 0 WHERE eligible = 1`)
 		return err
 	})
@@ -146,7 +149,7 @@ type snapshotPart struct {
 
 // run serves one event connection until it ends: subscribe, then apply
 // and acknowledge what the home sends.
-func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
+func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) error {
 	// The reader stops with this run, also when a frame it read is left
 	// unconsumed.
 	ctx, cancel := context.WithCancel(ctx)
@@ -157,6 +160,11 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	var cur eventCursor
 	snapshot := !e.resumed
 	err := e.db.Update(ctx, func(tx store.Tx) error {
+		// An acknowledged wake may have closed while disconnected. Only
+		// fresh authorization on this stream can stage it again.
+		if err := suspendSpokeWakes(ctx, tx); err != nil {
+			return err
+		}
 		var err error
 		if cur, err = e.cursor(ctx, tx); err != nil {
 			return err
@@ -217,6 +225,8 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	defer keepalive.Stop()
 	acked := cur.acked
 	var parts []snapshotPart
+	var caughtUp bool
+	var sendingWake int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -251,6 +261,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 						return err
 					}
 					e.resumed = false
+					caughtUp = false
 				}
 				parts = append(parts, snapshotPart{part, r.at})
 				if !part.Last {
@@ -272,6 +283,9 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 				if err := json.Unmarshal(r.frame.Body, &ev); err != nil {
 					return fmt.Errorf("link: malformed event: %w", err)
 				}
+				if !allowWake && (ev.Kind == link.EventWake || ev.Kind == link.EventWakeClosed) {
+					return errors.New("link: wake event without wake negotiation")
+				}
 				if ev.Seq <= acked {
 					continue // already applied
 				}
@@ -290,13 +304,76 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 				if err := e.ack(conn, acked, cuts); err != nil {
 					return err
 				}
-			case link.TypeCaughtUp, link.TypeRecorded:
+			case link.TypeCaughtUp:
+				if !allowWake {
+					continue
+				}
+				var ready link.CaughtUp
+				if err := json.Unmarshal(r.frame.Body, &ready); err != nil {
+					return fmt.Errorf("link: malformed catch-up: %w", err)
+				}
+				if !e.resumed || len(parts) != 0 || ready.Seq != acked {
+					return errors.New("link: catch-up does not match the applied wake cursor")
+				}
+				caughtUp = true
+				if sendingWake == 0 {
+					var err error
+					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
+						return err
+					}
+				}
+			case link.TypeWakeReplay:
+				if !allowWake || !caughtUp {
+					return errors.New("link: wake replay before wake negotiation and catch-up")
+				}
+				var wake link.Wake
+				if err := json.Unmarshal(r.frame.Body, &wake); err != nil {
+					return fmt.Errorf("link: malformed wake replay: %w", err)
+				}
+				if err := e.db.Update(ctx, func(tx store.Tx) error {
+					return stageSpokeWake(ctx, tx, wake)
+				}); err != nil {
+					return err
+				}
+			case link.TypeWakeRecorded:
+				if !allowWake {
+					return errors.New("link: wake receipt without wake negotiation")
+				}
+				var receipt link.WakeRecorded
+				if err := json.Unmarshal(r.frame.Body, &receipt); err != nil {
+					return fmt.Errorf("link: malformed wake receipt: %w", err)
+				}
+				if err := e.db.Update(ctx, func(tx store.Tx) error {
+					return recordSpokeWakeReceipt(ctx, tx, sendingWake, receipt)
+				}); err != nil {
+					return err
+				}
+				sendingWake = 0
+				if caughtUp {
+					var err error
+					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
+						return err
+					}
+				}
+			case link.TypeRecorded:
 				// Nothing is forwarded on this stream yet (6s-b).
 			default:
 				return fmt.Errorf("link: unexpected %q frame on the event stream", link.Printable(r.frame.Type))
 			}
 		}
 	}
+}
+
+func (e *spokeEvents) sendWakeResult(ctx context.Context, conn spokeConn) (int64, error) {
+	var result *link.WakeResult
+	if err := e.db.View(ctx, func(tx store.Tx) error {
+		var err error
+		result, err = nextSpokeWakeResult(ctx, tx)
+		return err
+	}); err != nil || result == nil {
+		return 0, err
+	}
+	return result.AttemptID, e.send(conn, link.TypeWakeResult, result)
 }
 
 func (e *spokeEvents) send(conn spokeConn, frame string, v any) error {
@@ -468,6 +545,7 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 	var h *heldLeaf
 	var offer link.Offer
 	switch ev.Kind {
+	case link.EventWake, link.EventWakeClosed:
 	case link.EventOffer:
 		if err := json.Unmarshal(ev.Body, &offer); err != nil {
 			return nil, fmt.Errorf("link: malformed offer: %w", err)
@@ -486,8 +564,12 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 		return nil, fmt.Errorf("link: unknown event kind %q", link.Printable(ev.Kind))
 	}
 	err := e.db.Update(ctx, func(tx store.Tx) error {
-		switch {
-		case ev.Kind == link.EventOffer:
+		switch ev.Kind {
+		case link.EventWake, link.EventWakeClosed:
+			if err := stageSpokeWakeEvent(ctx, tx, ev); err != nil {
+				return err
+			}
+		case link.EventOffer:
 			if err := e.putOffer(ctx, tx, offer, at, false); err != nil {
 				return err
 			}

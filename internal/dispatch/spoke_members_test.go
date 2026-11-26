@@ -378,3 +378,32 @@ func TestASpokeForwardsAJoinWithoutItsLocalLaunch(t *testing.T) {
 	}
 	<-f.m.turn
 }
+
+// A command whose deadline passes while it waits to journal, or before
+// its first byte, sends nothing and leaves no record of its own.
+func TestASpokeSendsNothingPastItsDeadline(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	held := make(chan struct{})
+	go f.m.db.Update(t.Context(), func(store.Tx) error {
+		close(held)
+		time.Sleep(200 * time.Millisecond) // another writer holds the store
+		return nil
+	})
+	<-held
+	started := time.Now()
+	if r := f.sendArgs(t, "note", "slow", `{"all":true,"body":"hi"}`, 50*time.Millisecond); r.Code != core.CodeUnsent {
+		t.Fatalf("journaling past the deadline: %+v", r)
+	}
+	if waited := time.Since(started); waited > 150*time.Millisecond {
+		t.Fatalf("the command waited %v for the store, past its deadline", waited)
+	}
+	if _, err := f.m.roundTrip(t.Context(), link, "call", domain.LinkCall{OpKey: "late"}, time.Now().Add(-time.Millisecond)); !errors.Is(err, errNotSent) {
+		t.Fatalf("a round trip past its deadline: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 || len(link.frames) != 0 || link.closed {
+		t.Fatalf("%d records, frames %v, closed %v", n, link.frames, link.closed)
+	}
+}

@@ -225,7 +225,7 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 		return
 	}
 	spoke := cfg.spoke(s.cfg.Version)
-	spoke.Caps = []string{link.CapEvents}
+	spoke.Caps = []string{link.CapEvents, link.CapPolicy}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if s.spokeMembers.halted.Load() {

@@ -93,3 +93,64 @@ func TestSpokeHooksReachTheHome(t *testing.T) {
 		t.Fatalf("%d hook facts were recorded stale", n)
 	}
 }
+
+// An adapter policy changed while a device is connected (#400, 12k, the
+// link rule): a device that negotiated the policy capability caches it; a
+// device of the base build never receives the event, and its stream goes
+// on without a reconnect.
+func TestSpokeLinkKeepsItsStreamAcrossAPolicyToggle(t *testing.T) {
+	withLinkBuildPairs(t, func(t *testing.T, f *linkFixture) {
+		home, spoke := f.home.owner(), f.spoke.owner()
+		home.must("owner", "start")
+		spoke.must("owner", "start")
+		home.must("owner", "channel", "create", "policy-toggle")
+		spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+		waitSpokeLink(t, spoke, "connected")
+		homeDB := f.home.db()
+		spokeDB := spokeStore(t, f.spoke.state)
+		value := func(db *sql.DB, query string, args ...any) (v sql.NullString) {
+			_ = db.QueryRow(query, args...).Scan(&v)
+			return v
+		}
+		eventually(t, "the device subscribed", func() bool {
+			return value(homeDB, `SELECT stream FROM link_event_stream WHERE closed_at_ms IS NULL`).Valid
+		})
+		stream := value(homeDB, `SELECT stream FROM link_event_stream WHERE closed_at_ms IS NULL`).String
+		head := func() int64 {
+			n, _ := strconv.ParseInt(value(homeDB, `SELECT head FROM link_event_cursor`).String, 10, 64)
+			return n
+		}
+		before := head()
+		epochBefore := value(homeDB, `SELECT epoch FROM adapter_policy WHERE adapter = 'claude'`).String
+		for _, enabled := range []string{"on", "off", "on"} {
+			home.must("owner", "adapter", "set", "claude", "--enabled", enabled)
+		}
+		appended := head() - before
+		// A later event still reaches the device and is acknowledged.
+		member := f.spoke.member()
+		member.must("join", "policy-toggle", "--as", "remote")
+		eventually(t, "the device acknowledged every event", func() bool {
+			return value(homeDB, `SELECT head = acked AND head > 0 FROM link_event_cursor`).String == "1"
+		})
+		if got := value(homeDB, `SELECT stream FROM link_event_stream WHERE closed_at_ms IS NULL`); got.String != stream {
+			t.Fatalf("the stream reconnected: %q, was %q", got.String, stream)
+		}
+		switch {
+		case strings.HasSuffix(t.Name(), "head-head"):
+			epoch := value(homeDB, `SELECT epoch FROM adapter_policy WHERE adapter = 'claude'`).String
+			if epoch == epochBefore {
+				t.Fatalf("the toggles kept epoch %s", epoch)
+			}
+			eventually(t, "the device holds the hall's claude policy", func() bool {
+				return value(spokeDB, `SELECT epoch FROM spoke_policy WHERE adapter = 'claude' AND enabled = 1`).String == epoch
+			})
+			if appended != 3 {
+				t.Fatalf("%d events for three policy changes, want 3", appended)
+			}
+		case strings.HasSuffix(t.Name(), "base-spoke"):
+			if appended != 0 || value(homeDB, `SELECT policy_capable FROM link_event_stream`).String != "0" {
+				t.Fatalf("%d events for a device without the capability", appended)
+			}
+		}
+	})
+}

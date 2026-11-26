@@ -124,6 +124,9 @@ var linkWakesSchema string
 //go:embed migrations/036_link_stream_close.sql
 var linkStreamCloseSchema string
 
+//go:embed migrations/037_link_stream_policy.sql
+var linkStreamPolicySchema string
+
 //go:embed link_wake_triggers.sql
 var linkWakeTriggers string
 
@@ -156,6 +159,7 @@ var migrations = []string{
 	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
 	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema, idlePromptSchema, reconcileCheckpointSchema,
 	linkDevicesSchema, deviceMembersSchema, linkFencesSchema, linkEventsSchema, linkWakesSchema, linkStreamCloseSchema,
+	linkStreamPolicySchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

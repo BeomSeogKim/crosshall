@@ -18,6 +18,7 @@ const linkEventPollInterval = 250 * time.Millisecond
 type servedLinkEvents struct {
 	peer         domain.LinkEventPeer
 	allowWake    bool
+	allowPolicy  bool
 	boot         string
 	sent         uint64
 	catchThrough uint64
@@ -50,7 +51,8 @@ func readLinkEventFrames(ctx context.Context, r *link.Reader, frames chan<- link
 
 func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Reader, w *link.Writer, session link.Session, peer domain.LinkEventPeer, o outputs) core.ExitCode {
 	ctx, cancel := context.WithCancel(ctx)
-	stream := servedLinkEvents{peer: peer, allowWake: slices.Contains(session.Caps, link.CapWake)}
+	stream := servedLinkEvents{peer: peer, allowWake: slices.Contains(session.Caps, link.CapWake),
+		allowPolicy: slices.Contains(session.Caps, link.CapPolicy)}
 	defer func() {
 		cancel()
 		if c, ok := stdin.(io.Closer); ok {
@@ -166,7 +168,8 @@ func (s *servedLinkEvents) subscribe(ctx context.Context, env Env, w *link.Write
 	if s.ackMore || s.snapshotPart != 0 {
 		return errors.New("link: subscribe interrupted a multipart transfer")
 	}
-	page, err := ownerData[domain.LinkEventsResult](ctx, env, Call{Command: domain.LinkEvents{LinkEventPeer: s.peer, Subscribe: &in, Resubscribe: s.boot != "", AllowWake: s.allowWake}})
+	page, err := ownerData[domain.LinkEventsResult](ctx, env, Call{Command: domain.LinkEvents{LinkEventPeer: s.peer, Subscribe: &in, Resubscribe: s.boot != "", AllowWake: s.allowWake,
+		AllowPolicy: s.allowPolicy}})
 	if err != nil {
 		return err
 	}

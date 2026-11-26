@@ -105,8 +105,14 @@ const (
 	EventOffer      = "offer"
 	EventInvalidate = "invalidate"
 	EventMembership = "membership"
-	EventPolicy     = "policy"
+	// EventPolicy, and Snapshot.Policies, are sent only on a stream that
+	// negotiated CapPolicy beside CapEvents.
+	EventPolicy = "policy"
 )
+
+// CapPolicy names the adapter policy in the event stream (#400, 12k): a
+// device without it never receives an EventPolicy or Snapshot.Policies.
+const CapPolicy = "policy"
 
 // AdapterPolicy is the hall's policy for one adapter, as the hook checks
 // it: whether hooks run, whether reminders do, and the epoch that output

@@ -2,6 +2,16 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Unreleased
+
+Upgrading from v0.3.1-rc.2 moves the database from schema 30 to schema 31. Migration 031 adds two tables for linking a second device (#400): `hall`, with one row holding a random identity for this hall, and `device`, which stays empty until a device links. No existing row changes.
+
+1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`. On its first start, the new dispatcher also saves a `store-v30-*.sqlite3` backup beside the database.
+3. Install the new release at the path your members and installed hooks use, then run `crosshall owner start` and `crosshall owner doctor`. No setup is needed.
+
+To roll back, stop the dispatcher, restore the schema 30 database from your copy (or the `store-v30-*.sqlite3` backup) and start v0.3.1-rc.2, which refuses a schema 31 store. Restoring discards messages and other changes made since the upgrade.
+
 ## To v0.3.1-rc.2
 
 Upgrading from v0.3.1-rc.1 keeps the database at schema 30. No migration runs, and no setup is needed.

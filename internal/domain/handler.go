@@ -132,6 +132,12 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	case BudgetPolicy:
 		return s.budgetPolicy(ctx, tx, caller, req, cmd)
 		// end read-ledger
+	case LinkEnroll:
+		return s.linkEnroll(ctx, tx, caller, req, cmd, now)
+	case LinkHall:
+		return s.linkHall(ctx, tx, caller)
+	case LinkVerify:
+		return s.linkVerify(ctx, tx, caller, cmd)
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)
 	case Restore:

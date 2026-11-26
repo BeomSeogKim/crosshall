@@ -93,6 +93,55 @@ func TestSpokeLinkEventStream(t *testing.T) {
 	}
 }
 
+func TestSpokeLinkWakeGatedWorkSurvivesReconnect(t *testing.T) {
+	withLinkBuildPairs(t, func(t *testing.T, f *linkFixture) {
+		home, spoke := f.home.owner(), f.spoke.owner()
+		home.must("owner", "start")
+		spoke.must("owner", "start")
+		home.must("owner", "channel", "create", "linked-work")
+		sender := f.home.member()
+		sender.must("join", "linked-work", "--as", "sender")
+		spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+		waitSpokeLink(t, spoke, "connected")
+		receiver := f.spoke.member()
+		receiver.must("join", "linked-work", "--as", "receiver")
+
+		homeDB := f.home.db()
+		spokeDB := spokeStore(t, f.spoke.state)
+		var originalStream string
+		eventually(t, "the home acknowledged the linked member's cut", func() bool {
+			return homeDB.QueryRow(`SELECT stream FROM link_event_stream
+				WHERE wake_capable = 0 AND EXISTS (SELECT 1 FROM link_event_cut WHERE absent = 0)`).
+				Scan(&originalStream) == nil
+		})
+		ask := strconv.FormatInt(num(t, sender.must("ask", "@receiver", "Check the linked work."), "id"), 10)
+		killSpokeSSH(t, f.ssh)
+		waitSpokeLink(t, spoke, "connected")
+		eventually(t, "the event stream reconnected with wakes gated", func() bool {
+			var stream string
+			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE wake_capable = 0`).Scan(&stream) == nil &&
+				stream != originalStream
+		})
+		if got := receiver.must("read", ask); !strings.Contains(got.stdout, "Check the linked work.") {
+			t.Fatalf("reconnected recipient could not read request %s: %s", ask, got.stdout)
+		}
+		reply := strconv.FormatInt(num(t, receiver.must("reply", ask, "Linked work checked."), "id"), 10)
+		if got := sender.must("read", reply); !strings.Contains(got.stdout, "Linked work checked.") {
+			t.Fatalf("home did not receive reply %s: %s", reply, got.stdout)
+		}
+		var homeAttempts, spokeAttempts int
+		if err := homeDB.QueryRow(`SELECT COUNT(*) FROM link_wake_attempt`).Scan(&homeAttempts); err != nil {
+			t.Fatal(err)
+		}
+		if err := spokeDB.QueryRow(`SELECT COUNT(*) FROM spoke_wake_attempt`).Scan(&spokeAttempts); err != nil {
+			t.Fatal(err)
+		}
+		if homeAttempts != 0 || spokeAttempts != 0 {
+			t.Fatalf("gated wake journal counts: home %d, spoke %d", homeAttempts, spokeAttempts)
+		}
+	})
+}
+
 func spokeStore(t *testing.T, state string) *sql.DB {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(state, "spoke", "*", "store.sqlite3"))

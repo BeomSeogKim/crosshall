@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -10,6 +11,58 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 )
+
+func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	check := func(want string) {
+		t.Helper()
+		got := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+			return memberWake(ctx, tx, route.Scope.Membership.BindingID, h.now)
+		})
+		if got.Wake != WakeNone || got.Why != want {
+			t.Fatalf("wake = %+v, want %s", got, want)
+		}
+	}
+	check(WhyNoRoute)
+	old := h.peer
+	acked := uint64(h.count(`SELECT acked FROM link_event_cursor WHERE device_id = ?`, h.peer.Device))
+	h.peer.Stream = link.NewNonce()
+	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, AllowWake: true,
+		Subscribe: &link.Subscribe{Boot: route.Boot, FromSeq: acked}}, ""))
+	wantOK(t, h.owner(LinkEvents{LinkEventPeer: old, Close: true}, ""))
+	check(WhyNoRoute)
+
+	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, Close: true}, ""))
+	wantCode(t, h.owner(LinkEvents{LinkEventPeer: h.peer}, ""), core.ExitRefused, "link_event_resync")
+	check(WhyDeviceOffline)
+	r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: "Review while offline."}, "")
+	wantOK(t, r)
+	id := decode[AskResult](t, r).ID
+	wake := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+		return h.svc.messageWake(ctx, tx, route.Scope.Membership.BindingID, h.principal, id, h.now)
+	})
+	if wake.Why != WhyDeviceOffline || wake.SeenAt != SeenAtCommand {
+		t.Fatalf("offline request = %+v", wake)
+	}
+	h.sql(`UPDATE link_event_launch SET verified = 0 WHERE principal_id = ?`, h.principal)
+	check(WhyNoRoute)
+}
+
+func TestLinkWakeOfflineKeepsAnUnresolvedAttemptHeld(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "held-while-offline")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, Close: true}, ""))
+	got := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+		return memberWake(ctx, tx, route.Scope.Membership.BindingID, h.now)
+	})
+	if got.Why != WhyHeld {
+		t.Fatalf("offline member with an unresolved attempt = %+v", got)
+	}
+	if n := h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL`, wake.AttemptID); n != 1 {
+		t.Fatal("stream closure released the unresolved attempt")
+	}
+}
 
 func linkWakeFixture(t *testing.T) (*linkedHookFixture, link.WakeRoute) {
 	t.Helper()

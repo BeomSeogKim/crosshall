@@ -225,6 +225,7 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 		{"vega", domain.Wake{Wake: domain.WakeWait}, "its wait is running"},
 		{"sol", codex, "not woken: no notice route for codex; it sees this at its next prompt"},
 		{"agy", none(domain.WhyNoRoute, domain.SeenAtCommand), "not woken: no notice route; it sees this at its next crosshall command"},
+		{"mini", none(domain.WhyDeviceOffline, domain.SeenAtCommand), "not woken: device offline; it sees this at its next crosshall command"},
 		{"astra", none(domain.WhyUnproven, domain.SeenAtPrompt), "not woken: notices not proven for its build; it sees this at its next prompt"},
 		{"lead", suspended, "not woken: notices suspended until " + clock(until) + "; it sees this at its next prompt"},
 		{"lyra", none(domain.WhyOff, domain.SeenAtCommand), "not woken: notices off; it sees this at its next crosshall command"},
@@ -267,7 +268,7 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 			t.Errorf("who lacks @%s %q:\n%s", c.alias, member, who)
 		}
 	}
-	const next = "next: nothing will wake @sol, @agy, @astra, @lead, @lyra, @recv, @fable or @orion. " +
+	const next = "next: nothing will wake @sol, @agy, @mini, @astra, @lead, @lyra, @recv, @fable or @orion. " +
 		"Ask a member the hall can wake (crosshall who), or tell your user.\n"
 	if strings.Count(ask, "next:") != 1 || !strings.Contains(ask, next) {
 		t.Errorf("send result lacks the one next: line %q:\n%s", next, ask)

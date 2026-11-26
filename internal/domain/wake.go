@@ -22,16 +22,17 @@ const (
 // who and in waiting; binding IDs, owner commands and reason details stay in
 // the owner's views.
 const (
-	WhyNoRoute   = "no_route"          // no notice route, or none for its adapter
-	WhyUnproven  = "unproven"          // notices not proven for its build
-	WhySuspended = "suspended"         // notices suspended, until UntilMS when timed
-	WhyOff       = "off"               // switched off, do not disturb included
-	WhyCapped    = "capped"            // the hourly limit, until UntilMS
-	WhyHeld      = "held"              // an earlier notice is unobserved
-	WhyTurnOpen  = "turn_open"         // the member already has a running turn
-	WhyKind      = "kind"              // this message starts no turn
-	WhyApproval  = "awaiting_approval" // its turn waits on its owner's approval
-	WhyEnded     = "session_ended"     // its session ended; it may be closed
+	WhyNoRoute       = "no_route"          // no notice route, or none for its adapter
+	WhyUnproven      = "unproven"          // notices not proven for its build
+	WhySuspended     = "suspended"         // notices suspended, until UntilMS when timed
+	WhyOff           = "off"               // switched off, do not disturb included
+	WhyCapped        = "capped"            // the hourly limit, until UntilMS
+	WhyHeld          = "held"              // an earlier notice is unobserved
+	WhyTurnOpen      = "turn_open"         // the member already has a running turn
+	WhyKind          = "kind"              // this message starts no turn
+	WhyApproval      = "awaiting_approval" // its turn waits on its owner's approval
+	WhyEnded         = "session_ended"     // its session ended; it may be closed
+	WhyDeviceOffline = "device_offline"
 )
 
 // Where a member that is not woken sees the work.
@@ -99,6 +100,9 @@ func reachWake(status store.PublishState, found bool) Wake {
 // memberWake is what will tell a live binding about new work now.
 func memberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) (Wake, error) {
 	status, found, err := store.ReadPublishState(ctx, tx, binding, now)
+	if err == nil && !found {
+		return linkedMemberWake(ctx, tx, binding, now)
+	}
 	return reachWake(status, found), err
 }
 
@@ -157,6 +161,18 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 				return Wake{}, false, err
 			}
 			w = Wake{Wake: WakeNone, Why: WhyKind}
+		}
+		if w.Why == WhyDeviceOffline {
+			var pending bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
+				WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
+				AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id))`,
+				principal, msg).Scan(&pending); err != nil {
+				return Wake{}, false, err
+			}
+			if !pending {
+				w = Wake{Wake: WakeNone, Why: WhyKind}
+			}
 		}
 	}
 	var running bool

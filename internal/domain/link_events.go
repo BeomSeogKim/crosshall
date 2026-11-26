@@ -39,7 +39,7 @@ func readLinkEventCursor(ctx context.Context, tx store.Tx, device string) (linkE
 func readLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer) (linkEventStream, error) {
 	var stream linkEventStream
 	err := tx.QueryRowContext(ctx, `SELECT boot, snapshot_seq, ack_seq, wake_capable FROM link_event_stream
-		WHERE device_id = ? AND stream = ? AND admission_gen = ?`,
+		WHERE device_id = ? AND stream = ? AND admission_gen = ? AND closed_at_ms IS NULL`,
 		peer.Device, peer.Stream, peer.Admission).Scan(&stream.boot, &stream.snapshotSeq, &stream.ackSeq, &stream.wakeCapable)
 	return stream, err
 }
@@ -73,6 +73,17 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 			return *refusal, nil
 		}
 		return core.Result{}, err
+	}
+	if cmd.Close {
+		if cmd.Subscribe != nil || cmd.SnapshotPart != nil || cmd.FromSeq != 0 || cmd.Resubscribe || cmd.AllowWake {
+			return refuseLinkEvents("invalid event stream close"), nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET closed_at_ms = ?
+			WHERE device_id = ? AND stream = ? AND admission_gen = ? AND closed_at_ms IS NULL`,
+			ms(now), cmd.Device, cmd.Stream, cmd.Admission); err != nil {
+			return core.Result{}, err
+		}
+		return OK(LinkEventsResult{})
 	}
 	if cmd.Subscribe != nil {
 		if cmd.SnapshotPart != nil || cmd.FromSeq != 0 || cmd.Subscribe.Boot == "" || !validRef(cmd.Subscribe.Boot) {

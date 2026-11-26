@@ -50,17 +50,25 @@ func readLinkEventFrames(ctx context.Context, r *link.Reader, frames chan<- link
 
 func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Reader, w *link.Writer, session link.Session, peer domain.LinkEventPeer, o outputs) core.ExitCode {
 	ctx, cancel := context.WithCancel(ctx)
+	stream := servedLinkEvents{peer: peer, allowWake: slices.Contains(session.Caps, link.CapWake)}
 	defer func() {
 		cancel()
 		if c, ok := stdin.(io.Closer); ok {
 			_ = c.Close()
+		}
+		if stream.boot != "" {
+			endCtx, end := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer end()
+			closeEnv := env
+			closeEnv.Start = nil
+			_, _ = ownerData[domain.LinkEventsResult](endCtx, closeEnv,
+				Call{Command: domain.LinkEvents{LinkEventPeer: peer, Close: true}})
 		}
 	}()
 	frames := make(chan linkFrameRead, 1)
 	go readLinkEventFrames(ctx, r, frames)
 	ticker := time.NewTicker(linkEventPollInterval)
 	defer ticker.Stop()
-	stream := servedLinkEvents{peer: peer, allowWake: slices.Contains(session.Caps, link.CapWake)}
 	for {
 		var received linkFrameRead
 		poll := false

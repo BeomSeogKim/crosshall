@@ -66,6 +66,8 @@ type spokeEvents struct {
 	resumed bool
 	mono    func() (int64, error)
 	stop    *spokeMembers // halted on a home rollback
+
+	wakeResultReady chan struct{}
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
@@ -75,7 +77,8 @@ func newSpokeEvents(m *spokeMembers) (*spokeEvents, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono}, nil
+	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono,
+		wakeResultReady: make(chan struct{}, 1)}, nil
 }
 
 // rolledBack stops the device: first in this process, so no command
@@ -227,10 +230,22 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 	var parts []snapshotPart
 	var caughtUp bool
 	var sendingWake int64
+	sendNextWake := func() error {
+		if !caughtUp || sendingWake != 0 {
+			return nil
+		}
+		var err error
+		sendingWake, err = e.sendWakeResult(ctx, conn)
+		return err
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-e.wakeResultReady:
+			if err := sendNextWake(); err != nil {
+				return err
+			}
 		case <-keepalive.C:
 			if e.resumed && len(parts) == 0 {
 				if err := e.send(conn, link.TypeAck, link.Ack{Seq: acked, Boot: e.boot}); err != nil {
@@ -316,11 +331,8 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return errors.New("link: catch-up does not match the applied wake cursor")
 				}
 				caughtUp = true
-				if sendingWake == 0 {
-					var err error
-					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
-						return err
-					}
+				if err := sendNextWake(); err != nil {
+					return err
 				}
 			case link.TypeWakeReplay:
 				if !allowWake || !caughtUp {
@@ -349,11 +361,8 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return err
 				}
 				sendingWake = 0
-				if caughtUp {
-					var err error
-					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
-						return err
-					}
+				if err := sendNextWake(); err != nil {
+					return err
 				}
 			case link.TypeRecorded:
 				// Nothing is forwarded on this stream yet (6s-b).

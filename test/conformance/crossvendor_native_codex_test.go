@@ -36,12 +36,14 @@ func nativeCodexPackage(t *testing.T) nativeCodexRelease {
 	switch runtime.GOOS + "-" + runtime.GOARCH {
 	case "darwin-arm64":
 		target = "aarch64-apple-darwin"
+	case "darwin-amd64":
+		target = "x86_64-apple-darwin"
 	case "linux-arm64":
 		target = "aarch64-unknown-linux-musl"
 	case "linux-amd64":
 		target = "x86_64-unknown-linux-musl"
 	default:
-		t.Skip("native cross-vendor conformance requires macOS arm64 or Linux arm64/amd64")
+		t.Skip("native cross-vendor conformance requires macOS or Linux arm64/amd64")
 	}
 	path := os.Getenv("CROSSHALL_CONFORMANCE_CODEX_PACKAGE")
 	if path == "" {

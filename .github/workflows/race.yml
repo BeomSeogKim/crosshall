@@ -12,13 +12,17 @@ on:
         description: Run the native Claude Code and Codex conformance tests on Linux amd64
         type: boolean
         default: false
+      native_macos_amd64:
+        description: Run the native Claude Code and Codex conformance tests on Intel macOS
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   race:
-    if: github.event_name != 'workflow_dispatch' || !inputs.native_linux_amd64
+    if: github.event_name != 'workflow_dispatch' || (!inputs.native_linux_amd64 && !inputs.native_macos_amd64)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -94,3 +98,68 @@ jobs:
         with:
           name: native-linux-amd64-events
           path: ${{ runner.temp }}/native-linux-amd64.json
+
+  native-macos-amd64:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_macos_amd64
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Stage the pinned Intel vendor binaries
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          NPM_CONFIG_USERCONFIG: /dev/null
+        run: |
+          uname -sm
+          test "$(uname -m)" = x86_64
+          test "$(go env GOHOSTARCH)" = amd64
+          fixture=$(mktemp -d /tmp/crosshall-native-intel.XXXXXXXX)
+          fixture=$(cd "$fixture" && pwd -P)
+          downloads="$fixture/downloads"
+          mkdir "$downloads"
+          export NPM_CONFIG_CACHE="$fixture/npm-cache"
+          npm pack --ignore-scripts --silent --registry=https://registry.npmjs.org --pack-destination "$downloads" \
+            @openai/codex@0.172.0-darwin-x64 @anthropic-ai/claude-code-darwin-x64@2.1.331
+          tar -xzf "$downloads/openai-codex-0.172.0-darwin-x64.tgz" -C "$downloads"
+          mv "$downloads/package/vendor/x86_64-apple-darwin" "$fixture/codex"
+          test -f "$fixture/codex/codex-package.json"
+          test -x "$fixture/codex/bin/codex"
+          tar -xOf "$downloads/anthropic-ai-claude-code-darwin-x64-2.1.331.tgz" package/claude > "$fixture/claude"
+          chmod 755 "$fixture/claude"
+          /usr/bin/file -b "$fixture/codex/bin/codex" | grep -F x86_64
+          /usr/bin/file -b "$fixture/claude" | grep -F x86_64
+          printf 'NATIVE_MACOS_FIXTURE=%s\n' "$fixture" >> "$GITHUB_ENV"
+          go mod download
+          go build -o "$fixture/crosshall" ./cmd/crosshall
+      - name: Verify native notices with loopback models
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOPROXY: "off"
+          GOSUMDB: "off"
+        run: |
+          export PATH="$NATIVE_MACOS_FIXTURE:$PATH"
+          export CROSSHALL_CONFORMANCE_CROSSHALL="$NATIVE_MACOS_FIXTURE/crosshall"
+          export CROSSHALL_CONFORMANCE_CODEX_PACKAGE="$NATIVE_MACOS_FIXTURE/codex"
+          events="$RUNNER_TEMP/native-macos-amd64.json"
+          go test -tags conformance -count=1 -timeout 5m -json \
+            -run '^(TestCrossVendorNativeRoundTrip|TestCodexDaemonPublishTrial|TestNativeFixtureWatchdogReapsKilledRun)$' \
+            ./test/conformance/ | tee "$events"
+          python3 -B scripts/release_gate_events.py TestCrossVendorNativeRoundTrip \
+            claude_to_codex_notice codex_to_claude_notice < "$events"
+          python3 -B scripts/release_gate_events.py TestCodexDaemonPublishTrial \
+            queued_read_and_settled_once server_approval_stops_publish < "$events"
+          python3 -B scripts/release_gate_events.py TestNativeFixtureWatchdogReapsKilledRun < "$events"
+          grep -F 'publish trial passed: codex 0.172.0 darwin-amd64 daemon codex-1' "$events" | grep -F 'paid_model_turns=0'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-macos-amd64-events
+          path: ${{ runner.temp }}/native-macos-amd64.json

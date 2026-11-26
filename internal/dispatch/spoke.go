@@ -35,10 +35,16 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 
 	var instance [16]byte
 	rand.Read(instance[:])
+	members, err := openSpokeMembers(ctx, state, cfg.StateRoot, linked)
+	if err != nil {
+		return err
+	}
+	defer members.db.Close()
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
 	ready.Hello = nil
 	ready.Spoke = linked.Target
-	s := server{cfg: cfg, state: state, ready: ready, cancel: cancel}
+	ready.Members = members.members
+	s := server{cfg: cfg, state: state, ready: ready, cancel: cancel, spokeMembers: members}
 	stopWatching := s.withdrawReadyOnCancel(ctx)
 	defer stopWatching()
 	if err := s.publishReady(ctx, root); err != nil {
@@ -94,6 +100,7 @@ func (s *server) scanSpoke(ctx context.Context) error {
 		s.nextReap = now.Add(time.Hour)
 		s.renewRendezvousFiles(root, now)
 	}
+	s.scanSpokeMembers(ctx, reap, now)
 	return nil
 }
 
@@ -155,7 +162,11 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 			status.Error = ""
 			publish("connected")
 			connectedAt := time.Now()
+			if s.recoverOutbox(ctx, sshSpokeConn{connection}) {
+				s.spokeMembers.setConn(connection)
+			}
 			err = connection.Wait()
+			s.spokeMembers.setConn(nil)
 			if time.Since(connectedAt) >= 30*time.Second {
 				backoff = time.Second
 			}

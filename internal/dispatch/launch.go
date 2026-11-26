@@ -218,6 +218,10 @@ type readyMarker struct {
 	Lease    bool   `json:"lease,omitempty"`
 	Probe    bool   `json:"probe,omitempty"`
 	Spoke    string `json:"spoke,omitempty"`
+	// Members is the rendezvous of a linked device's member spools, apart
+	// from the local hall's so that unlinking leaves those untouched
+	// (#400). Owner ingress and readiness stay here.
+	Members string `json:"members,omitempty"`
 	// Hello lists the first-contact intents beyond lookup and join that
 	// this dispatcher accepts, and the hook arguments it accepts beyond
 	// those an older dispatcher knows. A hook sends one only if it is
@@ -227,7 +231,7 @@ type readyMarker struct {
 
 func (r readyMarker) same(o readyMarker) bool {
 	return r.Instance == o.Instance && r.Version == o.Version && r.PID == o.PID &&
-		r.Lease == o.Lease && r.Probe == o.Probe && r.Spoke == o.Spoke && slices.Equal(r.Hello, o.Hello)
+		r.Lease == o.Lease && r.Probe == o.Probe && r.Spoke == o.Spoke && r.Members == o.Members && slices.Equal(r.Hello, o.Hello)
 }
 
 func (cfg LaunchConfig) LinkedTarget() string {

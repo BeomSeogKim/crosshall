@@ -75,9 +75,14 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if data, err := os.Stat(filepath.Join(f.spoke.state, "link.json")); err != nil || data.Mode().Perm() != 0600 {
 		t.Fatalf("link profile is missing or not private: %v, %v", data, err)
 	}
-	if got := member.run("who"); got.obj["code"] != "unsent" ||
-		!strings.Contains(got.stdout, "ask the owner to run crosshall link status") {
-		t.Fatalf("member command was not refused with an owner-facing hint: %+v", got)
+	// A member command goes to the home: the session has not joined the
+	// hall there yet, and its join is forwarded.
+	if got := member.run("who"); got.obj["code"] != "not_enrolled" {
+		t.Fatalf("an unjoined session's command on the device: %+v", got)
+	}
+	member.must("join", "home-only")
+	if got := member.must("who"); !strings.Contains(got.stdout, "home-only") {
+		t.Fatalf("the linked member is not in the home's channel: %+v", got)
 	}
 	if got := spoke.run("owner", "channel", "create", "wrong-device"); got.obj["code"] != "owner_only" {
 		t.Fatalf("owner command entered local mode while linked: %+v", got)
@@ -105,6 +110,9 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// After reconnecting, a keyed command reaches the home again.
+	member.must("join", "home-only")
 
 	spoke.must("unlink")
 	waitSpokeLink(t, spoke, "unlinked")

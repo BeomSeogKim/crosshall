@@ -115,6 +115,12 @@ var deviceMembersSchema string
 //go:embed migrations/033_link_fences.sql
 var linkFencesSchema string
 
+//go:embed migrations/spoke/001_spoke.sql
+var spokeSchema string
+
+// spokeMigrations is the schema of a linked device's spoke store.
+var spokeMigrations = []string{spokeSchema}
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
@@ -128,6 +134,7 @@ var migrations = []string{
 // Store owns the dispatcher's single SQLite write connection, and opens a
 // read-only one for long reads on first use.
 type Store struct {
+	schema  []string
 	db      *sql.DB
 	readDSN string
 	readMu  sync.Mutex
@@ -137,6 +144,16 @@ type Store struct {
 // Open configures and migrates the store after the caller takes the dispatcher
 // lock. stateRoot must already be an existing, private directory.
 func Open(ctx context.Context, stateRoot string) (*Store, error) {
+	return open(ctx, stateRoot, migrations)
+}
+
+// OpenSpoke opens the spoke store of a linked device in dir, an existing
+// private directory, with the same durability as the hall's store.
+func OpenSpoke(ctx context.Context, dir string) (*Store, error) {
+	return open(ctx, dir, spokeMigrations)
+}
+
+func open(ctx context.Context, stateRoot string, schema []string) (*Store, error) {
 	if !filepath.IsAbs(stateRoot) {
 		return nil, errors.New("store: state root must be absolute")
 	}
@@ -157,7 +174,7 @@ func Open(ctx context.Context, stateRoot string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	read := url.Values{"_txlock": {"deferred"}, "_pragma": {"query_only(ON)", "busy_timeout(5000)"}}
-	s := &Store{db: db, readDSN: (&url.URL{Scheme: "file", Path: path, RawQuery: read.Encode()}).String()}
+	s := &Store{schema: schema, db: db, readDSN: (&url.URL{Scheme: "file", Path: path, RawQuery: read.Encode()}).String()}
 	if err := s.initialize(ctx, stateRoot, previous); err != nil {
 		db.Close()
 		return nil, err
@@ -188,8 +205,8 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version < 0 || version > len(migrations) {
-		return fmt.Errorf("store: unsupported schema version %d (supported: 0–%d)", version, len(migrations))
+	if version < 0 || version > len(s.schema) {
+		return fmt.Errorf("store: unsupported schema version %d (supported: 0–%d)", version, len(s.schema))
 	}
 	var mode string
 	if err := s.db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
@@ -210,7 +227,7 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			return fmt.Errorf("store: PRAGMA %s is %d, want %d", pragma, got, want)
 		}
 	}
-	if version == len(migrations) {
+	if version == len(s.schema) {
 		return s.ensureReadIndexes(ctx)
 	}
 	var backupPath string
@@ -221,14 +238,14 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			return fmt.Errorf("store: back up schema %d: %w", version, err)
 		}
 	}
-	for step := version; step < len(migrations); step++ {
+	for step := version; step < len(s.schema); step++ {
 		err := s.Update(ctx, func(tx Tx) error {
-			if migrations[step] == sessionMoveSchema {
+			if s.schema[step] == sessionMoveSchema {
 				if err := checkSessionMoveBindings(ctx, tx); err != nil {
 					return err
 				}
 			}
-			if _, err := tx.ExecContext(ctx, migrations[step]); err != nil {
+			if _, err := tx.ExecContext(ctx, s.schema[step]); err != nil {
 				return err
 			}
 			_, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", step+1))
@@ -256,7 +273,7 @@ CREATE INDEX IF NOT EXISTS observation_launch_turn ON observation(principal_id, 
 CREATE INDEX IF NOT EXISTS turn_launch_opened ON turn(principal_id, launch_ref, opened_hook_at_ms);`
 
 func (s *Store) ensureReadIndexes(ctx context.Context) error {
-	if !slices.Contains(migrations, adapterSchema) {
+	if !slices.Contains(s.schema, adapterSchema) {
 		return nil // a schema without launches or turns
 	}
 	return s.Update(ctx, func(tx Tx) error {

@@ -33,6 +33,9 @@ func blockSpokeCommand(env Env, o outputs, verb string, args []string) (core.Exi
 	switch verb {
 	case "link", "unlink", "help", "--help", "-h", "version", "--version", "run":
 		return core.ExitOK, false
+	// The member commands the device forwards to the home (#400).
+	case "join", "who", "inbox", "read", "ask", "reply", "note", "log", "leave", "focus":
+		return core.ExitOK, false
 	}
 	if verb == "owner" && len(args) > 0 && args[0] == "help" {
 		return core.ExitOK, false
@@ -45,7 +48,7 @@ func blockSpokeCommand(env Env, o outputs, verb string, args []string) (core.Exi
 		return o.fail(core.ExitRefused, core.CodeOwnerOnly, "the owner seat is on the home device "+target,
 			"ssh -- "+target+" crosshall owner help"), true
 	}
-	return o.fail(core.ExitUnavailable, core.CodeUnsent, "this device is linked to "+target+"; command forwarding is not available yet",
+	return o.fail(core.ExitUnavailable, core.CodeUnsent, "this device is linked to "+target+"; crosshall "+verb+" is not forwarded to the home yet",
 		"ask the owner to run crosshall link status from their own shell"), true
 }
 

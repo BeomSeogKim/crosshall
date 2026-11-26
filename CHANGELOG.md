@@ -12,6 +12,11 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 - **The home side of a hall on two devices, behind an opt-in (#400):** with `CROSSHALL_EXPERIMENTAL_LINK=1`, `crosshall link enroll --name <device>` records a device on the hall's home device and reads its secret on stdin, and `crosshall link serve` speaks the link protocol on stdin and stdout: a handshake that checks the hall, the device's proof of its secret and a common link version, then pings. The spoke starts both commands through the user's own SSH. Migration 031 adds the `hall` and `device` tables. The dispatcher keeps each device secret in its store, makes the home's proof and checks the device's itself, and no audit or replay record holds a secret; during enrollment the secret passes through a private owner spool packet (mode 0600), as every owner command's arguments do.
 - **Codex explains when the hall cannot wake it.** A join or first prompt names a missing managed app server and how to reopen it. A hand join with no reported route also points the user to `/hooks` to check trust.
 
+## v0.3.1 (2026-11-26)
+
+- **Release of v0.3.1-rc.2:** no product change since rc.2.
+- **Upgrade:** from v0.3.1-rc.2 the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, the first start backs up the store and runs migration 030 (schema 29 to 30); see [UPGRADING.md](UPGRADING.md#to-v031).
+
 ## v0.3.1-rc.2 (2026-11-26)
 
 - **Upgrade from v0.3.1-rc.1:** the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, follow the v0.3.1-rc.1 steps (migration 030). See [UPGRADING.md](UPGRADING.md#to-v031-rc2).

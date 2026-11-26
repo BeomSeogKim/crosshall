@@ -30,9 +30,7 @@ type SpokeLeaf struct {
 // on the home. A session the device registered before may register again
 // (a lost tmp leaf, a new vendor version); an unknown one only for a join,
 // which the member then sends to the home. A new directory is a new
-// registration: a new generation and the next epoch, at least the time in
-// milliseconds, so a fresh spoke store (linking again after the home went
-// back) still registers above what the home holds. The caller calls
+// registration: a new generation and the next epoch. The caller calls
 // Publish after commit.
 func RegisterSpokeHello(ctx context.Context, tx store.Tx, rendezvous string, hello wire.Hello, now time.Time) (Registration, error) {
 	var reg Registration
@@ -89,7 +87,7 @@ func RegisterSpokeHello(ctx context.Context, tx store.Tx, rendezvous string, hel
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(digest) DO UPDATE SET generation = excluded.generation, epoch = excluded.epoch,
 				file_identity = excluded.file_identity, created_at_ms = excluded.created_at_ms`,
-			reg.digest, id.Vendor, id.Key, reg.generation, max(epoch+1, now.UnixMilli()), reg.fileID, reg.version, now.UnixMilli())
+			reg.digest, id.Vendor, id.Key, reg.generation, epoch+1, reg.fileID, reg.version, now.UnixMilli())
 	}
 	if err == nil && reg.version != "" {
 		_, err = tx.ExecContext(ctx, `UPDATE spoke_leaf SET vendor_version = ? WHERE digest = ?`, reg.version, reg.digest)

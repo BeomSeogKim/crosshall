@@ -109,7 +109,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 	t.Helper()
 	f := &eventFixture{spokeFixture: newSpokeFixture(t)}
 	f.now.Store(int64(time.Hour))
-	f.e = &spokeEvents{db: f.m.db, members: f.m.members, dir: f.m.dir, boot: "boot-1",
+	f.e = &spokeEvents{db: f.m.db, members: f.m.members, stop: f.m, boot: "boot-1",
 		mono: func() (int64, error) { return f.now.Load(), nil }}
 	if err := f.dir.WriteFile("hook-publish-seq", []byte("5\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -309,7 +309,7 @@ func TestASpokeResumesOnlyWithinItsProcessAndBoot(t *testing.T) {
 	if s := subscribe(); s.Snapshot || s.FromSeq != 10 {
 		t.Fatalf("reconnect %+v", s)
 	}
-	f.e = &spokeEvents{db: f.m.db, members: f.m.members, dir: f.m.dir, boot: "boot-1", mono: f.e.mono}
+	f.e = &spokeEvents{db: f.m.db, members: f.m.members, stop: f.m, boot: "boot-1", mono: f.e.mono}
 	if s := subscribe(); !s.Snapshot {
 		t.Fatalf("new process %+v", s)
 	}
@@ -656,6 +656,8 @@ func TestASpokeRecoversFromAnOlderHome(t *testing.T) {
 // stream for good, and every command refuses with the way back.
 func TestASpokeStopsOnAHomeRollback(t *testing.T) {
 	f := newEventFixture(t)
+	published := newFakeLink()
+	f.m.attach(published)
 	home := newFakeHome()
 	f.start(t, home)
 	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{
@@ -671,14 +673,20 @@ func TestASpokeStopsOnAHomeRollback(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream went on after a rollback")
 	}
+	if !published.closed || f.m.current() != nil {
+		t.Fatal("the command link stayed published") // its reconnect loop would wait on it
+	}
 	for _, fr := range home.frames() {
 		var a link.Ack
 		if fr.Type == link.TypeAck && json.Unmarshal(fr.Body, &a) == nil && a.Seq == 3 {
 			t.Fatal("the older snapshot was acknowledged")
 		}
 	}
-	if n := f.count(t, `SELECT acked_seq * 10 + eligible FROM spoke_event_cursor`); n != 100 {
+	if n := f.count(t, `SELECT acked_seq * 100 + eligible * 10 + rolled_back FROM spoke_event_cursor`); n != 1001 {
 		t.Fatalf("cursor %d", n)
+	}
+	if stopped, err := rolledBackFlag(t.Context(), f.m.db); err != nil || !stopped {
+		t.Fatalf("the stop is not recorded: %v, %v", stopped, err)
 	}
 	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`) + f.count(t, `SELECT COUNT(*) FROM spoke_offer`); n != 23 {
 		t.Fatalf("the older snapshot applied: %d", n)
@@ -692,9 +700,111 @@ func TestASpokeStopsOnAHomeRollback(t *testing.T) {
 	if r.Code != domain.CodeHomeRolledBack || !strings.Contains(string(r.Data), "crosshall link") {
 		t.Fatalf("a command after the rollback: %+v", r)
 	}
+	if err := f.e.persistStop(t.Context()); err != nil {
+		t.Fatal(err) // what a restarted stream does: the same record again
+	}
 	id := wire.NewID()
 	raw, _ := json.Marshal(wire.Hello{Version: wire.Version, Attempt: id, Vendor: "codex", Key: "session", Intent: "join"})
 	if r, err := f.s.spokeHello(t.Context(), id, raw); err != nil || r.Code != domain.CodeHomeRolledBack {
 		t.Fatalf("first contact after the rollback: %+v, %v", r, err)
+	}
+}
+
+// The stop holds at the send boundary: a command that waited for the turn
+// while the rollback came, outbox recovery, and a link published after
+// it send nothing, and the published link is closed so the reconnect
+// loop sees the stop.
+func TestASpokeRollbackStopsTheCommandLink(t *testing.T) {
+	f := newEventFixture(t)
+	published := newFakeLink()
+	f.m.attach(published)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.ack(t, 10)
+	f.m.turn <- struct{}{} // an exchange in progress
+	queued := make(chan core.Result, 1)
+	go func() { queued <- f.send(t, "note", "k1") }()
+	time.Sleep(20 * time.Millisecond) // the command is past its checks, waiting for the turn
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true})
+	for !f.m.halted.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	<-f.m.turn
+	if r := <-queued; r.Code != domain.CodeHomeRolledBack {
+		t.Fatalf("the queued command: %+v", r)
+	}
+	if err := <-f.done; !errors.Is(err, errHomeRolledBack) {
+		t.Fatalf("rollback: %v", err)
+	}
+	if len(published.written) != 0 || !published.closed || f.m.current() != nil {
+		t.Fatalf("the published link: sent %v, closed %v", published.frames, published.closed)
+	}
+	// The fence itself, whichever of the two took the turn first.
+	direct := newFakeLink()
+	if _, err := f.m.roundTrip(t.Context(), direct, "call", domain.LinkCall{}, time.Now().Add(time.Second)); !errors.Is(err, errNotSent) ||
+		len(direct.written) != 0 || !direct.closed {
+		t.Fatalf("a send after the stop: %v, %v", err, direct.frames)
+	}
+	f.exec(t, `INSERT INTO link_outbox (vendor, key, op_key, command, args, state, at_ms)
+		VALUES ('codex', 'session', 'old', 'note', '{}', 'unknown', 1)`)
+	recovering := newFakeLink()
+	if f.s.recoverOutbox(t.Context(), recovering) || len(recovering.written) != 0 || !recovering.closed {
+		t.Fatalf("recovery after the stop: sent %v", recovering.frames)
+	}
+	late := newFakeLink()
+	f.m.attach(late)
+	if !late.closed || f.m.current() != nil {
+		t.Fatal("a link published after the stop")
+	}
+}
+
+// A stop the store cannot record still holds in this process, and is
+// recorded once a write succeeds; a reopened store reads it.
+func TestASpokeRollbackHoldsWhenItCannotBeRecorded(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.ack(t, 10)
+	f.exec(t, `CREATE TRIGGER deny BEFORE UPDATE OF rolled_back ON spoke_event_cursor BEGIN SELECT RAISE(ABORT, 'denied'); END`)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true})
+	if err := <-f.done; !errors.Is(err, errHomeRolledBack) || err == errHomeRolledBack {
+		t.Fatalf("an unrecorded rollback: %v", err)
+	}
+	if r := f.send(t, "note", "k1"); r.Code != domain.CodeHomeRolledBack {
+		t.Fatalf("a command after an unrecorded rollback: %+v", r)
+	}
+	if stopped, err := rolledBackFlag(t.Context(), f.m.db); err != nil || stopped {
+		t.Fatalf("recorded through a denied write: %v, %v", stopped, err)
+	}
+	f.exec(t, `DROP TRIGGER deny`)
+	if err := f.e.persistStop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := rolledBackFlag(t.Context(), f.m.db); err != nil || !stopped {
+		t.Fatalf("not recorded after the retry: %v, %v", stopped, err)
+	}
+	// A new dispatcher process starts stopped.
+	if m, err := newSpokeMembers(t.Context(), f.m.db, f.m.members); err != nil || !m.halted.Load() {
+		t.Fatalf("a restarted spoke: %v", err)
+	}
+	f.exec(t, `UPDATE spoke_event_cursor SET rolled_back = 0`)
+	if m, err := newSpokeMembers(t.Context(), f.m.db, f.m.members); err != nil || m.halted.Load() {
+		t.Fatalf("a spoke that was never stopped: %v", err)
+	}
+	f.exec(t, `DROP TABLE spoke_event_cursor`)
+	if _, err := newSpokeMembers(t.Context(), f.m.db, f.m.members); err == nil {
+		t.Fatal("a store that cannot be read started")
+	}
+}
+
+func (f *eventFixture) exec(t *testing.T, query string, args ...any) {
+	t.Helper()
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), query, args...)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

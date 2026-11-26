@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -27,7 +28,9 @@ import (
 type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
-	dir     string // the spoke store's directory
+	// halted is set once the home was restored to an older store: no
+	// command frame leaves afterwards, until the device links again.
+	halted atomic.Bool
 
 	// turn admits one frame exchange at a time; waiting for it is bounded
 	// by the caller's deadline.
@@ -104,7 +107,23 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 		return nil, err
 	}
 	root.Close()
-	return &spokeMembers{db: db, members: members, dir: dir, turn: make(chan struct{}, 1)}, nil
+	m, err := newSpokeMembers(ctx, db, members)
+	if err != nil {
+		db.Close()
+	}
+	return m, err
+}
+
+// newSpokeMembers starts stopped when the store recorded a home rollback;
+// a store it cannot read does not start.
+func newSpokeMembers(ctx context.Context, db *store.Store, members string) (*spokeMembers, error) {
+	stopped, err := rolledBackFlag(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}
+	m.halted.Store(stopped)
+	return m, nil
 }
 
 // setConn installs or clears the link the member commands go over. A new
@@ -120,8 +139,31 @@ func (m *spokeMembers) setConn(c *link.SSHConnection) {
 
 func (m *spokeMembers) attach(c spokeConn) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c != nil && m.halted.Load() {
+		c.Close()
+		return
+	}
 	m.conn = c
+}
+
+// halt stops the command transport for good: no frame is sent once it
+// returns. It waits for the exchange in progress, which may still finish,
+// then closes the published link so the reconnect loop sees the stop.
+func (m *spokeMembers) halt(ctx context.Context) {
+	m.halted.Store(true)
+	select {
+	case m.turn <- struct{}{}:
+		defer m.give()
+	case <-ctx.Done():
+	}
+	m.mu.Lock()
+	c := m.conn
+	m.conn = nil
 	m.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
 }
 
 func (m *spokeMembers) current() spokeConn {
@@ -181,6 +223,10 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 // sent the frame. Every failure closes the link, so a late answer is
 // never read as the next command's.
 func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
+	if m.halted.Load() {
+		m.drop(conn)
+		return core.Result{}, errNotSent // the caller refuses with home_rolled_back
+	}
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
 		return core.Result{}, errNotSent
 	}
@@ -294,7 +340,7 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 // rolledBackRefusal refuses every command of a device whose home was
 // restored to an older store, until it links again (#400, v1).
 func (s *server) rolledBackRefusal() *core.Result {
-	if !homeRolledBack(s.spokeMembers.dir) {
+	if !s.spokeMembers.halted.Load() {
 		return nil
 	}
 	r := domain.Refuse(domain.CodeHomeRolledBack, "the home device was restored from an older state",
@@ -343,6 +389,17 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 // are a conflict, an answered one shows its answer, and an unresolved one
 // is looked up receipt-only.
 func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
+	r, err := s.spokeForward(ctx, path, dir, id, raw)
+	if err == nil && r.Code == core.CodeUnsent {
+		// Nothing left: if the home went back meanwhile, say so.
+		if refusal := s.rolledBackRefusal(); refusal != nil {
+			return *refusal, nil
+		}
+	}
+	return r, err
+}
+
+func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
@@ -621,7 +678,7 @@ func (s *server) markUnknown(ctx context.Context, id int64) {
 // link may be published.
 func (s *server) recoverOutbox(ctx context.Context, conn spokeConn) bool {
 	m := s.spokeMembers
-	if homeRolledBack(m.dir) {
+	if m.halted.Load() {
 		conn.Close() // nothing is looked up on a home that went back
 		return false
 	}

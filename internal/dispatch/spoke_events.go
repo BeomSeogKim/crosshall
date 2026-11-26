@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -41,13 +40,17 @@ var errEventGap = errors.New("link: the event stream has a gap; a snapshot follo
 // older store. Nothing of it applies; the device links again (v1).
 var errHomeRolledBack = errors.New("link: the home was restored to an older store; run crosshall link again")
 
-// homeRolledBackFile, in the spoke store's directory, keeps a device that
-// saw its home roll back refusing until it links again.
-const homeRolledBackFile = "home-rolled-back"
-
-func homeRolledBack(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, homeRolledBackFile))
-	return err == nil
+// rolledBackFlag reads whether the spoke store recorded a home rollback.
+// A store whose cursor was never written has none.
+func rolledBackFlag(ctx context.Context, db *store.Store) (bool, error) {
+	var flag bool
+	err := db.View(ctx, func(tx store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT rolled_back FROM spoke_event_cursor WHERE id = 1`).Scan(&flag)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return flag, err
 }
 
 // spokeEvents keeps the home's event stream in the spoke store (#400,
@@ -57,36 +60,42 @@ func homeRolledBack(dir string) bool {
 type spokeEvents struct {
 	db      *store.Store
 	members string // the spoke's member rendezvous
-	dir     string // the spoke store's directory
 	boot    string
 	// resumed is set once this process applied a snapshot: until then a
 	// subscribe asks for one.
 	resumed bool
 	mono    func() (int64, error)
+	stop    *spokeMembers // halted on a home rollback
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
 // already made the cache ineligible (invalidateEvents).
-func newSpokeEvents(db *store.Store, members, dir string) (*spokeEvents, error) {
+func newSpokeEvents(m *spokeMembers) (*spokeEvents, error) {
 	boot, err := hostclock.Boot()
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: db, members: members, dir: dir, boot: boot, mono: hostclock.Mono}, nil
+	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono}, nil
 }
 
-// rolledBack stops the device: nothing cached counts, and the marker
-// makes every command refuse until the device links again.
+// rolledBack stops the device: first in this process, so no command
+// frame leaves after it, then in the store. A failed write still stops
+// the device; persistStop is tried again until it holds.
 func (e *spokeEvents) rolledBack(ctx context.Context, seq, acked uint64) error {
-	if err := e.ineligible(ctx); err != nil {
-		return err
-	}
-	note := fmt.Sprintf("snapshot %d below acknowledged %d\n", seq, acked)
-	if err := os.WriteFile(filepath.Join(e.dir, homeRolledBackFile), []byte(note), 0600); err != nil {
-		return err
-	}
+	e.stop.halt(ctx)
 	log.Printf("dispatcher: the home sent snapshot %d below acknowledged event %d: it was restored to an older store; the link stops until crosshall link runs again", seq, acked)
+	if err := e.persistStop(ctx); err != nil {
+		return fmt.Errorf("%w (recording it: %v)", errHomeRolledBack, err)
+	}
 	return errHomeRolledBack
+}
+
+// persistStop records the rollback, so a restarted dispatcher refuses too.
+func (e *spokeEvents) persistStop(ctx context.Context) error {
+	return e.db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 0, rolled_back = 1 WHERE id = 1`)
+		return err
+	})
 }
 
 // invalidateEvents records that nothing cached may be served until a
@@ -136,7 +145,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	// unconsumed.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if homeRolledBack(e.dir) {
+	if e.stop.halted.Load() {
 		return errHomeRolledBack
 	}
 	var cur eventCursor

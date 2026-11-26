@@ -119,6 +119,11 @@ func eventually(t *testing.T, what string, ok func() bool) {
 // the way back, and linking again starts a fresh spoke store, the old one
 // kept aside.
 func TestSpokeLinkHomeRestoredFromBackup(t *testing.T) {
+	t.Run("link again", func(t *testing.T) { homeRestoredFromBackup(t, false) })
+	t.Run("unlink and enroll again", func(t *testing.T) { homeRestoredFromBackup(t, true) })
+}
+
+func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	f := newLinkFixture(t, binary, binary)
 	home, spoke := f.home.owner(), f.spoke.owner()
 	home.must("owner", "start")
@@ -138,6 +143,13 @@ func TestSpokeLinkHomeRestoredFromBackup(t *testing.T) {
 		return seq
 	}
 	eventually(t, "the spoke acknowledged the join", func() bool { return acked() > 0 })
+	// Moved before the backup: the restored home selects #second at a
+	// generation above 1, which a stampless call does not match.
+	if got := member.run("join", "second", "--move"); got.exit != 0 {
+		t.Fatalf("join second: %+v", got)
+	}
+	moved := acked()
+	eventually(t, "the spoke acknowledged the move", func() bool { return acked() > moved })
 
 	backup := t.TempDir()
 	home.must("owner", "stop")
@@ -145,8 +157,8 @@ func TestSpokeLinkHomeRestoredFromBackup(t *testing.T) {
 	home.must("owner", "start")
 	waitSpokeLink(t, spoke, "connected")
 	before := acked()
-	if got := member.run("join", "second", "--move"); got.exit != 0 {
-		t.Fatalf("join second: %+v", got)
+	if got := member.run("join", "first", "--move"); got.exit != 0 {
+		t.Fatalf("join first after the backup: %+v", got)
 	}
 	eventually(t, "the spoke acknowledged events after the backup", func() bool { return acked() > before })
 
@@ -154,28 +166,42 @@ func TestSpokeLinkHomeRestoredFromBackup(t *testing.T) {
 	copyStore(t, backup, f.home.state)
 	home.must("owner", "start")
 	eventually(t, "the spoke saw the home go back", func() bool {
-		marks, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*", "home-rolled-back"))
-		return len(marks) == 1
+		var stopped int64
+		return spokeDB.QueryRow(`SELECT rolled_back FROM spoke_event_cursor`).Scan(&stopped) == nil && stopped == 1
 	})
 	got := member.run("who")
 	if got.obj["code"] != "home_rolled_back" || !strings.Contains(got.stdout, "crosshall link "+linkFixtureTarget+" again") {
 		t.Fatalf("a command after the home went back: %+v", got)
 	}
+	// A new dispatcher process reads the stop from the store.
+	running := linkDispatcher(f.spoke)
+	if err := running.process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the spoke dispatcher stopped", func() bool { return !running.alive() })
+	if got := member.run("who"); got.obj["code"] != "home_rolled_back" {
+		t.Fatalf("a command after a restart: %+v", got)
+	}
 
-	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke")
+	if unlink {
+		spoke.must("unlink")
+		spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+	} else {
+		spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+	}
 	waitSpokeLink(t, spoke, "connected")
 	aside, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*-rolled-back-*", "store.sqlite3"))
 	if len(aside) != 1 {
 		t.Fatalf("the old spoke store was not kept aside: %v", aside)
 	}
-	if got := member.run("join", "first"); got.exit != 0 {
+	if got := member.run("join", "second"); got.exit != 0 {
 		data, _ := os.ReadFile(filepath.Join(f.spoke.state, "dispatcher.log"))
 		if len(data) > 3000 {
 			data = data[len(data)-3000:]
 		}
 		t.Fatalf("join after linking again: %+v\n%s", got, data)
 	}
-	if got := member.must("who"); !strings.Contains(got.stdout, "first") {
+	if got := member.must("who"); !strings.Contains(got.stdout, "second") {
 		t.Fatalf("who after linking again: %+v", got)
 	}
 }

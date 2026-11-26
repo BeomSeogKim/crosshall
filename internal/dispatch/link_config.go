@@ -20,6 +20,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 const (
@@ -138,10 +139,26 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 		if c.Target != target || name != "" && c.Name != name {
 			return link.Status{}, fmt.Errorf("already linked to %s as %s; run crosshall unlink first", c.Target, c.Name)
 		}
-		if err := cfg.setAsideRolledBack(ctx, state, c); err != nil {
+		aside, err := cfg.setAsideRolledBack(ctx, state, c)
+		if err != nil {
 			return link.Status{}, err
 		}
-		return cfg.startSpoke(ctx)
+		if aside == nil {
+			return cfg.startSpoke(ctx)
+		}
+		// The home went back to an older store: the device enrolls again
+		// on a fresh store. The new credential generation lets its
+		// sessions register anew and make their first call without the
+		// stamps the old store held.
+		if err := cfg.changeLinkMode(ctx, state, func() error {
+			if err := aside(); err != nil {
+				return err
+			}
+			return state.Remove(spokeConfigFile)
+		}); err != nil {
+			return link.Status{}, err
+		}
+		name = c.Name
 	}
 	var pending linkEnrollment
 	fresh := false
@@ -207,7 +224,20 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	}
 	conn.Close()
 	_ = conn.Wait()
-	if err := cfg.changeLinkMode(ctx, state, func() error { return spool.PublishServerFile(state, spokeConfigFile, c) }); err != nil {
+	// The same hall and device name may come back after an unlink: a
+	// store its home rolled back is not used again.
+	aside, err := cfg.setAsideRolledBack(ctx, state, c)
+	if err != nil {
+		return link.Status{}, err
+	}
+	if err := cfg.changeLinkMode(ctx, state, func() error {
+		if aside != nil {
+			if err := aside(); err != nil {
+				return err
+			}
+		}
+		return spool.PublishServerFile(state, spokeConfigFile, c)
+	}); err != nil {
 		return link.Status{}, err
 	}
 	_ = state.Remove(spokeEnrollFile)
@@ -320,25 +350,34 @@ func localLinkName(name string) (string, error) {
 	return name, nil
 }
 
-// setAsideRolledBack moves the spoke store of a device whose home was
-// restored to an older store out of the way, kept, so the dispatcher
-// starts on a fresh one (#400, v1). Sessions join again.
-func (cfg LaunchConfig) setAsideRolledBack(ctx context.Context, state *os.Root, c linkConfig) error {
+// setAsideRolledBack returns the change that moves the spoke store of a
+// device whose home was restored to an older store out of the way, kept,
+// with its member rendezvous, so the dispatcher starts on a fresh one and
+// sessions make first contact again (#400, v1); nil when there is none.
+// The caller runs it with the dispatcher stopped.
+func (cfg LaunchConfig) setAsideRolledBack(ctx context.Context, state *os.Root, c linkConfig) (func() error, error) {
 	name := filepath.Join("spoke", c.Hall+"-"+c.Device)
-	if _, err := state.Lstat(filepath.Join(name, homeRolledBackFile)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+	if _, err := state.Lstat(filepath.Join(name, "store.sqlite3")); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
 	}
-	suffix := fmt.Sprintf("-rolled-back-%d", time.Now().UnixMilli())
-	// The member rendezvous follows the store's path, so its leaves of the
-	// old registrations go aside too: sessions make first contact again.
-	members := ident.Rendezvous(filepath.Join(cfg.StateRoot, name), os.Geteuid())
-	return cfg.changeLinkMode(ctx, state, func() error {
+	dir := filepath.Join(cfg.StateRoot, name)
+	db, err := store.OpenSpoke(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	stopped, err := rolledBackFlag(ctx, db)
+	db.Close()
+	if err != nil || !stopped {
+		return nil, err
+	}
+	members := ident.Rendezvous(dir, os.Geteuid())
+	return func() error {
+		suffix := fmt.Sprintf("-rolled-back-%d", time.Now().UnixMilli())
 		if err := os.Rename(members, members+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return state.Rename(name, name+suffix)
-	})
+	}, nil
 }

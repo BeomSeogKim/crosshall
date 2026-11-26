@@ -164,7 +164,7 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 	spoke := cfg.spoke(s.cfg.Version)
 	backoff := time.Second
 	for ctx.Err() == nil {
-		if homeRolledBack(s.spokeMembers.dir) {
+		if s.spokeMembers.halted.Load() {
 			// Commands refuse until crosshall link runs again; the home
 			// is not dialed meanwhile.
 			status.Error = "the home device was restored from an older state; run crosshall link " + cfg.Target + " again"
@@ -212,7 +212,7 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 // own (#400, design 12j), so the command connection stays a plain call
 // and result exchange. A home that serves no events is asked again rarely.
 func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
-	events, err := newSpokeEvents(s.spokeMembers.db, s.spokeMembers.members, s.spokeMembers.dir)
+	events, err := newSpokeEvents(s.spokeMembers)
 	if err != nil {
 		log.Printf("dispatcher: the event stream is off: %v", err)
 		return
@@ -221,8 +221,17 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 	spoke.Caps = []string{link.CapEvents}
 	backoff := time.Second
 	for ctx.Err() == nil {
-		if homeRolledBack(s.spokeMembers.dir) {
-			return // until crosshall link runs again
+		if s.spokeMembers.halted.Load() {
+			// Until crosshall link runs again; the stop is recorded until
+			// a write holds.
+			for wait := time.Second; events.persistStop(ctx) != nil; wait = min(2*wait, time.Minute) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
+			return
 		}
 		limit := time.Minute
 		connection, err := link.DialSSH(ctx, cfg.Endpoint, spoke)
@@ -243,7 +252,10 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 			return
 		}
 		if errors.Is(err, errHomeRolledBack) {
-			return
+			if err != errHomeRolledBack {
+				log.Printf("dispatcher: event stream: %v", err)
+			}
+			continue
 		}
 		if err != nil && !errors.Is(err, errEventGap) {
 			log.Printf("dispatcher: event stream: %v", err)

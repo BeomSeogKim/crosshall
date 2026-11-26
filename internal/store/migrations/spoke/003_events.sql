@@ -9,7 +9,10 @@ CREATE TABLE spoke_event_cursor (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     boot TEXT NOT NULL,
     acked_seq INTEGER NOT NULL,
-    eligible INTEGER NOT NULL CHECK (eligible IN (0, 1))
+    eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+    -- 1 once the home sent a snapshot below acked_seq: it was restored to
+    -- an older store, and the device refuses until it links again.
+    rolled_back INTEGER NOT NULL DEFAULT 0 CHECK (rolled_back IN (0, 1))
 );
 
 -- A member's scope as the home last sent it.

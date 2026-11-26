@@ -67,11 +67,13 @@ func runSuite(m *testing.M) int {
 // world is one isolated installation: a home, a state root that does not
 // exist yet, and the rendezvous root the dispatcher derives from it.
 type world struct {
-	t       *testing.T
-	home    string
-	state   string
-	lease   *os.File
-	workers *os.File
+	t          *testing.T
+	home       string
+	state      string
+	executable string
+	extraEnv   []string
+	lease      *os.File
+	workers    *os.File
 }
 
 func newWorld(t *testing.T) *world {
@@ -113,11 +115,18 @@ func (w *world) baseEnv() []string {
 	if sentinel := os.Getenv("CROSSHALL_TEST_VENDOR_SENTINEL"); sentinel != "" {
 		env = append(env, "CROSSHALL_TEST_VENDOR_SENTINEL="+sentinel)
 	}
-	return env
+	return append(env, w.extraEnv...)
 }
 
 func (w *world) dispatcherLeaseEnv() string {
 	return "CROSSHALL_TEST_DISPATCHER_LEASE_DIR=" + filepath.Dir(w.lease.Name())
+}
+
+func (w *world) binaryPath() string {
+	if w.executable != "" {
+		return w.executable
+	}
+	return binary
 }
 
 type participant struct {
@@ -147,7 +156,7 @@ func (p *participant) env() []string {
 // run executes crosshall with --json and decodes its single output object.
 func (p *participant) run(args ...string) outcome {
 	p.w.t.Helper()
-	cmd := exec.Command(binary, append([]string{"--json"}, args...)...)
+	cmd := exec.Command(p.w.binaryPath(), append([]string{"--json"}, args...)...)
 	cmd.Env = p.env()
 	cmd.Dir = p.w.home
 	var out, errOut bytes.Buffer
@@ -216,7 +225,7 @@ func (p *participant) mustFixtureWrite(args ...string) {
 
 func (p *participant) mustPlain(args ...string) string {
 	p.w.t.Helper()
-	cmd := exec.Command(binary, args...)
+	cmd := exec.Command(p.w.binaryPath(), args...)
 	cmd.Dir, cmd.Env = p.w.home, p.env()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

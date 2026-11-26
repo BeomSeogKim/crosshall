@@ -333,6 +333,21 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			"hook facts of a linked device reach the hall in a later release", ""), nil
 	}
 	m := s.spokeMembers
+	retried := req.Verb == domain.VerbRetry
+	var replacing int64 // the record a retry sends again
+	if retried {
+		var done *core.Result
+		var err error
+		var resend wire.Request
+		resend, replacing, done, err = s.spokeRetry(ctx, path, dir, req)
+		if err != nil || done != nil {
+			if done != nil {
+				return *done, nil
+			}
+			return core.Result{}, err
+		}
+		req = resend
+	}
 	if req.Verb == domain.VerbJoin {
 		req.Args = withoutLocalLaunch(req.Args)
 	}
@@ -349,6 +364,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	}
 	var leaf ident.SpokeLeaf
 	var rec outboxRecord
+	var occupied, raced bool
 	journal, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	err := m.db.Update(journal, func(tx store.Tx) error {
@@ -359,11 +375,32 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			return err
 		}
 		rec, err = recordOutbox(ctx, tx, leaf, req)
-		return err
+		if err != nil || replacing == 0 {
+			return err
+		}
+		if !rec.fresh {
+			occupied = true // the key names another record: change nothing
+			return nil
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE link_outbox SET replaced_by = ? WHERE id = ?
+			AND (replaced_by IS NULL OR replaced_by NOT IN (SELECT op_key FROM link_outbox WHERE vendor = ? AND key = ?))`,
+			req.OpKey, replacing, leaf.Vendor, leaf.Key)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			raced = true
+			return errRefusalRollback // another retry claimed it first: undo this record
+		}
+		return nil
 	})
 	var env *ident.EnvironmentError
 	if errors.As(err, &env) {
 		return domain.Fail(core.ExitNotEnrolled, env.Code, env.Message, "crosshall join <channel>"), nil
+	}
+	if raced {
+		return domain.Refuse(core.CodeKeyConflict, "another retry is already sending this command again",
+			"crosshall retry "+retryKey(req)+" shows its outcome"), nil
 	}
 	if err != nil && journal.Err() != nil {
 		return unsent, nil // the record was not committed, and nothing was sent
@@ -375,9 +412,12 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	call := domain.LinkCall{Vendor: leaf.Vendor, Key: leaf.Key, LeafGeneration: leaf.Generation, LeafEpoch: leaf.Epoch,
 		Command: req.Verb, Args: req.Args, OpKey: req.OpKey, Membership: req.Membership, Ack: req.Ack}
 	switch {
+	case occupied:
+		return domain.Refuse(core.CodeKeyConflict, "this key already names another command of this session",
+			"run crosshall retry without --key"), nil
 	case rec.conflict:
 		return domain.Refuse(core.CodeKeyConflict, "this operation key was already used for a different command",
-			"send the original command again with this key, or drop --key to send a new one"), nil
+			"crosshall retry "+req.OpKey+" shows what the hall did with the original"), nil
 	case rec.answer != nil:
 		return *rec.answer, nil
 	case !rec.fresh && req.OpKey != "":
@@ -388,9 +428,10 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			return unsent, nil // the record stays for recovery
 		}
 		if err != nil {
-			return unknownOutcome("the link to the home ended before its answer", req.OpKey), nil
+			return lostAnswer(req.OpKey), nil
 		}
 		s.settleOutbox(ctx, rec.id, &answer)
+		s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
 		return answer, nil
 	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
@@ -402,16 +443,14 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	}
 	if err != nil {
 		s.markUnknown(ctx, rec.id)
-		return unknownOutcome("the link to the home ended before its answer", req.OpKey), nil
+		return lostAnswer(req.OpKey), nil
 	}
 	s.settleOutbox(ctx, rec.id, &result)
-	if result.Membership != nil {
-		s.logFailure(m.db.Update(ctx, func(tx store.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ? WHERE vendor = ? AND key = ?`,
-				result.Membership.BindingID, result.Membership.Generation, leaf.Vendor, leaf.Key)
-			return err
-		}))
-		s.logFailure(ident.RepublishMembership(dir, *result.Membership))
+	s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
+	if retried && result.Status == core.ExitOK {
+		if data, err := json.Marshal(domain.RetryResult{Command: req.Verb, Result: result.Data}); err == nil {
+			result.Data = data
+		}
 	}
 	return result, nil
 }
@@ -491,14 +530,21 @@ func recordOutbox(ctx context.Context, tx store.Tx, leaf ident.SpokeLeaf, req wi
 	return rec, nil
 }
 
-// settleOutbox closes a record: removed when nothing was sent, done with
-// the home's answer otherwise.
+// settleOutbox closes a record in one transaction: removed when nothing
+// was sent, along with any retry's pointer to it; or done with the home's
+// answer, together with the membership that answer carries when it is
+// newer than the device's, so a stored receipt and the selection it
+// moved to never part.
 func (s *server) settleOutbox(ctx context.Context, id int64, result *core.Result) {
 	if id == 0 {
 		return
 	}
 	s.logFailure(s.spokeMembers.db.Update(ctx, func(tx store.Tx) error {
 		if result == nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE link_outbox SET replaced_by = NULL
+				WHERE (vendor, key, replaced_by) IN (SELECT vendor, key, op_key FROM link_outbox WHERE id = ?)`, id); err != nil {
+				return err
+			}
 			_, err := tx.ExecContext(ctx, `DELETE FROM link_outbox WHERE id = ?`, id)
 			return err
 		}
@@ -506,9 +552,36 @@ func (s *server) settleOutbox(ctx context.Context, id int64, result *core.Result
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE link_outbox SET state = 'done', result = ? WHERE id = ?`, string(raw), id)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE link_outbox SET state = 'done', result = ? WHERE id = ?`, string(raw), id); err != nil {
+			return err
+		}
+		return adoptMembershipTx(ctx, tx, id, result.Membership)
 	}))
+}
+
+// adoptMembershipTx records the membership of a record's answer on its
+// session, unless the device already holds a newer one.
+func adoptMembershipTx(ctx context.Context, tx store.Tx, id int64, m *core.Membership) error {
+	if m == nil {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ?
+		WHERE (vendor, key) IN (SELECT vendor, key FROM link_outbox WHERE id = ?) AND membership_gen < ?`,
+		m.BindingID, m.Generation, id, m.Generation)
+	return err
+}
+
+// publishSelection writes the session's current selection to its leaf
+// before an answer returns, so the member's next command carries it.
+func (s *server) publishSelection(ctx context.Context, dir *os.Root, vendor, key string) {
+	var m core.Membership
+	err := s.spokeMembers.db.Update(ctx, func(tx store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE vendor = ? AND key = ?`,
+			vendor, key).Scan(&m.BindingID, &m.Generation)
+	})
+	if err == nil && m.Generation > 0 {
+		s.logFailure(ident.RepublishMembership(dir, m))
+	}
 }
 
 func (s *server) markUnknown(ctx context.Context, id int64) {
@@ -579,4 +652,151 @@ func (s *server) recoverOutbox(ctx context.Context, conn spokeConn) bool {
 		s.settleOutbox(ctx, r.id, &result)
 	}
 	return true
+}
+
+// lostAnswer reports a forwarded command whose answer never came: the
+// device looks it up on the next connection, and the member may send it
+// again as a new request.
+func lostAnswer(key string) core.Result {
+	if key == "" {
+		return unknownOutcome("the link to the home ended before its answer", "")
+	}
+	return domain.Fail(core.ExitUnavailable, core.CodeOutcomeUnknown, "the link to the home ended before its answer",
+		"crosshall retry "+key+" shows what the hall did with it; if the hall has no receipt, it sends the command again as a new operation, which may repeat its effect")
+}
+
+// spokeRetry answers crosshall retry from the outbox (#400). An outcome
+// the home answered is shown as it is; a record without one is looked up
+// receipt-only first. A fenced request will never run under its key, but
+// may have run before its receipt expired: only then is it sent again,
+// as a new operation that may repeat its effect, once. The replacement's
+// key is written to the original's record before it is sent, so a
+// repeated retry, or a replay of this one, resolves that replacement
+// (its stored answer, or receipt-only) and never sends another. The
+// returned request is the resend; done ends the retry with its answer.
+func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req wire.Request) (wire.Request, int64, *core.Result, error) {
+	var retry domain.Retry
+	if err := json.Unmarshal(req.Args, &retry); err != nil || retry.Key == "" || retry.Key == req.OpKey {
+		r := commandError(core.ExitUsage, "", "usage: crosshall retry <key>")
+		return req, 0, &r, nil
+	}
+	m := s.spokeMembers
+	deadline := time.UnixMilli(req.ExpiresAtMS)
+	var leaf ident.SpokeLeaf
+	load := func(key string) (int64, domain.LinkCall, string, sql.NullString, sql.NullString, error) {
+		var id int64
+		var call domain.LinkCall
+		var state string
+		var stored, replaced sql.NullString
+		err := m.db.Update(ctx, func(tx store.Tx) error {
+			var err error
+			leaf, err = ident.ResolveSpokeMember(ctx, tx, m.members, ident.Ingress{Path: path, Dir: dir},
+				ident.Proof{KeyDigest: req.KeyDigest, Generation: req.Generation})
+			if err != nil {
+				return err
+			}
+			var args string
+			var membership sql.NullString
+			err = tx.QueryRowContext(ctx, `SELECT id, command, args, membership, state, result, replaced_by FROM link_outbox
+				WHERE vendor = ? AND key = ? AND op_key = ?`, leaf.Vendor, leaf.Key, key).
+				Scan(&id, &call.Command, &args, &membership, &state, &stored, &replaced)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			call.Vendor, call.Key, call.OpKey, call.Args = leaf.Vendor, leaf.Key, key, json.RawMessage(args)
+			if err == nil && membership.Valid {
+				call.Membership = new(core.Membership)
+				err = json.Unmarshal([]byte(membership.String), call.Membership)
+			}
+			return err
+		})
+		return id, call, state, stored, replaced, err
+	}
+	// resolve returns the answer for a record: stored, or looked up.
+	resolve := func(id int64, call domain.LinkCall, state string, stored sql.NullString) (core.Result, *core.Result) {
+		var answer core.Result
+		if state == "done" && stored.Valid {
+			if err := json.Unmarshal([]byte(stored.String), &answer); err == nil {
+				// A stored answer's move is applied again, in case its
+				// first application failed; never backwards.
+				s.logFailure(m.db.Update(ctx, func(tx store.Tx) error { return adoptMembershipTx(ctx, tx, id, answer.Membership) }))
+				s.publishSelection(ctx, dir, call.Vendor, call.Key)
+				return answer, nil
+			}
+		}
+		answer, err := m.exchange(ctx, "receipt", call, deadline)
+		if errors.Is(err, errNotSent) {
+			r := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
+				"run crosshall link status, then crosshall retry "+retry.Key+" again")
+			return answer, &r
+		}
+		if err != nil {
+			r := lostAnswer(retry.Key)
+			return answer, &r
+		}
+		s.settleOutbox(ctx, id, &answer)
+		s.publishSelection(ctx, dir, call.Vendor, call.Key)
+		return answer, nil
+	}
+	shown := func(command string, answer core.Result) *core.Result {
+		if answer.Status != core.ExitOK {
+			return &answer
+		}
+		data, err := json.Marshal(domain.RetryResult{Command: command, Result: answer.Data})
+		if err != nil {
+			return &answer
+		}
+		answer.Data = data
+		return &answer
+	}
+	id, call, state, stored, replaced, err := load(retry.Key)
+	var env *ident.EnvironmentError
+	if errors.As(err, &env) {
+		r := domain.Fail(core.ExitNotEnrolled, env.Code, env.Message, "crosshall join <channel>")
+		return req, 0, &r, nil
+	}
+	if err != nil {
+		return req, 0, nil, err
+	}
+	if id == 0 {
+		r := domain.Refuse(core.CodeNotFound, "this device has no command of this session under that key",
+			"crosshall log shows what the hall stored")
+		return req, 0, &r, nil
+	}
+	answer, stop := resolve(id, call, state, stored)
+	if stop != nil {
+		return req, 0, stop, nil
+	}
+	if answer.Code != domain.CodeLinkFenced {
+		return req, 0, shown(call.Command, answer), nil
+	}
+	if replaced.Valid {
+		// Sent again before: that request is the retry's answer.
+		rid, rcall, rstate, rstored, _, err := load(replaced.String)
+		if err != nil {
+			return req, 0, nil, err
+		}
+		if rid != 0 {
+			answer, stop := resolve(rid, rcall, rstate, rstored)
+			if stop != nil {
+				return req, 0, stop, nil
+			}
+			return req, 0, shown(rcall.Command, answer), nil
+		}
+		// A pointer without its replacement: nothing of it was sent.
+	}
+	// The resend's record and the original's pointer to it are written
+	// together, under the send turn (spokeCommand).
+	req.Verb, req.Args = call.Command, call.Args
+	return req, id, nil, nil
+}
+
+// retryKey is the original key a resend replaces, for hints.
+func retryKey(req wire.Request) string {
+	var r domain.Retry
+	_ = json.Unmarshal(req.Args, &r)
+	if r.Key != "" {
+		return r.Key
+	}
+	return "<key>"
 }

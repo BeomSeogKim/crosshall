@@ -249,6 +249,65 @@ func TestASpokeClosesALinkTheHomeClosed(t *testing.T) {
 	}
 }
 
+// crosshall retry shows an outcome the home answered, looks a lost one up
+// first, and sends again only what the home fenced, under its own new key
+// with the original bytes.
+func TestASpokeRetrySendsAgainOnlyWhatNeverRan(t *testing.T) {
+	f := newSpokeFixture(t)
+	// k1: answered. k2: answer lost, and the home has it. k3: answer lost,
+	// and the home fences it.
+	fake := newFakeLink()
+	f.m.attach(fake)
+	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":1}`)})
+	f.send(t, "note", "k1")
+	for _, key := range []string{"k2", "k3"} {
+		ended := newFakeLink()
+		close(ended.answers)
+		f.m.attach(ended)
+		if r := f.send(t, "note", key); r.Code != core.CodeOutcomeUnknown {
+			t.Fatalf("%s: %+v", key, r)
+		}
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	retry := func(key, newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"`+key+`"}`, 2*time.Second)
+	}
+	inner := func(r core.Result) string {
+		t.Helper()
+		var out domain.RetryResult
+		if err := json.Unmarshal(r.Data, &out); err != nil || out.Command != "note" {
+			t.Fatalf("retry result %s", r.Data)
+		}
+		return string(out.Result)
+	}
+	if r := retry("k1", "r1"); r.Status != core.ExitOK || inner(r) != `{"id":1}` || len(link.frames) != 0 {
+		t.Fatalf("answered retry %+v, frames %v", r, link.frames)
+	}
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":2}`)})
+	if r := retry("k2", "r2"); r.Status != core.ExitOK || inner(r) != `{"id":2}` ||
+		len(link.frames) != 1 || link.frames[0] != "receipt" || link.written[0].OpKey != "k2" {
+		t.Fatalf("lost retry %+v, frames %v", r, link.frames)
+	}
+	link.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":3}`)})
+	if r := retry("k3", "r3"); r.Status != core.ExitOK || inner(r) != `{"id":3}` {
+		t.Fatalf("fenced retry %+v", r)
+	}
+	resend := link.written[2]
+	if link.frames[1] != "receipt" || link.frames[2] != "call" || resend.OpKey != "r3" || resend.Command != "note" ||
+		string(resend.Args) != `{"all":true,"body":"hi"}` {
+		t.Fatalf("resend %v %+v", link.frames, resend)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r3' AND state = 'done'`); n != 1 {
+		t.Fatalf("the resend has no record of its own")
+	}
+	if r := retry("k9", "r9"); r.Code != core.CodeNotFound {
+		t.Fatalf("unknown key %+v", r)
+	}
+}
+
 // A key already in the outbox is never reset or dropped: with the link
 // down the record stays for recovery, other bytes are a conflict, and the
 // same request is looked up, never sent again.
@@ -366,6 +425,69 @@ func TestASpokeSendsNothingPastItsDeadline(t *testing.T) {
 	}
 }
 
+// A fenced command is sent again once: a replay of the same retry, a
+// replay with the link down, and a repeated retry under another key all
+// resolve that resend, receipt-only, and never send another.
+func TestASpokeRetrySendsAFencedCommandAgainOnce(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	f.send(t, "note", "k1")
+	retry := func(newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"k1"}`, 2*time.Second)
+	}
+	// The resend's answer is lost too.
+	lossy := newFakeLink()
+	lossy.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	lossy.onWrite = func(frame string, _ any) {
+		if frame == "call" {
+			close(lossy.answers) // the link ends before the resend's answer
+		}
+	}
+	f.m.attach(lossy)
+	if r := retry("r1"); r.Code != core.CodeOutcomeUnknown || len(lossy.frames) != 2 || lossy.frames[1] != "call" || lossy.written[1].OpKey != "r1" {
+		t.Fatalf("first retry %+v, frames %v", r, lossy.frames)
+	}
+	f.m.attach(nil)
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("replay with the link down %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r1'`); n != 1 {
+		t.Fatalf("the resend's record is gone")
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	// k1's fenced answer is stored: only the resend is looked up.
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":5}`)})
+	if r := retry("r2"); r.Status != core.ExitOK || len(link.frames) != 1 || link.frames[0] != "receipt" || link.written[0].OpKey != "r1" {
+		t.Fatalf("repeated retry %+v, frames %v %+v", r, link.frames, link.written)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r2'`); n != 0 {
+		t.Fatalf("a repeated retry recorded another resend")
+	}
+}
+
+// A recovered answer never rolls the member's selection back.
+func TestASpokeKeepsTheNewestMembership(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 7, Generation: 3}})
+	f.send(t, "note", "k1")
+	var id int64
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT id FROM link_outbox WHERE op_key = 'k1'`).Scan(&id)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.settleOutbox(t.Context(), id, &core.Result{Status: core.ExitOK, Membership: &core.Membership{BindingID: 4, Generation: 2}})
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
+		t.Fatalf("selection %d after an older receipt", n)
+	}
+}
+
 // A frame that gets no byte out by its deadline (the home stopped
 // reading) leaves nothing behind: unsent, the link closed, and the
 // command's own record removed. A home that reads but never answers
@@ -388,5 +510,76 @@ func TestASpokeTellsUnsentFromUnanswered(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k2' AND state = 'unknown'`); n != 1 {
 		t.Fatalf("an unanswered command lost its record")
+	}
+}
+
+// A retry that sends nothing leaves the original untouched, and a key that
+// already names another command is refused without claiming the original:
+// a later retry sends the command again.
+func TestASpokeRetryClaimsTheOriginalOnlyWithItsResend(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	f.send(t, "note", "k1")
+	fence := newFakeLink()
+	fence.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	fence.full = false
+	f.m.attach(fence)
+	retry := func(newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"k1"}`, 2*time.Second)
+	}
+	// The fence is found and stored, but the resend's frame gets no byte out.
+	fence.onWrite = func(frame string, _ any) {
+		if frame == "receipt" {
+			fence.full = true
+		}
+	}
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("unsent resend %+v", r)
+	}
+	f.m.attach(nil)
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("link down %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE replaced_by IS NOT NULL OR op_key = 'r1'`); n != 0 {
+		t.Fatalf("an unsent retry left %d claims", n)
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":55}`)})
+	f.sendArgs(t, "note", "taken", `{"all":true,"body":"other"}`, 2*time.Second)
+	if r := retry("taken"); r.Code != core.CodeKeyConflict || len(link.frames) != 1 {
+		t.Fatalf("occupied key %+v, frames %v", r, link.frames)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE replaced_by IS NOT NULL`); n != 0 {
+		t.Fatalf("a refused retry claimed the original")
+	}
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":56}`)})
+	if r := retry("r2"); r.Status != core.ExitOK || link.frames[1] != "call" || link.written[1].OpKey != "r2" {
+		t.Fatalf("later retry %+v, frames %v", r, link.frames)
+	}
+}
+
+// A stored answer whose move was never applied is applied when a retry
+// shows it, never backwards.
+func TestASpokeRetryAppliesAStoredMove(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 7, Generation: 3}})
+	f.send(t, "note", "k1")
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `UPDATE spoke_leaf SET binding_id = 4, membership_gen = 2`)
+		return err
+	}); err != nil {
+		t.Fatal(err) // the move's first application failed
+	}
+	if r := f.sendArgs(t, domain.VerbRetry, "r1", `{"key":"k1"}`, 2*time.Second); r.Status != core.ExitOK || len(link.frames) != 1 {
+		t.Fatalf("retry %+v, frames %v", r, link.frames)
+	}
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
+		t.Fatalf("selection %d after the stored move", n)
 	}
 }

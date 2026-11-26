@@ -46,6 +46,8 @@ Member commands:
   publish on|off                                    Turn notices to your session on or off;
                                                     on never overrides an owner's off
   leave                                             Leave your channel
+  retry <key>                                       On a linked device: show what the hall did with a
+                                                    command whose outcome was unknown, or send it again
   run -- <command> [args...]                        Run a command with its own identity
 
 Other:
@@ -264,6 +266,11 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 	case domain.VerbNote, domain.VerbLog, domain.VerbLeave, domain.VerbFocus:
 		return runNoteLog(ctx, env, opts, verb, rest, stdout, stderr)
 	// end note-log
+	case domain.VerbRetry:
+		if len(rest) != 1 || rest[0] == "" {
+			return o.usage("usage: crosshall retry <key>")
+		}
+		return send(ctx, env, opts, Call{Command: domain.Retry{Key: rest[0]}, OpKey: opKey(env, opts)}, stdout, stderr)
 	case "owner":
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	case "setup", "uninstall":

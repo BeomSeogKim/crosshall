@@ -172,6 +172,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 	case Focus:
 		return s.focus(ctx, tx, caller, req, cmd, now)
 		// end note-log
+	case Retry:
+		return retryAtHome(), nil
 	}
 	return core.Result{}, fmt.Errorf("domain: unsupported command %T", req.Command)
 }

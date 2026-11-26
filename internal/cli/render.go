@@ -91,8 +91,27 @@ func writeJSON(w io.Writer, v any) {
 	_, _ = w.Write(buf.Bytes())
 }
 
+// retriedCommands are the commands a linked device's retry may concern,
+// as their plain renderers know them.
+var retriedCommands = map[string]domain.Command{
+	domain.VerbJoin: domain.Join{}, domain.VerbWho: domain.Who{}, domain.VerbAsk: domain.Ask{},
+	domain.VerbReply: domain.Reply{}, domain.VerbNote: domain.Note{}, domain.VerbLog: domain.Log{},
+	domain.VerbLeave: domain.Leave{}, domain.VerbFocus: domain.Focus{}, domain.VerbRead: domain.Read{},
+	domain.VerbInbox: domain.Inbox{},
+}
+
 func renderPlain(cmd domain.Command, data []byte, w io.Writer) error {
 	switch cmd.(type) {
+	case domain.Retry:
+		var r domain.RetryResult
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		original, ok := retriedCommands[r.Command]
+		if !ok {
+			return fmt.Errorf("no plain form for a retried %q", r.Command)
+		}
+		return renderPlain(original, r.Result, w)
 	case domain.AdapterSet:
 		return renderAdapterPolicy(data, w)
 	case domain.Publish, domain.OwnerPublish:

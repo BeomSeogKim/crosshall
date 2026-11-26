@@ -124,8 +124,11 @@ var linkOfferTriggers string
 //go:embed migrations/spoke/001_spoke.sql
 var spokeSchema string
 
+//go:embed migrations/spoke/002_retry.sql
+var spokeRetrySchema string
+
 // spokeMigrations is the schema of a linked device's spoke store.
-var spokeMigrations = []string{spokeSchema}
+var spokeMigrations = []string{spokeSchema, spokeRetrySchema}
 
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,

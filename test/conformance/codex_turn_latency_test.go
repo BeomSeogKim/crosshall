@@ -167,7 +167,7 @@ func (s *codexSession) turn(t *testing.T, steps int, measured bool, on bool) tim
 // after exit so the counter read itself cannot delay a measured boundary.
 type codexExecPhases struct{ toResult, afterResult, total time.Duration }
 
-func codexExecControl(t *testing.T, w *measurementWorld, thread string, events []string) codexExecPhases {
+func codexExecControl(t *testing.T, w *measurementWorld, thread string, events []string, pair int) codexExecPhases {
 	t.Helper()
 	plan := *w
 	plan.spec.Events = events
@@ -221,23 +221,23 @@ func codexExecControl(t *testing.T, w *measurementWorld, thread string, events [
 		t.Fatal("resumed exec did not deliver the expected thread and OK")
 	}
 	w.model.verify(t)
-	codexSessionCounters(t, w.counters(t)[before:], events)
+	codexSessionCounters(t, w.counters(t)[before:], events, pair)
 	return codexExecPhases{end.Sub(start), exit.Sub(end), exit.Sub(start)}
 }
 
-func codexSessionCounters(t *testing.T, lines, want []string) {
+func codexSessionCounters(t *testing.T, lines, want []string, pair int) {
 	t.Helper()
 	var got []string
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) != 4 || fields[0] != "codex" || (fields[2] != "rpc" && fields[2] != "clean") {
-			t.Fatalf("unexpected Codex hook outcome: %q", line)
+			t.Fatalf("Codex sample %d: unexpected hook outcome %q, want clean or rpc for %v; counters %q", pair, line, want, lines)
 		}
 		got = append(got, fields[1])
 	}
 	slices.Sort(got)
 	if !slices.Equal(got, slices.Sorted(slices.Values(want))) {
-		t.Fatalf("Codex hooks ran %v, want %v", got, want)
+		t.Fatalf("Codex sample %d: hooks ran %v, want %v; counters %q", pair, got, want, lines)
 	}
 }
 
@@ -304,7 +304,7 @@ func TestCodexSessionLatency(t *testing.T) {
 				if k == 1 {
 					wanted = []string{"UserPromptSubmit", "Stop"}
 				}
-				codexSessionCounters(t, s.world.counters(t)[before:], wanted)
+				codexSessionCounters(t, s.world.counters(t)[before:], wanted, i+1)
 			}
 			delta = append(delta, us[1]-us[0])
 			t.Logf("codex_pair mode=app-server n=%d off_us=%d on_us=%d hooks=0/2 requests=1/1 outputs=OK/OK", i+1, us[0], us[1])
@@ -333,7 +333,7 @@ func TestCodexSessionLatency(t *testing.T) {
 			ids[i], _ = w.run(t, "", 1)
 		}
 		for i, m := range modes {
-			codexExecControl(t, w, ids[i], m.events)
+			codexExecControl(t, w, ids[i], m.events, 0)
 		}
 		values := map[string][]int{}
 		for i := 0; i < pairs; i++ {
@@ -343,7 +343,7 @@ func TestCodexSessionLatency(t *testing.T) {
 				if (i/len(modes))%2 == 1 {
 					k = len(modes) - 1 - k
 				}
-				arms[k] = codexExecControl(t, w, ids[k], modes[k].events)
+				arms[k] = codexExecControl(t, w, ids[k], modes[k].events, i+1)
 			}
 			for k, m := range modes {
 				a := arms[k]

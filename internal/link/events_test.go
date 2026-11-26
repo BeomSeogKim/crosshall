@@ -15,14 +15,19 @@ func TestEventFramesRoundTrip(t *testing.T) {
 	scope := MemberScope{LeafGeneration: "g1", Membership: Membership{BindingID: 3, Generation: 2}, RouteEpoch: 1}
 	offer := Offer{Member: m, OfferID: 5, Nonce: "n", LeafGeneration: "g1", Membership: token.Membership, BindingID: 3, RouteEpoch: 1, PolicyEpoch: 4, Launch: "l", Epoch: 2, IDs: []int64{8, 9}, LeaseMS: 60000, LeaseEpoch: 2}
 	body, _ := json.Marshal(offer)
+	route := WakeRoute{Member: m, Scope: scope, Boot: token.Boot, Launch: "launch", PolicyEpoch: 4, Lane: NewNonce()}
 	for typ, v := range map[string]any{
-		TypeSubscribe: &Subscribe{FromSeq: 3, Boot: "b1", Snapshot: true},
-		TypeAck:       &Ack{Seq: 4, Boot: "b1", Cuts: []LeafCut{{Member: m, Seq: 4, LeafSeq: 7, Scope: scope}, {Member: m, Seq: 4, Scope: scope, Absent: true}}, More: true},
-		TypeCaughtUp:  &CaughtUp{Seq: 6},
-		TypeRecorded:  &Recorded{ID: 2, Status: RecordedStale, Code: "stale_leaf"},
-		TypeFact:      &Fact{ID: 1, Member: m, Token: token, Kind: "prompt", Body: json.RawMessage(`{"x":1}`)},
-		TypeWritten:   &Written{ID: 2, Member: m, OfferID: 5, Nonce: "n", WrittenAtMS: 12, Token: token},
-		TypeEvent:     &Event{Seq: 6, Kind: EventOffer, Body: body},
+		TypeWakeReady:    &route,
+		TypeWakeReplay:   &Wake{AttemptID: 4, Route: route, IDs: []int64{8, 9}},
+		TypeWakeResult:   &WakeResult{AttemptID: 4, Route: route, Outcome: WakeSubmitted, SubmissionSeq: 9},
+		TypeWakeRecorded: &WakeRecorded{AttemptID: 4, Status: RecordedApplied},
+		TypeSubscribe:    &Subscribe{FromSeq: 3, Boot: "b1", Snapshot: true},
+		TypeAck:          &Ack{Seq: 4, Boot: "b1", Cuts: []LeafCut{{Member: m, Seq: 4, LeafSeq: 7, Scope: scope}, {Member: m, Seq: 4, Scope: scope, Absent: true}}, More: true},
+		TypeCaughtUp:     &CaughtUp{Seq: 6},
+		TypeRecorded:     &Recorded{ID: 2, Status: RecordedStale, Code: "stale_leaf"},
+		TypeFact:         &Fact{ID: 1, Member: m, Token: token, Kind: "prompt", Body: json.RawMessage(`{"x":1}`)},
+		TypeWritten:      &Written{ID: 2, Member: m, OfferID: 5, Nonce: "n", WrittenAtMS: 12, Token: token},
+		TypeEvent:        &Event{Seq: 6, Kind: EventOffer, Body: body},
 		TypeSnapshot: &Snapshot{Seq: 6, Part: 1, Last: true, Members: []SnapshotMember{{Member: m, Scope: scope,
 			Offers: []Offer{offer}}}},
 	} {

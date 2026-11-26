@@ -119,9 +119,9 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 			return true
 		}
 		spoke := spokeConfig("dev-1")
-		spoke.Caps = []string{link.CapEvents}
+		spoke.Caps = []string{link.CapEvents, link.CapWake}
 		session, err := spoke.Connect(r, w)
-		if err != nil || !slices.Contains(session.Caps, link.CapEvents) {
+		if err != nil || !slices.Equal(session.Caps, []string{link.CapEvents}) {
 			t.Errorf("event handshake: %+v, %v", session, err)
 			return
 		}

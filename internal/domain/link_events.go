@@ -25,6 +25,7 @@ type linkEventCursor struct {
 
 type linkEventStream struct {
 	boot                string
+	wakeCapable         bool
 	snapshotSeq, ackSeq sql.NullInt64
 }
 
@@ -37,9 +38,9 @@ func readLinkEventCursor(ctx context.Context, tx store.Tx, device string) (linkE
 
 func readLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer) (linkEventStream, error) {
 	var stream linkEventStream
-	err := tx.QueryRowContext(ctx, `SELECT boot, snapshot_seq, ack_seq FROM link_event_stream
+	err := tx.QueryRowContext(ctx, `SELECT boot, snapshot_seq, ack_seq, wake_capable FROM link_event_stream
 		WHERE device_id = ? AND stream = ? AND admission_gen = ?`,
-		peer.Device, peer.Stream, peer.Admission).Scan(&stream.boot, &stream.snapshotSeq, &stream.ackSeq)
+		peer.Device, peer.Stream, peer.Admission).Scan(&stream.boot, &stream.snapshotSeq, &stream.ackSeq, &stream.wakeCapable)
 	return stream, err
 }
 
@@ -84,7 +85,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 				return core.Result{}, err
 			}
 		}
-		return startLinkEventStream(ctx, tx, cmd.LinkEventPeer, *cmd.Subscribe, now)
+		return startLinkEventStream(ctx, tx, cmd.LinkEventPeer, *cmd.Subscribe, cmd.AllowWake, now)
 	}
 	stream, err := readLinkEventStream(ctx, tx, cmd.LinkEventPeer)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -117,7 +118,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 	return linkEventPage(ctx, tx, cmd.Device, cmd.FromSeq, cursor.head, now)
 }
 
-func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, sub link.Subscribe, now time.Time) (core.Result, error) {
+func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, sub link.Subscribe, allowWake bool, now time.Time) (core.Result, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_cursor (device_id) VALUES (?) ON CONFLICT DO NOTHING`, peer.Device); err != nil {
 		return core.Result{}, err
 	}
@@ -136,12 +137,18 @@ func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	}
 	snapshotNeeded := sub.Snapshot || sub.FromSeq == 0 || sub.FromSeq < cursor.trimmed ||
 		sub.FromSeq > cursor.acked || sub.Boot != cursor.boot || peer.CredentialGen != cursor.credentialGen
+	if !allowWake && !snapshotNeeded {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device_event
+			WHERE device_id = ? AND seq > ? AND kind = ?)`, peer.Device, sub.FromSeq, link.EventWake).Scan(&snapshotNeeded); err != nil {
+			return core.Result{}, err
+		}
+	}
 	var snapshotSeq *uint64
 	if snapshotNeeded {
 		snapshotSeq = &cursor.head
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms)
-		VALUES (?, ?, ?, ?, ?, ?)`, peer.Device, peer.Stream, peer.Admission, sub.Boot, snapshotSeq, ms(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms, wake_capable)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, peer.Device, peer.Stream, peer.Admission, sub.Boot, snapshotSeq, ms(now), allowWake); err != nil {
 		return core.Result{}, err
 	}
 	if !snapshotNeeded {
@@ -181,6 +188,11 @@ func linkEventPage(ctx context.Context, tx store.Tx, device string, from, head u
 			offer.LeaseMS = remainingLinkLease(offer.LeaseMS, at, now)
 			event.Body, err = json.Marshal(offer)
 			if err != nil {
+				return core.Result{}, err
+			}
+		}
+		if event.Kind == link.EventWake {
+			if err := checkLinkWakeEvent(ctx, tx, device, &event); err != nil {
 				return core.Result{}, err
 			}
 		}

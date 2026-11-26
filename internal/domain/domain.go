@@ -39,6 +39,8 @@ type Request struct {
 	Adapter *AdapterContext
 	// Host is the agent process the client named for a member command.
 	Host *wire.Host
+	// LinkPickup is the authenticated linked read with a leaf capture token.
+	LinkPickup *LinkCall
 	// OwnerAlerts says the client prints the owner line, so an owner
 	// request may mark the stops it carries as shown.
 	OwnerAlerts bool
@@ -200,6 +202,10 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[LinkFact](args)
 	case VerbLinkWritten:
 		return decodeLedgerCommand[LinkWritten](args)
+	case VerbLinkWakeReady:
+		return decodeLedgerCommand[LinkWakeReady](args)
+	case VerbLinkWakeResult:
+		return decodeLedgerCommand[LinkWakeResult](args)
 	case VerbCreateChannel:
 		var c CreateChannel
 		if err := strictUnmarshal(args, &c); err != nil {

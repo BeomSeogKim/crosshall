@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -207,7 +208,7 @@ func dialSSH(ctx context.Context, e Endpoint, spoke Spoke, timeout time.Duration
 		child.close()
 		close(interrupted)
 	})
-	r, w := NewReader(child.stdout), NewWriter(child.stdin)
+	r, w := NewReader(child.stdout), NewWriter(child.sent)
 	spoke.Target = e.Target
 	session, err := spoke.Connect(r, w)
 	var waitErr error
@@ -239,9 +240,49 @@ func dialSSH(ctx context.Context, e Endpoint, spoke Spoke, timeout time.Duration
 type sshChild struct {
 	ctx    context.Context
 	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
+	stdin  *os.File // pipes, so a frame can be bounded by a deadline
+	stdout *os.File
+	sent   *countingWriter
 	stderr sshDiagnostics
+}
+
+// countingWriter counts the bytes that reached the pipe.
+type countingWriter struct {
+	w io.Writer
+	n int
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += n
+	return n, err
+}
+
+// SendFrame writes one frame by the deadline. sent is false only when no
+// byte of it reached the link, so the frame certainly did not leave.
+func (c *SSHConnection) SendFrame(typ string, body any, deadline time.Time) (sent bool, err error) {
+	return sendFrame(c.child.stdin, c.child.sent, c.Writer, typ, body, deadline)
+}
+
+// ReceiveFrame reads one frame by the deadline.
+func (c *SSHConnection) ReceiveFrame(deadline time.Time) (Frame, error) {
+	return receiveFrame(c.child.stdout, c.Reader, deadline)
+}
+
+func sendFrame(pipe *os.File, count *countingWriter, w *Writer, typ string, body any, deadline time.Time) (bool, error) {
+	if err := pipe.SetWriteDeadline(deadline); err != nil {
+		return false, err
+	}
+	count.n = 0
+	err := w.Write(typ, body)
+	return count.n > 0, err
+}
+
+func receiveFrame(pipe *os.File, r *Reader, deadline time.Time) (Frame, error) {
+	if err := pipe.SetReadDeadline(deadline); err != nil {
+		return Frame{}, err
+	}
+	return r.Read()
 }
 
 func startSSH(ctx context.Context, target, remote string, diagnostics bool) (*sshChild, error) {
@@ -261,23 +302,29 @@ func startSSH(ctx context.Context, target, remote string, diagnostics bool) (*ss
 	if diagnostics {
 		cmd.Stderr = &child.stderr
 	}
-	stdin, err := cmd.StdinPipe()
+	stdinRead, stdin, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWrite, err := os.Pipe()
 	if err != nil {
+		_ = stdinRead.Close()
 		_ = stdin.Close()
 		return nil, err
 	}
-	child.stdin, child.stdout = stdin, stdout
+	cmd.Stdin, cmd.Stdout = stdinRead, stdoutWrite
+	child.stdin, child.stdout, child.sent = stdin, stdout, &countingWriter{w: stdin}
 	cmd.Cancel = func() error {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		return cmd.Process.Kill()
 	}
 	cmd.WaitDelay = 250 * time.Millisecond
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	// The child holds its own ends now.
+	_ = stdinRead.Close()
+	_ = stdoutWrite.Close()
+	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		return nil, fmt.Errorf("link: start SSH to %s: %w", target, err)

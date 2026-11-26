@@ -640,6 +640,15 @@ func (s *Service) join(ctx context.Context, tx store.Tx, caller core.Caller, req
 	if out.AtNextPrompt {
 		out.Hint += "\n" + AtNextPromptJoin
 	}
+	if !restored {
+		line, err := joinWakeGuidance(ctx, tx, membership.BindingID, req.Vendor, now)
+		if err != nil {
+			return core.Result{}, err
+		}
+		if line != "" {
+			out.Hint += "\n" + line
+		}
+	}
 	if err := s.noteHost(ctx, tx, principal, req.Host, now); err != nil {
 		return core.Result{}, err
 	}

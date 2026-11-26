@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Codex explains when the hall cannot wake it.** A join or first prompt names a missing managed app server and how to reopen it. A hand join with no reported route also points the user to `/hooks` to check trust.
+
 ## v0.3.1-rc.2 (2026-11-26)
 
 - **Upgrade from v0.3.1-rc.1:** the database stays at schema 30; no migration runs and no setup is needed. From v0.3.0, follow the v0.3.1-rc.1 steps (migration 030). See [UPGRADING.md](UPGRADING.md#to-v031-rc2).

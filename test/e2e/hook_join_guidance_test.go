@@ -30,6 +30,7 @@ func TestInstalledHookRepeatsItsUndeliveredStartLine(t *testing.T) {
 			f := newSetupWorld(t)
 			f.apply("", "setup", adapter.name, "--apply")
 			repo := f.enrollmentRepo()
+			f.owner().must("owner", "publish", "hall", "off")
 			db := f.db()
 			for deadline := time.Now().Add(fixtureEventTimeout); ; {
 				f.blockHookOutput(repo, adapter.name, "SessionStart", `"source":"startup"`)

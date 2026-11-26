@@ -274,8 +274,9 @@ func (s *Service) hookEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 			return core.Result{}, err
 		}
 	}
-	if cmd.Source == "clear" || cmd.Source == "compact" || cmd.Source == "resume" {
-		if err := offerReach(ctx, tx, b, true, &out, now); err != nil {
+	restoredContext := cmd.Source == "clear" || cmd.Source == "compact" || cmd.Source == "resume"
+	if restoredContext || hasWakeGuidance(cmd.Profile.Adapter) {
+		if err := offerReach(ctx, tx, b, restoredContext, &out, now, nil); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -470,6 +471,11 @@ func (s *Service) hookAutoJoin(ctx context.Context, tx store.Tx, req Request, cm
 	}
 	if err := s.offerJoinHint(ctx, tx, principal, b, now, &out); err != nil {
 		return core.Result{}, err
+	}
+	if hasWakeGuidance(cmd.Profile.Adapter) {
+		if err := offerReach(ctx, tx, b, false, &out, now, prompt); err != nil {
+			return core.Result{}, err
+		}
 	}
 	if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "start", &out, now); err != nil {
 		return core.Result{}, err
@@ -860,7 +866,7 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 					return core.Result{}, err
 				}
 			}
-			if err := offerReach(ctx, tx, b, false, &out, now); err != nil {
+			if err := offerReach(ctx, tx, b, false, &out, now, &cmd); err != nil {
 				return core.Result{}, err
 			}
 			if err := req.offerPending(ctx, tx, principal, b, cmd.Profile, cmd.LaunchRef, "prompt", &out, now); err != nil {

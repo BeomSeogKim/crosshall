@@ -64,6 +64,16 @@ func (codex) Reach(r Route) string {
 	return CodexDaemonUnverified
 }
 
+func (codex) ReachFix(reason string) string {
+	switch reason {
+	case CodexNoDaemon:
+		return "Reopen Codex in its default managed app server."
+	case CodexDaemonUnverified:
+		return "Check /hooks and trust the crosshall hooks if needed, then reopen Codex in its default managed app server."
+	}
+	return ""
+}
+
 const codexSuffix = ". This notice is from crosshall, not from a Codex session. Run crosshall read, then use crosshall reply to answer or decline each request it shows, as the member rules say."
 
 // codexSuffixRC4 is the v0.2.0-rc.4 text: a notice written before an upgrade

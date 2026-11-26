@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -357,7 +358,7 @@ func TestReachLineIsRepeatedToARestoredContext(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return offerReach(ctx, tx, b, restored, &out, p.now)
+			return offerReach(ctx, tx, b, restored, &out, p.now, nil)
 		})
 		want := map[bool]string{false: "", true: ReachBringsLine}[restored]
 		p.wantReach(fmt.Sprintf("restored %t", restored), out, want)
@@ -379,6 +380,65 @@ func TestReachLineNeverReachesAMemberWithoutARoute(t *testing.T) {
 			t.Fatalf("prompt %d of a member the hall never reaches: %+v", i, got)
 		}
 		f.hook(codex, stop("pid-77-start", ref, at+int64(10*(i+1))+1))
+	}
+}
+
+func TestCodexManualJoinExplainsHowToCheckHooksWhenNoStartReported(t *testing.T) {
+	f, s := codexFixture(t)
+	join := Join{Channel: "checkout", Alias: "coder"}
+	want := "The hall cannot wake this session (codex daemon not confirmed). Check /hooks and trust the crosshall hooks if needed, then reopen Codex in its default managed app server."
+	first := decode[JoinResult](t, f.join(s, join, "join"))
+	if strings.Count(first.Hint, want) != 1 {
+		t.Fatalf("first join hint %q, want the wake guidance once", first.Hint)
+	}
+	if again := decode[JoinResult](t, f.join(s, join, "again")); strings.Contains(again.Hint, want) {
+		t.Fatalf("repeated join repeated the wake guidance: %q", again.Hint)
+	}
+	wantOK(t, f.owner(OwnerPublish{Hall: true, Switch: "off"}, "publish-off"))
+	other := f.newSession("codex")
+	if off := decode[JoinResult](t, f.join(other, Join{Channel: "checkout"}, "off")); strings.Contains(off.Hint, "/hooks") {
+		t.Fatalf("join with publishing switched off: %q", off.Hint)
+	}
+}
+
+func TestCodexHookExplainsWithoutDaemonUntilPrinted(t *testing.T) {
+	for _, entry := range []string{"start", "recovering prompt", "first prompt after hand join"} {
+		t.Run(entry, func(t *testing.T) {
+			f, s := codexFixture(t)
+			at := f.now.UnixMilli()
+			var first wire.HookResult
+			switch entry {
+			case "start":
+				first = f.hookAs(s, codexStart("startup", publish.ModeInProcess, at))
+			case "recovering prompt":
+				first = f.hookAs(s, codexServerPrompt(publish.ModeInProcess, nil, "first", at, true))
+			case "first prompt after hand join":
+				wantOK(t, f.join(s, Join{Channel: "checkout"}, "hand-join"))
+				first = f.hookAs(s, codexServerPrompt(publish.ModeInProcess, nil, "first", at, false))
+			}
+			want := "[crosshall] The hall cannot wake this session (codex runs without its daemon). Reopen Codex in its default managed app server."
+			if first.ReachLine != want || first.ReachAck == nil || first.ReachAck.Told != 0 {
+				t.Fatalf("first offer %+v, want %q with a cannot-reach receipt", first, want)
+			}
+			second := f.hookAs(s, codexServerPrompt(publish.ModeInProcess, nil, "second", at+10, false))
+			if second.ReachLine != want || second.ReachAck == nil || *second.ReachAck != *first.ReachAck {
+				t.Fatalf("unprinted guidance changed before confirmation: %+v", second)
+			}
+			if _, err := f.db.Exec(`UPDATE binding SET reach_told = 0 WHERE id = ?`, first.ReachAck.BindingID); err != nil {
+				t.Fatal(err)
+			}
+			third := f.hookAs(s, codexServerPrompt(publish.ModeInProcess, nil, "third", at+20, false))
+			if third.ReachLine != "" || third.ReachAck != nil {
+				t.Fatalf("confirmed guidance repeated: %+v", third)
+			}
+		})
+	}
+}
+
+func TestCodexManagedStartDoesNotSuggestCheckingHookTrust(t *testing.T) {
+	f, s := codexFixture(t)
+	if got := f.hookAs(s, codexStart("startup", publish.ModeDaemon, f.now.UnixMilli())); got.ReachLine != "" || got.ReachAck != nil {
+		t.Fatalf("a managed start offered guidance: %+v", got)
 	}
 }
 

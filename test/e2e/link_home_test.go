@@ -43,7 +43,7 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 		t.Fatalf("link enroll wrote more than one frame: %v", err)
 	}
 
-	serve := exec.Command(binary, "--json", "link", "serve")
+	serve := exec.CommandContext(t.Context(), binary, "--json", "link", "serve")
 	serve.Dir, serve.Env = w.home, owner.env()
 	stdin, _ := serve.StdinPipe()
 	stdout, _ := serve.StdoutPipe()
@@ -52,6 +52,7 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	if err := serve.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { serve.Process.Kill(); serve.Wait() })
 	spoke := link.Spoke{Target: "home", Hall: enrolled.Hall, Device: enrolled.Device, Secret: secret,
 		Release: "test", Link: link.Supported()}
 	lr, lw := link.NewReader(stdout), link.NewWriter(stdin)
@@ -82,7 +83,7 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	}
 
 	// A device with another secret gets no welcome, and stdout stays frames.
-	bad := exec.Command(binary, "--json", "link", "serve")
+	bad := exec.CommandContext(t.Context(), binary, "--json", "link", "serve")
 	bad.Dir, bad.Env = w.home, owner.env()
 	bin, _ := bad.StdinPipe()
 	bout, _ := bad.StdoutPipe()
@@ -91,12 +92,12 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	if err := bad.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { bad.Process.Kill(); bad.Wait() })
 	spoke.Secret = bytes.Repeat([]byte{1}, 32)
 	if _, err := spoke.Connect(link.NewReader(bout), link.NewWriter(bin)); err == nil || !strings.Contains(err.Error(), "did not prove") {
 		t.Fatalf("wrong secret: %v", err)
 	}
 	bin.Close()
-	bad.Wait()
 }
 
 // Without the opt-in, link refuses on stderr and writes nothing to stdout,

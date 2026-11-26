@@ -168,7 +168,7 @@ func pendingLinkWakeIDs(ctx context.Context, tx store.Tx, scope linkOfferScope, 
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
 			WHERE a.principal_id = ?1 AND item.value = x.message_id
 				AND (`+linkWakeMayHaveSubmitted+`
-					OR (a.state = 'not_submitted' AND a.route = ?3)))
+					OR (a.state = 'not_submitted' AND a.submission_seq > 0 AND a.route = ?3)))
 		ORDER BY x.message_id LIMIT ?4`, scope.principal, scope.binding.channel, route, OfferCap)
 }
 

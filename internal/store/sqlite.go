@@ -148,8 +148,11 @@ var spokeWakesSchema string
 //go:embed migrations/spoke/005_hooks.sql
 var spokeHooksSchema string
 
+//go:embed migrations/spoke/006_native_wake.sql
+var spokeNativeWakeSchema string
+
 // spokeMigrations is the schema of a linked device's spoke store.
-var spokeMigrations = []string{spokeSchema, spokeRetrySchema, spokeEventsSchema, spokeWakesSchema, spokeHooksSchema}
+var spokeMigrations = []string{spokeSchema, spokeRetrySchema, spokeEventsSchema, spokeWakesSchema, spokeHooksSchema, spokeNativeWakeSchema}
 
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,

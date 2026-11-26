@@ -54,7 +54,7 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 		return err
 	}
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
-	ready.Hello = nil
+	ready.Hello = []string{wire.HelloLaunchProof, wire.HelloPromptHost}
 	ready.Spoke = linked.Target
 	ready.Members = members.members
 	s := server{cfg: cfg, state: state, ready: ready, cancel: cancel, spokeMembers: members}
@@ -169,6 +169,7 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 		publish("stopped")
 	}()
 	spoke := cfg.spoke(s.cfg.Version)
+	spoke.Caps = []string{link.CapWake}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if s.spokeMembers.halted.Load() {
@@ -224,8 +225,9 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 		log.Printf("dispatcher: the event stream is off: %v", err)
 		return
 	}
+	events.nativeWakeRoot, events.nativeEnrollment = s.cfg.StateRoot, cfg.ID
 	spoke := cfg.spoke(s.cfg.Version)
-	spoke.Caps = []string{link.CapEvents, link.CapPolicy}
+	spoke.Caps = []string{link.CapEvents, link.CapPolicy, link.CapWake}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if s.spokeMembers.halted.Load() {

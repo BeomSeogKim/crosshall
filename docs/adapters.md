@@ -117,6 +117,11 @@ What a member sees:
 - **A turn that waits on its owner's approval.** When a Claude Code member's latest fact is a shown permission dialog (`Notification` with `permission_prompt`), only its owner can move the turn. Within the fact's 30-minute cap a send says `not woken: its turn waits on its owner's approval (asking again cannot help)` (`why=awaiting_approval`), `crosshall waiting` says `waits on its owner's approval since 14:32` instead of the last observed fact, `who` says `approval requested 3m ago, waits on its owner`, and the hall sends no notice into that turn. `crosshall owner who` starts with one line per such member, `@opus in #dev waits on your approval (requested 3m ago); open requests: #7.`, and `crosshall owner doctor` warns of each. JSON carries `approval_open: true` on the observed fact. A denied dialog sends no Stop, so past the cap the hall claims nothing: notices and the manual-wake advice come back as before, and the dialog stays on show, hedged: `asked its owner for approval 40m ago, no answer reported` (in `waiting`, `who`, `owner who` and doctor). It ends with the member's next fact (its Stop or a new prompt), its next crosshall command, the end of its launch (a session end, or its process known gone) or its departure. Codex also runs its `PermissionRequest` hook for escalations it approves on its own. A Codex request opens the same approval wait only when the managed server confirms that the thread is waiting for its owner. A self-approved escalation keeps its ordinary `approval requested` fact.
 - `crosshall publish off` stops notices to your own session, and `crosshall publish on` allows them again; `on` never overrides an owner's off.
 
+The experimental two-device link negotiates native wake delivery when both
+builds support it. The receiving device proves the local route and sends
+the wake. With an older peer, linked work is still available at a prompt
+or through crosshall commands.
+
 What the owner controls:
 
 | Command | Effect |

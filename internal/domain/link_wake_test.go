@@ -150,6 +150,34 @@ func TestLinkWakeDispatchSurvivesTrimAndReconnect(t *testing.T) {
 	}
 }
 
+func TestLinkWakeRetriesARefusalBeforeTheClaim(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	id := h.turnEndAsk(h.writer, "reader", "retry-before-claim")
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	ready := LinkWakeReady{LinkEventPeer: h.peer, Route: route}
+	if got := decodeAs[LinkWakeReadyResult](t, h.owner(ready, "")); got.Replay == nil || got.Replay.AttemptID != wake.AttemptID {
+		t.Fatalf("first replay = %+v", got)
+	}
+	record := func(attempt int64, cut uint64) {
+		t.Helper()
+		got := decodeAs[link.WakeRecorded](t, h.owner(LinkWakeResult{LinkEventPeer: h.peer,
+			Result: link.WakeResult{AttemptID: attempt, Route: route, Outcome: link.WakeNotSubmitted, SubmissionSeq: cut}}, ""))
+		if got.Status != link.RecordedApplied {
+			t.Fatalf("recorded = %+v", got)
+		}
+	}
+	// The replay could not find its local route. No transport claim was made.
+	record(wake.AttemptID, 0)
+	retry, _ := dispatchTestLinkWake(t, h, route, id)
+	if retry.AttemptID == wake.AttemptID {
+		t.Fatal("a refusal should start a new attempt on the same route")
+	}
+	record(retry.AttemptID, 7)
+	if got := decodeAs[LinkWakeReadyResult](t, h.owner(ready, "")); got.Seq != 0 || got.Replay != nil {
+		t.Fatalf("a refusal with a transport cut was retried: %+v", got)
+	}
+}
+
 func TestLinkWakeHeldLaneAndResultScope(t *testing.T) {
 	h, route := linkWakeFixture(t)
 	id := h.turnEndAsk(h.writer, "reader", "original-wake")

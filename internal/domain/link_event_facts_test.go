@@ -199,6 +199,34 @@ func TestLinkWrittenMatchesRemoteOfferScope(t *testing.T) {
 	}
 }
 
+// A display receipt handled after a later fact of its leaf (#426, Sol
+// #3696) still confirms its offer: it is not a lifecycle step, so it
+// neither rewinds the leaf nor moves its head.
+func TestALateLinkReceiptConfirmsItsOfferWithoutRewinding(t *testing.T) {
+	h := newLinkedHookFixture(t)
+	launch := "pid-42-first"
+	h.fact(1, 2, linkedStart(launch, ms(h.now)), link.RecordedApplied)
+	h.sql(`INSERT INTO offer (id, principal_id, binding_id, route_epoch, generation, launch_ref, epoch,
+		reason, evidence, at_ms, receipt_mode, nonce, device_credential_gen, device_membership_gen)
+		SELECT 17, principal_id, binding_id, route_epoch, leaf_generation, launch_ref, policy_epoch,
+		'prompt', 'fixture', 0, 'provisional', 'nonce', credential_gen, membership_generation FROM link_event_launch`)
+	h.fact(2, 9, prompt(launch, "t1", ms(h.now)), link.RecordedApplied)
+	h.token.LeafSeq = 8
+	late := LinkWritten{LinkEventPeer: h.peer, Written: link.Written{
+		ID: 3, Member: h.member, OfferID: 17, Nonce: "nonce", WrittenAtMS: ms(h.now), Token: h.token,
+	}}
+	if got := decodeAs[link.Recorded](t, h.owner(late, "")); got.Status != link.RecordedApplied {
+		t.Fatalf("late receipt = %+v", got)
+	}
+	if got := h.count(`SELECT COUNT(*) FROM offer WHERE id = 17 AND written_at_ms IS NOT NULL`); got != 1 {
+		t.Fatal("the late receipt did not confirm its offer")
+	}
+	if got := h.count(`SELECT COUNT(*) FROM link_event_fact_head WHERE leaf_seq = 9 AND quarantined = 0`); got != 1 {
+		t.Fatal("the late receipt moved or quarantined the leaf's head")
+	}
+	h.fact(4, 10, stop(launch, "t1", ms(h.now)), link.RecordedApplied)
+}
+
 func TestLinkFactRejectsLocalProcessFields(t *testing.T) {
 	h := newLinkedHookFixture(t)
 	cmd := linkedStart("pid-42-first", ms(h.now))

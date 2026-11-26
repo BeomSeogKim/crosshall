@@ -185,6 +185,31 @@ func TestASpokeHookAcknowledgementSuppressesTheOffer(t *testing.T) {
 	f.end(t, f.home)
 }
 
+// A receipt handled after a later frame of its leaf went out is still
+// queued (Sol #3696): the home confirms its offer without moving the
+// leaf's head, so it needs no second display.
+func TestASpokeQueuesAReceiptThatCameLate(t *testing.T) {
+	f := newHookFixture(t)
+	f.hook(t, wire.VerbHookEvent, prompt("e5", 3), 9, stamp22)
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT hook_sent_seq FROM spoke_leaf`); n != 9 {
+		t.Fatalf("released through %d, want 9", n)
+	}
+	receipt := wire.HookOutputAckArgs{Offer: &wire.HookOfferReceipt{OfferID: 7, Nonce: "nonce-7"}, WrittenAtMS: 99}
+	if r := f.hook(t, wire.VerbHookJoinHintAck, receipt, 8, stamp22); r.Status != core.ExitOK {
+		t.Fatalf("late receipt %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE kind = 'written' AND leaf_seq = 8`); n != 1 {
+		t.Fatal("a late receipt was not queued")
+	}
+	if n := f.count(t, `SELECT suppressed FROM spoke_offer WHERE offer_id = 7`); n != 1 {
+		t.Fatal("the offer of a queued receipt is still served")
+	}
+	f.end(t, f.home)
+}
+
 // The event client sends queued hook frames once the home caught up, each
 // leaf's in publish sequence order, retires one on its Recorded, and sends
 // the rest again on the next connection.
@@ -319,6 +344,20 @@ func TestASpokeCutsAMembershipChangeWhereItsStampChanged(t *testing.T) {
 	if cuts := home.ack(t, 14); len(cuts) != 1 || cuts[0].LeafSeq != 5 {
 		t.Fatalf("the same route scope again cut %+v, want leaf seq 5", cuts)
 	}
+	// The leaf is registered again (as RegisterSpokeHello does): its
+	// counter starts over, and the old generation's cut at 5 no longer
+	// counts for the same membership and route.
+	f.exec(t, `UPDATE spoke_leaf SET generation = 'replaced', stamp_binding = 0, stamp_gen = 0, stamp_seq = 0, hook_sent_seq = 0`)
+	publish(2)
+	if err := stampLeaf(t.Context(), f.m.db, f.m.members, eventMember.Vendor, eventMember.Key); err != nil {
+		t.Fatal(err)
+	}
+	publish(6)
+	scope.LeafGeneration = "replaced"
+	home.push(t, link.TypeEvent, event(t, 15, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: scope}))
+	if cuts := home.ack(t, 15); len(cuts) != 1 || cuts[0].LeafSeq != 2 {
+		t.Fatalf("a replaced leaf cut %+v, want leaf seq 2", cuts)
+	}
 	f.end(t, home)
 }
 
@@ -451,12 +490,38 @@ func TestASpokeHookProcessedAgainKeepsItsFrameID(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox`) != 0 && time.Now().Before(deadline); {
 		time.Sleep(5 * time.Millisecond)
 	}
+	// Processed again after its release (a stop before the work file was
+	// removed, then a restart under a new boot): the home would take the
+	// same sequence for a rewound leaf, so it is not queued again.
 	f.hook(t, wire.VerbHookEvent, prompt("r1", 3), 4, stamp22)
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox`); n != 0 {
+		t.Fatalf("%d rows queued again after the release", n)
+	}
+	f.end(t, f.home)
+}
+
+// A lower publish sequence handled by a later drain pass (more packets
+// than one pass takes, ordered by a clock that stepped back) comes after
+// a higher one already went out: it is dropped, not sent to get the leaf
+// quarantined, and the leaf's later facts still go (Sol #3681).
+func TestASpokeDropsAHookFrameBelowWhatItReleased(t *testing.T) {
+	f := newHookFixture(t)
+	f.hook(t, wire.VerbHookEvent, prompt("r1", 3), 5, stamp22)
 	if err := f.s.endHookPass(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := waitFacts(t, f.home, 2); len(got) != 2 || got[1].ID != first[0].ID {
-		t.Fatalf("processed again after its Recorded: %+v", got)
+	f.hook(t, wire.VerbHookEvent, prompt("r0", 3), 4, stamp22)
+	f.hook(t, wire.VerbHookEvent, prompt("r2", 3), 6, stamp22)
+	if err := f.s.endHookPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE leaf_seq = 4`); got != 0 {
+		t.Fatal("a sequence below the released one was queued")
+	}
+	f.home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	got := waitFacts(t, f.home, 2)
+	if len(got) != 2 || got[0].Token.LeafSeq != 5 || got[1].Token.LeafSeq != 6 {
+		t.Fatalf("sent %+v", got)
 	}
 	f.end(t, f.home)
 }

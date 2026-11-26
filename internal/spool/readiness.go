@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
@@ -88,4 +89,26 @@ func (c Client) DispatcherRunning() bool {
 	// Older dispatchers omit the lease, and restricted clients can be denied flock.
 	err = syscall.Kill(marker.PID, 0)
 	return err == nil || errors.Is(err, os.ErrPermission)
+}
+
+// memberRendezvous returns where member spools are: the rendezvous
+// itself, or the member rendezvous a linked device's dispatcher names in
+// its ready marker (#400).
+func memberRendezvous(rendezvous string) string {
+	root, err := ident.OpenPrivateDir(rendezvous)
+	if err != nil {
+		return rendezvous
+	}
+	defer root.Close()
+	raw, err := ident.ReadPrivateFile(root, "ready", 4096)
+	if err != nil {
+		return rendezvous
+	}
+	var marker struct {
+		Members string `json:"members"`
+	}
+	if json.Unmarshal(raw, &marker) != nil || marker.Members == "" || !filepath.IsAbs(marker.Members) {
+		return rendezvous
+	}
+	return marker.Members
 }

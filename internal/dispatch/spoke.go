@@ -219,13 +219,13 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 // own (#400, design 12j), so the command connection stays a plain call
 // and result exchange. A home that serves no events is asked again rarely.
 func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
-	events, err := newSpokeEvents(s.spokeMembers)
+	events, err := newSpokeEvents(s.spokeMembers, s.spokePolicyFiles)
 	if err != nil {
 		log.Printf("dispatcher: the event stream is off: %v", err)
 		return
 	}
 	spoke := cfg.spoke(s.cfg.Version)
-	spoke.Caps = []string{link.CapEvents}
+	spoke.Caps = []string{link.CapEvents, link.CapPolicy}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if s.spokeMembers.halted.Load() {

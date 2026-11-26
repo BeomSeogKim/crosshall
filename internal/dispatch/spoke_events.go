@@ -11,6 +11,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/hostclock"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
@@ -66,18 +68,20 @@ type spokeEvents struct {
 	resumed bool
 	mono    func() (int64, error)
 	stop    *spokeMembers // halted on a home rollback
+	// policy publishes (true) or withdraws (false) the hook policy files.
+	policy func(ctx context.Context, publish bool) error
 
 	wakeResultReady chan struct{}
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
 // already made the cache ineligible (invalidateEvents).
-func newSpokeEvents(m *spokeMembers) (*spokeEvents, error) {
+func newSpokeEvents(m *spokeMembers, policy func(context.Context, bool) error) (*spokeEvents, error) {
 	boot, err := hostclock.Boot()
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono,
+	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono, policy: policy,
 		wakeResultReady: make(chan struct{}, 1)}, nil
 }
 
@@ -119,7 +123,16 @@ func invalidateEvents(ctx context.Context, db *store.Store) error {
 	})
 }
 
-func (e *spokeEvents) ineligible(ctx context.Context) error { return invalidateEvents(ctx, e.db) }
+// ineligible stops serving the cache: the hook policy files go first, so
+// hooks go quiet rather than act on a policy the device may have missed.
+func (e *spokeEvents) ineligible(ctx context.Context) error {
+	if e.policy != nil {
+		if err := e.policy(ctx, false); err != nil {
+			return err
+		}
+	}
+	return invalidateEvents(ctx, e.db)
+}
 
 type eventCursor struct {
 	boot     string
@@ -206,7 +219,11 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 			_ = e.ineligible(ctx) // until a snapshot applies; run again invalidates if this failed
 		}
 	}()
-	frames := make(chan linkRead, 1)
+	// The reader keeps draining the connection while this loop writes:
+	// the home writes a page before it reads again, so a write of ours
+	// that waits for the home must never wait on our reading too.
+	received, frames := make(chan linkRead), make(chan linkRead)
+	go link.Relay(ctx, received, frames)
 	go func() {
 		for {
 			f, err := conn.Receive(time.Time{})
@@ -215,7 +232,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 				at, err = e.mono()
 			}
 			select {
-			case frames <- linkRead{f, at, err}:
+			case received <- linkRead{f, at, err}:
 			case <-ctx.Done():
 				return
 			}
@@ -230,6 +247,11 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 	var parts []snapshotPart
 	var caughtUp bool
 	var sendingWake int64
+	// Hook facts and written acks go out once the home caught up, and
+	// again on every connection: the home answers a repeated ID from what
+	// it stored.
+	hooksReady := false
+	sent := map[int64]bool{}
 	sendNextWake := func() error {
 		if !caughtUp || sendingWake != 0 {
 			return nil
@@ -242,6 +264,12 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-e.stop.hooks:
+			if hooksReady {
+				if err := e.sendHooks(ctx, conn, sent); err != nil {
+					return err
+				}
+			}
 		case <-e.wakeResultReady:
 			if err := sendNextWake(); err != nil {
 				return err
@@ -320,6 +348,12 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return err
 				}
 			case link.TypeCaughtUp:
+				if !hooksReady {
+					hooksReady = true
+					if err := e.sendHooks(ctx, conn, sent); err != nil {
+						return err
+					}
+				}
 				if !allowWake {
 					continue
 				}
@@ -365,7 +399,24 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return err
 				}
 			case link.TypeRecorded:
-				// Nothing is forwarded on this stream yet (6s-b).
+				var rec link.Recorded
+				if err := json.Unmarshal(r.frame.Body, &rec); err != nil {
+					return fmt.Errorf("link: malformed recorded: %w", err)
+				}
+				// Applied, stale or quarantined: the home holds it now,
+				// and the window has room for the next.
+				if err := e.db.Update(ctx, func(tx store.Tx) error {
+					_, err := tx.ExecContext(ctx, `DELETE FROM spoke_hook_outbox WHERE frame_id = ?`, int64(rec.ID))
+					return err
+				}); err != nil {
+					return err
+				}
+				delete(sent, int64(rec.ID))
+				if hooksReady {
+					if err := e.sendHooks(ctx, conn, sent); err != nil {
+						return err
+					}
+				}
 			default:
 				return fmt.Errorf("link: unexpected %q frame on the event stream", link.Printable(r.frame.Type))
 			}
@@ -383,6 +434,80 @@ func (e *spokeEvents) sendWakeResult(ctx context.Context, conn spokeConn) (int64
 		return 0, err
 	}
 	return result.AttemptID, e.send(conn, link.TypeWakeResult, result)
+}
+
+// spokeHookWindow bounds the hook frames sent and not yet answered on a
+// connection: the home answers each with a Recorded, which this loop reads
+// only between sends.
+const spokeHookWindow = 64
+
+// spokeHookHorizon is how long a hook frame is sent again: the home's
+// receipt retention less a day for the two clocks' difference.
+const spokeHookHorizon = store.RetentionWindow - 24*time.Hour
+
+// sendHooks sends queued hook frames this connection has not sent, each
+// leaf's in the order of its publish sequence, up to the window. Only the
+// frames of finished drain passes go (endHookPass).
+func (e *spokeEvents) sendHooks(ctx context.Context, conn spokeConn, sent map[int64]bool) error {
+	room := spokeHookWindow - len(sent)
+	if room <= 0 {
+		return nil
+	}
+	type queued struct {
+		id         int64
+		kind, body string
+	}
+	var queue []queued
+	err := e.db.Update(ctx, func(tx store.Tx) error {
+		// The home answers a frame sent again from the receipt it keeps
+		// for its retention window; past that, the same frame would read
+		// as a rewound leaf, so it is dropped before then.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_hook_outbox WHERE at_ms < ?`,
+			time.Now().Add(-spokeHookHorizon).UnixMilli()); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT frame_id, kind, body FROM spoke_hook_outbox WHERE id <= ?
+			ORDER BY vendor, key, leaf_seq, id`, e.stop.released.Load())
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for len(queue) < room && rows.Next() {
+			var q queued
+			if err := rows.Scan(&q.id, &q.kind, &q.body); err != nil {
+				return err
+			}
+			if !sent[q.id] {
+				queue = append(queue, q)
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return err
+	}
+	for _, q := range queue {
+		var err error
+		switch q.kind {
+		case "fact":
+			var f link.Fact
+			if err = json.Unmarshal([]byte(q.body), &f); err == nil {
+				f.ID = uint64(q.id)
+				err = e.send(conn, link.TypeFact, f)
+			}
+		default:
+			var w link.Written
+			if err = json.Unmarshal([]byte(q.body), &w); err == nil {
+				w.ID = uint64(q.id)
+				err = e.send(conn, link.TypeWritten, w)
+			}
+		}
+		if err != nil {
+			return err
+		}
+		sent[q.id] = true
+	}
+	return nil
 }
 
 func (e *spokeEvents) send(conn spokeConn, frame string, v any) error {
@@ -425,6 +550,7 @@ type heldLeaf struct {
 	scope                        link.MemberScope
 	rendezvous, digest, identity string
 	seq                          uint64
+	cutSeq                       uint64 // the cut's leaf publish sequence (see hold)
 	dir                          *os.Root
 	unlock                       func()
 	absent                       bool
@@ -440,7 +566,7 @@ func (h *heldLeaf) release() {
 func (h *heldLeaf) cut(seq uint64) link.LeafCut {
 	c := link.LeafCut{Member: h.member, Seq: seq, Scope: h.scope, Absent: h.absent}
 	if !h.absent {
-		c.LeafSeq = h.seq
+		c.LeafSeq = h.cutSeq
 	}
 	return c
 }
@@ -478,6 +604,44 @@ func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.M
 		return nil, err
 	}
 	h.dir, h.seq, h.unlock, h.absent = dir, seq, unlock, false
+	h.cutSeq = seq
+	// Where the change is cut (design 6a, #3617). A membership the leaf's
+	// stamp already carries (a command answer stamped it before the
+	// home's event arrived) is cut where the stamp changed: hooks after it
+	// carry the new membership. A route change alone is cut here. The
+	// same scope again never cuts earlier than before.
+	var stamp core.Membership
+	var stampSeq uint64
+	var prior link.MemberScope
+	var priorCut uint64
+	known := true
+	err = e.db.View(ctx, func(tx store.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT stamp_binding, stamp_gen, stamp_seq FROM spoke_leaf WHERE vendor = ? AND key = ?`,
+			member.Vendor, member.Key).Scan(&stamp.BindingID, &stamp.Generation, &stampSeq); err != nil {
+			return err
+		}
+		err := tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen, route_epoch, cut_seq FROM spoke_member_scope
+			WHERE vendor = ? AND key = ?`, member.Vendor, member.Key).
+			Scan(&prior.Membership.BindingID, &prior.Membership.Generation, &prior.RouteEpoch, &priorCut)
+		if errors.Is(err, sql.ErrNoRows) {
+			known = false
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		h.release()
+		return nil, err
+	}
+	sameMembership := known && prior.Membership == scope.Membership
+	switch {
+	case sameMembership && prior.RouteEpoch != scope.RouteEpoch:
+	case stamp.Generation > 0 && link.Membership(stamp) == scope.Membership && stampSeq <= seq:
+		h.cutSeq = stampSeq
+		if sameMembership && priorCut > h.cutSeq && priorCut <= seq {
+			h.cutSeq = priorCut
+		}
+	}
 	return h, nil
 }
 
@@ -523,10 +687,11 @@ func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 		return err
 	}
 	s := h.scope
-	if _, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch)
-		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, key) DO UPDATE SET leaf_generation = excluded.leaf_generation,
-			binding_id = excluded.binding_id, membership_gen = excluded.membership_gen, route_epoch = excluded.route_epoch`,
-		h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.BindingID, s.Membership.Generation, s.RouteEpoch); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, key) DO UPDATE SET leaf_generation = excluded.leaf_generation,
+			binding_id = excluded.binding_id, membership_gen = excluded.membership_gen, route_epoch = excluded.route_epoch,
+			cut_seq = excluded.cut_seq`,
+		h.member.Vendor, h.member.Key, s.LeafGeneration, s.Membership.BindingID, s.Membership.Generation, s.RouteEpoch, h.cutSeq); err != nil {
 		return err
 	}
 	if h.absent || s.Membership.BindingID == 0 {
@@ -544,7 +709,7 @@ func (e *spokeEvents) stamp(ctx context.Context, h *heldLeaf) error {
 	if h.absent {
 		return nil
 	}
-	return stampLocked(ctx, e.db, h.dir, h.digest, h.identity)
+	return stampLocked(ctx, e.db, h.dir, h.digest, h.identity, h.seq)
 }
 
 // applyEvent applies one event, read at monotonic time at, and advances
@@ -553,11 +718,18 @@ func (e *spokeEvents) stamp(ctx context.Context, h *heldLeaf) error {
 func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) ([]link.LeafCut, error) {
 	var h *heldLeaf
 	var offer link.Offer
+	var policy link.AdapterPolicy
 	switch ev.Kind {
 	case link.EventWake, link.EventWakeClosed:
 	case link.EventOffer:
 		if err := json.Unmarshal(ev.Body, &offer); err != nil {
 			return nil, fmt.Errorf("link: malformed offer: %w", err)
+		}
+	case link.EventPolicy:
+		// A well-formed adapter this installation lacks is kept too: the
+		// policy files name only the local ones.
+		if err := json.Unmarshal(ev.Body, &policy); err != nil || !domain.ValidName(policy.Adapter) {
+			return nil, fmt.Errorf("link: malformed policy: %v", err)
 		}
 	case link.EventInvalidate, link.EventMembership:
 		var change link.Invalidate
@@ -580,6 +752,10 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 			}
 		case link.EventOffer:
 			if err := e.putOffer(ctx, tx, offer, at, false); err != nil {
+				return err
+			}
+		case link.EventPolicy:
+			if err := putPolicy(ctx, tx, policy); err != nil {
 				return err
 			}
 		default:
@@ -605,6 +781,9 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 	if err != nil {
 		return nil, err
 	}
+	if ev.Kind == link.EventPolicy {
+		return nil, e.publishPolicy(ctx)
+	}
 	if h == nil {
 		return nil, nil
 	}
@@ -614,6 +793,22 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 		return nil, errors.Join(err, e.ineligible(ctx))
 	}
 	return []link.LeafCut{h.cut(ev.Seq)}, nil
+}
+
+func putPolicy(ctx context.Context, tx store.Tx, p link.AdapterPolicy) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO spoke_policy (adapter, enabled, reminder, epoch) VALUES (?, ?, ?, ?)
+		ON CONFLICT (adapter) DO UPDATE SET enabled = excluded.enabled, reminder = excluded.reminder, epoch = excluded.epoch`,
+		p.Adapter, p.Enabled, p.Reminder, p.Epoch)
+	return err
+}
+
+// publishPolicy writes the hook policy files from the cached policies
+// while the cache is eligible (#400, 12k).
+func (e *spokeEvents) publishPolicy(ctx context.Context) error {
+	if e.policy == nil {
+		return nil
+	}
+	return e.policy(ctx, true)
 }
 
 // putOffer records an offer received at monotonic time at, under the
@@ -738,6 +933,17 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_member_scope`); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_policy`); err != nil {
+			return err
+		}
+		for _, p := range parts[0].Policies {
+			if !domain.ValidName(p.Adapter) {
+				return errors.New("link: a snapshot names an invalid adapter")
+			}
+			if err := putPolicy(ctx, tx, p); err != nil {
+				return err
+			}
+		}
 		for i, m := range members {
 			if err := applyScope(ctx, tx, held[i]); err != nil {
 				return err
@@ -767,5 +973,8 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 1 WHERE id = 1 AND acked_seq = ?`, seq)
 		return err
 	})
-	return cuts, err
+	if err != nil {
+		return nil, err
+	}
+	return cuts, e.publishPolicy(ctx)
 }

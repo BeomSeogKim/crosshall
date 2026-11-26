@@ -75,7 +75,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 		return core.Result{}, err
 	}
 	if cmd.Close {
-		if cmd.Subscribe != nil || cmd.SnapshotPart != nil || cmd.FromSeq != 0 || cmd.Resubscribe || cmd.AllowWake {
+		if cmd.Subscribe != nil || cmd.SnapshotPart != nil || cmd.FromSeq != 0 || cmd.Resubscribe || cmd.AllowWake || cmd.AllowPolicy {
 			return refuseLinkEvents("invalid event stream close"), nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET closed_at_ms = ?
@@ -96,7 +96,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 				return core.Result{}, err
 			}
 		}
-		return startLinkEventStream(ctx, tx, cmd.LinkEventPeer, *cmd.Subscribe, cmd.AllowWake, now)
+		return startLinkEventStream(ctx, tx, cmd.LinkEventPeer, *cmd.Subscribe, cmd.AllowWake, cmd.AllowPolicy, now)
 	}
 	stream, err := readLinkEventStream(ctx, tx, cmd.LinkEventPeer)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -129,7 +129,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 	return linkEventPage(ctx, tx, cmd.Device, cmd.FromSeq, cursor.head, now)
 }
 
-func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, sub link.Subscribe, allowWake bool, now time.Time) (core.Result, error) {
+func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, sub link.Subscribe, allowWake, allowPolicy bool, now time.Time) (core.Result, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_cursor (device_id) VALUES (?) ON CONFLICT DO NOTHING`, peer.Device); err != nil {
 		return core.Result{}, err
 	}
@@ -143,14 +143,30 @@ func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if sub.FromSeq > cursor.head {
 		return refuseLinkEvents("the event cursor is ahead of the home"), nil
 	}
+	// A stream that gains the policy capability missed the policy changes
+	// made while its device had none.
+	var hadPolicy bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_event_stream WHERE device_id = ? AND policy_capable = 1)`,
+		peer.Device).Scan(&hadPolicy); err != nil {
+		return core.Result{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM link_event_stream WHERE device_id = ?`, peer.Device); err != nil {
 		return core.Result{}, err
 	}
 	snapshotNeeded := sub.Snapshot || sub.FromSeq == 0 || sub.FromSeq < cursor.trimmed ||
-		sub.FromSeq > cursor.acked || sub.Boot != cursor.boot || peer.CredentialGen != cursor.credentialGen
-	if !allowWake && !snapshotNeeded {
+		sub.FromSeq > cursor.acked || sub.Boot != cursor.boot || peer.CredentialGen != cursor.credentialGen ||
+		allowPolicy && !hadPolicy
+	// Events a stream without their capability may not see are replaced
+	// by a snapshot.
+	for _, gated := range []struct {
+		allowed bool
+		kind    string
+	}{{allowWake, link.EventWake}, {allowPolicy, link.EventPolicy}} {
+		if gated.allowed || snapshotNeeded {
+			continue
+		}
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device_event
-			WHERE device_id = ? AND seq > ? AND kind = ?)`, peer.Device, sub.FromSeq, link.EventWake).Scan(&snapshotNeeded); err != nil {
+			WHERE device_id = ? AND seq > ? AND kind = ?)`, peer.Device, sub.FromSeq, gated.kind).Scan(&snapshotNeeded); err != nil {
 			return core.Result{}, err
 		}
 	}
@@ -158,14 +174,15 @@ func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if snapshotNeeded {
 		snapshotSeq = &cursor.head
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms, wake_capable)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, peer.Device, peer.Stream, peer.Admission, sub.Boot, snapshotSeq, ms(now), allowWake); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms,
+		wake_capable, policy_capable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, peer.Device, peer.Stream, peer.Admission, sub.Boot, snapshotSeq,
+		ms(now), allowWake, allowPolicy); err != nil {
 		return core.Result{}, err
 	}
 	if !snapshotNeeded {
 		return linkEventPage(ctx, tx, peer.Device, sub.FromSeq, cursor.head, now)
 	}
-	if err := prepareLinkSnapshot(ctx, tx, peer, sub.Boot, cursor.head, now); err != nil {
+	if err := prepareLinkSnapshot(ctx, tx, peer, sub.Boot, cursor.head, allowPolicy, now); err != nil {
 		return core.Result{}, err
 	}
 	return linkSnapshotPage(ctx, tx, peer, 0, now)
@@ -222,12 +239,18 @@ func linkEventPage(ctx context.Context, tx store.Tx, device string, from, head u
 	return OK(page)
 }
 
-func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, boot string, seq uint64, now time.Time) error {
+func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, boot string, seq uint64, allowPolicy bool, now time.Time) error {
 	members, err := snapshotLinkMembers(ctx, tx, peer.Device, boot, now)
 	if err != nil {
 		return err
 	}
-	snapshot := link.Snapshot{Seq: seq, Members: []link.SnapshotMember{}}
+	var policies []link.AdapterPolicy
+	if allowPolicy {
+		if policies, err = linkAdapterPolicies(ctx, tx, ""); err != nil {
+			return err
+		}
+	}
+	snapshot := link.Snapshot{Seq: seq, Members: []link.SnapshotMember{}, Policies: policies}
 	save := func(last bool) error {
 		snapshot.Last = last
 		data, err := json.Marshal(snapshot)
@@ -252,7 +275,7 @@ func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, b
 				return err
 			}
 			snapshot.Part++
-			snapshot.Members = snapshot.Members[:0]
+			snapshot.Members, snapshot.Policies = snapshot.Members[:0], nil
 			size = 128
 		}
 		snapshot.Members = append(snapshot.Members, member)
@@ -290,3 +313,59 @@ func remainingLinkLease(lease, at int64, now time.Time) int64 {
 }
 
 func validLinkInteger(n uint64) bool { return n <= math.MaxInt64 }
+
+// linkAdapterPolicies reads the hall's adapter policies as a linked
+// device's hooks check them: one adapter, or every one with a policy.
+func linkAdapterPolicies(ctx context.Context, tx store.Tx, adapter string) ([]link.AdapterPolicy, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT adapter, enabled, reminder, epoch FROM adapter_policy
+		WHERE ? = '' OR adapter = ? ORDER BY adapter`, adapter, adapter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []link.AdapterPolicy
+	for rows.Next() {
+		var p link.AdapterPolicy
+		if err := rows.Scan(&p.Adapter, &p.Enabled, &p.Reminder, &p.Epoch); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// appendLinkPolicy sends an adapter's new policy to every linked device
+// with an event stream, in order with the offers that carry its epoch.
+// A device without a stream yet gets it in its first snapshot.
+func appendLinkPolicy(ctx context.Context, tx store.Tx, adapter string, now time.Time) error {
+	policies, err := linkAdapterPolicies(ctx, tx, adapter)
+	if err != nil || len(policies) != 1 {
+		return err
+	}
+	// Only a device whose last stream negotiated the capability: a device
+	// that subscribes with it after one that had none takes a snapshot.
+	rows, err := tx.QueryContext(ctx, `SELECT c.device_id FROM link_event_cursor c
+		JOIN link_event_stream s ON s.device_id = c.device_id AND s.policy_capable = 1 ORDER BY c.device_id`)
+	if err != nil {
+		return err
+	}
+	var devices []string
+	for rows.Next() {
+		var device string
+		if err := rows.Scan(&device); err != nil {
+			rows.Close()
+			return err
+		}
+		devices = append(devices, device)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, device := range devices {
+		if _, err := appendLinkEvent(ctx, tx, device, link.EventPolicy, policies[0], now); err != nil {
+			return err
+		}
+	}
+	return nil
+}

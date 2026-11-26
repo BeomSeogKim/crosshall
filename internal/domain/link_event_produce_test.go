@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -191,5 +192,81 @@ func TestLinkOffersRefreshOneDevicePageAtATime(t *testing.T) {
 		if n := f.count(`SELECT COUNT(*) FROM device_offer_dirty WHERE device_id = ?`, id); n != 1 {
 			t.Fatalf("device %q: %d dirty rows left, want one", id, n)
 		}
+	}
+}
+
+// An adapter policy change reaches every linked device with an event
+// stream as a policy event, in order with its offers, and a snapshot
+// The link rule for the adapter policy (#400, 12k): only a stream that
+// negotiated the policy capability gets its event and the snapshot's
+// policies; a device whose last stream had none gets no policy event, a
+// device that drops the capability is given a snapshot instead of the
+// events it may not see, and one that gains it is given a snapshot of the
+// changes it missed.
+func TestAnAdapterPolicyChangeReachesLinkedDevices(t *testing.T) {
+	f := newFixture(t)
+	on := true
+	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "claude", Enabled: &on}}, "claude-on"))
+	const boot = "test-boot"
+	subscribe := func(peer LinkEventPeer, from uint64, policy bool) LinkEventsResult {
+		t.Helper()
+		peer.Stream = link.NewNonce()
+		return decodeAs[LinkEventsResult](t, f.owner(LinkEvents{LinkEventPeer: peer, AllowPolicy: policy,
+			Subscribe: &link.Subscribe{FromSeq: from, Boot: boot}}, ""))
+	}
+	start := func(name string, policy bool) (LinkEventPeer, LinkEventsResult) {
+		t.Helper()
+		peer := testLinkEventPeer(t, f, name)
+		page := decodeAs[LinkEventsResult](t, f.owner(LinkEvents{LinkEventPeer: peer, AllowPolicy: policy,
+			Subscribe: &link.Subscribe{Boot: boot}}, ""))
+		wantOK(t, f.owner(LinkAck{LinkEventPeer: peer, Ack: link.Ack{Boot: boot, Seq: page.Snapshot.Seq}}, ""))
+		// One acknowledged event, so a resume is not a snapshot by itself.
+		seq := appendTestLinkEvent(t, f, peer, link.EventOffer, link.Offer{Member: link.Member{Vendor: "claude", Key: name},
+			OfferID: 1, IDs: []int64{1}, LeaseMS: 60000})
+		if got := decodeAs[LinkEventsResult](t, f.owner(LinkEvents{LinkEventPeer: peer}, "")); len(got.Events) != 1 {
+			t.Fatalf("%s page %+v", name, got)
+		}
+		wantOK(t, f.owner(LinkAck{LinkEventPeer: peer, Ack: link.Ack{Boot: boot, Seq: seq}}, ""))
+		return peer, page
+	}
+	device, page := start("spoke", true)
+	if page.Snapshot == nil || len(page.Snapshot.Policies) != 1 || page.Snapshot.Policies[0].Adapter != "claude" {
+		t.Fatalf("a policy stream's snapshot %+v", page.Snapshot)
+	}
+	older, page := start("older", false)
+	if page.Snapshot == nil || page.Snapshot.Policies != nil {
+		t.Fatalf("a stream without the capability got policies: %+v", page.Snapshot)
+	}
+	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "codex", Enabled: &on}}, "codex-on"))
+	var body string
+	if err := f.db.QueryRowContext(t.Context(), `SELECT body FROM device_event WHERE device_id = ? AND kind = ?`,
+		device.Device, link.EventPolicy).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var p link.AdapterPolicy
+	if json.Unmarshal([]byte(body), &p) != nil || p.Adapter != "codex" || !p.Enabled || p.Epoch == 0 {
+		t.Fatalf("policy event %s", body)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ? AND kind = ?`, older.Device, link.EventPolicy); n != 0 {
+		t.Fatal("a device without the capability got a policy event")
+	}
+	// A switch that keeps the epoch sends nothing.
+	before := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, device.Device)
+	wantOK(t, f.owner(AdapterSet{wire.AdapterPolicyArgs{Adapter: "codex", Enabled: &on}}, "codex-again"))
+	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, device.Device); n != before {
+		t.Fatal("an unchanged policy was sent again")
+	}
+	// A resume that keeps the capability gets the event itself.
+	if page := subscribe(device, 1, true); page.Snapshot != nil || len(page.Events) != 1 || page.Events[0].Kind != link.EventPolicy {
+		t.Fatalf("a resumed policy stream %+v", page)
+	}
+	// The device drops the capability with the event unsent: a snapshot
+	// without policies instead.
+	if page := subscribe(device, 1, false); page.Snapshot == nil || page.Snapshot.Policies != nil || len(page.Events) != 0 {
+		t.Fatalf("a downgraded stream %+v", page)
+	}
+	// The older device gains it: a snapshot with the policies it missed.
+	if page := subscribe(older, 1, true); page.Snapshot == nil || len(page.Snapshot.Policies) != 2 {
+		t.Fatalf("an upgraded stream %+v", page)
 	}
 }

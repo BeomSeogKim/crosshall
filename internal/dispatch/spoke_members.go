@@ -28,6 +28,16 @@ import (
 type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
+	// hooks says the hook outbox has frames to send (#400, 12k);
+	// hooksQueued, that the drain pass in progress queued some; released,
+	// the last outbox row a finished pass queued (see endHookPass);
+	// passed, that this process finished a pass (the drain's own).
+	hooks       chan struct{}
+	hooksQueued atomic.Bool
+	released    atomic.Int64
+	passed      bool
+	// mono is the clock offer leases are kept on; nil is hostclock.Mono.
+	mono func() (int64, error)
 	// halted is set once the home was restored to an older store: no
 	// command frame leaves afterwards, until the device links again.
 	halted atomic.Bool
@@ -125,7 +135,7 @@ func newSpokeMembers(ctx context.Context, db *store.Store, members string) (*spo
 	if err != nil {
 		return nil, err
 	}
-	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}
+	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1), hooks: make(chan struct{}, 1)}
 	m.halted.Store(stopped)
 	return m, nil
 }
@@ -339,6 +349,14 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		}))
 		dir.Close()
 	}
+	if m.hooksQueued.Swap(false) || !m.passed {
+		if err := s.endHookPass(ctx); err != nil {
+			m.hooksQueued.Store(true)
+			s.logFailure(err)
+		} else {
+			m.passed = true
+		}
+	}
 }
 
 // rolledBackRefusal refuses every command of a device whose home was
@@ -411,12 +429,11 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 	if r := s.rolledBackRefusal(); r != nil {
 		return *r, nil
 	}
+	if req.IsHook() {
+		return s.spokeHook(ctx, path, dir, req)
+	}
 	if req.ExpiresAtMS <= time.Now().UnixMilli() {
 		return unknownOutcome("attempt expired", req.OpKey), nil
-	}
-	if req.IsHook() {
-		return domain.Fail(core.ExitUnavailable, core.CodeDispatcherUnavailable,
-			"hook facts of a linked device reach the hall in a later release", ""), nil
 	}
 	m := s.spokeMembers
 	retried := req.Verb == domain.VerbRetry

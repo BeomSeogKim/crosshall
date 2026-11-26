@@ -456,7 +456,12 @@ func transportOutcome(ctx context.Context, err error) string {
 }
 
 func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hookTransport, spec eventSpec, e event) (*os.Root, string, enrolment, string) {
-	leaf, gen, err := spool.OpenHookLeaf(rv, e.Identity)
+	members, done, err := memberRoot(rv)
+	if err != nil {
+		return nil, "", enrolment{}, transportOutcome(ctx, err)
+	}
+	defer done()
+	leaf, gen, err := spool.OpenHookLeaf(members, e.Identity)
 	if err == nil {
 		var repo enrolment
 		if spec.Enroll && startedHere(stateRoot, e, false) {
@@ -522,7 +527,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	if resp.Status != core.ExitOK {
 		return nil, "", enrolment{}, "refused"
 	}
-	leaf, current, err := spool.OpenHookLeaf(rv, e.Identity)
+	leaf, current, err := spool.OpenHookLeaf(members, e.Identity)
 	if err != nil {
 		return nil, "", enrolment{}, transportOutcome(ctx, err)
 	}
@@ -860,4 +865,19 @@ func readDispatcher(rv *os.Root) (bool, []string) {
 // continue that member wherever it joined.
 func continuesMember(rv *os.Root, e event) bool {
 	return e.Source == "clear" && e.LaunchRef != "" && launchMarked(rv, e.LaunchRef)
+}
+
+// memberRoot opens the rendezvous that holds the member leaves: rv itself,
+// or a linked device's member rendezvous (#400). The ready marker, the
+// policy and the counters stay in rv.
+func memberRoot(rv *os.Root) (*os.Root, func(), error) {
+	path := spool.LinkedMembers(rv)
+	if path == "" || path == rv.Name() {
+		return rv, func() {}, nil
+	}
+	members, err := ident.OpenPrivateDir(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return members, func() { members.Close() }, nil
 }

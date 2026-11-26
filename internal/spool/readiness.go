@@ -100,15 +100,24 @@ func memberRendezvous(rendezvous string) string {
 		return rendezvous
 	}
 	defer root.Close()
+	if members := LinkedMembers(root); members != "" {
+		return members
+	}
+	return rendezvous
+}
+
+// LinkedMembers returns the member rendezvous the ready marker in the open
+// rendezvous root names, or "" when it names none (a native hall).
+func LinkedMembers(root *os.Root) string {
 	raw, err := ident.ReadPrivateFile(root, "ready", 4096)
 	if err != nil {
-		return rendezvous
+		return ""
 	}
 	var marker struct {
 		Members string `json:"members"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || marker.Members == "" || !filepath.IsAbs(marker.Members) {
-		return rendezvous
+		return ""
 	}
 	return marker.Members
 }

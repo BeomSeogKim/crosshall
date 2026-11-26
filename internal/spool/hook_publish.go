@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/hostclock"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -46,6 +48,20 @@ func publishHookRequest(ctx context.Context, leaf, in *os.Root, req wire.Request
 	if req.PublishSeq == 0 {
 		return errors.New("hook publication sequence exhausted")
 	}
+	if req.Capture != nil {
+		// The causal token (design 6a): what the leaf held at this
+		// sequence, under the lock its dispatcher stamps it under.
+		capture, err := captureHook(leaf)
+		if err != nil {
+			return err
+		}
+		// The request was prepared for the membership it pins; a stamp
+		// that changed before this lock is another membership's turn.
+		if req.Membership != nil && (capture.Membership == nil || *capture.Membership != *req.Membership) {
+			return errors.New("membership changed before hook publication")
+		}
+		req.Capture = &capture
+	}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -56,4 +72,20 @@ func publishHookRequest(ctx context.Context, leaf, in *os.Root, req wire.Request
 		return err
 	}
 	return publishFile(ctx, in, req.Attempt+".part", req.Attempt+".json", data)
+}
+
+func captureHook(leaf *os.Root) (wire.HookCapture, error) {
+	membership, err := ident.LookupMembership(leaf)
+	if err != nil {
+		return wire.HookCapture{}, err
+	}
+	boot, err := hostclock.Boot()
+	if err != nil {
+		return wire.HookCapture{}, err
+	}
+	mono, err := hostclock.Mono()
+	if err != nil {
+		return wire.HookCapture{}, err
+	}
+	return wire.HookCapture{Boot: boot, MonoNS: mono, WallMS: time.Now().UnixMilli(), Membership: membership}, nil
 }

@@ -124,6 +124,9 @@ var linkWakesSchema string
 //go:embed migrations/036_link_stream_close.sql
 var linkStreamCloseSchema string
 
+//go:embed migrations/037_link_stream_policy.sql
+var linkStreamPolicySchema string
+
 //go:embed link_wake_triggers.sql
 var linkWakeTriggers string
 
@@ -142,8 +145,11 @@ var spokeEventsSchema string
 //go:embed migrations/spoke/004_wakes.sql
 var spokeWakesSchema string
 
+//go:embed migrations/spoke/005_hooks.sql
+var spokeHooksSchema string
+
 // spokeMigrations is the schema of a linked device's spoke store.
-var spokeMigrations = []string{spokeSchema, spokeRetrySchema, spokeEventsSchema, spokeWakesSchema}
+var spokeMigrations = []string{spokeSchema, spokeRetrySchema, spokeEventsSchema, spokeWakesSchema, spokeHooksSchema}
 
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
@@ -153,6 +159,7 @@ var migrations = []string{
 	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
 	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema, idlePromptSchema, reconcileCheckpointSchema,
 	linkDevicesSchema, deviceMembersSchema, linkFencesSchema, linkEventsSchema, linkWakesSchema, linkStreamCloseSchema,
+	linkStreamPolicySchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

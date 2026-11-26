@@ -35,6 +35,20 @@ type Request struct {
 	OwnerAlerts bool `json:"owner_alerts,omitempty"`
 	// Older dispatchers ignore envelope extensions but reject unknown command arguments.
 	OfferReceipts bool `json:"offer_receipts,omitempty"`
+	// Capture is the causal token a hook takes under its leaf's publish
+	// lock, with PublishSeq, when its dispatcher is a linked device's
+	// (#400, design 6a). Native hooks leave it out.
+	Capture *HookCapture `json:"capture,omitempty"`
+}
+
+// HookCapture is what a hook reads under its leaf's publish lock: the
+// device's boot incarnation, monotonic and wall capture times, and the
+// leaf's membership stamp at that moment.
+type HookCapture struct {
+	Boot       string      `json:"boot"`
+	MonoNS     int64       `json:"mono_ns"`
+	WallMS     int64       `json:"wall_ms"`
+	Membership *Membership `json:"membership,omitempty"`
 }
 
 type Membership = core.Membership

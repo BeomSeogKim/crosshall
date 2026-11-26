@@ -25,35 +25,32 @@ const (
 	linkPong     = "pong"
 )
 
-// runLink runs the home side of a link (#400). A spoke starts these over
-// the user's own ssh: `link enroll` once, `link serve` for each connection.
-// Both stay behind CROSSHALL_EXPERIMENTAL_LINK until the release gate
-// covers two devices.
 func runLink(ctx context.Context, env Env, opts options, args []string, stdin io.Reader, stdout, stderr io.Writer) core.ExitCode {
-	// Stdout carries link frames only, so every message goes to stderr,
-	// with --json too.
-	o := outputs{json: opts.json, stdout: stderr, stderr: stderr}
-	if !env.ExperimentalLink {
-		return o.fail(core.ExitUsage, CodeUsage, "linking devices is experimental",
-			"set CROSSHALL_EXPERIMENTAL_LINK=1 to try it")
+	o := outputs{json: opts.json, stdout: stdout, stderr: stderr}
+	if len(args) > 0 && (args[0] == "serve" || args[0] == "enroll") {
+		// The SSH entry points reserve stdout for frames, including with --json.
+		o.stdout = stderr
 	}
-	if env.OwnerGate != nil {
-		if gate := env.OwnerGate(); gate != "" {
-			return render(opts, nil, domain.Refuse(core.CodeOwnerOnly, gate,
-				"run crosshall link from your own shell"), stderr, stderr)
-		}
-	}
-	if env.Transport == nil {
-		return o.unavailableFor(env, "link")
+	if code, denied := linkDenied(env, o); denied {
+		return code
 	}
 	switch {
 	case len(args) == 3 && args[0] == "enroll" && args[1] == "--name":
+		if env.Transport == nil {
+			return o.unavailableFor(env, "link enroll")
+		}
 		return linkEnroll(ctx, env, opts, args[2], stdin, stdout, stderr)
 	case len(args) == 1 && args[0] == "serve":
-		// The stream carries frames only: every message goes to stderr.
+		if env.Transport == nil {
+			return o.unavailableFor(env, "link serve")
+		}
 		return linkServe(ctx, env, stdin, stdout, o)
+	case len(args) == 1 && args[0] == "status":
+		return runLinkStatus(env, o)
+	case len(args) > 0 && args[0] != "enroll" && args[0] != "serve" && args[0] != "status":
+		return runLinkSpoke(ctx, env, o, args, stdin)
 	}
-	return o.usage("usage: crosshall link enroll --name <device> (the secret on stdin) | crosshall link serve")
+	return o.usage("usage: crosshall link <ssh-target> [--name <device>] [--yes] | crosshall link status")
 }
 
 // ownerCall runs one owner command with its own deadline, starting the
@@ -124,6 +121,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	}
 	r, w := link.NewReader(stdin), link.NewWriter(stdout)
 	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
+		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
 			v, err := ownerData[domain.LinkProveResult](ctx, env,
 				Call{Command: domain.LinkProve{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce}})

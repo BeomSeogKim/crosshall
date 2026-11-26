@@ -111,6 +111,10 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			return err
 		}
 		env.StartReady = paths.launch(true).StartReady
+		env.LinkSpoke = paths.launch(true).LinkSpoke
+		env.LinkStatus = paths.launch(true).LinkStatus
+		env.UnlinkSpoke = paths.launch(true).UnlinkSpoke
+		env.LinkedTarget = paths.launch(false).LinkedTarget
 		env.OutdatedHooks = func() []string { return setup.OutdatedHooks(paths.state) }
 		env.Stop = paths.launch(true).Stop
 		env.TelemetryEndpoint = telemetry.Receiver(version)

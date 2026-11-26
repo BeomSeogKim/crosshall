@@ -118,6 +118,9 @@ var linkFencesSchema string
 //go:embed migrations/034_link_events.sql
 var linkEventsSchema string
 
+//go:embed link_offer_triggers.sql
+var linkOfferTriggers string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
@@ -234,6 +237,17 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			if _, err := tx.ExecContext(ctx, migrations[step]); err != nil {
 				return err
 			}
+			if migrations[step] == linkEventsSchema {
+				var enrolled bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device)`).Scan(&enrolled); err != nil {
+					return err
+				}
+				if enrolled {
+					if err := InstallLinkOfferTriggers(ctx, tx); err != nil {
+						return err
+					}
+				}
+			}
 			_, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", step+1))
 			return err
 		})
@@ -266,6 +280,13 @@ func (s *Store) ensureReadIndexes(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, ReadIndexes)
 		return err
 	})
+}
+
+// InstallLinkOfferTriggers enables remote offer invalidation only in halls
+// with enrolled devices. Migration 034 calls it for existing enrollments.
+func InstallLinkOfferTriggers(ctx context.Context, tx Tx) error {
+	_, err := tx.ExecContext(ctx, linkOfferTriggers)
+	return err
 }
 
 func checkSessionMoveBindings(ctx context.Context, tx Tx) error {

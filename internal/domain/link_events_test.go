@@ -124,3 +124,20 @@ func TestHomeLinkCannotRestoreSupersededSubscription(t *testing.T) {
 	}
 	wantCode(t, f.owner(LinkEvents{LinkEventPeer: newer}, ""), core.ExitRefused, CodeLinkStale)
 }
+
+func TestHomeLinkInstallsOfferTriggersOnEnrollment(t *testing.T) {
+	f := newFixture(t)
+	const triggers = `SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND name GLOB 'device_offer_*'`
+	if n := f.count(triggers); n != 0 {
+		t.Fatalf("unlinked hall has %d offer triggers", n)
+	}
+	testLinkEventPeer(t, f, "first")
+	first := f.count(triggers)
+	if first == 0 {
+		t.Fatal("first enrollment did not install offer triggers")
+	}
+	testLinkEventPeer(t, f, "second")
+	if n := f.count(triggers); n != first {
+		t.Fatalf("second enrollment changed the trigger count from %d to %d", first, n)
+	}
+}

@@ -63,11 +63,19 @@ type Ack struct {
 // only a leaf whose current generation is Scope.LeafGeneration; the home
 // installs a cut only when Scope equals the scope it recorded for that
 // event, so a cut never moves to another registration of the same key.
+//
+// Absent says the device holds no leaf of that generation any more (it
+// was removed or replaced before the event applied). LeafSeq is then
+// unused: the home advances its cursor, installs no cut, and treats that
+// registration's facts and offers as ineligible until the session
+// registers again, which brings a new scope. One absent member never
+// holds up the others.
 type LeafCut struct {
 	Member
 	Seq     uint64      `json:"seq"`
 	LeafSeq uint64      `json:"leaf_seq"`
 	Scope   MemberScope `json:"scope"`
+	Absent  bool        `json:"absent,omitempty"`
 }
 
 // MemberScope is what a membership-changing event applies to: the leaf
@@ -168,6 +176,14 @@ type MembershipChange struct {
 // and so on, each within one link frame; the frame with Last ends it.
 // The device applies it atomically once it has every part, dropping its
 // cache first; a link that ends before Last leaves the cache as it was.
+//
+// Cache eligibility: from the moment the device needs a snapshot (a boot
+// change, a cursor the home no longer keeps, a gap) until one applies,
+// no cached offer or membership is served, though the entries may stay on
+// disk. Applying a snapshot keeps two things it cannot know: an offer
+// whose Written the device has queued but the home has not recorded
+// stays suppressed, and an offer the device already held keeps the
+// earlier of its two deadlines.
 type Snapshot struct {
 	Seq     uint64           `json:"seq"`
 	Part    int              `json:"part"`

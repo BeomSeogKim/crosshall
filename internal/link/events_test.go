@@ -17,7 +17,7 @@ func TestEventFramesRoundTrip(t *testing.T) {
 	body, _ := json.Marshal(offer)
 	for typ, v := range map[string]any{
 		TypeSubscribe: &Subscribe{FromSeq: 3, Boot: "b1", Snapshot: true},
-		TypeAck:       &Ack{Seq: 4, Boot: "b1", Cuts: []LeafCut{{Member: m, Seq: 4, LeafSeq: 7, Scope: scope}}, More: true},
+		TypeAck:       &Ack{Seq: 4, Boot: "b1", Cuts: []LeafCut{{Member: m, Seq: 4, LeafSeq: 7, Scope: scope}, {Member: m, Seq: 4, Scope: scope, Absent: true}}, More: true},
 		TypeCaughtUp:  &CaughtUp{Seq: 6},
 		TypeRecorded:  &Recorded{ID: 2, Status: RecordedStale, Code: "stale_leaf"},
 		TypeFact:      &Fact{ID: 1, Member: m, Token: token, Kind: "prompt", Body: json.RawMessage(`{"x":1}`)},

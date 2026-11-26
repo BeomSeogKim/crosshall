@@ -70,6 +70,8 @@ type Config struct {
 }
 
 type server struct {
+	// spokeMembers forwards member commands on a linked device (#400).
+	spokeMembers    *spokeMembers
 	cfg             Config
 	state           *os.Root
 	db              *store.Store

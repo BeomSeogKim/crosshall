@@ -211,6 +211,7 @@ func turnEndCovered(ctx context.Context, tx store.Tx, principal int64) (bool, er
 		WHERE l.rowid = (SELECT latest.rowid FROM adapter_launch latest
 				WHERE latest.principal_id = ?1 AND latest.ended_hook_at_ms IS NULL
 				ORDER BY latest.started_hook_at_ms DESC, latest.rowid DESC LIMIT 1)
+			AND (SELECT device_id IS NULL FROM principal WHERE id = ?1)
 			AND `+store.CapabilityCovered("json_extract(l.profile,'$.adapter')", "l.profile", "'turn_end'")+`
 			AND `+store.TurnEndSwitchOn("json_extract(l.profile,'$.adapter')")+`)`, principal).Scan(&covered)
 	return covered, err
@@ -222,6 +223,7 @@ func turnEndCovered(ctx context.Context, tx store.Tx, principal int64) (bool, er
 // and the binding selected for its session.
 const promptAdapter = `LEFT JOIN ` + currentBindingLaunch + `
 	LEFT JOIN adapter_policy ap ON ap.adapter = json_extract(l.profile, '$.adapter') AND ap.enabled = 1
+		AND (SELECT device_id IS NULL FROM principal WHERE id = b.principal_id)
 		AND l.fenced = 0 AND b.dnd = 0 AND (b.owner_hook_fence_ms IS NULL OR l.started_hook_at_ms > b.owner_hook_fence_ms)
 		AND b.id = (SELECT binding_id FROM member_selection WHERE principal_id = b.principal_id)`
 

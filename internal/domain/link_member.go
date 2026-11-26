@@ -118,15 +118,8 @@ type LinkMember struct {
 // transaction, in order: the link's credential generation, then the
 // device's key and leaf registration. A refusal commits nothing.
 func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time.Time) (LinkMember, *core.Result, error) {
-	var gen int64
-	err := tx.QueryRowContext(ctx, `SELECT credential_gen FROM device WHERE device_id = ?`, call.Device).Scan(&gen)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && gen != call.CredentialGen {
-		r := Refuse(CodeLinkStale, "this link was authenticated under a device credential that no longer holds",
-			"reconnect the link")
-		return LinkMember{}, &r, nil
-	}
-	if err != nil {
-		return LinkMember{}, nil, err
+	if refusal, err := linkCredential(ctx, tx, call); err != nil || refusal != nil {
+		return LinkMember{}, refusal, err
 	}
 	if call.Vendor == "" || call.Key == "" || call.LeafGeneration == "" || call.LeafEpoch <= 0 {
 		r := Fail(core.ExitUsage, "", "a forwarded command names its session and leaf",
@@ -136,12 +129,15 @@ func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time
 	var principal, epoch, keyGen int64
 	var leafGen, state, kind string
 	var deviceOf sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT k.principal_id, k.leaf_generation, k.leaf_epoch, k.credential_gen, k.state,
+	err := tx.QueryRowContext(ctx, `SELECT k.principal_id, k.leaf_generation, k.leaf_epoch, k.credential_gen, k.state,
 		p.kind, p.device_id
 		FROM device_key k JOIN principal p ON p.id = k.principal_id
 		WHERE k.device_id = ? AND k.vendor = ? AND k.key = ?`, call.Device, call.Vendor, call.Key).
 		Scan(&principal, &leafGen, &epoch, &keyGen, &state, &kind, &deviceOf)
 	if errors.Is(err, sql.ErrNoRows) {
+		if r, found, err := replayLinkFence(ctx, tx, call); err != nil || found {
+			return LinkMember{}, &r, err
+		}
 		if call.Command != VerbJoin {
 			r := Refuse(core.CodeNotEnrolled, "this session has not joined the hall", "crosshall join <channel>")
 			return LinkMember{}, &r, nil
@@ -242,7 +238,9 @@ func ReplayLinkReceipt(ctx context.Context, tx store.Tx, principal int64, call L
 	err = tx.QueryRowContext(ctx, `SELECT scope, result, link_request FROM op WHERE principal_id = ? AND op_key = ?`,
 		principal, call.OpKey).Scan(&scope, &stored, &got)
 	if errors.Is(err, sql.ErrNoRows) {
-		return core.Result{}, false, nil
+		// A fence written while the session was still unknown holds
+		// after it joined under another key.
+		return replayLinkFence(ctx, tx, call)
 	}
 	if err != nil {
 		return core.Result{}, false, err

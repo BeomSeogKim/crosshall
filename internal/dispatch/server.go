@@ -719,13 +719,17 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result = *resolved.Refusal
 			return errRefusalRollback
 		}
-		if req.Verb == domain.VerbLinkCall {
+		if req.Verb == domain.VerbLinkCall || req.Verb == domain.VerbLinkReceipt {
 			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
 				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "a link call requires owner ingress")
 				return errRefusalRollback
 			}
+			run := s.linkCall
+			if req.Verb == domain.VerbLinkReceipt {
+				run = s.linkReceipt
+			}
 			var commit bool
-			if result, commit, err = s.linkCall(ctx, tx, req); err != nil || !commit {
+			if result, commit, err = run(ctx, tx, req); err != nil || !commit {
 				if err == nil {
 					err = errRefusalRollback
 				}

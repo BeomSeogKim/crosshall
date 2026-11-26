@@ -26,6 +26,9 @@ const (
 	// A member command forwarded by the device, and the hall's answer.
 	linkCallFrame   = "call"
 	linkResultFrame = "result"
+	// The device's lookup of a forwarded command whose answer it lost; the
+	// answer is a result frame.
+	linkReceiptFrame = "receipt"
 )
 
 func runLink(ctx context.Context, env Env, opts options, args []string, stdin io.Reader, stdout, stderr io.Writer) core.ExitCode {
@@ -157,15 +160,19 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 			if err := w.Write(linkPong, f.Body); err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
-		case linkCallFrame:
+		case linkCallFrame, linkReceiptFrame:
 			var call domain.LinkCall
 			if err := json.Unmarshal(f.Body, &call); err != nil {
-				return o.fail(core.ExitError, CodeLocalError, "link: malformed call", "")
+				return o.fail(core.ExitError, CodeLocalError, "link: malformed "+f.Type, "")
 			}
 			// The device and credential come from this link's
 			// authentication, never from the device's frame.
 			call.Device, call.CredentialGen = session.Device, credentialGen
-			result, err := ownerCall(ctx, env, Call{Command: call})
+			var cmd domain.Command = call
+			if f.Type == linkReceiptFrame {
+				cmd = domain.LinkReceipt{LinkCall: call}
+			}
+			result, err := ownerCall(ctx, env, Call{Command: cmd})
 			if err != nil {
 				return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
 			}

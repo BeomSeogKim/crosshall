@@ -73,6 +73,8 @@ var retentionSteps = []struct {
 }{
 	{"ops", RetentionWindow, `DELETE FROM op WHERE rowid IN (SELECT rowid FROM op
 		WHERE at_ms < ?1 AND rowid NOT IN (SELECT value FROM json_each(?2)) LIMIT ?4)`},
+	{"link fences", RetentionWindow, `DELETE FROM link_fence WHERE rowid IN (SELECT rowid FROM link_fence
+		WHERE at_ms < ?1 LIMIT ?4)`},
 	{"observations", RetentionWindow, `DELETE FROM observation WHERE seq IN (SELECT o.seq FROM observation o
 		WHERE o.observed_at_ms < ?1 AND o.seq NOT IN (SELECT value FROM json_each(?3))
 			AND (o.kind = 'command' OR NOT ` + running + `) LIMIT ?4)`},

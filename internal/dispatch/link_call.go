@@ -104,7 +104,7 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 	if err != nil {
 		return core.Result{}, false, err
 	}
-	request := domain.Request{OpKey: call.OpKey, Command: cmd, Vendor: call.Vendor, Enroll: member.Enroll, Ack: ack}
+	request := domain.Request{OpKey: call.OpKey, Command: cmd, Vendor: call.Vendor, Enroll: member.Enroll, Ack: ack, Linked: true}
 	if _, reading := cmd.(domain.Read); reading && call.WakePickup != nil {
 		request.LinkPickup = &call
 	}

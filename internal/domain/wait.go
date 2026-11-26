@@ -46,11 +46,17 @@ type WaitSnapshot struct {
 }
 
 // waitSnapshot also records in waits whether the caller's wait keeps
-// running: it does unless the snapshot holds something that ends it.
-func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, now time.Time) (core.Result, error) {
+// running: it does unless the snapshot holds something that ends it. A
+// linked device's first poll can lose its answer on the way back, and its
+// retry would take a newer baseline: its wait counts as running only once
+// a poll carries a cursor, proof that the client holds its baseline
+// (Sol #3693).
+func (s *Service) waitSnapshot(ctx context.Context, tx store.Tx, caller core.Caller, cmd Wait, linked bool, now time.Time) (core.Result, error) {
 	result, poll, err := s.waitSnapshotOf(ctx, tx, caller, cmd, now)
 	switch {
 	case err != nil || poll.cursor.BindingID == 0:
+	case linked && cmd.Cursor == nil:
+		s.waits.forget(poll.cursor.BindingID) // a new baseline: no earlier poll vouches for it
 	case poll.ends:
 		s.waits.forget(poll.cursor.BindingID)
 	default:

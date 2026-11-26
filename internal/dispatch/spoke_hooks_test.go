@@ -184,33 +184,27 @@ func TestASpokeHookAcknowledgementSuppressesTheOffer(t *testing.T) {
 	f.end(t, f.home)
 }
 
-// A receipt handled after a later frame of its leaf went out cannot reach
-// the home in order (Sol #3690): it is not queued, and the offer stays
-// served, so the next hook shows it again and that receipt goes.
-func TestASpokeServesAgainAnOfferWhoseReceiptCameLate(t *testing.T) {
+// A receipt handled after a later frame of its leaf went out is still
+// queued (Sol #3696): the home confirms its offer without moving the
+// leaf's head, so it needs no second display.
+func TestASpokeQueuesAReceiptThatCameLate(t *testing.T) {
 	f := newHookFixture(t)
 	f.hook(t, wire.VerbHookEvent, prompt("e5", 3), 9, stamp22)
 	if err := f.s.endHookPass(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if n := f.count(t, `SELECT hook_sent_seq FROM spoke_leaf`); n != 9 {
+		t.Fatalf("released through %d, want 9", n)
+	}
 	receipt := wire.HookOutputAckArgs{Offer: &wire.HookOfferReceipt{OfferID: 7, Nonce: "nonce-7"}, WrittenAtMS: 99}
 	if r := f.hook(t, wire.VerbHookJoinHintAck, receipt, 8, stamp22); r.Status != core.ExitOK {
 		t.Fatalf("late receipt %+v", r)
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE kind = 'written'`); n != 0 {
-		t.Fatal("a late receipt was queued")
-	}
-	var out wire.HookResult
-	r := f.hook(t, wire.VerbHookEvent, prompt("e6", 3), 10, stamp22)
-	if json.Unmarshal(r.Data, &out) != nil || out.PendingLine == "" {
-		t.Fatalf("the offer of a late receipt was not served again: %+v", out)
-	}
-	f.hook(t, wire.VerbHookJoinHintAck, receipt, 11, stamp22)
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE kind = 'written' AND leaf_seq = 11`); n != 1 {
-		t.Fatal("the receipt after the offer was served again was not queued")
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE kind = 'written' AND leaf_seq = 8`); n != 1 {
+		t.Fatal("a late receipt was not queued")
 	}
 	if n := f.count(t, `SELECT suppressed FROM spoke_offer WHERE offer_id = 7`); n != 1 {
-		t.Fatal("the offer is still served after its receipt was queued")
+		t.Fatal("the offer of a queued receipt is still served")
 	}
 	f.end(t, f.home)
 }

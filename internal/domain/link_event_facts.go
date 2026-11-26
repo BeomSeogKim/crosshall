@@ -249,6 +249,16 @@ func (s *Service) applyLinkHookInput(ctx context.Context, tx store.Tx, peer Link
 	if same && quarantined {
 		return link.RecordedQuarantined, "rewound_leaf", nil
 	}
+	if in.written != nil && same && in.token.LeafSeq <= lastSeq {
+		// A display receipt is not a lifecycle step: one handled after a
+		// later fact of its leaf still confirms its nonce-checked offer,
+		// and leaves the leaf's head where it is.
+		ok, err := confirmLinkHookOffer(ctx, tx, peer, in, scope, now)
+		if err != nil || !ok {
+			return link.RecordedStale, "fact_scope", err
+		}
+		return link.RecordedApplied, "", nil
+	}
 	if same && in.token.LeafSeq <= lastSeq {
 		if snapshot {
 			return link.RecordedStale, "rewound_leaf", nil

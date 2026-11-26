@@ -454,6 +454,13 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 	if req.Verb == domain.VerbJoin {
 		req.Args = withoutLocalLaunch(req.Args)
 	}
+	// A wait poll is a read-only snapshot: it is not journaled (the spool
+	// gave it a fresh key, and a poll a second runs all day), changes no
+	// selection, and a lost answer is just a poll to make again.
+	observe := req.Verb == domain.VerbWait && !retried
+	if observe {
+		req.OpKey, req.Ack = "", 0
+	}
 	deadline := time.UnixMilli(req.ExpiresAtMS)
 	unsent := domain.Fail(core.ExitUnavailable, core.CodeUnsent, "the link to the home is down; nothing was sent",
 		"run crosshall link status, then send the command again")
@@ -538,6 +545,12 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 		return answer, nil
 	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
+	if observe {
+		if err != nil {
+			return unsent, nil // the CLI polls again
+		}
+		return result, nil
+	}
 	if errors.Is(err, errNotSent) {
 		if rec.fresh {
 			s.settleOutbox(ctx, rec.id, nil) // this command's own record, and nothing left

@@ -41,6 +41,8 @@ type Request struct {
 	Host *wire.Host
 	// LinkPickup is the authenticated linked read with a leaf capture token.
 	LinkPickup *LinkCall
+	// Linked says a linked device forwarded the command.
+	Linked bool
 	// OwnerAlerts says the client prints the owner line, so an owner
 	// request may mark the stops it carries as shown.
 	OwnerAlerts bool

@@ -49,7 +49,7 @@ var _ Handler = (*Service)(nil)
 // result, not an error; an error means the transaction must be rolled back.
 func (s *Service) Handle(ctx context.Context, tx store.Tx, caller core.Caller, req Request) (core.Result, error) {
 	if cmd, ok := req.Command.(Wait); ok {
-		return s.waitSnapshot(ctx, tx, caller, cmd, s.now())
+		return s.waitSnapshot(ctx, tx, caller, cmd, req.Linked, s.now())
 	}
 	now := s.now()
 	returnedAs, err := s.returnByHost(ctx, tx, &caller, req, now)

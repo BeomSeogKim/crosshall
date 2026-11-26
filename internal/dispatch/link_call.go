@@ -97,11 +97,14 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 		_, err := tx.ExecContext(ctx, `RELEASE link_command`)
 		return r, err == nil, err
 	}
+	if call.Command == domain.VerbWait {
+		call.Ack = 0 // a wait's output acknowledges no roster, as on the home itself
+	}
 	ack, undoAck, err := domain.AcknowledgeRoster(ctx, tx, caller.BindingID, call.Ack, 0)
 	if err != nil {
 		return core.Result{}, false, err
 	}
-	request := domain.Request{OpKey: call.OpKey, Command: cmd, Vendor: call.Vendor, Enroll: member.Enroll, Ack: ack}
+	request := domain.Request{OpKey: call.OpKey, Command: cmd, Vendor: call.Vendor, Enroll: member.Enroll, Ack: ack, Linked: true}
 	if _, reading := cmd.(domain.Read); reading && call.WakePickup != nil {
 		request.LinkPickup = &call
 	}

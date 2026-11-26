@@ -63,10 +63,12 @@ func notOnADeviceYet(what string) core.Result {
 		"run it from a session on the hall's home device")
 }
 
-// linkVerbs are the member commands a linked device may forward in v1.
+// linkVerbs are the member commands a linked device may forward in v1. A
+// wait is forwarded poll by poll: each is one read-only snapshot, which
+// also keeps the home's record that the member waits (#400, 12l).
 var linkVerbs = map[string]bool{
 	VerbJoin: true, VerbWho: true, VerbInbox: true, VerbRead: true, VerbAsk: true, VerbReply: true,
-	VerbNote: true, VerbLog: true, VerbLeave: true, VerbFocus: true,
+	VerbNote: true, VerbLog: true, VerbLeave: true, VerbFocus: true, VerbWait: true,
 }
 
 // LinkCommand decodes a forwarded command in its link shape: only the

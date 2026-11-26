@@ -71,6 +71,15 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 	stamp := call.Membership
 	if stamp == nil && member.Reenrolled {
 		stamp = caller.Membership
+		if selected := caller.Membership; selected != nil {
+			// The bootstrap is spent on this call whatever its outcome:
+			// a refusal too carries the selection for the device to stamp.
+			defer func() {
+				if err == nil && result.Membership == nil {
+					result.Membership = selected
+				}
+			}()
+		}
 	}
 	if !matchesMembership(stamp, caller.Membership) {
 		return membershipChanged(wire.Request{Membership: call.Membership}), true, nil

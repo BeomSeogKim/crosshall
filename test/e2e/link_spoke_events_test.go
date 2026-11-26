@@ -182,6 +182,13 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	if got := member.run("who"); got.obj["code"] != "home_rolled_back" {
 		t.Fatalf("a command after a restart: %+v", got)
 	}
+	// A link that stops at its confirmation changes nothing.
+	if got := spoke.run("link", linkFixtureTarget, "--name", "fixture-spoke"); got.exit == 0 {
+		t.Fatalf("an unconfirmed link: %+v", got)
+	}
+	if got := member.run("who"); got.obj["code"] != "home_rolled_back" {
+		t.Fatalf("a command after an unconfirmed link: %+v", got)
+	}
 
 	if unlink {
 		spoke.must("unlink")

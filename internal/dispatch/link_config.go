@@ -149,15 +149,8 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 		// The home went back to an older store: the device enrolls again
 		// on a fresh store. The new credential generation lets its
 		// sessions register anew and make their first call without the
-		// stamps the old store held.
-		if err := cfg.changeLinkMode(ctx, state, func() error {
-			if err := aside(); err != nil {
-				return err
-			}
-			return state.Remove(spokeConfigFile)
-		}); err != nil {
-			return link.Status{}, err
-		}
+		// stamps the old store held. Until the enrollment is done, the
+		// stopped profile and store stay as they are.
 		name = c.Name
 	}
 	var pending linkEnrollment
@@ -224,19 +217,19 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	}
 	conn.Close()
 	_ = conn.Wait()
-	// The same hall and device name may come back after an unlink: a
-	// store its home rolled back is not used again.
+	// A store whose home rolled back (linking again, or the same hall
+	// and device name after an unlink) is not used again. The new profile
+	// goes first: if the move does not happen, the store still refuses,
+	// and linking again enrolls again.
 	aside, err := cfg.setAsideRolledBack(ctx, state, c)
 	if err != nil {
 		return link.Status{}, err
 	}
 	if err := cfg.changeLinkMode(ctx, state, func() error {
-		if aside != nil {
-			if err := aside(); err != nil {
-				return err
-			}
+		if err := spool.PublishServerFile(state, spokeConfigFile, c); err != nil || aside == nil {
+			return err
 		}
-		return spool.PublishServerFile(state, spokeConfigFile, c)
+		return aside()
 	}); err != nil {
 		return link.Status{}, err
 	}

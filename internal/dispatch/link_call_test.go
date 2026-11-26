@@ -560,7 +560,15 @@ func TestTheFirstCallAfterReenrollmentNeedsNoStamp(t *testing.T) {
 			left = m
 		}
 		s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
-		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j2", cred: 2, gen: "fresh"}))
+		// A first call that is refused still hands the device the stamp.
+		refused := s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("mistyped"), op: "j2", cred: 2, gen: "fresh"})
+		if refused.Status == core.ExitOK || refused.Membership == nil || *refused.Membership != *left {
+			t.Fatalf("a refused first call: %+v, want the selection %+v", refused, left)
+		}
+		mustLinkCode(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh"}),
+			core.CodeBindingChanged)
+		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j4", cred: 2, gen: "fresh",
+			membership: refused.Membership}))
 		if r.Membership == nil || r.Membership.BindingID == left.BindingID {
 			t.Fatalf("rejoin selection %+v after %+v", r.Membership, left)
 		}

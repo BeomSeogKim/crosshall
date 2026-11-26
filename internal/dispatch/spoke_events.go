@@ -82,10 +82,16 @@ func newSpokeEvents(m *spokeMembers) (*spokeEvents, error) {
 // frame leaves after it, then in the store. A failed write still stops
 // the device; persistStop is tried again until it holds.
 func (e *spokeEvents) rolledBack(ctx context.Context, seq, acked uint64) error {
-	e.stop.halt(ctx)
+	e.stop.halted.Store(true)
 	log.Printf("dispatcher: the home sent snapshot %d below acknowledged event %d: it was restored to an older store; the link stops until crosshall link runs again", seq, acked)
-	if err := e.persistStop(ctx); err != nil {
-		return fmt.Errorf("%w (recording it: %v)", errHomeRolledBack, err)
+	// Recorded before waiting for the command turn, and also while the
+	// dispatcher shuts down.
+	record, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	recorded := e.persistStop(record)
+	cancel()
+	e.stop.halt(ctx)
+	if recorded != nil {
+		return fmt.Errorf("%w (recording it: %v)", errHomeRolledBack, recorded)
 	}
 	return errHomeRolledBack
 }

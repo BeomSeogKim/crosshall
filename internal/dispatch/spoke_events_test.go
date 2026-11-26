@@ -808,3 +808,28 @@ func (f *eventFixture) exec(t *testing.T, query string, args ...any) {
 		t.Fatal(err)
 	}
 }
+
+// A rollback is recorded even when the dispatcher shuts down while the
+// stop waits for an exchange in progress.
+func TestASpokeRecordsARollbackDuringShutdown(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- f.e.run(ctx, home) }()
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.ack(t, 10)
+	f.m.turn <- struct{}{} // an exchange in progress
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true})
+	for !f.m.halted.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, errHomeRolledBack) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown: %v", err)
+	}
+	<-f.m.turn
+	if m, err := newSpokeMembers(t.Context(), f.m.db, f.m.members); err != nil || !m.halted.Load() {
+		t.Fatalf("a restarted spoke forgot the rollback: %v", err)
+	}
+}

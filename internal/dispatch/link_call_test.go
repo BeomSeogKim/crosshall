@@ -574,3 +574,25 @@ func TestTheFirstCallAfterReenrollmentNeedsNoStamp(t *testing.T) {
 		}
 	})
 }
+
+// The answer to the first stampless call after re-enrollment is lost: the
+// receipt lookup of that call hands over the key's selection, and the next
+// call carrying it is admitted.
+func TestALostFirstAnswerAfterReenrollmentIsRecoverable(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	left := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbLeave, op: "l1", membership: m})).Membership
+	if left == nil {
+		left = m
+	}
+	s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
+	first := linkReq{command: domain.VerbJoin, args: joinChannel("mistyped"), op: "j2", cred: 2, gen: "fresh"}
+	_ = s.link(t, first) // its answer is lost
+	first.receipt = true
+	lookup := s.link(t, first)
+	if lookup.Membership == nil || *lookup.Membership != *left {
+		t.Fatalf("receipt lookup %+v, want the selection %+v", lookup, left)
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh",
+		membership: lookup.Membership}))
+}

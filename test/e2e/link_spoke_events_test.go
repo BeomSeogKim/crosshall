@@ -5,9 +5,11 @@ package e2e
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -133,6 +135,18 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
 	waitSpokeLink(t, spoke, "connected")
 	member := f.spoke.member()
+	if !unlink {
+		// The enrollment record of this first link survives, as after an
+		// interruption before its cleanup: it never authorizes the later
+		// replacement.
+		profile, err := os.ReadFile(filepath.Join(f.spoke.state, "link.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.spoke.state, "link-enrollment.json"), profile, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	member.must("join", "first")
 	spokeDB := spokeStore(t, f.spoke.state)
 	acked := func() int64 {
@@ -190,6 +204,31 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 		t.Fatalf("a command after an unconfirmed link: %+v", got)
 	}
 
+	if !unlink {
+		// Linking again stops after each step of replacing the profile:
+		// a restarted dispatcher dials nothing and refuses, and the next
+		// link finishes the replacement.
+		dials := func() int {
+			data, _ := os.ReadFile(f.ssh + ".pids")
+			return len(strings.Fields(string(data)))
+		}
+		for step := 1; step <= 3; step++ {
+			interrupted := f.spoke.owner()
+			interrupted.extra = []string{"CROSSHALL_TEST_LINK_INTERRUPT=" + strconv.Itoa(step)}
+			if got := interrupted.run("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes"); got.exit == 0 ||
+				!strings.Contains(got.stdout+got.stderr, fmt.Sprintf("interrupted after step %d", step)) {
+				t.Fatalf("link interrupted after step %d: %+v", step, got)
+			}
+			before := dials()
+			if got := member.run("who"); got.obj["code"] != "home_rolled_back" {
+				t.Fatalf("a command after step %d: %+v", step, got)
+			}
+			time.Sleep(time.Second)
+			if after := dials(); after != before {
+				t.Fatalf("a restarted dispatcher dialed after step %d: %d -> %d", step, before, after)
+			}
+		}
+	}
 	if unlink {
 		spoke.must("unlink")
 		spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
@@ -198,8 +237,18 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	}
 	waitSpokeLink(t, spoke, "connected")
 	aside, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*-rolled-back-*", "store.sqlite3"))
-	if len(aside) != 1 {
-		t.Fatalf("the old spoke store was not kept aside: %v", aside)
+	kept := false
+	for _, path := range aside {
+		db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stopped int64
+		kept = kept || db.QueryRow(`SELECT rolled_back FROM spoke_event_cursor`).Scan(&stopped) == nil && stopped == 1
+		db.Close()
+	}
+	if !kept {
+		t.Fatalf("the stopped spoke store was not kept aside: %v", aside)
 	}
 	if got := member.run("join", "second"); got.exit != 0 {
 		data, _ := os.ReadFile(filepath.Join(f.spoke.state, "dispatcher.log"))

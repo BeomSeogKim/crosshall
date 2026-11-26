@@ -183,5 +183,24 @@ func (s *server) linkReceipt(ctx context.Context, tx store.Tx, req wire.Request)
 	if result.Code == domain.CodeLinkStale || result.Status == core.ExitUsage {
 		return result, false, nil
 	}
+	if lookup.Membership == nil && result.Membership == nil {
+		// A lost answer to a call without a stamp (the first after its
+		// device enrolled again) may have been the device's only way to
+		// learn its selection: the lookup hands over the key's current
+		// one, read only.
+		principal, err := domain.LinkMemberPrincipal(ctx, tx, lookup.LinkCall)
+		if err != nil {
+			return core.Result{}, false, err
+		}
+		if principal != 0 {
+			selected, err := domain.SelectedMembership(ctx, tx, principal)
+			if err != nil {
+				return core.Result{}, false, err
+			}
+			if selected.BindingID != 0 {
+				result.Membership = &selected
+			}
+		}
+	}
 	return fitLinkResult(result), true, nil
 }

@@ -110,8 +110,12 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 	m, err := newSpokeMembers(ctx, db, members)
 	if err != nil {
 		db.Close()
+		return nil, err
 	}
-	return m, err
+	if linked.RolledBack {
+		m.halted.Store(true) // the profile carries the stop until linking again replaces it
+	}
+	return m, nil
 }
 
 // newSpokeMembers starts stopped when the store recorded a home rollback;

@@ -36,6 +36,7 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 
 	var instance [16]byte
 	rand.Read(instance[:])
+	consumeEnrollment(state, linked)
 	members, err := openSpokeMembers(ctx, state, cfg.StateRoot, linked)
 	if err != nil {
 		return err

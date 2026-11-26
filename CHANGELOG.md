@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **The home reports a linked member's notice route (#438):** `who`, `ask` and `reply` on the home said `not woken: no notice route` for a member on a linked device even when the device woke it. While the device holds its event stream and the member's launch can be woken, they now report a notice; they still report a held wake, an offline device, or no route when the home has no launch it could wake.
 - **Linking a device is available by default (#400):** from the owner's terminal, run `crosshall link <ssh-target>` to join another device's hall. Use `crosshall link status` to see the current connection and `crosshall unlink` to return to the local hall.
 - **Linking again after a home rollback stays with the same hall (#418):** `crosshall link` refuses to replace a stopped profile when its SSH target now reaches a home serving another hall, before it asks for confirmation or sets the stopped store aside. A dispatcher that starts during a link change no longer removes that change's new enrollment record.
 - **A linked device catching up holds a bounded backlog (#422):** the home writes at most four pages of events ahead of what the linked device has acknowledged, so a device reconnecting to a large backlog no longer queues all of it in memory while it applies the events one by one.

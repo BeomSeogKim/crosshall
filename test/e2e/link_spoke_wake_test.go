@@ -148,8 +148,23 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 			Scan(&ready) == nil && ready
 	})
 
+	// The home reports the notice route the device's wake will use (#438),
+	// once it has served the launch's route change.
+	eventually(t, "who reports a notice route for the linked receiver", func() bool {
+		for _, m := range sender.must("who").obj["members"].([]any) {
+			if row := m.(map[string]any); row["alias"] == "receiver" {
+				return row["wake"] == "notice"
+			}
+		}
+		return false
+	})
 	const request = "Check the linked native inbox."
-	askID := num(t, sender.must("ask", "@receiver", request), "id")
+	asked := sender.must("ask", "@receiver", request)
+	if recipients, _ := asked.obj["recipients"].([]any); len(recipients) != 1 ||
+		recipients[0].(map[string]any)["wake"] != "notice" {
+		t.Fatalf("the ask did not report a notice for the linked receiver: %v", asked.obj)
+	}
+	askID := num(t, asked, "id")
 	adapter, ok := publish.Lookup("claude")
 	if !ok {
 		t.Fatal("Claude publish adapter missing from the fixture binary")

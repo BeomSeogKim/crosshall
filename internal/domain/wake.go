@@ -99,11 +99,33 @@ func reachWake(status store.PublishState, found bool) Wake {
 
 // memberWake is what will tell a live binding about new work now.
 func memberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) (Wake, error) {
+	w, _, err := memberWakeOf(ctx, tx, binding, now)
+	return w, err
+}
+
+// memberWakeOf is memberWake; linked says a linked device holds the
+// member's session, so its notices go through that device (#400).
+func memberWakeOf(ctx context.Context, tx store.Tx, binding int64, now time.Time) (Wake, bool, error) {
 	status, found, err := store.ReadPublishState(ctx, tx, binding, now)
 	if err == nil && !found {
-		return linkedMemberWake(ctx, tx, binding, now)
+		w, err := linkedMemberWake(ctx, tx, binding, now)
+		return w, true, err
 	}
-	return reachWake(status, found), err
+	return reachWake(status, found), false, err
+}
+
+// linkWakePending says a linked wake could still offer message msg to the
+// principal: no notice announced it and no linked attempt may have
+// submitted it.
+func linkWakePending(ctx context.Context, tx store.Tx, principal, msg int64) (bool, error) {
+	var pending bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
+		WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
+		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
+		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
+			WHERE a.principal_id = x.principal_id AND item.value = x.message_id AND `+linkWakeMayHaveSubmitted+`))`,
+		principal, msg).Scan(&pending)
+	return pending, err
 }
 
 // messageWake is what will tell a live binding about stored message msg: a
@@ -151,25 +173,36 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 	var w Wake
 	if !eligible {
 		var err error
-		w, err = memberWake(ctx, tx, binding, now)
+		var linked bool
+		w, linked, err = memberWakeOf(ctx, tx, binding, now)
 		if err != nil {
 			return Wake{}, false, err
 		}
-		if w.Wake == WakeNotice {
+		switch {
+		case w.Wake == WakeNotice && linked:
+			if eligible, err = linkWakePending(ctx, tx, principal, msg); err != nil {
+				return Wake{}, false, err
+			}
+			if !eligible {
+				var submitted bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
+					WHERE a.principal_id = ? AND item.value = ? AND `+linkWakeMayHaveSubmitted+`)`, principal, msg).Scan(&submitted); err != nil {
+					return Wake{}, false, err
+				}
+				if submitted {
+					return Wake{Wake: WakeNotice}, true, nil // a linked wake may have submitted it
+				}
+			}
+			w = Wake{Wake: WakeNone, Why: WhyKind}
+		case w.Wake == WakeNotice:
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+activePublishRoutes(now)+
 				` AND r.binding_id = ? AND EXISTS (`+publishMessages+` AND x.message_id = ?))`, binding, msg).Scan(&eligible); err != nil {
 				return Wake{}, false, err
 			}
 			w = Wake{Wake: WakeNone, Why: WhyKind}
-		}
-		if w.Why == WhyDeviceOffline {
-			var pending bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
-				WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
-				AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
-				AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
-					WHERE a.principal_id = x.principal_id AND item.value = x.message_id AND `+linkWakeMayHaveSubmitted+`))`,
-				principal, msg).Scan(&pending); err != nil {
+		case w.Why == WhyDeviceOffline:
+			pending, err := linkWakePending(ctx, tx, principal, msg)
+			if err != nil {
 				return Wake{}, false, err
 			}
 			if !pending {

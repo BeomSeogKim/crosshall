@@ -14,27 +14,33 @@ import (
 
 func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
 	h, route := linkWakeFixture(t)
-	check := func(want string) {
+	check := func(want Wake) {
 		t.Helper()
 		got := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
 			return memberWake(ctx, tx, route.Scope.Membership.BindingID, h.now)
 		})
-		if got.Wake != WakeNone || got.Why != want {
-			t.Fatalf("wake = %+v, want %s", got, want)
+		if got != want {
+			t.Fatalf("wake = %+v, want %+v", got, want)
 		}
 	}
-	check(WhyNoRoute)
+	notice, noRoute := Wake{Wake: WakeNotice}, Wake{Wake: WakeNone, Why: WhyNoRoute}
+	// An open stream with a launch the home could wake is a notice route
+	// (#438), and it follows the stream that is current.
+	check(notice)
 	old := h.peer
 	acked := uint64(h.count(`SELECT acked FROM link_event_cursor WHERE device_id = ?`, h.peer.Device))
 	h.peer.Stream = link.NewNonce()
 	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, AllowWake: true,
 		Subscribe: &link.Subscribe{Boot: route.Boot, FromSeq: acked}}, ""))
 	wantOK(t, h.owner(LinkEvents{LinkEventPeer: old, Close: true}, ""))
-	check(WhyNoRoute)
+	check(notice)
+	h.sql(`UPDATE binding SET dnd = 1 WHERE id = ?`, route.Scope.Membership.BindingID)
+	check(noRoute)
+	h.sql(`UPDATE binding SET dnd = 0 WHERE id = ?`, route.Scope.Membership.BindingID)
 
 	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, Close: true}, ""))
 	wantCode(t, h.owner(LinkEvents{LinkEventPeer: h.peer}, ""), core.ExitRefused, "link_event_resync")
-	check(WhyDeviceOffline)
+	check(Wake{Wake: WakeNone, Why: WhyDeviceOffline})
 	r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: "Review while offline."}, "")
 	wantOK(t, r)
 	id := decode[AskResult](t, r).ID
@@ -45,7 +51,35 @@ func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
 		t.Fatalf("offline request = %+v", wake)
 	}
 	h.sql(`UPDATE link_event_launch SET verified = 0 WHERE principal_id = ?`, h.principal)
-	check(WhyNoRoute)
+	check(noRoute)
+}
+
+// A request to a linked member whose device holds the stream reads as a
+// notice, as the device's wake delivers it; once a linked wake may have
+// submitted it, it still does (#438).
+func TestLinkWakeReportsANoticeForAConnectedMember(t *testing.T) {
+	h, route := linkWakeFixture(t)
+	binding := route.Scope.Membership.BindingID
+	messageWake := func(id int64) Wake {
+		t.Helper()
+		return inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+			return h.svc.messageWake(ctx, tx, binding, h.principal, id, h.now)
+		})
+	}
+	r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: "Review while connected."}, "")
+	wantOK(t, r)
+	id := decode[AskResult](t, r).ID
+	if got := messageWake(id); got.Wake != WakeNotice {
+		t.Fatalf("request to a connected linked member = %+v", got)
+	}
+	wake, _ := dispatchTestLinkWake(t, h, route, id)
+	if got := messageWake(id); got.Why != WhyHeld {
+		t.Fatalf("request while its wake dispatches = %+v", got)
+	}
+	h.sql(`UPDATE link_wake_attempt SET state = 'submitted', released_at_ms = ? WHERE id = ?`, ms(h.now), wake.AttemptID)
+	if got := messageWake(id); got.Wake != WakeNotice {
+		t.Fatalf("request a linked wake submitted = %+v", got)
+	}
 }
 
 func TestLinkWakeOfflineKeepsAnUnresolvedAttemptHeld(t *testing.T) {

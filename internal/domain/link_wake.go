@@ -213,12 +213,18 @@ func linkedMemberWake(ctx context.Context, tx store.Tx, binding int64, now time.
 	if held {
 		return Wake{Wake: WakeNone, Why: WhyHeld}, nil
 	}
-	if !closed || scope.binding.dnd {
+	if scope.binding.dnd {
 		return none, nil
 	}
 	eligible, err := linkWakeRouteEligible(ctx, tx, peer, principal, route)
 	if err != nil || !eligible {
 		return none, err
+	}
+	if !closed {
+		// The device proves the route when it has an offer to deliver:
+		// a launch the home could wake is a notice route, as a local
+		// member's available publish state is (#438).
+		return Wake{Wake: WakeNotice}, nil
 	}
 	running, err := inReportedTurn(ctx, tx, principal, now)
 	if err != nil || running {

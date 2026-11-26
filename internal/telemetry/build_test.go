@@ -151,6 +151,11 @@ var fixtureSQL = []string{
 	`INSERT INTO member_host (principal_id, pid, start_identity, pid_namespace, seen_at_ms) VALUES (3, 4343, 1, 'zqxmarker', 0)`,
 	`INSERT INTO thread_position (principal_id, thread_root_id, level_ms) VALUES (3, 1, 1)`,
 	`INSERT INTO owner_alert (event_seq) VALUES (4)`,
+	// A linked device's name and secret, and the hall's identity, never
+	// reach a report (#400).
+	`INSERT INTO device (device_id, name, secret, created_at_ms, secret_at_ms)
+		VALUES ('zqxmarker-device', 'zqxmarker', 'zqxmarker-secret', 0, 0)`,
+	`UPDATE hall SET hall_id = 'zqxmarker-hall'`,
 }
 
 func openFixture(t *testing.T) *store.Store {

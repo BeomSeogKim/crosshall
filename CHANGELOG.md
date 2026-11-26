@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **The home side of a hall on two devices, behind an opt-in (#400):** with `CROSSHALL_EXPERIMENTAL_LINK=1`, `crosshall link enroll --name <device>` records a device on the hall's home device and reads its secret on stdin, and `crosshall link serve` speaks the link protocol on stdin and stdout: a handshake that checks the hall, the device's proof of its secret and a common link version, then pings. Both are meant to be started by the other device over the user's own ssh, which a later release adds. Migration 031 adds the `hall` and `device` tables. The dispatcher keeps each device secret in its store, makes the home's proof and checks the device's itself, and no audit or replay record holds a secret; during enrollment the secret passes through a private owner spool packet (mode 0600), as every owner command's arguments do.
 - **Codex explains when the hall cannot wake it.** A join or first prompt names a missing managed app server and how to reopen it. A hand join with no reported route also points the user to `/hooks` to check trust.
 
 ## v0.3.1-rc.2 (2026-11-26)

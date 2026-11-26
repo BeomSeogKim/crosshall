@@ -164,6 +164,14 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 	spoke := cfg.spoke(s.cfg.Version)
 	backoff := time.Second
 	for ctx.Err() == nil {
+		if homeRolledBack(s.spokeMembers.dir) {
+			// Commands refuse until crosshall link runs again; the home
+			// is not dialed meanwhile.
+			status.Error = "the home device was restored from an older state; run crosshall link " + cfg.Target + " again"
+			publish("disconnected")
+			<-ctx.Done()
+			return
+		}
 		publish("connecting")
 		started := time.Now()
 		connection, err := link.DialSSH(ctx, cfg.Endpoint, spoke)
@@ -204,7 +212,7 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 // own (#400, design 12j), so the command connection stays a plain call
 // and result exchange. A home that serves no events is asked again rarely.
 func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
-	events, err := newSpokeEvents(s.spokeMembers.db, s.spokeMembers.members, s.spokeMembers.turn)
+	events, err := newSpokeEvents(s.spokeMembers.db, s.spokeMembers.members, s.spokeMembers.dir)
 	if err != nil {
 		log.Printf("dispatcher: the event stream is off: %v", err)
 		return
@@ -213,6 +221,9 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 	spoke.Caps = []string{link.CapEvents}
 	backoff := time.Second
 	for ctx.Err() == nil {
+		if homeRolledBack(s.spokeMembers.dir) {
+			return // until crosshall link runs again
+		}
 		limit := time.Minute
 		connection, err := link.DialSSH(ctx, cfg.Endpoint, spoke)
 		if err == nil {
@@ -229,6 +240,9 @@ func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
 			}
 		}
 		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errHomeRolledBack) {
 			return
 		}
 		if err != nil && !errors.Is(err, errEventGap) {

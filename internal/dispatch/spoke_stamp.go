@@ -57,14 +57,11 @@ func stampLocked(ctx context.Context, db *store.Store, dir *os.Root, digest, ide
 		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE digest = ? AND file_identity = ?`,
 			digest, identity).Scan(&m.BindingID, &m.Generation)
 	})
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || err == nil && m.Generation == 0 {
 		return nil
 	}
 	if err != nil {
 		return err
-	}
-	if m.Generation == 0 {
-		return ident.WithdrawMembership(dir) // the hall holds no selection
 	}
 	return ident.RepublishMembership(dir, m)
 }

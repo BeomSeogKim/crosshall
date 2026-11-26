@@ -17,6 +17,7 @@ import (
 // registers again with a new generation and the next epoch, and the
 // registered directory authenticates member requests.
 func TestASpokeRegistersItsOwnSessions(t *testing.T) {
+	started := time.Now()
 	db, err := store.OpenSpoke(t.Context(), privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +69,11 @@ func TestASpokeRegistersItsOwnSessions(t *testing.T) {
 		})
 		return leaf, err
 	}
-	if leaf, err := resolve(first); err != nil || leaf.Epoch != 1 || leaf.Key != "session" {
-		t.Fatalf("resolve %+v, %v", leaf, err)
+	// An epoch is at least the registration time, so a fresh spoke store
+	// still registers above what the home holds.
+	firstLeaf, err := resolve(first)
+	if err != nil || firstLeaf.Epoch < started.UnixMilli() || firstLeaf.Key != "session" {
+		t.Fatalf("resolve %+v, %v", firstLeaf, err)
 	}
 	// The tmp leaf is lost: the session registers again.
 	if err := os.Rename(filepath.Join(root, "m", first.digest[:16]), filepath.Join(root, "lost")); err != nil {
@@ -79,7 +83,7 @@ func TestASpokeRegistersItsOwnSessions(t *testing.T) {
 	if err != nil || second.generation == first.generation {
 		t.Fatalf("re-registration %v", err)
 	}
-	if leaf, err := resolve(second); err != nil || leaf.Epoch != 2 {
+	if leaf, err := resolve(second); err != nil || leaf.Epoch <= firstLeaf.Epoch {
 		t.Fatalf("resolve after re-registration %+v, %v", leaf, err)
 	}
 	if _, err := resolve(first); err == nil {

@@ -5,15 +5,11 @@
 -- The one cursor: the device boot it was acknowledged under, the last
 -- event applied and acknowledged, and whether the cache may be served.
 -- eligible is 0 from the moment a snapshot is needed until one applies.
--- rebaseline is 1 while a snapshot that replaces everything (the home
--- went back to an older store) has not finished; the next snapshot
--- replaces everything again.
 CREATE TABLE spoke_event_cursor (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     boot TEXT NOT NULL,
     acked_seq INTEGER NOT NULL,
-    eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
-    rebaseline INTEGER NOT NULL DEFAULT 0 CHECK (rebaseline IN (0, 1))
+    eligible INTEGER NOT NULL CHECK (eligible IN (0, 1))
 );
 
 -- A member's scope as the home last sent it.

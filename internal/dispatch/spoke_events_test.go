@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -108,8 +109,8 @@ func newEventFixture(t *testing.T) *eventFixture {
 	t.Helper()
 	f := &eventFixture{spokeFixture: newSpokeFixture(t)}
 	f.now.Store(int64(time.Hour))
-	f.e = &spokeEvents{db: f.m.db, members: f.m.members, boot: "boot-1", mono: func() (int64, error) { return f.now.Load(), nil },
-		turn: f.m.turn}
+	f.e = &spokeEvents{db: f.m.db, members: f.m.members, dir: f.m.dir, boot: "boot-1",
+		mono: func() (int64, error) { return f.now.Load(), nil }}
 	if err := f.dir.WriteFile("hook-publish-seq", []byte("5\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestASpokeKeepsOfferLeases(t *testing.T) {
 	f := newEventFixture(t)
 	put := func(o link.Offer) int {
 		t.Helper()
-		if err := f.m.db.Update(t.Context(), func(tx store.Tx) error { return f.e.putOffer(t.Context(), tx, o, f.now.Load(), offerEvent) }); err != nil {
+		if err := f.m.db.Update(t.Context(), func(tx store.Tx) error { return f.e.putOffer(t.Context(), tx, o, f.now.Load(), false) }); err != nil {
 			t.Fatal(err)
 		}
 		return f.count(t, `SELECT COALESCE(MAX(lease_epoch * 100000 + deadline_mono / 1000000000), -1) FROM spoke_offer`)
@@ -308,7 +309,7 @@ func TestASpokeResumesOnlyWithinItsProcessAndBoot(t *testing.T) {
 	if s := subscribe(); s.Snapshot || s.FromSeq != 10 {
 		t.Fatalf("reconnect %+v", s)
 	}
-	f.e = &spokeEvents{db: f.m.db, members: f.m.members, boot: "boot-1", mono: f.e.mono}
+	f.e = &spokeEvents{db: f.m.db, members: f.m.members, dir: f.m.dir, boot: "boot-1", mono: f.e.mono}
 	if s := subscribe(); !s.Snapshot {
 		t.Fatalf("new process %+v", s)
 	}
@@ -650,176 +651,50 @@ func TestASpokeRecoversFromAnOlderHome(t *testing.T) {
 	}
 }
 
-// A snapshot below the acknowledged cursor (a home restored to an older
-// store) sets the home's selections as they are, also when older,
-// withdraws the stamp of a session it does not list, and keeps no offer
-// of the newer state.
-func TestASpokeRebaselinesOnAnOlderHome(t *testing.T) {
+// A snapshot below what the device acknowledged means the home went back
+// to an older store: v1 applies and acknowledges nothing of it, stops the
+// stream for good, and every command refuses with the way back.
+func TestASpokeStopsOnAHomeRollback(t *testing.T) {
 	f := newEventFixture(t)
 	home := newFakeHome()
 	f.start(t, home)
-	newer := offer(1, 3, 60_000)
-	newer.Nonce = "after-backup"
 	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{
-		{Member: eventMember, Scope: f.scope(2, 2), Offers: []link.Offer{newer}}}})
+		{Member: eventMember, Scope: f.scope(2, 2), Offers: []link.Offer{offer(1, 0, 60_000)}}}})
 	home.ack(t, 10)
-	stamp := func() *core.Membership {
-		t.Helper()
-		m, err := ident.LookupMembership(f.dir)
-		if err != nil {
-			t.Fatal(err)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true, Members: []link.SnapshotMember{
+		{Member: eventMember, Scope: f.scope(1, 1)}}})
+	select {
+	case err := <-f.done:
+		if !errors.Is(err, errHomeRolledBack) {
+			t.Fatalf("a rollback: %v", err)
 		}
-		return m
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream went on after a rollback")
 	}
-	if m := stamp(); m == nil || *m != (core.Membership{BindingID: 2, Generation: 2}) {
-		t.Fatalf("stamp %+v", m)
-	}
-	older := offer(1, 0, 60_000)
-	older.Nonce = "before-backup"
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true, Members: []link.SnapshotMember{
-		{Member: eventMember, Scope: f.scope(1, 1), Offers: []link.Offer{older}}}})
-	home.ack(t, 3)
-	if m := stamp(); m == nil || *m != (core.Membership{BindingID: 1, Generation: 1}) {
-		t.Fatalf("stamp %+v after the rollback", m)
-	}
-	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 11 {
-		t.Fatalf("selection %d after the rollback", n)
-	}
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_offer WHERE json_extract(body, '$.nonce') = 'before-backup' AND lease_epoch = 0`); n != 1 {
-		t.Fatal("the offer of the newer state stayed")
-	}
-	// An older home that no longer knows the session.
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 1, Last: true})
-	home.ack(t, 1)
-	if m := stamp(); m != nil {
-		t.Fatalf("an unknown session kept its stamp %+v", m)
-	}
-	if n := f.count(t, `SELECT binding_id + membership_gen + (SELECT COUNT(*) FROM spoke_offer) FROM spoke_leaf`); n != 0 {
-		t.Fatalf("an unknown session kept %d", n)
-	}
-	f.end(t, home)
-}
-
-func (f *eventFixture) exec(t *testing.T, query string, args ...any) {
-	t.Helper()
-	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
-		_, err := tx.ExecContext(t.Context(), query, args...)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A lower snapshot replaces everything the newer history left: the
-// device publishes exactly its selection and offer, keeps a queued
-// Written's suppression only for that very offer, drops command answers
-// a retry could adopt a selection from, and sets the selection of a
-// session whose directory is gone; commands wait until it committed.
-func TestASpokeReplacesEverythingOnARollback(t *testing.T) {
-	f := newEventFixture(t)
-	home := newFakeHome()
-	f.start(t, home)
-	newer, same := offer(1, 3, 60_000), offer(5, 2, 60_000)
-	newer.Nonce, same.Nonce = "after-backup", "same"
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{
-		{Member: eventMember, Scope: f.scope(2, 2), Offers: []link.Offer{newer, same}}}})
-	home.ack(t, 10)
-	f.exec(t, `UPDATE spoke_offer SET suppressed = 1`) // Writtens queued for both
-	f.exec(t, `INSERT INTO link_outbox (vendor, key, op_key, command, args, state, result, at_ms)
-		VALUES ('codex', 'session', 'moved', 'join', '{}', 'done', '{"status":0,"membership":{"binding_id":2,"generation":2}}', 0)`)
-	// A member command holds the turn: the replacement waits for it.
-	f.m.turn <- struct{}{}
-	older, sameAgain := offer(1, 0, 60_000), offer(5, 0, 60_000)
-	older.Nonce, sameAgain.Nonce = "before-backup", "same"
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true, Members: []link.SnapshotMember{
-		{Member: eventMember, Scope: f.scope(1, 1), Offers: []link.Offer{older, sameAgain}}}})
-	time.Sleep(50 * time.Millisecond)
 	for _, fr := range home.frames() {
 		var a link.Ack
 		if fr.Type == link.TypeAck && json.Unmarshal(fr.Body, &a) == nil && a.Seq == 3 {
-			t.Fatal("the replacement went on while a command held the turn")
+			t.Fatal("the older snapshot was acknowledged")
 		}
 	}
-	<-f.m.turn
-	home.ack(t, 3)
-	if m, err := ident.LookupMembership(f.dir); err != nil || m == nil || *m != (core.Membership{BindingID: 1, Generation: 1}) {
-		t.Fatalf("stamp %+v, %v", m, err)
-	}
-	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 11 {
-		t.Fatalf("selection %d", n)
-	}
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_offer WHERE offer_id = 1 AND json_extract(body, '$.nonce') = 'before-backup'
-		AND lease_epoch = 0 AND suppressed = 0`); n != 1 {
-		t.Fatal("the offer is not the restored home's")
-	}
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_offer WHERE offer_id = 5 AND lease_epoch = 0 AND suppressed = 1`); n != 1 {
-		t.Fatal("the very offer lost its suppression or kept the newer lease")
-	}
-	if n := f.count(t, `SELECT COUNT(*) FROM spoke_offer`) + f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 2 {
-		t.Fatalf("%d offers and answers of the newer history stayed", n-2)
-	}
-	if n := f.count(t, `SELECT eligible * 10 + rebaseline FROM spoke_event_cursor`); n != 10 {
+	if n := f.count(t, `SELECT acked_seq * 10 + eligible FROM spoke_event_cursor`); n != 100 {
 		t.Fatalf("cursor %d", n)
 	}
-	f.end(t, home)
-}
-
-// A rollback sets the selection of a session whose directory is gone,
-// and one whose stamp cannot be withdrawn is done again by the next
-// snapshot before the cache counts.
-func TestASpokeFinishesAnInterruptedRollback(t *testing.T) {
-	f := newEventFixture(t)
-	home := newFakeHome()
-	f.start(t, home)
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(2, 2)}}})
-	home.ack(t, 10)
-	// The home no longer lists the session; its stamp cannot be removed.
-	blockStamp(t, f.spokeFixture)
-	if err := os.WriteFile(filepath.Join(f.path, "membership", "x"), nil, 0600); err != nil {
-		t.Fatal(err)
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`) + f.count(t, `SELECT COUNT(*) FROM spoke_offer`); n != 23 {
+		t.Fatalf("the older snapshot applied: %d", n)
 	}
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true})
-	select {
-	case err := <-f.done:
-		if err == nil {
-			t.Fatal("the rollback went on without withdrawing the stamp")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the stream did not stop")
+	// It stays stopped: no subscribe, and commands refuse.
+	again := newFakeHome()
+	if err := f.e.run(t.Context(), again); !errors.Is(err, errHomeRolledBack) || len(again.frames()) != 0 {
+		t.Fatalf("a stopped stream: %v, %v", err, again.frames())
 	}
-	if n := f.count(t, `SELECT eligible * 10 + rebaseline FROM spoke_event_cursor`); n != 1 {
-		t.Fatalf("cursor %d after an interrupted rollback", n)
+	r := f.send(t, "note", "k1")
+	if r.Code != domain.CodeHomeRolledBack || !strings.Contains(string(r.Data), "crosshall link") {
+		t.Fatalf("a command after the rollback: %+v", r)
 	}
-	if err := os.RemoveAll(filepath.Join(f.path, "membership")); err != nil {
-		t.Fatal(err)
+	id := wire.NewID()
+	raw, _ := json.Marshal(wire.Hello{Version: wire.Version, Attempt: id, Vendor: "codex", Key: "session", Intent: "join"})
+	if r, err := f.s.spokeHello(t.Context(), id, raw); err != nil || r.Code != domain.CodeHomeRolledBack {
+		t.Fatalf("first contact after the rollback: %+v, %v", r, err)
 	}
-	f.exec(t, `UPDATE spoke_leaf SET binding_id = 2, membership_gen = 2`) // as a stale writer would
-	if err := ident.RepublishMembership(f.dir, core.Membership{BindingID: 2, Generation: 2}); err != nil {
-		t.Fatal(err)
-	}
-	home = newFakeHome()
-	f.start(t, home)
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true})
-	home.ack(t, 3)
-	if m, err := ident.LookupMembership(f.dir); err != nil || m != nil {
-		t.Fatalf("stamp %+v, %v after the rollback finished", m, err)
-	}
-	if n := f.count(t, `SELECT binding_id + membership_gen FROM spoke_leaf`) + f.count(t, `SELECT eligible * 10 + rebaseline FROM spoke_event_cursor`); n != 10 {
-		t.Fatalf("selection and cursor %d", n)
-	}
-	f.end(t, home)
-	// A listed session whose directory is gone still takes the selection.
-	home = newFakeHome()
-	f.start(t, home)
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 20, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(2, 2)}}})
-	home.ack(t, 20)
-	if err := os.Rename(f.path, f.path+".gone"); err != nil {
-		t.Fatal(err)
-	}
-	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 4, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(1, 1)}}})
-	home.ack(t, 4)
-	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 11 {
-		t.Fatalf("selection %d of a session without its directory", n)
-	}
-	f.end(t, home)
 }

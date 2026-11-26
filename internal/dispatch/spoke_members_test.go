@@ -88,7 +88,7 @@ func newSpokeFixture(t *testing.T) *spokeFixture {
 		t.Fatal(err)
 	}
 	root.Close()
-	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}
+	m := &spokeMembers{db: db, members: members, dir: dir, turn: make(chan struct{}, 1)}
 	f := &spokeFixture{s: &server{spokeMembers: m}, m: m}
 	var reg ident.Registration
 	if err := db.Update(t.Context(), func(tx store.Tx) error {
@@ -163,7 +163,7 @@ func TestASpokeRecordsACommandBeforeSendingIt(t *testing.T) {
 	}
 	call := fake.written[0]
 	if fake.frames[0] != "call" || call.Vendor != "codex" || call.Key != "session" || call.LeafGeneration != f.generation ||
-		call.LeafEpoch != 1 || call.OpKey != "k1" || string(call.Args) != `{"all":true,"body":"hi"}` {
+		call.LeafEpoch <= 0 || call.OpKey != "k1" || string(call.Args) != `{"all":true,"body":"hi"}` {
 		t.Fatalf("forwarded %s %+v", fake.frames[0], call)
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE state = 'done'`); n != 1 {

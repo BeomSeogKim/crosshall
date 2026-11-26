@@ -103,13 +103,3 @@ func receiptMembership(memberships []core.Membership) core.Membership {
 	}
 	return memberships[0]
 }
-
-// WithdrawMembership removes a leaf's membership stamp: the hall holds no
-// selection for the session (a linked device rebaselined on a home
-// restored to an older store, #400).
-func WithdrawMembership(leaf *os.Root) error {
-	if err := leaf.Remove(membershipFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
-}

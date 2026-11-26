@@ -10,12 +10,14 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
@@ -135,6 +137,9 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	} else if found {
 		if c.Target != target || name != "" && c.Name != name {
 			return link.Status{}, fmt.Errorf("already linked to %s as %s; run crosshall unlink first", c.Target, c.Name)
+		}
+		if err := cfg.setAsideRolledBack(ctx, state, c); err != nil {
+			return link.Status{}, err
 		}
 		return cfg.startSpoke(ctx)
 	}
@@ -313,4 +318,27 @@ func localLinkName(name string) (string, error) {
 		return "", errors.New("a device name must use 1–32 lowercase letters, digits or hyphens; set --name")
 	}
 	return name, nil
+}
+
+// setAsideRolledBack moves the spoke store of a device whose home was
+// restored to an older store out of the way, kept, so the dispatcher
+// starts on a fresh one (#400, v1). Sessions join again.
+func (cfg LaunchConfig) setAsideRolledBack(ctx context.Context, state *os.Root, c linkConfig) error {
+	name := filepath.Join("spoke", c.Hall+"-"+c.Device)
+	if _, err := state.Lstat(filepath.Join(name, homeRolledBackFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	suffix := fmt.Sprintf("-rolled-back-%d", time.Now().UnixMilli())
+	// The member rendezvous follows the store's path, so its leaves of the
+	// old registrations go aside too: sessions make first contact again.
+	members := ident.Rendezvous(filepath.Join(cfg.StateRoot, name), os.Geteuid())
+	return cfg.changeLinkMode(ctx, state, func() error {
+		if err := os.Rename(members, members+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return state.Rename(name, name+suffix)
+	})
 }

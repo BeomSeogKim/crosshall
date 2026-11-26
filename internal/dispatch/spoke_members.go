@@ -27,6 +27,7 @@ import (
 type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
+	dir     string // the spoke store's directory
 
 	// turn admits one frame exchange at a time; waiting for it is bounded
 	// by the caller's deadline.
@@ -103,7 +104,7 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 		return nil, err
 	}
 	root.Close()
-	return &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}, nil
+	return &spokeMembers{db: db, members: members, dir: dir, turn: make(chan struct{}, 1)}, nil
 }
 
 // setConn installs or clears the link the member commands go over. A new
@@ -277,8 +278,7 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		}
 		// Only a stamp that differs takes the leaf's lock: the locked
 		// write reads the store again, so it never puts back l.
-		if current, err := ident.LookupMembership(dir); err != nil || (current == nil) != (l.membership.Generation == 0) ||
-			current != nil && *current != l.membership {
+		if current, err := ident.LookupMembership(dir); err != nil || current == nil || *current != l.membership {
 			s.logFailure(stampLeaf(ctx, m.db, m.members, l.vendor, l.key))
 		}
 		if reap {
@@ -291,7 +291,21 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 	}
 }
 
+// rolledBackRefusal refuses every command of a device whose home was
+// restored to an older store, until it links again (#400, v1).
+func (s *server) rolledBackRefusal() *core.Result {
+	if !homeRolledBack(s.spokeMembers.dir) {
+		return nil
+	}
+	r := domain.Refuse(domain.CodeHomeRolledBack, "the home device was restored from an older state",
+		"run crosshall link "+s.ready.Spoke+" again")
+	return &r
+}
+
 func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Result, error) {
+	if r := s.rolledBackRefusal(); r != nil {
+		return *r, nil
+	}
 	var hello wire.Hello
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Version != wire.Version || hello.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid first-contact envelope"), nil
@@ -332,6 +346,9 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
+	}
+	if r := s.rolledBackRefusal(); r != nil {
+		return *r, nil
 	}
 	if req.ExpiresAtMS <= time.Now().UnixMilli() {
 		return unknownOutcome("attempt expired", req.OpKey), nil
@@ -604,6 +621,10 @@ func (s *server) markUnknown(ctx context.Context, id int64) {
 // link may be published.
 func (s *server) recoverOutbox(ctx context.Context, conn spokeConn) bool {
 	m := s.spokeMembers
+	if homeRolledBack(m.dir) {
+		conn.Close() // nothing is looked up on a home that went back
+		return false
+	}
 	if !m.take(ctx, time.Now().Add(time.Minute)) {
 		conn.Close()
 		return false

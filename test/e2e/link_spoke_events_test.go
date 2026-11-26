@@ -4,9 +4,11 @@ package e2e
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -108,6 +110,93 @@ func eventually(t *testing.T, what string, ok func() bool) {
 	for deadline := time.Now().Add(fixtureEventTimeout); !ok(); time.Sleep(30 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("waiting until %s", what)
+		}
+	}
+}
+
+// A home restored from an older backup stops its linked device (v1): the
+// device applies nothing of the older stream, its commands refuse with
+// the way back, and linking again starts a fresh spoke store, the old one
+// kept aside.
+func TestSpokeLinkHomeRestoredFromBackup(t *testing.T) {
+	f := newLinkFixture(t, binary, binary)
+	home, spoke := f.home.owner(), f.spoke.owner()
+	home.must("owner", "start")
+	spoke.must("owner", "start")
+	home.must("owner", "channel", "create", "first")
+	home.must("owner", "channel", "create", "second")
+	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+	waitSpokeLink(t, spoke, "connected")
+	member := f.spoke.member()
+	member.must("join", "first")
+	spokeDB := spokeStore(t, f.spoke.state)
+	acked := func() int64 {
+		var seq, eligible int64
+		if spokeDB.QueryRow(`SELECT acked_seq, eligible FROM spoke_event_cursor`).Scan(&seq, &eligible) != nil || eligible == 0 {
+			return 0
+		}
+		return seq
+	}
+	eventually(t, "the spoke acknowledged the join", func() bool { return acked() > 0 })
+
+	backup := t.TempDir()
+	home.must("owner", "stop")
+	copyStore(t, f.home.state, backup)
+	home.must("owner", "start")
+	waitSpokeLink(t, spoke, "connected")
+	before := acked()
+	if got := member.run("join", "second", "--move"); got.exit != 0 {
+		t.Fatalf("join second: %+v", got)
+	}
+	eventually(t, "the spoke acknowledged events after the backup", func() bool { return acked() > before })
+
+	home.must("owner", "stop")
+	copyStore(t, backup, f.home.state)
+	home.must("owner", "start")
+	eventually(t, "the spoke saw the home go back", func() bool {
+		marks, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*", "home-rolled-back"))
+		return len(marks) == 1
+	})
+	got := member.run("who")
+	if got.obj["code"] != "home_rolled_back" || !strings.Contains(got.stdout, "crosshall link "+linkFixtureTarget+" again") {
+		t.Fatalf("a command after the home went back: %+v", got)
+	}
+
+	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke")
+	waitSpokeLink(t, spoke, "connected")
+	aside, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*-rolled-back-*", "store.sqlite3"))
+	if len(aside) != 1 {
+		t.Fatalf("the old spoke store was not kept aside: %v", aside)
+	}
+	if got := member.run("join", "first"); got.exit != 0 {
+		data, _ := os.ReadFile(filepath.Join(f.spoke.state, "dispatcher.log"))
+		if len(data) > 3000 {
+			data = data[len(data)-3000:]
+		}
+		t.Fatalf("join after linking again: %+v\n%s", got, data)
+	}
+	if got := member.must("who"); !strings.Contains(got.stdout, "first") {
+		t.Fatalf("who after linking again: %+v", got)
+	}
+}
+
+// copyStore copies a stopped hall's store files from one state directory
+// to another, replacing what is there.
+func copyStore(t *testing.T, from, to string) {
+	t.Helper()
+	for _, name := range []string{"store.sqlite3", "store.sqlite3-wal", "store.sqlite3-shm"} {
+		data, err := os.ReadFile(filepath.Join(from, name))
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Remove(filepath.Join(to, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(to, name), data, 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

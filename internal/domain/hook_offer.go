@@ -20,18 +20,7 @@ func (req Request) offerPending(ctx context.Context, tx store.Tx, principal int6
 		return nil // held: no offer, nothing spent, no acknowledgement
 	}
 	capable := req.Adapter != nil && req.Adapter.OfferReceipts
-	ids, err := selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
-		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
-			AND `+noClosedObligation+`
-			AND NOT EXISTS (SELECT 1 FROM offer_item oi JOIN offer o ON o.id = oi.offer_id
-				WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id
-					AND (o.written_at_ms IS NOT NULL OR o.receipt_mode = 'legacy' OR (o.receipt_mode = 'historical' AND NOT ?)))
-			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
-				AND a.via = 'turn_end')
-			AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt pa ON pa.id = i.attempt_id
-				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id
-					AND pa.observation IN ('own_turn', 'absorbed', 'unknown'))
-		ORDER BY r.message_id LIMIT ?`, principal, b.channel, capable, OfferCap+1)
+	ids, err := pendingOfferIDs(ctx, tx, principal, b.channel, capable)
 	if err != nil {
 		return err
 	}
@@ -77,26 +66,50 @@ func (req Request) offerPending(ctx context.Context, tx store.Tx, principal int6
 		out.OfferReceipt = receipt
 		mode, nonce = "provisional", &receipt.Nonce
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO offer
-		(principal_id, binding_id, route_epoch, generation, launch_ref, epoch, reason, evidence, at_ms, receipt_mode, nonce)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, principal, b.id, b.routeEpoch, generation, launch, out.Epoch, reason,
-		evidence(p), ms(now), mode, nonce)
+	out.OfferID, err = recordHookOffer(ctx, tx, principal, b, p, launch, reason, generation, out.Epoch, mode, nonce, ids, now)
 	if err != nil {
-		return err
-	}
-	if out.OfferID, err = res.LastInsertId(); err != nil {
 		return err
 	}
 	if out.OfferReceipt != nil {
 		out.OfferReceipt.OfferID = out.OfferID
 	}
+	return nil
+}
+
+func pendingOfferIDs(ctx context.Context, tx store.Tx, principal, channel int64, capable bool) ([]int64, error) {
+	return selectIDs(ctx, tx, `SELECT r.message_id FROM recipient r JOIN message m ON m.id = r.message_id
+		WHERE r.principal_id = ? AND m.channel_id = ? AND r.picked_up_at_ms IS NULL AND `+notMoreTime+`
+			AND `+noClosedObligation+`
+			AND NOT EXISTS (SELECT 1 FROM offer_item oi JOIN offer o ON o.id = oi.offer_id
+				WHERE oi.principal_id = r.principal_id AND oi.message_id = r.message_id
+					AND (o.written_at_ms IS NOT NULL OR o.receipt_mode = 'legacy' OR (o.receipt_mode = 'historical' AND NOT ?)))
+			AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = r.principal_id AND a.message_id = r.message_id
+				AND a.via = 'turn_end')
+			AND NOT EXISTS (SELECT 1 FROM publish_attempt_item i JOIN publish_attempt pa ON pa.id = i.attempt_id
+				WHERE i.principal_id = r.principal_id AND i.message_id = r.message_id
+					AND pa.observation IN ('own_turn', 'absorbed', 'unknown'))
+		ORDER BY r.message_id LIMIT ?`, principal, channel, capable, OfferCap+1)
+}
+
+func recordHookOffer(ctx context.Context, tx store.Tx, principal int64, b hookBinding, p wire.HookProfile, launch, reason, generation string,
+	epoch uint64, mode string, nonce *string, ids []int64, now time.Time) (int64, error) {
+	res, err := tx.ExecContext(ctx, `INSERT INTO offer
+		(principal_id, binding_id, route_epoch, generation, launch_ref, epoch, reason, evidence, at_ms, receipt_mode, nonce)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, principal, b.id, b.routeEpoch, generation, launch, epoch, reason,
+		evidence(p), ms(now), mode, nonce)
+	if err != nil {
+		return 0, err
+	}
+	offer, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (?, ?, ?)`,
-			out.OfferID, id, principal); err != nil {
-			return err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO offer_item (offer_id, message_id, principal_id) VALUES (?, ?, ?)`, offer, id, principal); err != nil {
+			return 0, err
 		}
 	}
-	return nil
+	return offer, nil
 }
 
 // ConfirmHookOffer records the earliest reported write for this exact batch. An

@@ -160,6 +160,33 @@ var fixtureSQL = []string{
 		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 3, 'zqxmarker', 1, 1, 'live', 0)`,
 	`INSERT INTO link_fence (device_id, vendor, key, op_key, link_request, at_ms)
 		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-fence-key', 'zqxmarker-op', 'zqxmarker-request', 0)`,
+	`INSERT INTO link_event_cursor (device_id, head, boot, credential_gen)
+		VALUES ('zqxmarker-device', 1, 'zqxmarker-boot', 1)`,
+	`INSERT INTO device_event (device_id, seq, kind, body, at_ms)
+		VALUES ('zqxmarker-device', 1, 'membership', '{"key":"zqxmarker-device-key"}', 0)`,
+	`INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms)
+		VALUES ('zqxmarker-device', 'zqxmarker-stream', 1, 'zqxmarker-boot', 1, 0)`,
+	`INSERT INTO link_event_snapshot (device_id, stream, part, body)
+		VALUES ('zqxmarker-device', 'zqxmarker-stream', 0, '{"key":"zqxmarker-device-key"}')`,
+	`INSERT INTO link_event_cut_stage (device_id, stream, seq, vendor, key, body)
+		VALUES ('zqxmarker-device', 'zqxmarker-stream', 1, 'codex', 'zqxmarker-device-key', '{"marker":"zqxmarker-device-key"}')`,
+	`INSERT INTO link_event_cut (device_id, vendor, key, boot, leaf_generation, binding_id, membership_generation, route_epoch, leaf_seq, absent, event_seq)
+		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 'zqxmarker-boot', 'zqxmarker-leaf', 2, 1, 1, 1, 0, 1)`,
+	`INSERT INTO device_offer_dirty (device_id, vendor, key, invalidate_reason)
+		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 'zqxmarker')`,
+	`INSERT INTO device_offer (device_id, vendor, key, offer_id, expires_at_ms, body)
+		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 1, 0, '{"key":"zqxmarker-device-key"}')`,
+	`INSERT INTO link_event_input
+		(device_id, credential_gen, id, vendor, key, boot, leaf_generation, leaf_seq, kind, payload, status, code, recorded_at_ms)
+		VALUES ('zqxmarker-device', 1, 1, 'codex', 'zqxmarker-device-key', 'zqxmarker-boot', 'zqxmarker-leaf', 1,
+			'hook.event', '{"marker":"zqxmarker-device-key"}', 'quarantined', 'zqxmarker-code', 0)`,
+	`INSERT INTO link_event_fact_head
+		(device_id, vendor, key, credential_gen, boot, leaf_generation, binding_id, membership_generation, route_epoch, leaf_seq, effective_at_ms, quarantined)
+		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 1, 'zqxmarker-boot', 'zqxmarker-leaf', 2, 1, 1, 1, 0, 1)`,
+	`INSERT INTO link_event_launch
+		(principal_id, device_id, credential_gen, boot, leaf_generation, binding_id, membership_generation, route_epoch,
+			launch_ref, projection_ref, policy_epoch, verified, hosted)
+		VALUES (3, 'zqxmarker-device', 1, 'zqxmarker-boot', 'zqxmarker-leaf', 2, 1, 1, 'zqxmarker-route', 'zqxmarker-projection', 1, 0, 0)`,
 }
 
 func openFixture(t *testing.T) *store.Store {

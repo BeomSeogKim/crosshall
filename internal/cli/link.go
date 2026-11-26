@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,11 +81,22 @@ func ownerData[T any](ctx context.Context, env Env, call Call) (T, error) {
 		return v, err
 	}
 	if r.Status != core.ExitOK {
-		var msg struct{ Message string }
-		_ = json.Unmarshal(r.Data, &msg)
-		return v, fmt.Errorf("%s: %s", call.Command.Verb(), msg.Message)
+		return v, linkOwnerRefusal(call.Command, r)
 	}
 	return v, json.Unmarshal(r.Data, &v)
+}
+
+type linkCommandRefusal struct {
+	code core.Code
+	text string
+}
+
+func (err linkCommandRefusal) Error() string { return err.text }
+
+func linkOwnerRefusal(cmd domain.Command, r core.Result) error {
+	var msg struct{ Message string }
+	_ = json.Unmarshal(r.Data, &msg)
+	return linkCommandRefusal{code: r.Code, text: cmd.Verb() + ": " + msg.Message}
 }
 
 // linkEnroll reads the device secret as one hex line on stdin, so it never
@@ -130,7 +142,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	// carries it, and the dispatcher refuses it once the device enrolls
 	// again.
 	var credentialGen, admission int64
-	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
+	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(), Caps: []string{link.CapEvents},
 		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
 			v, err := ownerData[domain.LinkProveResult](ctx, env,
@@ -147,6 +159,11 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
+	peer := domain.LinkEventPeer{Device: session.Device, CredentialGen: credentialGen, Admission: admission}
+	if slices.Contains(session.Caps, link.CapEvents) {
+		peer.Stream = link.NewNonce()
+		return serveLinkEvents(ctx, env, stdin, r, w, session, peer, o)
+	}
 	for {
 		f, err := r.Read()
 		if errors.Is(err, io.EOF) {
@@ -155,36 +172,47 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 		if err != nil {
 			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 		}
-		switch f.Type {
-		case linkPing:
-			if err := w.Write(linkPong, f.Body); err != nil {
-				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
-			}
-		case linkCallFrame, linkReceiptFrame:
-			var call domain.LinkCall
-			if err := json.Unmarshal(f.Body, &call); err != nil {
-				return o.fail(core.ExitError, CodeLocalError, "link: malformed "+f.Type, "")
-			}
-			// The device and credential come from this link's
-			// authentication, never from the device's frame.
-			call.Device, call.CredentialGen, call.Admission = session.Device, credentialGen, admission
-			var cmd domain.Command = call
-			if f.Type == linkReceiptFrame {
-				cmd = domain.LinkReceipt{LinkCall: call}
-			}
-			result, err := ownerCall(ctx, env, Call{Command: cmd})
-			if err != nil {
-				return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
-			}
-			if err := w.Write(linkResultFrame, result); err != nil {
-				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
-			}
-			if result.Code == domain.CodeLinkStale {
-				return o.fail(core.ExitRefused, domain.CodeLinkStale, "the hall no longer admits this link (the device enrolled again, or its fences were pruned); this link is closed", "")
-			}
-		default:
-			return o.fail(core.ExitError, CodeLocalError,
-				fmt.Sprintf("link %d has no %q frame", session.Link, link.Printable(f.Type)), "")
+		if code := serveLinkCommand(ctx, env, w, session, peer, f, o); code != core.ExitOK {
+			return code
 		}
 	}
+}
+
+func failStaleLink(o outputs) core.ExitCode {
+	return o.fail(core.ExitRefused, domain.CodeLinkStale,
+		"the hall no longer admits this link (the device enrolled again, or its fences were pruned); this link is closed",
+		"reconnect the link")
+}
+
+func serveLinkCommand(ctx context.Context, env Env, w *link.Writer, session link.Session, peer domain.LinkEventPeer, f link.Frame, o outputs) core.ExitCode {
+	switch f.Type {
+	case linkPing:
+		if err := w.Write(linkPong, f.Body); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+		}
+	case linkCallFrame, linkReceiptFrame:
+		var call domain.LinkCall
+		if err := json.Unmarshal(f.Body, &call); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, "link: malformed "+f.Type, "")
+		}
+		call.Device, call.CredentialGen, call.Admission = peer.Device, peer.CredentialGen, peer.Admission
+		var cmd domain.Command = call
+		if f.Type == linkReceiptFrame {
+			cmd = domain.LinkReceipt{LinkCall: call}
+		}
+		result, err := ownerCall(ctx, env, Call{Command: cmd})
+		if err != nil {
+			return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
+		}
+		if err := w.Write(linkResultFrame, result); err != nil {
+			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+		}
+		if result.Code == domain.CodeLinkStale {
+			return failStaleLink(o)
+		}
+	default:
+		return o.fail(core.ExitError, CodeLocalError,
+			fmt.Sprintf("link %d has no %q frame", session.Link, link.Printable(f.Type)), "")
+	}
+	return core.ExitOK
 }

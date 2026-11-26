@@ -115,6 +115,12 @@ var deviceMembersSchema string
 //go:embed migrations/033_link_fences.sql
 var linkFencesSchema string
 
+//go:embed migrations/034_link_events.sql
+var linkEventsSchema string
+
+//go:embed link_offer_triggers.sql
+var linkOfferTriggers string
+
 //go:embed migrations/spoke/001_spoke.sql
 var spokeSchema string
 
@@ -131,7 +137,7 @@ var migrations = []string{
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
 	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
 	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema, idlePromptSchema, reconcileCheckpointSchema,
-	linkDevicesSchema, deviceMembersSchema, linkFencesSchema,
+	linkDevicesSchema, deviceMembersSchema, linkFencesSchema, linkEventsSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a
@@ -251,6 +257,17 @@ func (s *Store) initialize(ctx context.Context, stateRoot string, previous bool)
 			if _, err := tx.ExecContext(ctx, s.schema[step]); err != nil {
 				return err
 			}
+			if s.schema[step] == linkEventsSchema {
+				var enrolled bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device)`).Scan(&enrolled); err != nil {
+					return err
+				}
+				if enrolled {
+					if err := InstallLinkOfferTriggers(ctx, tx); err != nil {
+						return err
+					}
+				}
+			}
 			_, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", step+1))
 			return err
 		})
@@ -283,6 +300,13 @@ func (s *Store) ensureReadIndexes(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, ReadIndexes)
 		return err
 	})
+}
+
+// InstallLinkOfferTriggers enables remote offer invalidation only in halls
+// with enrolled devices. Migration 034 calls it for existing enrollments.
+func InstallLinkOfferTriggers(ctx context.Context, tx Tx) error {
+	_, err := tx.ExecContext(ctx, linkOfferTriggers)
+	return err
 }
 
 func checkSessionMoveBindings(ctx context.Context, tx Tx) error {

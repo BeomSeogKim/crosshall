@@ -140,6 +140,14 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.linkProve(ctx, tx, caller, cmd)
 	case LinkVerify:
 		return s.linkVerify(ctx, tx, caller, cmd)
+	case LinkEvents:
+		return s.linkEvents(ctx, tx, caller, cmd, now)
+	case LinkAck:
+		return s.linkAck(ctx, tx, caller, cmd, now)
+	case LinkFact:
+		return s.linkFact(ctx, tx, caller, cmd, now)
+	case LinkWritten:
+		return s.linkWritten(ctx, tx, caller, cmd, now)
 	case CreateChannel:
 		return s.createChannel(ctx, tx, caller, req, cmd, now)
 	case Restore:

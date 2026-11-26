@@ -19,7 +19,8 @@ const turnEndAsk = `m.kind = 'ask' AND r.picked_up_at_ms IS NULL AND r.message_i
 // channel of its live binding. Without one a Stop has nothing to print, so
 // its hook need not wait for the dispatcher.
 func TurnEndAskWaiting(ctx context.Context, tx store.Tx, principal int64) (bool, error) {
-	channels, err := selectIDs(ctx, tx, `SELECT channel_id FROM binding WHERE principal_id = ? AND state = 'live'`, principal)
+	channels, err := selectIDs(ctx, tx, `SELECT b.channel_id FROM binding b JOIN principal p ON p.id = b.principal_id
+		WHERE b.principal_id = ? AND b.state = 'live' AND p.device_id IS NULL`, principal)
 	if err != nil {
 		return false, err
 	}
@@ -44,6 +45,7 @@ func claimTurnEndNotice(ctx context.Context, tx store.Tx, principal, channel int
 		SELECT 1 FROM turn t JOIN adapter_launch l
 			ON l.principal_id = t.principal_id AND l.launch_ref = t.launch_ref
 		WHERE t.principal_id = ?1 AND t.launch_ref = ?2 AND t.turn_ref = ?3 AND t.superseded = 0
+			AND (SELECT device_id IS NULL FROM principal WHERE id = ?1)
 			AND l.ended_hook_at_ms IS NULL AND l.profile = ?4
 			AND t.opened_hook_at_ms BETWEEN l.started_hook_at_ms AND ?5
 			AND `+store.CapabilityCovered("json_extract(l.profile,'$.adapter')", "l.profile", "'turn_end'")+`

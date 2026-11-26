@@ -71,7 +71,9 @@ type spokeEvents struct {
 	// policy publishes (true) or withdraws (false) the hook policy files.
 	policy func(ctx context.Context, publish bool) error
 
-	wakeResultReady chan struct{}
+	wakeResultReady  chan struct{}
+	nativeWakeRoot   string
+	nativeEnrollment string
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
@@ -166,6 +168,7 @@ type snapshotPart struct {
 // run serves one event connection until it ends: subscribe, then apply
 // and acknowledge what the home sends.
 func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) error {
+	dispatcher := ctx
 	// The reader stops with this run, also when a frame it read is left
 	// unconsumed.
 	ctx, cancel := context.WithCancel(ctx)
@@ -247,6 +250,34 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 	var parts []snapshotPart
 	var caughtUp bool
 	var sendingWake int64
+	var native *spokeWakeWorker
+	var ready <-chan []link.WakeRoute
+	var wakePoll <-chan time.Time
+	if allowWake && e.nativeWakeRoot != "" {
+		native = &spokeWakeWorker{e: e, dispatcher: dispatcher, stateRoot: e.nativeWakeRoot, enrollment: e.nativeEnrollment,
+			poll: make(chan struct{}, 1), replay: make(chan link.Wake, 1), ready: make(chan []link.WakeRoute)}
+		tick := time.NewTicker(spokeWakePoll)
+		wakePoll, ready = tick.C, native.ready
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			native.run(ctx)
+		}()
+		defer func() {
+			tick.Stop()
+			cancel()
+			<-done
+		}()
+	}
+	requestWakePoll := func() {
+		if native == nil || !caughtUp || e.stop.halted.Load() {
+			return
+		}
+		select {
+		case native.poll <- struct{}{}:
+		default:
+		}
+	}
 	// Hook facts and written acks go out once the home caught up, and
 	// again on every connection: the home answers a repeated ID from what
 	// it stored.
@@ -264,6 +295,16 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-wakePoll:
+			requestWakePoll()
+		case routes := <-ready:
+			if caughtUp && !e.stop.halted.Load() {
+				for _, route := range routes {
+					if err := e.send(conn, link.TypeWakeReady, route); err != nil {
+						return err
+					}
+				}
+			}
 		case <-e.stop.hooks:
 			if hooksReady {
 				if err := e.sendHooks(ctx, conn, sent); err != nil {
@@ -368,6 +409,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 				if err := sendNextWake(); err != nil {
 					return err
 				}
+				requestWakePoll()
 			case link.TypeWakeReplay:
 				if !allowWake || !caughtUp {
 					return errors.New("link: wake replay before wake negotiation and catch-up")
@@ -380,6 +422,14 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return stageSpokeWake(ctx, tx, wake)
 				}); err != nil {
 					return err
+				}
+				// Only a live Replay can authorize a claim. The sequenced
+				// wake may predate a membership or policy change.
+				if native != nil {
+					select {
+					case native.replay <- wake:
+					default:
+					}
 				}
 			case link.TypeWakeRecorded:
 				if !allowWake {

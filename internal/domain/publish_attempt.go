@@ -222,10 +222,10 @@ func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]P
 	return proofs, rows.Err()
 }
 
-// launchOwns reports whether the proven listener is the probe's launch: the process its
+// PublishLaunchOwns reports whether the proven listener is the probe's launch: the process its
 // launch reference names, or for a thread-routed adapter the server its
 // start named, started no later than the launch's first hook.
-func launchOwns(probe publish.Probe, proven publish.Proven) bool {
+func PublishLaunchOwns(probe publish.Probe, proven publish.Proven) bool {
 	if proven.Queue.PID <= 0 || proven.Queue.StartMS <= 0 || proven.StartedAtMS <= 0 || proven.StartedAtMS > probe.StartedHookAtMS {
 		return false
 	}
@@ -242,7 +242,7 @@ func launchOwns(probe publish.Probe, proven publish.Proven) bool {
 // address the proof was asked for. It records identity only; whether and
 // from which message the route publishes is ActivatePublishRoutes'.
 func ConfirmPublishProof(ctx context.Context, tx store.Tx, proof PublishProof, proven publish.Proven) (bool, error) {
-	if !launchOwns(proof.Probe, proven) {
+	if !PublishLaunchOwns(proof.Probe, proven) {
 		return false, nil
 	}
 	var route publish.Probe

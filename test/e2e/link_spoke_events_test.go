@@ -93,7 +93,7 @@ func TestSpokeLinkEventStream(t *testing.T) {
 	}
 }
 
-func TestSpokeLinkWakeGatedWorkSurvivesReconnect(t *testing.T) {
+func TestSpokeLinkWorkSurvivesReconnectAcrossWakeVersions(t *testing.T) {
 	withLinkBuildPairs(t, func(t *testing.T, f *linkFixture) {
 		home, spoke := f.home.owner(), f.spoke.owner()
 		home.must("owner", "start")
@@ -108,18 +108,20 @@ func TestSpokeLinkWakeGatedWorkSurvivesReconnect(t *testing.T) {
 
 		homeDB := f.home.db()
 		spokeDB := spokeStore(t, f.spoke.state)
+		wantWake := f.home.binaryPath() == binary && f.spoke.binaryPath() == binary
 		var originalStream string
 		eventually(t, "the home acknowledged the linked member's cut", func() bool {
 			return homeDB.QueryRow(`SELECT stream FROM link_event_stream
-				WHERE wake_capable = 0 AND EXISTS (SELECT 1 FROM link_event_cut WHERE absent = 0)`).
+				WHERE wake_capable = ? AND EXISTS (SELECT 1 FROM link_event_cut WHERE absent = 0)`, wantWake).
 				Scan(&originalStream) == nil
 		})
-		ask := strconv.FormatInt(num(t, sender.must("ask", "@receiver", "Check the linked work."), "id"), 10)
+		askID := num(t, sender.must("ask", "@receiver", "Check the linked work."), "id")
+		ask := strconv.FormatInt(askID, 10)
 		killSpokeSSH(t, f.ssh)
 		waitSpokeLink(t, spoke, "connected")
-		eventually(t, "the event stream reconnected with wakes gated", func() bool {
+		eventually(t, "the event stream reconnected with the expected wake capability", func() bool {
 			var stream string
-			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE wake_capable = 0`).Scan(&stream) == nil &&
+			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE wake_capable = ?`, wantWake).Scan(&stream) == nil &&
 				stream != originalStream
 		})
 		if got := receiver.must("read", ask); !strings.Contains(got.stdout, "Check the linked work.") {
@@ -130,14 +132,16 @@ func TestSpokeLinkWakeGatedWorkSurvivesReconnect(t *testing.T) {
 			t.Fatalf("home did not receive reply %s: %s", reply, got.stdout)
 		}
 		var homeAttempts, spokeAttempts int
-		if err := homeDB.QueryRow(`SELECT COUNT(*) FROM link_wake_attempt`).Scan(&homeAttempts); err != nil {
+		if err := homeDB.QueryRow(`SELECT COUNT(*) FROM link_wake_attempt a
+			WHERE EXISTS (SELECT 1 FROM json_each(a.message_ids) WHERE value = ?)`, askID).Scan(&homeAttempts); err != nil {
 			t.Fatal(err)
 		}
-		if err := spokeDB.QueryRow(`SELECT COUNT(*) FROM spoke_wake_attempt`).Scan(&spokeAttempts); err != nil {
+		if err := spokeDB.QueryRow(`SELECT COUNT(*) FROM spoke_wake_attempt a
+			WHERE EXISTS (SELECT 1 FROM json_each(a.wake, '$.ids') WHERE value = ?)`, askID).Scan(&spokeAttempts); err != nil {
 			t.Fatal(err)
 		}
 		if homeAttempts != 0 || spokeAttempts != 0 {
-			t.Fatalf("gated wake journal counts: home %d, spoke %d", homeAttempts, spokeAttempts)
+			t.Fatalf("wake journal counts for request %s without a route: home %d, spoke %d", ask, homeAttempts, spokeAttempts)
 		}
 	})
 }

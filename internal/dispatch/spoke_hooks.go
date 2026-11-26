@@ -85,7 +85,7 @@ var spokeHookFacts = map[string]bool{
 // hook outbox with the token the hook took at capture, in a committed
 // transaction; its output comes only from an eligible cache.
 func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req wire.Request) (core.Result, error) {
-	if req.Verb != wire.VerbHookEnroll && req.Verb != wire.VerbHookEvent && req.Verb != wire.VerbHookJoinHintAck {
+	if req.Verb != wire.VerbHookEnroll && req.Verb != wire.VerbHookEvent && req.Verb != wire.VerbHookRoute && req.Verb != wire.VerbHookJoinHintAck {
 		return domain.Fail(core.ExitUnavailable, core.CodeDispatcherUnavailable,
 			"hook routes of a linked device reach the hall in a later release", ""), nil
 	}
@@ -103,6 +103,8 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 	var written *link.Written
 	var adapter, launch string
 	var epoch uint64
+	var native spokeNativeHook
+	opPrefix := "hook:"
 	output := !req.OneWayHook()
 	switch req.Verb {
 	case wire.VerbHookEnroll:
@@ -111,6 +113,8 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			return commandError(core.ExitUsage, "", "invalid hook enrollment"), nil
 		}
 		adapter, launch, epoch = args.Profile.Adapter, args.LaunchRef, args.Epoch
+		native = spokeNativeHook{enroll: true, mode: args.Profile.Mode, startedAtMS: args.HookAtMS,
+			verified: args.LaunchVerified, pidNamespace: args.PIDNamespace, host: args.Host, vendorHome: args.VendorHome}
 		args.PIDNamespace, args.Host, args.VendorHome = "", nil, ""
 		args.RepoRoot, args.Repository, args.CreateChannel = "", "", false
 		body, err := json.Marshal(args)
@@ -124,6 +128,8 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			return commandError(core.ExitUsage, "", "invalid hook event"), nil
 		}
 		adapter, launch, epoch = args.Profile.Adapter, args.LaunchRef, args.Epoch
+		native = spokeNativeHook{fact: args.Fact, mode: args.Profile.Mode, startedAtMS: args.LaunchAtMS, hookAtMS: args.HookAtMS,
+			verified: args.LaunchVerified, pidNamespace: args.PIDNamespace, host: args.Host, vendorHome: args.VendorHome}
 		args.PIDNamespace, args.Host, args.VendorHome = "", nil, ""
 		args.EnrollRepoRoot, args.EnrollRepository, args.EnrollCreate = "", "", false
 		if spokeHookFacts[args.Fact] {
@@ -133,6 +139,14 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			}
 			fact = &link.Fact{Kind: req.Verb, Body: body}
 		}
+	case wire.VerbHookRoute:
+		var args wire.HookRouteArgs
+		if err := json.Unmarshal(req.Args, &args); err != nil {
+			return commandError(core.ExitUsage, "", "invalid hook route"), nil
+		}
+		adapter, launch, epoch = args.Adapter, args.LaunchRef, args.Epoch
+		native = spokeNativeHook{report: &args}
+		opPrefix = "hook:route:"
 	case wire.VerbHookJoinHintAck:
 		var args wire.HookOutputAckArgs
 		if err := json.Unmarshal(req.Args, &args); err != nil {
@@ -172,7 +186,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			queued = true
 			return queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, capture.WallMS, written)
 		}
-		if adapter != leaf.Vendor || req.OpKey != "hook:"+adapter+":"+launch+":"+hookEventRef(req) {
+		if adapter != leaf.Vendor || req.OpKey != opPrefix+adapter+":"+launch+":"+hookEventRef(req) {
 			r := commandError(core.ExitRefused, "", "hook identity does not match the member exchange")
 			refusal = &r
 			return nil
@@ -189,6 +203,11 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			return nil
 		}
 		result.Epoch = epoch
+		if leaf.Membership == *capture.Membership {
+			if err := recordSpokeNativeHook(ctx, tx, member, token, launch, epoch, native); err != nil {
+				return err
+			}
+		}
 		if fact != nil {
 			fact.Member, fact.Token = member, token
 			queued = true

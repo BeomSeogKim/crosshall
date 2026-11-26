@@ -142,7 +142,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	// carries it, and the dispatcher refuses it once the device enrolls
 	// again.
 	var credentialGen, admission int64
-	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(), Caps: []string{link.CapEvents, link.CapPolicy},
+	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(), Caps: []string{link.CapEvents, link.CapPolicy, link.CapWake},
 		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
 			v, err := ownerData[domain.LinkProveResult](ctx, env,

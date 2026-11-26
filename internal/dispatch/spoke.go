@@ -188,13 +188,10 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 			status.Version = connection.Link
 			status.ClockOffsetMS = link.EstimateClockOffset(started, connection.PeerTimeMS)
 			status.Error = ""
-			publish("connected")
 			connectedAt := time.Now()
-			if s.recoverOutbox(ctx, sshSpokeConn{connection}) {
-				s.spokeMembers.setConn(connection)
-			}
+			s.admitSpokeCommands(ctx, sshSpokeConn{connection}, func() { publish("connected") })
 			err = connection.Wait()
-			s.spokeMembers.setConn(nil)
+			s.spokeMembers.attach(nil)
 			if time.Since(connectedAt) >= 30*time.Second {
 				backoff = time.Second
 			}

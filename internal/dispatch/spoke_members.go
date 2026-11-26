@@ -142,25 +142,28 @@ func newSpokeMembers(ctx context.Context, db *store.Store, members string) (*spo
 	return m, nil
 }
 
-// setConn installs or clears the link the member commands go over. A new
-// link is published only after recovery, so no fresh command is sent
-// before every record the previous link left behind is resolved.
-func (m *spokeMembers) setConn(c *link.SSHConnection) {
-	if c == nil {
-		m.attach(nil)
+func (s *server) admitSpokeCommands(ctx context.Context, conn spokeConn, connected func()) {
+	if !s.recoverOutbox(ctx, conn) {
 		return
 	}
-	m.attach(sshSpokeConn{c})
+	if ctx.Err() != nil {
+		conn.Close()
+		return
+	}
+	if s.spokeMembers.attach(conn) {
+		connected()
+	}
 }
 
-func (m *spokeMembers) attach(c spokeConn) {
+func (m *spokeMembers) attach(c spokeConn) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c != nil && m.halted.Load() {
 		c.Close()
-		return
+		return false
 	}
 	m.conn = c
+	return true
 }
 
 // halt stops the command transport for good: no frame is sent once it

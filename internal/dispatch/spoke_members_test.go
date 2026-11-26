@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -345,8 +346,13 @@ func TestASpokeNeverResetsAKeyInItsOutbox(t *testing.T) {
 func TestASpokeRecoversBeforeItSendsFreshCommands(t *testing.T) {
 	f := newSpokeFixture(t)
 	next := newFakeLink()
-	release := make(chan struct{})
-	next.onWrite = func(string, any) { <-release }
+	receipt := make(chan struct{})
+	release := sync.OnceFunc(func() { close(receipt) })
+	started := make(chan struct{})
+	next.onWrite = func(string, any) {
+		close(started)
+		<-receipt
+	}
 	next.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
 	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
 		_, err := tx.ExecContext(t.Context(), `INSERT INTO link_outbox (vendor, key, op_key, command, args, state, at_ms)
@@ -355,26 +361,63 @@ func TestASpokeRecoversBeforeItSendsFreshCommands(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan bool)
-	go func() { done <- f.s.recoverOutbox(t.Context(), next) }()
-	for len(f.m.turn) == 0 {
-		time.Sleep(time.Millisecond)
+	connected := make(chan spokeConn, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.s.admitSpokeCommands(t.Context(), next, func() { connected <- f.m.current() })
+	}()
+	defer func() {
+		release()
+		<-done
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the link never started receipt recovery")
+	}
+	select {
+	case <-connected:
+		t.Fatal("connected was published during receipt recovery")
+	default:
 	}
 	if r := f.sendArgs(t, "note", "fresh", `{"all":true,"body":"hi"}`, 50*time.Millisecond); r.Code != core.CodeUnsent {
 		t.Fatalf("a fresh command during recovery: %+v", r)
 	}
-	close(release)
-	if !<-done {
-		t.Fatal("recovery failed")
+	release()
+	<-done
+	select {
+	case installed := <-connected:
+		if installed != next {
+			t.Fatal("connected was published before the link could carry commands")
+		}
+	default:
+		t.Fatal("recovery did not publish connected")
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'fresh'`); n != 0 || len(next.frames) != 1 {
 		t.Fatalf("recovery saw a fresh record: %d, frames %v", n, next.frames)
 	}
 	next.onWrite = nil
-	f.m.attach(next)
 	next.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
 	if r := f.send(t, "note", "fresh"); r.Status != core.ExitOK || next.frames[1] != "call" {
 		t.Fatalf("after recovery: %+v, frames %v", r, next.frames)
+	}
+}
+
+func TestASpokeDoesNotAnnounceAConnectionHaltedDuringRecovery(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	if r := f.send(t, "note", "lost"); r.Code != core.CodeOutcomeUnknown {
+		t.Fatalf("the previous command did not leave a receipt to recover: %+v", r)
+	}
+	next := newFakeLink()
+	next.onWrite = func(string, any) { f.m.halted.Store(true) }
+	next.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	f.s.admitSpokeCommands(t.Context(), next, func() { t.Error("published connected for a halted link") })
+	if !next.closed || f.m.current() != nil {
+		t.Fatal("a halted link was left open or installed")
 	}
 }
 

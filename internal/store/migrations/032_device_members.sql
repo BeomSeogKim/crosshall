@@ -23,3 +23,7 @@ CREATE TABLE device_key (
     PRIMARY KEY (device_id, vendor, key)
 );
 CREATE INDEX device_key_principal ON device_key(principal_id);
+
+-- The membership a forwarded command was admitted under, so a retry after
+-- a lost response gets exactly its committed receipt (#400).
+ALTER TABLE op ADD COLUMN membership TEXT;

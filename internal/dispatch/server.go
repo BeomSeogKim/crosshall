@@ -700,6 +700,20 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 			result = *resolved.Refusal
 			return errRefusalRollback
 		}
+		if req.Verb == domain.VerbLinkCall {
+			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
+				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "a link call requires owner ingress")
+				return errRefusalRollback
+			}
+			var commit bool
+			if result, commit, err = s.linkCall(ctx, tx, req); err != nil || !commit {
+				if err == nil {
+					err = errRefusalRollback
+				}
+				return err
+			}
+			return nil
+		}
 		if !arrival.Owner && !matchesMembership(req.Membership, resolved.Caller.Membership) {
 			if resolved.Caller.PrincipalID != nil && (req.Verb == domain.VerbJoin || req.Verb == domain.VerbLeave) {
 				request, err := s.cfg.Decode(req, resolved)

@@ -135,22 +135,28 @@ func TestSpokeLinkKeepsItsStreamAcrossAPolicyToggle(t *testing.T) {
 		if got := value(homeDB, `SELECT stream FROM link_event_stream WHERE closed_at_ms IS NULL`); got.String != stream {
 			t.Fatalf("the stream reconnected: %q, was %q", got.String, stream)
 		}
-		switch {
-		case strings.HasSuffix(t.Name(), "head-head"):
-			epoch := value(homeDB, `SELECT epoch FROM adapter_policy WHERE adapter = 'claude'`).String
-			if epoch == epochBefore {
-				t.Fatalf("the toggles kept epoch %s", epoch)
-			}
-			eventually(t, "the device holds the hall's claude policy", func() bool {
-				return value(spokeDB, `SELECT epoch FROM spoke_policy WHERE adapter = 'claude' AND enabled = 1`).String == epoch
-			})
-			if appended != 3 {
-				t.Fatalf("%d events for three policy changes, want 3", appended)
-			}
-		case strings.HasSuffix(t.Name(), "base-spoke"):
-			if appended != 0 || value(homeDB, `SELECT policy_capable FROM link_event_stream`).String != "0" {
+		// What the stream negotiated decides what the device gets; a pair
+		// whose base build predates the capability negotiates none (and a
+		// base home has no such column).
+		capable := value(homeDB, `SELECT policy_capable FROM link_event_stream WHERE closed_at_ms IS NULL`).String == "1"
+		if strings.HasSuffix(t.Name(), "head-head") && !capable {
+			t.Fatal("two builds of this tree did not negotiate the policy capability")
+		}
+		if !capable {
+			if appended != 0 {
 				t.Fatalf("%d events for a device without the capability", appended)
 			}
+			return
+		}
+		epoch := value(homeDB, `SELECT epoch FROM adapter_policy WHERE adapter = 'claude'`).String
+		if epoch == epochBefore {
+			t.Fatalf("the toggles kept epoch %s", epoch)
+		}
+		eventually(t, "the device holds the hall's claude policy", func() bool {
+			return value(spokeDB, `SELECT epoch FROM spoke_policy WHERE adapter = 'claude' AND enabled = 1`).String == epoch
+		})
+		if appended != 3 {
+			t.Fatalf("%d events for three policy changes, want 3", appended)
 		}
 	})
 }

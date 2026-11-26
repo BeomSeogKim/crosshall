@@ -37,11 +37,13 @@ func newLinkFixture(t *testing.T, homeBinary, spokeBinary string, homeEnv ...str
 func writeLocalSSH(t *testing.T, home *world) string {
 	t.Helper()
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+	path := filepath.Join(t.TempDir(), "ssh")
 	var command strings.Builder
 	for _, entry := range home.baseEnv() {
 		command.WriteString(" " + quote(entry))
 	}
 	command.WriteString(" " + quote(home.binaryPath()))
+	remote := "CROSSHALL_EXPERIMENTAL_LINK=1 " + quote(home.binaryPath())
 	shim := fmt.Sprintf(`#!/bin/sh
 set -eu
 refuse() { printf '%%s\n' 'fixture ssh: expected the configured home command' >&2; exit 2; }
@@ -49,17 +51,44 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -T) shift ;;
     -o) [ "$#" -ge 2 ] || refuse; shift 2 ;;
+    --) shift; break ;;
     *) break ;;
   esac
 done
-[ "$#" -ge 3 ] && [ "$1" = %s ] && [ "$2" = %s ] || refuse
-shift 2
+[ "$#" -ge 2 ] && [ "$1" = %s ] || refuse
+shift
+if [ "$#" -eq 1 ]; then
+  case "$1" in
+    %s) printf '%%s\n' %s; exit 0 ;;
+    %s)
+      printf '%%s\n' "$$" > %s
+      set -- link serve ;;
+    %s*)
+      key=${1#%s}
+      key=${key%%%%\'*}
+      case "$key" in ''|*[!0-9a-f]*) refuse ;; esac
+      [ "${#key}" -eq 32 ] && [ "$1" = %s"$key"%s ] || refuse
+      printf '%%s\n' "$key" >> %s
+      set -- --key "$key" link enroll --name fixture-spoke
+      if [ -f %s ]; then
+        /usr/bin/env -i%s "$@" >/dev/null
+        exit 1
+      fi ;;
+    *) refuse ;;
+  esac
+  exec /usr/bin/env -i%s "$@"
+fi
+[ "$1" = %s ] || refuse
+shift
 case "$#:$*" in
   '1:version'|'2:link serve') exec /usr/bin/env -i%s "$@" ;;
   *) refuse ;;
 esac
-`, quote(linkFixtureTarget), quote(home.binaryPath()), command.String())
-	path := filepath.Join(t.TempDir(), "ssh")
+`, quote(linkFixtureTarget),
+		quote(`command -v crosshall || { test -x "$HOME/.local/bin/crosshall" && printf '%s\n' "$HOME/.local/bin/crosshall"; }`), quote(home.binaryPath()),
+		quote(remote+" 'link' 'serve'"), quote(path+".pid"), quote(remote+" '--key' '"), quote(remote+" '--key' '"),
+		quote(remote+" '--key' '"), quote("' 'link' 'enroll' '--name' 'fixture-spoke'"), quote(path+".enrolls"),
+		quote(path+".drop-enrollment"), command.String(), command.String(), quote(home.binaryPath()), command.String())
 	if err := os.WriteFile(path, []byte(shim), 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 )
 
@@ -164,6 +165,10 @@ type Env struct {
 	SetupAdapters []string
 	// ExperimentalLink enables crosshall link (CROSSHALL_EXPERIMENTAL_LINK=1).
 	ExperimentalLink bool
+	LinkSpoke        func(context.Context, string, string, func(link.Preview) error) (link.Status, error)
+	LinkStatus       func() (link.Status, error)
+	UnlinkSpoke      func(context.Context) error
+	LinkedTarget     func() string
 }
 
 // Run executes the command line with the default environment.
@@ -188,10 +193,13 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return core.ExitOK
 	}
 	verb, rest := rest[0], rest[1:]
-	if verb != domain.VerbWait && verb != "owner" && verb != "setup" && verb != "uninstall" && verb != "link" && !env.CommandDeadline.IsZero() {
+	if verb != domain.VerbWait && verb != "owner" && verb != "setup" && verb != "uninstall" && verb != "link" && verb != "unlink" && !env.CommandDeadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, env.CommandDeadline)
 		defer cancel()
+	}
+	if code, blocked := blockSpokeCommand(env, o, verb, rest); blocked {
+		return code
 	}
 	switch verb {
 	case "help", "--help", "-h":
@@ -262,6 +270,8 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return runSetup(ctx, env, opts, verb, rest, stdout, stderr)
 	case "link":
 		return runLink(ctx, env, opts, rest, env.Stdin, stdout, stderr)
+	case "unlink":
+		return runUnlink(ctx, env, o, rest)
 	}
 	return o.usage(fmt.Sprintf("unknown command %q; run `crosshall help`", verb))
 }

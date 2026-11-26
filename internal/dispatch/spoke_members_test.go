@@ -1,0 +1,235 @@
+package dispatch
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
+	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
+)
+
+// fakeLink stands in for the SSH link: it records what the device writes
+// and answers with the frames the test queues.
+type fakeLink struct {
+	onWrite func(frame string, v any)
+	answers chan link.Frame
+	written []domain.LinkCall
+	frames  []string
+	closed  bool
+}
+
+func newFakeLink() *fakeLink { return &fakeLink{answers: make(chan link.Frame, 8)} }
+
+func (f *fakeLink) Write(frame string, v any) error {
+	if f.onWrite != nil {
+		f.onWrite(frame, v)
+	}
+	f.frames = append(f.frames, frame)
+	f.written = append(f.written, v.(domain.LinkCall))
+	return nil
+}
+
+func (f *fakeLink) Read() (link.Frame, error) {
+	frame, ok := <-f.answers
+	if !ok {
+		return link.Frame{}, errors.New("link ended")
+	}
+	return frame, nil
+}
+
+func (f *fakeLink) Close() { f.closed = true }
+
+func (f *fakeLink) answer(t *testing.T, r core.Result) {
+	t.Helper()
+	body, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.answers <- link.Frame{Type: "result", Body: body}
+}
+
+type spokeFixture struct {
+	s          *server
+	m          *spokeMembers
+	path       string
+	dir        *os.Root
+	digest     string
+	generation string
+}
+
+func newSpokeFixture(t *testing.T) *spokeFixture {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.OpenSpoke(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	members := filepath.Join(t.TempDir(), "rv")
+	root, err := openRendezvous(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
+	m := &spokeMembers{db: db, members: members}
+	f := &spokeFixture{s: &server{spokeMembers: m}, m: m}
+	var reg ident.Registration
+	if err := db.Update(t.Context(), func(tx store.Tx) error {
+		reg, err = ident.RegisterSpokeHello(t.Context(), tx, members,
+			wire.Hello{Version: wire.Version, Attempt: wire.NewID(), Vendor: "codex", Key: "session", Intent: "join"}, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Publish(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT digest, generation FROM spoke_leaf`).Scan(&f.digest, &f.generation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.path = filepath.Join(members, "m", f.digest[:16])
+	if f.dir, err = os.OpenRoot(f.path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.dir.Close() })
+	return f
+}
+
+func (f *spokeFixture) count(t *testing.T, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), query, args...).Scan(&n)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func (f *spokeFixture) send(t *testing.T, verb, key string) core.Result {
+	t.Helper()
+	id := wire.NewID()
+	raw, err := json.Marshal(wire.Request{Version: wire.Version, Attempt: id, OpKey: key, KeyDigest: f.digest,
+		Generation: f.generation, Verb: verb, Args: json.RawMessage(`{"all":true,"body":"hi"}`),
+		Membership: &core.Membership{BindingID: 4, Generation: 2}, ExpiresAtMS: time.Now().Add(2 * time.Second).UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.s.spokeCommand(t.Context(), f.path, f.dir, id, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// A keyed command is in the outbox before its first byte reaches the
+// link, and the home's answer settles it and the member's stamp.
+func TestASpokeRecordsACommandBeforeSendingIt(t *testing.T) {
+	f := newSpokeFixture(t)
+	fake := newFakeLink()
+	fake.onWrite = func(string, any) {
+		if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k1' AND state = 'sent'`); n != 1 {
+			t.Errorf("the command reached the link before its outbox record: %d", n)
+		}
+	}
+	f.m.attach(fake)
+	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 4, Generation: 3}})
+	if r := f.send(t, "note", "k1"); r.Status != core.ExitOK {
+		t.Fatalf("result %+v", r)
+	}
+	call := fake.written[0]
+	if fake.frames[0] != "call" || call.Vendor != "codex" || call.Key != "session" || call.LeafGeneration != f.generation ||
+		call.LeafEpoch != 1 || call.OpKey != "k1" || string(call.Args) != `{"all":true,"body":"hi"}` {
+		t.Fatalf("forwarded %s %+v", fake.frames[0], call)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE state = 'done'`); n != 1 {
+		t.Fatalf("%d settled records", n)
+	}
+	if n := f.count(t, `SELECT membership_gen FROM spoke_leaf`); n != 3 {
+		t.Fatalf("membership stamp generation %d", n)
+	}
+}
+
+// Nothing reaches a link that is down: the member is told nothing was
+// sent, and no record is kept.
+func TestASpokeWithoutALinkSendsNothing(t *testing.T) {
+	f := newSpokeFixture(t)
+	if r := f.send(t, "note", "k1"); r.Code != core.CodeUnsent {
+		t.Fatalf("result %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 {
+		t.Fatalf("%d records for an unsent command", n)
+	}
+}
+
+// A link that ends before its answer leaves the outcome unknown and the
+// link closed; the next connection looks the record up receipt-only, as
+// it does for a record a crash left as sent.
+func TestASpokeLooksUpALostAnswerReceiptOnly(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	r := f.send(t, "note", "k1")
+	if r.Code != core.CodeOutcomeUnknown || !ended.closed || f.m.conn != nil {
+		t.Fatalf("result %+v, closed %v", r, ended.closed)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE state = 'unknown'`); n != 1 {
+		t.Fatalf("%d unknown records", n)
+	}
+	// A crash after the record and before the answer.
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `INSERT INTO link_outbox (vendor, key, op_key, command, args, state, at_ms)
+			VALUES ('codex', 'session', 'k2', 'join', '{"channel":"x"}', 'sent', 1)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := newFakeLink()
+	f.m.attach(next)
+	fenced := domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again")
+	next.answer(t, fenced)
+	next.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
+	f.s.recoverOutbox(t.Context())
+	if len(next.frames) != 2 || next.frames[0] != "receipt" || next.frames[1] != "receipt" ||
+		next.written[0].OpKey != "k1" || string(next.written[0].Args) != `{"all":true,"body":"hi"}` ||
+		next.written[0].Membership == nil || next.written[0].Membership.Generation != 2 ||
+		next.written[1].OpKey != "k2" || next.written[1].Command != "join" {
+		t.Fatalf("lookups %v %+v", next.frames, next.written)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE state = 'done'`); n != 2 {
+		t.Fatalf("%d settled records", n)
+	}
+	var stored string
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT result FROM link_outbox WHERE op_key = 'k1'`).Scan(&stored)
+	}); err != nil || !json.Valid([]byte(stored)) {
+		t.Fatalf("stored %q, %v", stored, err)
+	}
+	var got core.Result
+	if json.Unmarshal([]byte(stored), &got); got.Code != domain.CodeLinkFenced {
+		t.Fatalf("the fenced answer was not kept: %s", stored)
+	}
+}
+
+// A home that closed the link (link_stale) closes it on the device too,
+// so the reconnect loop dials again.
+func TestASpokeClosesALinkTheHomeClosed(t *testing.T) {
+	f := newSpokeFixture(t)
+	fake := newFakeLink()
+	f.m.attach(fake)
+	fake.answer(t, domain.Refuse(domain.CodeLinkStale, "stale", "reconnect the link"))
+	if r := f.send(t, "who", ""); r.Code != core.CodeOutcomeUnknown || !fake.closed || f.m.conn != nil {
+		t.Fatalf("result %+v, closed %v", r, fake.closed)
+	}
+}

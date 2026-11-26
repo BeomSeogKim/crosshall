@@ -29,8 +29,21 @@ type spokeMembers struct {
 	members string // the member rendezvous
 
 	mu   sync.Mutex
-	conn *link.SSHConnection // nil while the link is down
+	conn spokeConn // nil while the link is down
 }
+
+// spokeConn is the link the member commands go over.
+type spokeConn interface {
+	Write(frame string, v any) error
+	Read() (link.Frame, error)
+	Close()
+}
+
+type sshSpokeConn struct{ c *link.SSHConnection }
+
+func (s sshSpokeConn) Write(frame string, v any) error { return s.c.Writer.Write(frame, v) }
+func (s sshSpokeConn) Read() (link.Frame, error)       { return s.c.Reader.Read() }
+func (s sshSpokeConn) Close()                          { s.c.Close() }
 
 // spokeDir is the private directory of one hall and device's spoke store.
 func spokeDir(state *os.Root, stateRoot string, linked linkConfig) (string, error) {
@@ -86,6 +99,14 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 
 // setConn installs or clears the link the member commands go over.
 func (m *spokeMembers) setConn(c *link.SSHConnection) {
+	if c == nil {
+		m.attach(nil)
+		return
+	}
+	m.attach(sshSpokeConn{c})
+}
+
+func (m *spokeMembers) attach(c spokeConn) {
 	m.mu.Lock()
 	m.conn = c
 	m.mu.Unlock()
@@ -109,7 +130,7 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 		m.conn = nil
 		return core.Result{}, err
 	}
-	if err := conn.Writer.Write(frame, call); err != nil {
+	if err := conn.Write(frame, call); err != nil {
 		return fail(err)
 	}
 	type read struct {
@@ -118,7 +139,7 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 	}
 	got := make(chan read, 1)
 	go func() {
-		f, err := conn.Reader.Read()
+		f, err := conn.Read()
 		got <- read{f, err}
 	}()
 	timer := time.NewTimer(time.Until(deadline))

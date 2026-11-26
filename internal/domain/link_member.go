@@ -123,7 +123,8 @@ func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time
 		return LinkMember{}, nil, err
 	}
 	if call.Vendor == "" || call.Key == "" || call.LeafGeneration == "" || call.LeafEpoch <= 0 {
-		r := Fail(core.ExitUsage, "", "a forwarded command names its session and leaf", "")
+		r := Fail(core.ExitUsage, "", "a forwarded command names its session and leaf",
+			"update crosshall on the linked device")
 		return LinkMember{}, &r, nil
 	}
 	var principal, epoch, keyGen int64

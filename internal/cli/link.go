@@ -23,6 +23,9 @@ const (
 	linkEnrolled = "enrolled"
 	linkPing     = "ping"
 	linkPong     = "pong"
+	// A member command forwarded by the device, and the hall's answer.
+	linkCallFrame   = "call"
+	linkResultFrame = "result"
 )
 
 // runLink runs the home side of a link (#400). A spoke starts these over
@@ -123,6 +126,10 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 		return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
 	}
 	r, w := link.NewReader(stdin), link.NewWriter(stdout)
+	// The credential generation the link authenticated under; every call
+	// carries it, and the dispatcher refuses it once the device enrolls
+	// again.
+	var credentialGen int64
 	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
 			v, err := ownerData[domain.LinkProveResult](ctx, env,
@@ -132,6 +139,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 		Verify: func(device, homeNonce, spokeNonce, proof string) (bool, error) {
 			v, err := ownerData[domain.LinkVerifyResult](ctx, env,
 				Call{Command: domain.LinkVerify{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce, Proof: proof}})
+			credentialGen = v.CredentialGen
 			return v.OK, err
 		}}
 	session, err := home.Accept(r, w)
@@ -151,9 +159,27 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 			if err := w.Write(linkPong, f.Body); err != nil {
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
+		case linkCallFrame:
+			var call domain.LinkCall
+			if err := json.Unmarshal(f.Body, &call); err != nil {
+				return o.fail(core.ExitError, CodeLocalError, "link: malformed call", "")
+			}
+			// The device and credential come from this link's
+			// authentication, never from the device's frame.
+			call.Device, call.CredentialGen = session.Device, credentialGen
+			result, err := ownerCall(ctx, env, Call{Command: call})
+			if err != nil {
+				return o.fail(core.ExitUnavailable, core.CodeUnsent, err.Error(), "crosshall owner doctor")
+			}
+			if err := w.Write(linkResultFrame, result); err != nil {
+				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+			}
+			if result.Code == domain.CodeLinkStale {
+				return o.fail(core.ExitRefused, domain.CodeLinkStale, "the device enrolled again; this link is closed", "")
+			}
 		default:
 			return o.fail(core.ExitError, CodeLocalError,
-				fmt.Sprintf("link %d has no %q frame", session.Link, f.Type), "")
+				fmt.Sprintf("link %d has no %q frame", session.Link, link.Printable(f.Type)), "")
 		}
 	}
 }

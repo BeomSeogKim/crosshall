@@ -168,6 +168,11 @@ publish evidence in both runs. On GitHub, manually dispatch the `race` workflow
 with `native_linux_amd64` enabled to run the amd64 round trip and the Codex
 publish trial on `ubuntu-latest`. [Linux amd64 run](https://github.com/BeomSeogKim/crosshall/actions/runs/45707349401).
 
+Codex 0.172.0 and Claude Code 2.1.331 also passed both directions on native
+Intel macOS with loopback models and scratch Claude Code publish evidence.
+Dispatch the `race` workflow with `native_macos_amd64` enabled to run the
+round trip and publish trial on `macos-15-intel`. [Intel macOS run](https://github.com/BeomSeogKim/crosshall/actions/runs/45745791324/attempts/2).
+
 An amd64 run under Rosetta stopped at route activation because Linux reported
 `/run/rosetta/rosetta` as the daemon executable. The managed server check
 requires the executable from the fixture's release directory.
@@ -176,7 +181,7 @@ requires the executable from the fixture's release directory.
 
 Use the same managed package setup and select `TestCodexDaemonPublishTrial`
 to reproduce the publish trial for Codex `0.172.0`, `daemon`, and `codex-1`.
-Crosshall ships evidence for `darwin-arm64`, `linux-arm64` and `linux-amd64`:
+Crosshall ships evidence for `darwin-arm64`, `darwin-amd64`, `linux-arm64` and `linux-amd64`.
 
 ```sh
 CROSSHALL_CONFORMANCE_CODEX_PACKAGE=/absolute/path/to/codex-0.172.0-release \

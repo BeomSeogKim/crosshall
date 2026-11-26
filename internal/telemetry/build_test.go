@@ -156,6 +156,8 @@ var fixtureSQL = []string{
 	`INSERT INTO device (device_id, name, secret, created_at_ms, secret_at_ms)
 		VALUES ('zqxmarker-device', 'zqxmarker', 'zqxmarker-secret', 0, 0)`,
 	`UPDATE hall SET hall_id = 'zqxmarker-hall'`,
+	`INSERT INTO device_key (device_id, vendor, key, principal_id, leaf_generation, leaf_epoch, credential_gen, state, created_at_ms)
+		VALUES ('zqxmarker-device', 'codex', 'zqxmarker-device-key', 3, 'zqxmarker', 1, 1, 'live', 0)`,
 }
 
 func openFixture(t *testing.T) *store.Store {

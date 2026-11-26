@@ -58,6 +58,9 @@ func (s *Service) restore(ctx context.Context, tx store.Tx, caller core.Caller, 
 		return Refuse(core.CodeBindingChanged, fmt.Sprintf("binding %d is historical", cmd.BindingID),
 			fmt.Sprintf("retry with crosshall owner restore %d and the replacement identity", selected)), nil
 	}
+	if device, err := onADevice(ctx, tx, principal); err != nil || device {
+		return notOnADeviceYet("restoring a member of a linked device"), err
+	}
 	if s.RestoreKey == nil {
 		return core.Result{}, errors.New("domain: missing identity restore handler")
 	}

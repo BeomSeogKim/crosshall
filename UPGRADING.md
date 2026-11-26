@@ -4,7 +4,7 @@ Notes for moving an existing installation from one release to the next. A new in
 
 ## Unreleased
 
-Upgrading from v0.3.1-rc.2 moves the database from schema 30 to schema 31. Migration 031 adds two tables for linking a second device (#400): `hall`, with one row holding a random identity for this hall, and `device`, which stays empty until a device links. No existing row changes.
+Upgrading from v0.3.1-rc.2 moves the database from schema 30 to schema 32, for linking a second device (#400). Migration 031 adds two tables: `hall`, with one row holding a random identity for this hall, and `device`, which stays empty until a device links. Migration 032 adds `device.credential_gen`, `principal.device_id` and `op.link_request` (all empty or default for existing rows) and the `device_key` table, which stays empty until a linked device's member joins. No existing value changes.
 
 1. Stop running crosshall commands, including background waits, and run `crosshall owner stop`.
 2. Keep a private copy of the stopped hall's `store.sqlite3`. On its first start, the new dispatcher also saves a `store-v30-*.sqlite3` backup beside the database.
@@ -12,7 +12,7 @@ Upgrading from v0.3.1-rc.2 moves the database from schema 30 to schema 31. Migra
 
 The experimental device link requires a POSIX-compatible login shell for the home account that SSH logs in as.
 
-v0.3.1-rc.2 refuses to start on a schema 31 store. To roll back, stop running crosshall commands and run `crosshall owner stop` with the new release. While stopped, move the upgraded `store.sqlite3` and any `store.sqlite3-wal` or `store.sqlite3-shm` files out of the state directory together. Copy your private schema 30 backup or the automatic `store-v30-*.sqlite3` backup back as `store.sqlite3`, keeping mode `0600`. Put the v0.3.1-rc.2 binary back at the original path, run `crosshall owner start`, and check for schema version 30 with `crosshall owner doctor`. The restored store contains only data written before the upgrade, and any linked device must link again.
+v0.3.1-rc.2 refuses to start on a schema 32 store. To roll back, stop running crosshall commands and run `crosshall owner stop` with the new release. While stopped, move the upgraded `store.sqlite3` and any `store.sqlite3-wal` or `store.sqlite3-shm` files out of the state directory together. Copy your private schema 30 backup or the automatic `store-v30-*.sqlite3` backup back as `store.sqlite3`, keeping mode `0600`. Put the v0.3.1-rc.2 binary back at the original path, run `crosshall owner start`, and check for schema version 30 with `crosshall owner doctor`. The restored store contains only data written before the upgrade, and any linked device must link again.
 
 ## To v0.3.1-rc.2
 

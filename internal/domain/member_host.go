@@ -23,6 +23,11 @@ import (
 // a request named: both fields are set and its PID is in the dispatcher's
 // own namespace.
 func (s *Service) judgeableHost(h *wire.Host) bool {
+	// No host named, as from a linked device (#400), is never judged, and
+	// asks nothing of this machine.
+	if h == nil {
+		return false
+	}
 	own := ""
 	if s.LaunchPIDNamespace != nil {
 		own = s.LaunchPIDNamespace()

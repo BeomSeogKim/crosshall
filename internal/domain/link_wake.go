@@ -158,13 +158,16 @@ func linkWakeRouteEligible(ctx context.Context, tx store.Tx, peer LinkEventPeer,
 }
 
 // An attempt that may have submitted keeps its original IDs out of later wakes.
+const linkWakeMayHaveSubmitted = `(a.state IN ('submitted', 'uncertain')
+	OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL))`
+
 func pendingLinkWakeIDs(ctx context.Context, tx store.Tx, scope linkOfferScope, route string) ([]int64, error) {
 	return selectIDs(ctx, tx, `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 		WHERE x.principal_id = ?1 AND m.channel_id = ?2 AND `+pendingPublishItem+`
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
 			WHERE a.principal_id = ?1 AND item.value = x.message_id
-				AND (a.state IN ('submitted', 'uncertain') OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL)
+				AND (`+linkWakeMayHaveSubmitted+`
 					OR (a.state = 'not_submitted' AND a.route = ?3)))
 		ORDER BY x.message_id LIMIT ?4`, scope.principal, scope.binding.channel, route, OfferCap)
 }

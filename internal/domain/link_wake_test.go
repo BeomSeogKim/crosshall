@@ -62,6 +62,13 @@ func TestLinkWakeOfflineKeepsAnUnresolvedAttemptHeld(t *testing.T) {
 	if n := h.count(`SELECT COUNT(*) FROM link_wake_attempt WHERE id = ? AND released_at_ms IS NULL`, wake.AttemptID); n != 1 {
 		t.Fatal("stream closure released the unresolved attempt")
 	}
+	h.sql(`UPDATE link_wake_attempt SET released_at_ms = ? WHERE id = ?`, ms(h.now), wake.AttemptID)
+	got = inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
+		return h.svc.messageWake(ctx, tx, route.Scope.Membership.BindingID, h.principal, id, h.now)
+	})
+	if got.Why == WhyDeviceOffline {
+		t.Fatalf("an already covered message was reported eligible: %+v", got)
+	}
 }
 
 func linkWakeFixture(t *testing.T) (*linkedHookFixture, link.WakeRoute) {

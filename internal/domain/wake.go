@@ -166,12 +166,14 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 			var pending bool
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
 				WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
-				AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id))`,
+				AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
+				AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
+					WHERE a.principal_id = x.principal_id AND item.value = x.message_id AND `+linkWakeMayHaveSubmitted+`))`,
 				principal, msg).Scan(&pending); err != nil {
 				return Wake{}, false, err
 			}
 			if !pending {
-				w = Wake{Wake: WakeNone, Why: WhyKind}
+				w = Wake{Wake: WakeNone, Why: WhyNoRoute}
 			}
 		}
 	}

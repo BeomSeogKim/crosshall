@@ -613,6 +613,16 @@ func TestALinkedWaitIsOneSnapshotPerPoll(t *testing.T) {
 	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM message) + (SELECT COUNT(*) FROM op)`); n != before {
 		t.Fatalf("%d rows written by wait polls", n-before)
 	}
+	// A wait acknowledges no roster, whatever cursor it carries (Sol #3684).
+	mustLinkOK(t, s.link(t, linkReq{key: "other", command: domain.VerbJoin, args: joinChannel("checkout"), op: "j2"}))
+	acked := func() int {
+		return s.count(t, `SELECT roster_ack_seq FROM binding WHERE id = `+fmt.Sprint(m.BindingID))
+	}
+	ackBefore := acked()
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{}, membership: m, ack: ^uint64(0)}))
+	if got := acked(); got != ackBefore {
+		t.Fatalf("a linked wait moved the roster acknowledgement %d -> %d", ackBefore, got)
+	}
 	if r := s.link(t, linkReq{command: domain.VerbWait, args: map[string]any{"pid": 1}, membership: m}); r.Status == core.ExitOK {
 		t.Fatal("a wait with an unknown field was run")
 	}

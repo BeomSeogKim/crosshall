@@ -12,6 +12,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/domain"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -581,5 +582,50 @@ func TestASpokeRetryAppliesAStoredMove(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
 		t.Fatalf("selection %d after the stored move", n)
+	}
+}
+
+// A wait poll is observational (Sol #3684): it is not journaled, carries
+// no key, and returns without the member's stamp work, so a hook holding
+// the leaf's publish lock never keeps the device's command turn.
+func TestASpokeWaitPollIsObservational(t *testing.T) {
+	f := newSpokeFixture(t)
+	fake := newFakeLink()
+	f.m.attach(fake)
+	_, unlock, err := spool.LockLeafPublish(t.Context(), f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	fake.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)})
+	done := make(chan core.Result, 1)
+	go func() { done <- f.sendArgs(t, domain.VerbWait, "spool-key", `{"work_only":true}`, 2*time.Second) }()
+	select {
+	case r := <-done:
+		if r.Status != core.ExitOK {
+			t.Fatalf("wait poll %+v", r)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a wait poll waited for the leaf's publish lock")
+	}
+	if len(fake.written) != 1 || fake.written[0].OpKey != "" || fake.written[0].Ack != 0 {
+		t.Fatalf("forwarded %+v", fake.written)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 {
+		t.Fatalf("%d journal rows for a wait poll", n)
+	}
+	select {
+	case f.m.turn <- struct{}{}:
+		<-f.m.turn
+	default:
+		t.Fatal("the command turn is still held after the poll")
+	}
+	// A lost answer is a poll to make again, never a fenced command.
+	close(fake.answers)
+	if r := f.sendArgs(t, domain.VerbWait, "spool-key-2", `{}`, 2*time.Second); r.Code != core.CodeUnsent {
+		t.Fatalf("a lost wait answer: %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 {
+		t.Fatalf("%d journal rows after a lost poll", n)
 	}
 }

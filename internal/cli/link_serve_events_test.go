@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
@@ -271,5 +272,139 @@ func TestLinkServeEventsReportsStaleAdmission(t *testing.T) {
 	})
 	if code != core.ExitRefused || !strings.Contains(stderr, "reconnect the link") || !strings.Contains(stderr, "fences were pruned") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+}
+
+// A device catching up on a large backlog holds at most a window of pages
+// it has not acknowledged: the home writes the next page only as the
+// device acknowledges the earlier ones, and the backlog still drains
+// (#422).
+func TestLinkServeWritesAWindowAheadOfTheAcknowledgements(t *testing.T) {
+	const perPage, backlog = 8, 800
+	var fetched []uint64
+	home := &eventHomeTransport{handle: func(cmd domain.Command) (core.Result, error) {
+		switch in := cmd.(type) {
+		case domain.LinkEvents:
+			from := in.FromSeq
+			if in.Subscribe != nil {
+				from = in.Subscribe.FromSeq
+			}
+			if in.Close {
+				return domain.OK(domain.LinkEventsResult{})
+			}
+			fetched = append(fetched, from)
+			page := domain.LinkEventsResult{Through: backlog}
+			for seq := from + 1; seq <= min(from+perPage, backlog); seq++ {
+				page.Events = append(page.Events, link.Event{Seq: seq, Kind: link.EventOffer})
+			}
+			return domain.OK(page)
+		case domain.LinkAck:
+			return core.Result{Status: core.ExitOK}, nil
+		}
+		return core.Result{}, fmt.Errorf("unexpected event command: %+v", cmd)
+	}}
+	stderr, code := serve(t, Env{Transport: home, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+		spoke := spokeConfig("dev-1")
+		spoke.Caps = []string{link.CapEvents}
+		if _, err := spoke.Connect(r, w); err != nil {
+			t.Errorf("event handshake: %v", err)
+			return
+		}
+		frames := make(chan link.Frame)
+		go func() {
+			defer close(frames)
+			for {
+				f, err := r.Read()
+				if err != nil {
+					return
+				}
+				frames <- f
+			}
+		}()
+		next := func(wait time.Duration) (link.Frame, bool) {
+			select {
+			case f, ok := <-frames:
+				return f, ok
+			case <-time.After(wait):
+				return link.Frame{}, false
+			}
+		}
+		if err := w.Write(link.TypeSubscribe, link.Subscribe{FromSeq: 0, Boot: "boot"}); err != nil {
+			t.Error(err)
+			return
+		}
+		// Events arrive in order until the home has a window unacknowledged.
+		var seq uint64
+		quiet := func(want uint64) bool {
+			for {
+				f, ok := next(300 * time.Millisecond)
+				if !ok {
+					break
+				}
+				var ev link.Event
+				if f.Type != link.TypeEvent || json.Unmarshal(f.Body, &ev) != nil || ev.Seq != seq+1 {
+					t.Errorf("want event %d, got %s %s", seq+1, f.Type, f.Body)
+					return false
+				}
+				seq = ev.Seq
+			}
+			if seq != want {
+				t.Errorf("the home wrote through event %d, want %d", seq, want)
+				return false
+			}
+			return true
+		}
+		ack := func(seq uint64) bool {
+			if err := w.Write(link.TypeAck, link.Ack{Seq: seq, Boot: "boot"}); err != nil {
+				t.Error(err)
+				return false
+			}
+			return true
+		}
+		const window = linkEventWindow * perPage
+		// Subscribing again starts a fresh window from the device's cursor.
+		if !quiet(window) {
+			return
+		}
+		if err := w.Write(link.TypeSubscribe, link.Subscribe{FromSeq: 0, Boot: "boot"}); err != nil {
+			t.Error(err)
+			return
+		}
+		seq = 0
+		// Nothing acknowledged; then part of a page, which frees none;
+		// then the whole window, which frees a window.
+		if !quiet(window) || !ack(perPage/2) || !quiet(window) || !ack(window) || !quiet(2*window) ||
+			!ack(2*window) {
+			return
+		}
+		// Acknowledging every event drains the backlog to its catch-up.
+		for {
+			f, ok := next(5 * time.Second)
+			if !ok {
+				t.Errorf("the backlog stalled after event %d", seq)
+				return
+			}
+			if f.Type == link.TypeCaughtUp {
+				break
+			}
+			var ev link.Event
+			if f.Type != link.TypeEvent || json.Unmarshal(f.Body, &ev) != nil || ev.Seq != seq+1 {
+				t.Errorf("want event %d, got %s %s", seq+1, f.Type, f.Body)
+				return
+			}
+			seq = ev.Seq
+			if !ack(seq) {
+				return
+			}
+		}
+		if seq != backlog {
+			t.Errorf("caught up at %d, want %d", seq, backlog)
+		}
+	})
+	if code != core.ExitOK || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if want := backlog/perPage + linkEventWindow; len(fetched) != want {
+		t.Fatalf("fetched %d pages, want %d", len(fetched), want)
 	}
 }

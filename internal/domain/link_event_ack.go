@@ -50,6 +50,9 @@ func (s *Service) linkAck(ctx context.Context, tx store.Tx, caller core.Caller, 
 			return refuseLinkEvents("this boot needs a new snapshot"), nil
 		}
 		if ack.Seq <= cursor.acked {
+			if err := touchLinkAck(ctx, tx, peer, now); err != nil {
+				return core.Result{}, err
+			}
 			return OK(nil)
 		}
 		if cursor.acked < cursor.trimmed {
@@ -63,8 +66,8 @@ func (s *Service) linkAck(ctx context.Context, tx store.Tx, caller core.Caller, 
 		return core.Result{}, err
 	}
 	if ack.More {
-		_, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET ack_seq = ? WHERE device_id = ? AND stream = ?`,
-			ack.Seq, peer.Device, peer.Stream)
+		_, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET ack_seq = ?, last_ack_at_ms = max(COALESCE(last_ack_at_ms, created_at_ms), ?)
+			WHERE device_id = ? AND stream = ?`, ack.Seq, ms(now), peer.Device, peer.Stream)
 		if err != nil {
 			return core.Result{}, err
 		}
@@ -97,7 +100,7 @@ func (s *Service) linkAck(ctx context.Context, tx store.Tx, caller core.Caller, 
 	if err := s.resolveLinkFactCuts(ctx, tx, peer, ack, snapshot, now); err != nil {
 		return core.Result{}, err
 	}
-	if err := finishLinkAck(ctx, tx, peer, ack.Seq); err != nil {
+	if err := finishLinkAck(ctx, tx, peer, ack.Seq, now); err != nil {
 		return core.Result{}, err
 	}
 	return OK(nil)
@@ -256,7 +259,13 @@ func applyLinkCuts(ctx context.Context, tx store.Tx, peer LinkEventPeer, boot st
 	return nil
 }
 
-func finishLinkAck(ctx context.Context, tx store.Tx, peer LinkEventPeer, seq uint64) error {
+func touchLinkAck(ctx context.Context, tx store.Tx, peer LinkEventPeer, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET last_ack_at_ms = max(COALESCE(last_ack_at_ms, created_at_ms), ?)
+		WHERE device_id = ? AND stream = ?`, ms(now), peer.Device, peer.Stream)
+	return err
+}
+
+func finishLinkAck(ctx context.Context, tx store.Tx, peer LinkEventPeer, seq uint64, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE link_event_cursor SET acked = ? WHERE device_id = ?`, seq, peer.Device); err != nil {
 		return err
 	}
@@ -266,8 +275,8 @@ func finishLinkAck(ctx context.Context, tx store.Tx, peer LinkEventPeer, seq uin
 	if _, err := tx.ExecContext(ctx, `DELETE FROM link_event_snapshot WHERE device_id = ? AND stream = ?`, peer.Device, peer.Stream); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET ack_seq = NULL, snapshot_seq = NULL WHERE device_id = ? AND stream = ?`,
-		peer.Device, peer.Stream); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE link_event_stream SET ack_seq = NULL, snapshot_seq = NULL, last_ack_at_ms = max(COALESCE(last_ack_at_ms, created_at_ms), ?)
+		WHERE device_id = ? AND stream = ?`, ms(now), peer.Device, peer.Stream); err != nil {
 		return err
 	}
 	return trimAckedLinkEvents(ctx, tx, peer.Device, seq)

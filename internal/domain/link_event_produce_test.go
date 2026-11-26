@@ -103,10 +103,22 @@ func TestLinkOfferReplacementKeepsHistoricalWrittenReceipts(t *testing.T) {
 	}
 	wantOK(t, f.owner(Cancel{Channel: "dev", ID: request.ID}, "cancel"))
 	replacement := offer(message.ID)
-	f.now = f.now.Add(linkOfferLease)
-	renewal := offer(message.ID)
-	if first.OfferID == replacement.OfferID || replacement.OfferID == renewal.OfferID || renewal.LeaseMS != 60_000 {
-		t.Fatalf("replacement %+v, renewal %+v", replacement, renewal)
+	if first.OfferID == replacement.OfferID {
+		t.Fatalf("replacement kept the invalidated offer: %+v", replacement)
+	}
+	for epoch := uint64(1); epoch <= 3; epoch++ {
+		f.now = f.now.Add(linkOfferLease)
+		renewal := offer(message.ID)
+		if renewal.OfferID != replacement.OfferID || renewal.Nonce != replacement.Nonce ||
+			renewal.LeaseEpoch != epoch || renewal.LeaseMS != linkOfferLease.Milliseconds() {
+			t.Fatalf("renewal %d changed the offer identity or failed to refresh its lease: %+v", epoch, renewal)
+		}
+	}
+	if n := f.count(`SELECT COUNT(*) FROM offer WHERE device_credential_gen IS NOT NULL`); n != 2 {
+		t.Fatalf("an idle member grew the offer ledger: got %d rows, want 2", n)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM offer_item WHERE offer_id IN (?, ?)`, first.OfferID, replacement.OfferID); n != 3 {
+		t.Fatalf("the two offers have %d item rows, want 3", n)
 	}
 	execArgs(f, `UPDATE offer SET written_at_ms = ? WHERE id = ?`, ms(f.now), first.OfferID)
 	members := snapshot()
@@ -118,7 +130,7 @@ func TestLinkOfferReplacementKeepsHistoricalWrittenReceipts(t *testing.T) {
 		FROM device_event WHERE device_id = ?`, device).Scan(&kinds); err != nil {
 		t.Fatal(err)
 	}
-	if want := "membership,offer,offer,invalidate/cancel,offer,invalidate/offer_set,offer,invalidate/offer_set"; kinds != want {
+	if want := "membership,offer,offer,invalidate/cancel,offer,offer,offer,offer,invalidate/offer_set"; kinds != want {
 		t.Fatalf("events %s, want %s", kinds, want)
 	}
 

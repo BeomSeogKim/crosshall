@@ -79,7 +79,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 		}
 		if cmd.Resubscribe {
 			if _, err := readLinkEventStream(ctx, tx, cmd.LinkEventPeer); errors.Is(err, sql.ErrNoRows) {
-				return refuseLinkEvents("a newer link subscribed to this device"), nil
+				return refuseLinkEvents("this link no longer owns the active subscription"), nil
 			} else if err != nil {
 				return core.Result{}, err
 			}

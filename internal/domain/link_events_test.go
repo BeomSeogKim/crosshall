@@ -70,6 +70,12 @@ func TestHomeLinkCursorIsPrivateAndSurvivesCompleteTrim(t *testing.T) {
 	if n := f.count(`SELECT COUNT(*) FROM device_event WHERE device_id = ?`, one.Device); n != 0 {
 		t.Fatalf("acknowledged event remains: %d", n)
 	}
+	f.now = f.now.Add(time.Hour)
+	wantOK(t, f.owner(LinkAck{LinkEventPeer: one, Ack: link.Ack{Seq: seq, Boot: boot}}, ""))
+	if n := f.count(`SELECT COUNT(*) FROM link_event_stream WHERE device_id = ? AND last_ack_at_ms = ?`,
+		one.Device, ms(f.now)); n != 1 {
+		t.Fatal("a valid duplicate acknowledgement did not renew the stream")
+	}
 	one.Stream = link.NewNonce()
 	page = decodeAs[LinkEventsResult](t, f.owner(LinkEvents{LinkEventPeer: one,
 		Subscribe: &link.Subscribe{FromSeq: seq, Boot: "after-reboot"}}, ""))

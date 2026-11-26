@@ -79,9 +79,9 @@ var retentionSteps = []struct {
 	{"device events", RetentionWindow, `DELETE FROM device_event WHERE rowid IN (SELECT rowid FROM device_event
 		WHERE at_ms < ?1 ORDER BY at_ms LIMIT ?4)`},
 	{"event streams", RetentionWindow, `DELETE FROM link_event_stream WHERE rowid IN (SELECT rowid FROM link_event_stream
-		WHERE created_at_ms < ?1 ORDER BY created_at_ms LIMIT ?4)`},
+		WHERE COALESCE(last_ack_at_ms, created_at_ms) < ?1 ORDER BY COALESCE(last_ack_at_ms, created_at_ms) LIMIT ?4)`},
 	{"link input receipts", RetentionWindow, `DELETE FROM link_event_input WHERE rowid IN (SELECT rowid FROM link_event_input
-		WHERE recorded_at_ms < ?1 AND status <> 'quarantined' LIMIT ?4)`},
+		WHERE recorded_at_ms < ?1 ORDER BY recorded_at_ms LIMIT ?4)`},
 	{"observations", RetentionWindow, `DELETE FROM observation WHERE seq IN (SELECT o.seq FROM observation o
 		WHERE o.observed_at_ms < ?1 AND o.seq NOT IN (SELECT value FROM json_each(?3))
 			AND (o.kind = 'command' OR NOT ` + running + `) LIMIT ?4)`},

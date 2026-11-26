@@ -32,11 +32,12 @@ CREATE TABLE link_event_stream (
     snapshot_seq INTEGER,
     ack_seq INTEGER,
     created_at_ms INTEGER NOT NULL,
+    last_ack_at_ms INTEGER,
     PRIMARY KEY (device_id, stream),
     UNIQUE (device_id)
 );
 
-CREATE INDEX link_event_stream_age ON link_event_stream(created_at_ms);
+CREATE INDEX link_event_stream_age ON link_event_stream(COALESCE(last_ack_at_ms, created_at_ms));
 
 CREATE TABLE link_event_snapshot (
     device_id TEXT NOT NULL,
@@ -223,6 +224,7 @@ CREATE TABLE link_event_input (
     recorded_at_ms INTEGER NOT NULL,
     PRIMARY KEY (device_id, credential_gen, id)
 );
+CREATE INDEX link_event_input_age ON link_event_input(recorded_at_ms);
 CREATE INDEX link_event_input_pending ON link_event_input(device_id, credential_gen, vendor, key, leaf_seq)
     WHERE status = 'quarantined';
 

@@ -13,7 +13,7 @@ func TestEventFramesRoundTrip(t *testing.T) {
 	m := Member{Vendor: "claude", Key: "k1"}
 	token := HookToken{Boot: "b1", LeafSeq: 7, MonoNS: 9, WallMS: 11, LeafGeneration: "g1", Membership: Membership{BindingID: 3, Generation: 2}}
 	scope := MemberScope{LeafGeneration: "g1", Membership: Membership{BindingID: 3, Generation: 2}, RouteEpoch: 1}
-	offer := Offer{Member: m, OfferID: 5, Nonce: "n", LeafGeneration: "g1", Membership: token.Membership, BindingID: 3, RouteEpoch: 1, PolicyEpoch: 4, Launch: "l", Epoch: 2, IDs: []int64{8, 9}, LeaseMS: 60000}
+	offer := Offer{Member: m, OfferID: 5, Nonce: "n", LeafGeneration: "g1", Membership: token.Membership, BindingID: 3, RouteEpoch: 1, PolicyEpoch: 4, Launch: "l", Epoch: 2, IDs: []int64{8, 9}, LeaseMS: 60000, LeaseEpoch: 2}
 	body, _ := json.Marshal(offer)
 	for typ, v := range map[string]any{
 		TypeSubscribe: &Subscribe{FromSeq: 3, Boot: "b1", Snapshot: true},

@@ -163,3 +163,47 @@ func TestRetentionClearsTheReassignmentRecordOfLaunchesItDeletesFrom(t *testing.
 		t.Fatalf("%d of %d running launches kept their record", n, launches)
 	}
 }
+
+func TestRetentionUsesStreamAckAndExpiresQuarantinedInput(t *testing.T) {
+	ctx := t.Context()
+	db := retentionStore(t)
+	now := time.UnixMilli(1_900_000_000_000)
+	old := now.Add(-RetentionWindow - 25*time.Hour).UnixMilli()
+	if err := db.Update(ctx, func(tx Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO device (device_id, name, secret, created_at_ms, secret_at_ms)
+			VALUES ('idle', 'idle', zeroblob(32), ?1, ?1), ('active', 'active', zeroblob(32), ?1, ?1)`, old); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_cursor (device_id) VALUES ('idle'), ('active')`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, created_at_ms, last_ack_at_ms)
+			VALUES ('idle', 'idle-stream', 1, 'boot', ?1, NULL), ('active', 'active-stream', 1, 'boot', ?1, ?2)`, old, now.UnixMilli()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO link_event_input
+			(device_id, credential_gen, id, vendor, key, boot, leaf_generation, leaf_seq, kind, payload, status, code, recorded_at_ms)
+			VALUES ('active', 1, 1, 'claude', 'key', 'boot', 'leaf', 1, 'fact', '{}', 'quarantined', '', ?),
+			       ('active', 1, 2, 'claude', 'key', 'boot', 'leaf', 2, 'fact', '{}', 'quarantined', '', ?)`, old, now.UnixMilli())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pass, err := db.StartRetention(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for done := false; !done; {
+		if done, err = db.RetentionChunk(ctx, pass); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if db.count(t, `SELECT COUNT(*) FROM link_event_stream`) != 1 ||
+		db.count(t, `SELECT COUNT(*) FROM link_event_stream WHERE device_id = 'active'`) != 1 {
+		t.Fatal("retention did not preserve only the stream with a recent acknowledgement")
+	}
+	if db.count(t, `SELECT COUNT(*) FROM link_event_input`) != 1 ||
+		db.count(t, `SELECT COUNT(*) FROM link_event_input WHERE id = 2 AND status = 'quarantined'`) != 1 {
+		t.Fatal("retention did not preserve only the quarantined input within the window")
+	}
+}

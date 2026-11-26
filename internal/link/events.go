@@ -46,7 +46,10 @@ type CaughtUp struct {
 // range, the member's leaf publish sequence at which the device applied
 // it, under that leaf's publish lock: facts with a higher LeafSeq were
 // captured after the change. The Ack of a Snapshot carries a cut for
-// every member in it, the applied baseline after a resync.
+// every member in it, the applied baseline after a resync. Acknowledge
+// the exact snapshot sequence before acknowledging subsequent events.
+// An idle device can repeat its current acknowledged sequence with no
+// cuts to keep its subscription alive.
 //
 // Cuts for one Seq may span several Ack frames, each within one link
 // frame: every frame but the last sets More, and the home applies the
@@ -124,9 +127,11 @@ type Membership struct {
 // generation and membership selection it was prepared for.
 //
 // LeaseMS is the offer's remaining lifetime when the home sent this frame,
-// computed again for every send. The device keeps the earlier of its
-// current deadline and its monotonic receive time plus LeaseMS, so a
-// replay never extends an offer; zero or less retires it.
+// computed again for every send. LeaseEpoch starts at zero and advances
+// when the home renews the same offer ID and nonce. The device ignores
+// older epochs. For the same epoch it keeps the earlier of its current
+// deadline and its monotonic receive time plus LeaseMS. A newer epoch
+// starts a fresh deadline. Zero or less retires the current lease.
 type Offer struct {
 	Member
 	OfferID        int64      `json:"offer_id"`
@@ -140,6 +145,7 @@ type Offer struct {
 	Epoch          int64      `json:"epoch"`
 	IDs            []int64    `json:"ids"`
 	LeaseMS        int64      `json:"lease_ms"`
+	LeaseEpoch     uint64     `json:"lease_epoch,omitempty"`
 }
 
 // Invalidate retires what the device holds for a member before any newer

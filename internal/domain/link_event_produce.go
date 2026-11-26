@@ -123,7 +123,7 @@ func refreshLinkOffer(ctx context.Context, tx store.Tx, device string, change li
 	if err != nil {
 		return err
 	}
-	reuse := change.reason == "" && old.OfferID != 0 && expires > ms(now) && sameLinkOffer(old, next)
+	reuse := change.reason == "" && old.OfferID != 0 && sameLinkOffer(old, next)
 	if scope.Membership.BindingID == 0 {
 		return clearPreparedLinkOffer(ctx, tx, device, change.Member)
 	}
@@ -152,8 +152,15 @@ func refreshLinkOffer(ctx context.Context, tx store.Tx, device string, change li
 		}
 	}
 	if reuse {
-		// A snapshot may have omitted this member's still-dirty offer.
 		old.LeaseMS = expires - ms(now)
+		if old.LeaseMS <= 0 {
+			old.LeaseEpoch++
+			old.LeaseMS = linkOfferLease.Milliseconds()
+			if err := renewLinkOffer(ctx, tx, device, old, now); err != nil {
+				return err
+			}
+		}
+		// A snapshot may have omitted this member's still-dirty offer.
 		_, err := appendLinkEvent(ctx, tx, device, link.EventOffer, old, now)
 		return err
 	}
@@ -219,6 +226,17 @@ func sameLinkOffer(a, b link.Offer) bool {
 func clearPreparedLinkOffer(ctx context.Context, tx store.Tx, device string, member link.Member) error {
 	_, err := tx.ExecContext(ctx, `DELETE FROM device_offer WHERE device_id = ? AND vendor = ? AND key = ?`,
 		device, member.Vendor, member.Key)
+	return err
+}
+
+func renewLinkOffer(ctx context.Context, tx store.Tx, device string, offer link.Offer, now time.Time) error {
+	raw, err := json.Marshal(offer)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE device_offer SET expires_at_ms = ?, body = ?
+		WHERE device_id = ? AND vendor = ? AND key = ?`,
+		ms(now)+offer.LeaseMS, string(raw), device, offer.Vendor, offer.Key)
 	return err
 }
 

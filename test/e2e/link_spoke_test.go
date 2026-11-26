@@ -142,8 +142,11 @@ func TestSpokeLinkIgnoresTerminalInputQueuedBeforeConfirmation(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if output, err := confirm("y\n", "n\n"); err == nil || !strings.Contains(output, `link canceled (answer: "n")`) {
-		t.Fatalf("queued yes overrode the answer: %v\n%s", err, output)
+	for _, answer := range []string{"n", "yeſ"} {
+		output, err := confirm("y\n", answer+"\n")
+		if err == nil || !strings.Contains(output, "link canceled (answer: "+strconv.Quote(answer)+")") {
+			t.Fatalf("link accepted answer %q: %v\n%s", answer, err, output)
+		}
 	}
 	if _, err := os.Stat(f.ssh + ".enrolls"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("link enrolled despite the refusal: %v", err)

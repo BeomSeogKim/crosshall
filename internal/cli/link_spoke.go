@@ -88,7 +88,8 @@ func runLinkSpoke(ctx context.Context, env Env, o outputs, args []string, stdin 
 		fmt.Fprint(o.stderr, "Link and enroll this device? [y/N] ")
 		answer, _ := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
 		answer = strings.TrimSpace(answer)
-		if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
+		switch strings.ToLower(answer) {
+		case "y", "yes":
 			return nil
 		}
 		return fmt.Errorf("link canceled (answer: %q)", answer)

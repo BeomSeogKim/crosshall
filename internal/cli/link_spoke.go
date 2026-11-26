@@ -46,7 +46,7 @@ func blockSpokeCommand(env Env, o outputs, verb string, args []string) (core.Exi
 			"ssh -- "+target+" crosshall owner help"), true
 	}
 	return o.fail(core.ExitUnavailable, core.CodeUnsent, "this device is linked to "+target+"; command forwarding is not available yet",
-		"crosshall link status"), true
+		"ask the owner to run crosshall link status from their own shell"), true
 }
 
 func runLinkSpoke(ctx context.Context, env Env, o outputs, args []string, stdin io.Reader) core.ExitCode {

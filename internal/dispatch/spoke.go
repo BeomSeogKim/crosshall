@@ -154,8 +154,11 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 			status.ClockOffsetMS = link.EstimateClockOffset(started, connection.PeerTimeMS)
 			status.Error = ""
 			publish("connected")
-			backoff = time.Second
+			connectedAt := time.Now()
 			err = connection.Wait()
+			if time.Since(connectedAt) >= 30*time.Second {
+				backoff = time.Second
+			}
 		}
 		if ctx.Err() != nil {
 			return

@@ -75,26 +75,30 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if data, err := os.Stat(filepath.Join(f.spoke.state, "link.json")); err != nil || data.Mode().Perm() != 0600 {
 		t.Fatalf("link profile is missing or not private: %v, %v", data, err)
 	}
-	if got := member.run("who"); got.obj["code"] != "unsent" {
-		t.Fatalf("member command entered local mode while linked: %+v", got)
+	if got := member.run("who"); got.obj["code"] != "unsent" ||
+		!strings.Contains(got.stdout, "ask the owner to run crosshall link status") {
+		t.Fatalf("member command was not refused with an owner-facing hint: %+v", got)
 	}
 	if got := spoke.run("owner", "channel", "create", "wrong-device"); got.obj["code"] != "owner_only" {
 		t.Fatalf("owner command entered local mode while linked: %+v", got)
 	}
 	home.must("owner", "who", "--all")
 
-	pid := spokeLinkSSHPID(t, f.ssh)
-	start, err := proc.StartOf(pid)
-	if err != nil || !proc.ProcessAlive(int64(pid), start.Identity) {
-		t.Fatalf("fixture SSH child %d is not active: %v", pid, err)
-	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
+	first := killSpokeSSH(t, f.ssh)
+	waitSpokeLink(t, spoke, "disconnected")
+	waitSpokeLink(t, spoke, "connected")
+	flapAt := time.Now()
+	second := killSpokeSSH(t, f.ssh)
+	if second == first {
+		t.Fatal("the spoke did not start another SSH child")
 	}
 	waitSpokeLink(t, spoke, "disconnected")
 	waitSpokeLink(t, spoke, "connected")
+	if delay := time.Since(flapAt); delay < 2*time.Second {
+		t.Fatalf("the short-lived connection reset reconnect backoff: %v", delay)
+	}
 	next := spokeLinkSSHPID(t, f.ssh)
-	if next == pid {
+	if next == second {
 		t.Fatal("the spoke did not start another SSH child")
 	}
 	reconnected, err := proc.StartOf(next)
@@ -139,6 +143,19 @@ func spokeLinkSSHPID(t *testing.T, ssh string) int {
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 1 {
 		t.Fatalf("invalid SSH fixture PID: %q", data)
+	}
+	return pid
+}
+
+func killSpokeSSH(t *testing.T, ssh string) int {
+	t.Helper()
+	pid := spokeLinkSSHPID(t, ssh)
+	start, err := proc.StartOf(pid)
+	if err != nil || !proc.ProcessAlive(int64(pid), start.Identity) {
+		t.Fatalf("fixture SSH child %d is not active: %v", pid, err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
 	}
 	return pid
 }

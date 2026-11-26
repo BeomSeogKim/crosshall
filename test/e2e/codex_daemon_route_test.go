@@ -48,6 +48,8 @@ func main() {
 }
 `
 
+const codexInProcessWakeGuidance = "[crosshall] The hall cannot wake this session (codex runs without its daemon). Reopen Codex in its default managed app server."
+
 func TestCodexJoinShowsWakeGuidance(t *testing.T) {
 	t.Run("no hook start", func(t *testing.T) {
 		f := newSetupWorld(t)
@@ -67,15 +69,14 @@ func TestCodexJoinShowsWakeGuidance(t *testing.T) {
 		f := newSetupWorld(t)
 		f.apply("", "setup", "codex", "--apply")
 		repo := f.enrollmentRepo()
-		const line = "The hall cannot wake this session (codex runs without its daemon). Reopen Codex in its default managed app server."
 		deadline := time.Now().Add(fixtureEventTimeout)
 		for {
 			out := f.invokeHook(repo, "codex", "SessionStart", `"source":"startup"`)
-			if strings.Count(out, line) == 1 {
+			if strings.Count(out, codexInProcessWakeGuidance) == 1 {
 				break
 			}
 			if out != "" || !time.Now().Before(deadline) {
-				t.Fatalf("installed start printed %q, want %q; %s", out, line, f.enrollmentEvidence("codex"))
+				t.Fatalf("installed start printed %q, want %q; %s", out, codexInProcessWakeGuidance, f.enrollmentEvidence("codex"))
 			}
 			f.waitEnrollmentPackets("codex", "SessionStart", deadline)
 			time.Sleep(20 * time.Millisecond)
@@ -86,7 +87,7 @@ func TestCodexJoinShowsWakeGuidance(t *testing.T) {
 			WHERE k.vendor = 'codex' AND k.key = ?`, setupSessionPrefix+"codex").Scan(&told); err != nil || told != 0 {
 			t.Fatalf("the printed wake guidance has receipt %d, %v, want 0", told, err)
 		}
-		if prompt := f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"after-guidance"`); strings.Contains(prompt, line) {
+		if prompt := f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"after-guidance"`); strings.Contains(prompt, codexInProcessWakeGuidance) {
 			t.Fatalf("first prompt repeated the guidance confirmed at start: %q", prompt)
 		}
 	})

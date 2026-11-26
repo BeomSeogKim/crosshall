@@ -177,7 +177,8 @@ func testRepositoryChannel(t *testing.T, stall bool) {
 	}
 	// A hook-joined Codex session is told at once that its next prompt shows new work.
 	const welcome = "[crosshall] Joined #shop-api as @codex1, with @claude1. `crosshall join shop-api --rules` prints the member rules.\n" +
-		"[crosshall] In this session new work shows at your next prompt: under rule 4, do not run `wait`; end the turn when you have nothing else to do."
+		"[crosshall] In this session new work shows at your next prompt: under rule 4, do not run `wait`; end the turn when you have nothing else to do.\n" +
+		codexInProcessWakeGuidance
 	offer := observeRepositoryCallback(f, "codex", "two", worktree, "SessionStart", `"source":"startup"`)
 	printed := false
 	turn := 0

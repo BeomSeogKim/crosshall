@@ -86,7 +86,8 @@ func RegisterSpokeHello(ctx context.Context, tx store.Tx, rendezvous string, hel
 			(digest, vendor, key, generation, epoch, file_identity, vendor_version, created_at_ms)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(digest) DO UPDATE SET generation = excluded.generation, epoch = excluded.epoch,
-				file_identity = excluded.file_identity, created_at_ms = excluded.created_at_ms`,
+				file_identity = excluded.file_identity, created_at_ms = excluded.created_at_ms,
+				stamp_binding = 0, stamp_gen = 0, stamp_seq = 0, hook_sent_seq = 0`,
 			reg.digest, id.Vendor, id.Key, reg.generation, epoch+1, reg.fileID, reg.version, now.UnixMilli())
 	}
 	if err == nil && reg.version != "" {

@@ -233,12 +233,23 @@ func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.M
 	if err != nil {
 		return err
 	}
-	// A packet processed again (the dispatcher stopped before it removed
-	// the claimed file) is the same frame: queued once, and sent again
-	// under the same ID if the first was answered meanwhile.
-	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (frame_id, vendor, key, leaf_seq, kind, body, at_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (frame_id) DO NOTHING`,
-		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, leafSeq, kind, string(body), capturedMS)
+	// A frame at or below what this leaf generation already released is
+	// late: a lower sequence a later drain pass handled, or a packet
+	// processed again after its first was released. The home would take it
+	// for a rewound leaf and stop the leaf's facts, so it is not queued.
+	var sent uint64
+	if err := tx.QueryRowContext(ctx, `SELECT hook_sent_seq FROM spoke_leaf WHERE vendor = ? AND key = ? AND generation = ?`,
+		member.Vendor, member.Key, generation).Scan(&sent); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if leafSeq <= sent {
+		return nil
+	}
+	// A packet processed again before its release is the same frame,
+	// queued once.
+	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (frame_id, vendor, key, generation, leaf_seq, kind, body, at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (frame_id) DO NOTHING`,
+		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, generation, leafSeq, kind, string(body), capturedMS)
 	return err
 }
 
@@ -303,8 +314,20 @@ func (s *server) spokeOffer(ctx context.Context, tx store.Tx, leaf ident.SpokeLe
 // what a stopped one left claimed.
 func (s *server) endHookPass(ctx context.Context) error {
 	var last int64
-	if err := s.spokeMembers.db.View(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM spoke_hook_outbox`).Scan(&last)
+	if err := s.spokeMembers.db.Update(ctx, func(tx store.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM spoke_hook_outbox`).Scan(&last); err != nil {
+			return err
+		}
+		// What each leaf generation releases now; later frames below it are
+		// late (see queueHookFrame).
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET hook_sent_seq = (
+			SELECT MAX(o.leaf_seq) FROM spoke_hook_outbox o
+			WHERE o.vendor = spoke_leaf.vendor AND o.key = spoke_leaf.key AND o.generation = spoke_leaf.generation AND o.id <= ?)
+			WHERE EXISTS (SELECT 1 FROM spoke_hook_outbox o
+				WHERE o.vendor = spoke_leaf.vendor AND o.key = spoke_leaf.key AND o.generation = spoke_leaf.generation
+					AND o.id <= ? AND o.leaf_seq > spoke_leaf.hook_sent_seq)`,
+			last, last)
+		return err
 	}); err != nil {
 		return err
 	}

@@ -71,7 +71,23 @@ func TestASpokeRegistersItsOwnSessions(t *testing.T) {
 	if leaf, err := resolve(first); err != nil || leaf.Epoch != 1 || leaf.Key != "session" {
 		t.Fatalf("resolve %+v, %v", leaf, err)
 	}
-	// The tmp leaf is lost: the session registers again.
+	// The tmp leaf is lost: the session registers again, and what the old
+	// leaf's publish counter marked (its stamp boundary, its released hook
+	// sequence) does not carry over to the new counter.
+	marks := func(set bool) (n int) {
+		t.Helper()
+		if err := db.Update(t.Context(), func(tx store.Tx) error {
+			if set {
+				_, err := tx.ExecContext(t.Context(), `UPDATE spoke_leaf SET stamp_binding = 1, stamp_gen = 1, stamp_seq = 9, hook_sent_seq = 9`)
+				return err
+			}
+			return tx.QueryRowContext(t.Context(), `SELECT stamp_binding + stamp_gen + stamp_seq + hook_sent_seq FROM spoke_leaf`).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	marks(true)
 	if err := os.Rename(filepath.Join(root, "m", first.digest[:16]), filepath.Join(root, "lost")); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +97,9 @@ func TestASpokeRegistersItsOwnSessions(t *testing.T) {
 	}
 	if leaf, err := resolve(second); err != nil || leaf.Epoch != 2 {
 		t.Fatalf("resolve after re-registration %+v, %v", leaf, err)
+	}
+	if n := marks(false); n != 0 {
+		t.Fatalf("the new generation kept the old leaf's marks (%d)", n)
 	}
 	if _, err := resolve(first); err == nil {
 		t.Fatal("the old generation still authenticates")

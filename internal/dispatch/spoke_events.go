@@ -620,9 +620,9 @@ func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.M
 			member.Vendor, member.Key).Scan(&stamp.BindingID, &stamp.Generation, &stampSeq); err != nil {
 			return err
 		}
-		err := tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen, route_epoch, cut_seq FROM spoke_member_scope
+		err := tx.QueryRowContext(ctx, `SELECT leaf_generation, binding_id, membership_gen, route_epoch, cut_seq FROM spoke_member_scope
 			WHERE vendor = ? AND key = ?`, member.Vendor, member.Key).
-			Scan(&prior.Membership.BindingID, &prior.Membership.Generation, &prior.RouteEpoch, &priorCut)
+			Scan(&prior.LeafGeneration, &prior.Membership.BindingID, &prior.Membership.Generation, &prior.RouteEpoch, &priorCut)
 		if errors.Is(err, sql.ErrNoRows) {
 			known = false
 			return nil
@@ -633,7 +633,9 @@ func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.M
 		h.release()
 		return nil, err
 	}
-	sameMembership := known && prior.Membership == scope.Membership
+	// A prior cut counts only for the same leaf generation: a replaced
+	// leaf's publish counter started again.
+	sameMembership := known && prior.LeafGeneration == scope.LeafGeneration && prior.Membership == scope.Membership
 	switch {
 	case sameMembership && prior.RouteEpoch != scope.RouteEpoch:
 	case stamp.Generation > 0 && link.Membership(stamp) == scope.Membership && stampSeq <= seq:

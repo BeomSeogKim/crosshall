@@ -10,14 +10,17 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
+	"github.com/BeomSeogKim/crosshall/internal/store"
 )
 
 const (
@@ -32,11 +35,18 @@ type linkEnrollment struct {
 	Name   string `json:"name"`
 	Secret string `json:"secret"`
 	ID     string `json:"id"`
+	// Source is the ID of the stopped profile this enrollment replaces
+	// (#400): only an enrollment begun for that very profile is resumed.
+	Source string `json:"source,omitempty"`
 }
 
 type linkConfig struct {
 	linkEnrollment
 	Device string `json:"device"`
+	// RolledBack marks a profile whose home was restored to an older
+	// store: nothing dials with it, every command refuses, and linking
+	// again replaces it.
+	RolledBack bool `json:"rolled_back,omitempty"`
 }
 
 type spokeStatusRecord struct {
@@ -130,18 +140,35 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	}
 	defer state.Close()
 	defer guard.Close()
+	var replacing *linkConfig
 	if c, found, err := readLinkConfig(state); err != nil {
 		return link.Status{}, err
 	} else if found {
 		if c.Target != target || name != "" && c.Name != name {
 			return link.Status{}, fmt.Errorf("already linked to %s as %s; run crosshall unlink first", c.Target, c.Name)
 		}
-		return cfg.startSpoke(ctx)
+		stopped := c.RolledBack
+		if !stopped {
+			if stopped, err = cfg.storeRolledBack(ctx, state, c); err != nil {
+				return link.Status{}, err
+			}
+		}
+		if !stopped {
+			consumeEnrollment(state, c)
+			return cfg.startSpoke(ctx)
+		}
+		// The home went back to an older store: the device enrolls again
+		// on a fresh store. The new credential generation lets its
+		// sessions register anew and make their first call without the
+		// stamps the old store held.
+		replacing, name = &c, c.Name
 	}
 	var pending linkEnrollment
 	fresh := false
 	switch err := readLinkJSON(state, spokeEnrollFile, &pending); {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist) || err == nil && replacing != nil && pending.Source != replacing.ID:
+		// No enrollment, or one that was not begun for the stopped
+		// profile (the one it came from, say): a new one.
 		fresh = true
 		name, err = localLinkName(name)
 		if err != nil {
@@ -179,10 +206,33 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 		Version: chosen, ClockOffsetMS: link.EstimateClockOffset(started, challenge.TimeMS)}); err != nil {
 		return link.Status{}, err
 	}
+	if replacing != nil {
+		// Steps 1 and 2: the profile carries the stop, so nothing dials
+		// with it whatever happens next, then the stopped store goes aside.
+		flagged := *replacing
+		flagged.RolledBack = true
+		if err := cfg.changeLinkMode(ctx, state, func() error {
+			if err := spool.PublishServerFile(state, spokeConfigFile, flagged); err != nil {
+				return err
+			}
+			if err := linkInterrupt(1); err != nil {
+				return err
+			}
+			return cfg.archiveSpokeStore(state, flagged)
+		}); err != nil {
+			return link.Status{}, err
+		}
+		if err := linkInterrupt(2); err != nil {
+			return link.Status{}, err
+		}
+	}
 	if fresh {
 		var secret [32]byte
 		rand.Read(secret[:])
 		pending = linkEnrollment{Endpoint: endpoint, Hall: challenge.Hall, Name: name, Secret: hex.EncodeToString(secret[:]), ID: link.NewNonce()}
+		if replacing != nil {
+			pending.Source = replacing.ID
+		}
 		if err := spool.PublishServerFile(state, spokeEnrollFile, pending); err != nil {
 			return link.Status{}, err
 		}
@@ -195,6 +245,9 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	if enrolled.Hall != challenge.Hall {
 		return link.Status{}, errors.New("the home hall changed during enrollment; run crosshall link again")
 	}
+	if err := linkInterrupt(3); err != nil {
+		return link.Status{}, err
+	}
 	c := linkConfig{linkEnrollment: pending, Device: enrolled.Device}
 	conn, err := link.DialSSH(ctx, endpoint, c.spoke(cfg.Version))
 	if err != nil {
@@ -202,7 +255,20 @@ func (cfg LaunchConfig) LinkSpoke(ctx context.Context, target, name string, conf
 	}
 	conn.Close()
 	_ = conn.Wait()
-	if err := cfg.changeLinkMode(ctx, state, func() error { return spool.PublishServerFile(state, spokeConfigFile, c) }); err != nil {
+	// Step 4. A store whose home rolled back (the same hall and device
+	// name after an unlink) is not used again: the new profile goes
+	// first, and if the move does not happen the store still refuses and
+	// linking again enrolls again.
+	stopped, err := cfg.storeRolledBack(ctx, state, c)
+	if err != nil {
+		return link.Status{}, err
+	}
+	if err := cfg.changeLinkMode(ctx, state, func() error {
+		if err := spool.PublishServerFile(state, spokeConfigFile, c); err != nil || !stopped {
+			return err
+		}
+		return cfg.archiveSpokeStore(state, c)
+	}); err != nil {
 		return link.Status{}, err
 	}
 	_ = state.Remove(spokeEnrollFile)
@@ -313,4 +379,46 @@ func localLinkName(name string) (string, error) {
 		return "", errors.New("a device name must use 1–32 lowercase letters, digits or hyphens; set --name")
 	}
 	return name, nil
+}
+
+// storeRolledBack reads whether the profile's spoke store recorded a home
+// rollback; a missing store recorded nothing.
+func (cfg LaunchConfig) storeRolledBack(ctx context.Context, state *os.Root, c linkConfig) (bool, error) {
+	name := filepath.Join("spoke", c.Hall+"-"+c.Device)
+	if _, err := state.Lstat(filepath.Join(name, "store.sqlite3")); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	db, err := store.OpenSpoke(ctx, filepath.Join(cfg.StateRoot, name))
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	return rolledBackFlag(ctx, db)
+}
+
+// archiveSpokeStore moves the profile's spoke store out of the way, kept,
+// with its member rendezvous, so the dispatcher starts on a fresh one and
+// sessions make first contact again (#400, v1). The dispatcher is stopped.
+func (cfg LaunchConfig) archiveSpokeStore(state *os.Root, c linkConfig) error {
+	name := filepath.Join("spoke", c.Hall+"-"+c.Device)
+	suffix := fmt.Sprintf("-rolled-back-%d", time.Now().UnixMilli())
+	members := ident.Rendezvous(filepath.Join(cfg.StateRoot, name), os.Geteuid())
+	if err := os.Rename(members, members+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := state.Rename(name, name+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// consumeEnrollment removes an enrollment record whose result the profile
+// already holds: it is done and never resumed.
+func consumeEnrollment(state *os.Root, c linkConfig) {
+	var done linkEnrollment
+	if readLinkJSON(state, spokeEnrollFile, &done) == nil && done.ID == c.ID {
+		_ = state.Remove(spokeEnrollFile)
+	}
 }

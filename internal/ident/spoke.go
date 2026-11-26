@@ -127,3 +127,17 @@ func ResolveSpokeMember(ctx context.Context, tx store.Tx, rendezvous string, ing
 	}
 	return leaf, nil
 }
+
+// OpenSpokeLeaf opens the leaf directory of a session registered on a
+// linked device, by its registration digest.
+func OpenSpokeLeaf(rendezvous, digest string) (*os.Root, error) {
+	if len(digest) < 16 {
+		return nil, errors.New("ident: short leaf digest")
+	}
+	members, err := openMembers(rendezvous)
+	if err != nil {
+		return nil, err
+	}
+	defer members.Close()
+	return OpenPrivateChild(members, digest[:16])
+}

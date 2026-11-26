@@ -20,6 +20,11 @@ const VerbLinkReceipt = "owner link receipt"
 // may have run before its receipt expired.
 const CodeLinkFenced core.Code = "link_outcome_unknown"
 
+// CodeHomeRolledBack refuses every command of a linked device whose home
+// was restored to an older store (#400): v1 fails closed until the
+// device links again.
+const CodeHomeRolledBack core.Code = "home_rolled_back"
+
 // LinkReceipt names a forwarded request exactly as the device sent it:
 // its session, operation key, command, raw arguments and membership. The
 // leaf fields are not used: a lookup authorizes nothing.

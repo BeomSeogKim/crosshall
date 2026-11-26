@@ -117,6 +117,11 @@ type LinkMember struct {
 	// Enroll is set for a first join of an unknown key: it records the
 	// device key in the join's transaction.
 	Enroll func(context.Context, store.Tx, int64) error
+	// Reenrolled is set for the first call of a known key since its
+	// device enrolled again: the device may have started a fresh store
+	// (its home was restored to an older one, #400) and lost the stamp,
+	// so a call without one is admitted against the home's selection.
+	Reenrolled bool
 }
 
 // ResolveLinkMember authorizes a forwarded command in the writer
@@ -156,10 +161,12 @@ func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time
 		r := Refuse(core.CodeNotEnrolled, "this session's membership is no longer live", "crosshall join <channel>")
 		return LinkMember{}, &r, nil
 	}
+	reenrolled := false
 	switch {
 	case keyGen < call.CredentialGen:
 		// The device enrolled again: its leaf counter starts a new scope,
 		// and requests of the old credential died before this lookup.
+		reenrolled = true
 	case call.LeafEpoch == epoch && call.LeafGeneration == leafGen:
 	case call.LeafEpoch > epoch:
 		// A newer registration of the same session on the device.
@@ -193,7 +200,7 @@ func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time
 		caller.Role = core.RoleMember
 		caller.BindingID = &selected.BindingID
 	}
-	return LinkMember{Caller: caller}, nil, nil
+	return LinkMember{Caller: caller, Reenrolled: reenrolled}, nil, nil
 }
 
 func enrollDeviceKey(call LinkCall, now time.Time) func(context.Context, store.Tx, int64) error {

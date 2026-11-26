@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -27,6 +28,9 @@ import (
 type spokeMembers struct {
 	db      *store.Store
 	members string // the member rendezvous
+	// halted is set once the home was restored to an older store: no
+	// command frame leaves afterwards, until the device links again.
+	halted atomic.Bool
 
 	// turn admits one frame exchange at a time; waiting for it is bounded
 	// by the caller's deadline.
@@ -103,7 +107,27 @@ func openSpokeMembers(ctx context.Context, state *os.Root, stateRoot string, lin
 		return nil, err
 	}
 	root.Close()
-	return &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}, nil
+	m, err := newSpokeMembers(ctx, db, members)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if linked.RolledBack {
+		m.halted.Store(true) // the profile carries the stop until linking again replaces it
+	}
+	return m, nil
+}
+
+// newSpokeMembers starts stopped when the store recorded a home rollback;
+// a store it cannot read does not start.
+func newSpokeMembers(ctx context.Context, db *store.Store, members string) (*spokeMembers, error) {
+	stopped, err := rolledBackFlag(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	m := &spokeMembers{db: db, members: members, turn: make(chan struct{}, 1)}
+	m.halted.Store(stopped)
+	return m, nil
 }
 
 // setConn installs or clears the link the member commands go over. A new
@@ -119,8 +143,31 @@ func (m *spokeMembers) setConn(c *link.SSHConnection) {
 
 func (m *spokeMembers) attach(c spokeConn) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c != nil && m.halted.Load() {
+		c.Close()
+		return
+	}
 	m.conn = c
+}
+
+// halt stops the command transport for good: no frame is sent once it
+// returns. It waits for the exchange in progress, which may still finish,
+// then closes the published link so the reconnect loop sees the stop.
+func (m *spokeMembers) halt(ctx context.Context) {
+	m.halted.Store(true)
+	select {
+	case m.turn <- struct{}{}:
+		defer m.give()
+	case <-ctx.Done():
+	}
+	m.mu.Lock()
+	c := m.conn
+	m.conn = nil
 	m.mu.Unlock()
+	if c != nil {
+		c.Close()
+	}
 }
 
 func (m *spokeMembers) current() spokeConn {
@@ -180,6 +227,10 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 // sent the frame. Every failure closes the link, so a late answer is
 // never read as the next command's.
 func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
+	if m.halted.Load() {
+		m.drop(conn)
+		return core.Result{}, errNotSent // the caller refuses with home_rolled_back
+	}
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
 		return core.Result{}, errNotSent
 	}
@@ -228,19 +279,19 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 	}
 	defer members.Close()
 	type leaf struct {
-		digest, identity, generation string
-		membership                   core.Membership
+		digest, identity, generation, vendor, key string
+		membership                                core.Membership
 	}
 	var leaves []leaf
 	err = m.db.Update(ctx, func(tx store.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT digest, file_identity, generation, binding_id, membership_gen FROM spoke_leaf`)
+		rows, err := tx.QueryContext(ctx, `SELECT digest, file_identity, generation, vendor, key, binding_id, membership_gen FROM spoke_leaf`)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var l leaf
-			if err := rows.Scan(&l.digest, &l.identity, &l.generation, &l.membership.BindingID, &l.membership.Generation); err != nil {
+			if err := rows.Scan(&l.digest, &l.identity, &l.generation, &l.vendor, &l.key, &l.membership.BindingID, &l.membership.Generation); err != nil {
 				return err
 			}
 			leaves = append(leaves, l)
@@ -275,7 +326,11 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		if err := ident.RepublishGeneration(dir, l.generation); !errors.Is(err, ident.ErrDirectoryBusy) {
 			s.logFailure(err)
 		}
-		s.logFailure(ident.RepublishMembership(dir, l.membership))
+		// Only a stamp that differs takes the leaf's lock: the locked
+		// write reads the store again, so it never puts back l.
+		if current, err := ident.LookupMembership(dir); err != nil || current == nil || *current != l.membership {
+			s.logFailure(stampLeaf(ctx, m.db, m.members, l.vendor, l.key))
+		}
 		if reap {
 			s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), true))
 		}
@@ -286,7 +341,21 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 	}
 }
 
+// rolledBackRefusal refuses every command of a device whose home was
+// restored to an older store, until it links again (#400, v1).
+func (s *server) rolledBackRefusal() *core.Result {
+	if !s.spokeMembers.halted.Load() {
+		return nil
+	}
+	r := domain.Refuse(domain.CodeHomeRolledBack, "the home device was restored from an older state",
+		"run crosshall link "+s.ready.Spoke+" again")
+	return &r
+}
+
 func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Result, error) {
+	if r := s.rolledBackRefusal(); r != nil {
+		return *r, nil
+	}
 	var hello wire.Hello
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Version != wire.Version || hello.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid first-contact envelope"), nil
@@ -308,8 +377,11 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 		s.logFailure(err)
 		return commandError(core.ExitError, "", "first contact failed; see dispatcher.log"), nil
 	}
-	if err := reg.Publish(); err != nil {
+	if err := reg.PublishLeaf(); err != nil {
 		return core.Result{}, err // the next pass finishes a committed registration
+	}
+	if err := stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, hello.Vendor, hello.Key); err != nil {
+		return core.Result{}, err // the hook reads the stamp next; the spool retries first contact
 	}
 	return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}, nil
 }
@@ -321,9 +393,23 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 // are a conflict, an answered one shows its answer, and an unresolved one
 // is looked up receipt-only.
 func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
+	r, err := s.spokeForward(ctx, path, dir, id, raw)
+	if err == nil && r.Code == core.CodeUnsent {
+		// Nothing left: if the home went back meanwhile, say so.
+		if refusal := s.rolledBackRefusal(); refusal != nil {
+			return *refusal, nil
+		}
+	}
+	return r, err
+}
+
+func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
+	}
+	if r := s.rolledBackRefusal(); r != nil {
+		return *r, nil
 	}
 	if req.ExpiresAtMS <= time.Now().UnixMilli() {
 		return unknownOutcome("attempt expired", req.OpKey), nil
@@ -431,7 +517,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 			return lostAnswer(req.OpKey), nil
 		}
 		s.settleOutbox(ctx, rec.id, &answer)
-		s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
+		s.publishSelection(ctx, leaf.Vendor, leaf.Key)
 		return answer, nil
 	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
@@ -446,7 +532,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		return lostAnswer(req.OpKey), nil
 	}
 	s.settleOutbox(ctx, rec.id, &result)
-	s.publishSelection(ctx, dir, leaf.Vendor, leaf.Key)
+	s.publishSelection(ctx, leaf.Vendor, leaf.Key)
 	if retried && result.Status == core.ExitOK {
 		if data, err := json.Marshal(domain.RetryResult{Command: req.Verb, Result: result.Data}); err == nil {
 			result.Data = data
@@ -573,15 +659,8 @@ func adoptMembershipTx(ctx context.Context, tx store.Tx, id int64, m *core.Membe
 
 // publishSelection writes the session's current selection to its leaf
 // before an answer returns, so the member's next command carries it.
-func (s *server) publishSelection(ctx context.Context, dir *os.Root, vendor, key string) {
-	var m core.Membership
-	err := s.spokeMembers.db.Update(ctx, func(tx store.Tx) error {
-		return tx.QueryRowContext(ctx, `SELECT binding_id, membership_gen FROM spoke_leaf WHERE vendor = ? AND key = ?`,
-			vendor, key).Scan(&m.BindingID, &m.Generation)
-	})
-	if err == nil && m.Generation > 0 {
-		s.logFailure(ident.RepublishMembership(dir, m))
-	}
+func (s *server) publishSelection(ctx context.Context, vendor, key string) {
+	s.logFailure(stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, vendor, key))
 }
 
 func (s *server) markUnknown(ctx context.Context, id int64) {
@@ -603,6 +682,10 @@ func (s *server) markUnknown(ctx context.Context, id int64) {
 // link may be published.
 func (s *server) recoverOutbox(ctx context.Context, conn spokeConn) bool {
 	m := s.spokeMembers
+	if m.halted.Load() {
+		conn.Close() // nothing is looked up on a home that went back
+		return false
+	}
 	if !m.take(ctx, time.Now().Add(time.Minute)) {
 		conn.Close()
 		return false
@@ -720,7 +803,7 @@ func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req 
 				// A stored answer's move is applied again, in case its
 				// first application failed; never backwards.
 				s.logFailure(m.db.Update(ctx, func(tx store.Tx) error { return adoptMembershipTx(ctx, tx, id, answer.Membership) }))
-				s.publishSelection(ctx, dir, call.Vendor, call.Key)
+				s.publishSelection(ctx, call.Vendor, call.Key)
 				return answer, nil
 			}
 		}
@@ -735,7 +818,7 @@ func (s *server) spokeRetry(ctx context.Context, path string, dir *os.Root, req 
 			return answer, &r
 		}
 		s.settleOutbox(ctx, id, &answer)
-		s.publishSelection(ctx, dir, call.Vendor, call.Key)
+		s.publishSelection(ctx, call.Vendor, call.Key)
 		return answer, nil
 	}
 	shown := func(command string, answer core.Result) *core.Result {

@@ -520,3 +520,79 @@ func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
 	note.admission, note.op = admission, "n2"
 	mustLinkOK(t, s.link(t, note))
 }
+
+// After its device enrolled again (a fresh device store, its home restored
+// to an older one, #400), the first call of a known key may come without
+// a stamp and is admitted against the home's selection, once: for a
+// member that moved, and for one that left. A stamp that does not match
+// is still refused, and so is a second call without one.
+func TestTheFirstCallAfterReenrollmentNeedsNoStamp(t *testing.T) {
+	t.Run("moved", func(t *testing.T) {
+		s := linkServer(t)
+		m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+		moved := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: map[string]any{"channel": "payments", "move": true},
+			op: "j2", membership: m})).Membership
+		if moved == nil || moved.Generation < 2 {
+			t.Fatalf("move selection %+v", moved)
+		}
+		// Without enrolling again, a stampless call is refused.
+		mustLinkCode(t, s.link(t, linkReq{command: domain.VerbWho, epoch: 2, gen: "g2"}), core.CodeBindingChanged)
+		s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
+		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh"}))
+		if r.Membership == nil || *r.Membership != *moved {
+			t.Fatalf("the device did not get the home's selection back: %+v, want %+v", r.Membership, moved)
+		}
+		mustLinkCode(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, gen: "fresh"}), core.CodeBindingChanged)
+		mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, gen: "fresh", membership: r.Membership}))
+	})
+	t.Run("a stamp that does not match", func(t *testing.T) {
+		s := linkServer(t)
+		m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+		s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
+		mustLinkCode(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, gen: "fresh",
+			membership: &core.Membership{BindingID: m.BindingID, Generation: m.Generation + 1}}), core.CodeBindingChanged)
+	})
+	t.Run("left", func(t *testing.T) {
+		s := linkServer(t)
+		m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+		left := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbLeave, op: "l1", membership: m})).Membership
+		if left == nil {
+			left = m
+		}
+		s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
+		// A first call that is refused still hands the device the stamp.
+		refused := s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("mistyped"), op: "j2", cred: 2, gen: "fresh"})
+		if refused.Status == core.ExitOK || refused.Membership == nil || *refused.Membership != *left {
+			t.Fatalf("a refused first call: %+v, want the selection %+v", refused, left)
+		}
+		mustLinkCode(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh"}),
+			core.CodeBindingChanged)
+		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j4", cred: 2, gen: "fresh",
+			membership: refused.Membership}))
+		if r.Membership == nil || r.Membership.BindingID == left.BindingID {
+			t.Fatalf("rejoin selection %+v after %+v", r.Membership, left)
+		}
+	})
+}
+
+// The answer to the first stampless call after re-enrollment is lost: the
+// receipt lookup of that call hands over the key's selection, and the next
+// call carrying it is admitted.
+func TestALostFirstAnswerAfterReenrollmentIsRecoverable(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	left := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbLeave, op: "l1", membership: m})).Membership
+	if left == nil {
+		left = m
+	}
+	s.fixtureSQL(t, `UPDATE device SET credential_gen = 2 WHERE device_id = 'dev-a'`)
+	first := linkReq{command: domain.VerbJoin, args: joinChannel("mistyped"), op: "j2", cred: 2, gen: "fresh"}
+	_ = s.link(t, first) // its answer is lost
+	first.receipt = true
+	lookup := s.link(t, first)
+	if lookup.Membership == nil || *lookup.Membership != *left {
+		t.Fatalf("receipt lookup %+v, want the selection %+v", lookup, left)
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("payments"), op: "j3", cred: 2, gen: "fresh",
+		membership: lookup.Membership}))
+}

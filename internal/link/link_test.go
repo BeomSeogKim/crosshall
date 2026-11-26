@@ -132,7 +132,9 @@ func handshake(home Home, spoke Spoke) (Session, error, Session, error) {
 func pair() (Home, Spoke) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	home := Home{Hall: "hall-1", Release: "v0.4.0", Link: Range{1, 2}, Caps: []string{"offers", "wakes"},
-		Secret: func(d string) ([]byte, bool) { return secret, d == "dev-1" }}
+		Verify: func(d, nonce, proof string) (bool, bool, error) {
+			return d == "dev-1", CheckProof(secret, "hall-1", d, nonce, proof), nil
+		}}
 	spoke := Spoke{Target: "mini", Hall: "hall-1", Device: "dev-1", Secret: secret, Release: "v0.4.1",
 		Link: Range{2, 3}, Caps: []string{"wakes", "later"}}
 	return home, spoke

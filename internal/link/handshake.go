@@ -115,6 +115,11 @@ type Session struct {
 	Device      string
 }
 
+// CheckProof reports whether proof is the device's proof for the nonce.
+func CheckProof(secret []byte, hall, device, nonce, proof string) bool {
+	return hmac.Equal([]byte(proof), []byte(Proof(secret, hall, device, nonce)))
+}
+
 // Proof binds a device's secret to one challenge of one hall.
 func Proof(secret []byte, hall, device, nonce string) string {
 	m := hmac.New(sha256.New, secret)
@@ -136,8 +141,10 @@ type Home struct {
 	Hall, Release string
 	Link          Range
 	Caps          []string
-	// Secret returns a known device's secret.
-	Secret func(device string) ([]byte, bool)
+	// Verify checks a device's proof for a challenge. The secret stays
+	// with whoever holds it (the home dispatcher's store); known is false
+	// for a device the hall has no record of.
+	Verify func(device, nonce, proof string) (known, ok bool, err error)
 	nonce  func() string
 }
 
@@ -163,11 +170,13 @@ func (h Home) Accept(r *Reader, w *Writer) (Session, error) {
 		}
 		return Session{}, &RefusedError{ref}
 	}
-	secret, ok := h.Secret(hello.Device)
-	if !ok {
+	known, ok, err := h.Verify(hello.Device, c.Nonce, hello.Proof)
+	switch {
+	case err != nil:
+		return Session{}, err
+	case !known:
 		return refuse(RefuseUnknownDevice, "crosshall link: this device is not linked to the hall on the home device; run crosshall link <ssh-target> again")
-	}
-	if !hmac.Equal([]byte(hello.Proof), []byte(Proof(secret, h.Hall, hello.Device, c.Nonce))) {
+	case !ok:
 		return refuse(RefuseBadProof, "crosshall link: this device's link secret does not match the home device's; run crosshall link <ssh-target> again")
 	}
 	v, ok := Negotiate(h.Link, hello.Link)

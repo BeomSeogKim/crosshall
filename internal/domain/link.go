@@ -1,0 +1,170 @@
+package domain
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/store"
+)
+
+// Wire verbs of the home side of a link (#400). The owner seat runs them:
+// `crosshall link enroll` and `crosshall link serve`, which a spoke starts
+// over the user's own ssh.
+const (
+	VerbLinkEnroll = "link enroll"
+	VerbLinkHall   = "link hall"
+	VerbLinkVerify = "link verify"
+)
+
+// LinkEnroll records a device that links to this hall, or gives a device
+// of that name a new secret.
+type LinkEnroll struct {
+	Name string `json:"name"`
+	// Secret is the device's link secret in hex, at least 32 bytes.
+	Secret string `json:"secret"`
+}
+
+func (LinkEnroll) command() {}
+
+// Verb returns the wire verb.
+func (LinkEnroll) Verb() string { return VerbLinkEnroll }
+
+// LinkHall asks for the hall's identity.
+type LinkHall struct{}
+
+func (LinkHall) command() {}
+
+// Verb returns the wire verb.
+func (LinkHall) Verb() string { return VerbLinkHall }
+
+// LinkVerify checks a device's proof for a nonce against the secret this
+// hall keeps, so the secret never leaves the dispatcher.
+type LinkVerify struct {
+	Device string `json:"device"`
+	Nonce  string `json:"nonce"`
+	Proof  string `json:"proof"`
+}
+
+func (LinkVerify) command() {}
+
+// Verb returns the wire verb.
+func (LinkVerify) Verb() string { return VerbLinkVerify }
+
+// LinkEnrollResult names the hall and the device's ID.
+type LinkEnrollResult struct {
+	Hall   string `json:"hall"`
+	Device string `json:"device"`
+	// Rotated is true when a device of that name existed: it keeps its ID
+	// and its old secret no longer proves anything.
+	Rotated bool `json:"rotated"`
+}
+
+// LinkHallResult names the hall.
+type LinkHallResult struct {
+	Hall string `json:"hall"`
+}
+
+// LinkVerifyResult says whether the device is known and the proof holds.
+type LinkVerifyResult struct {
+	Known bool `json:"known"`
+	OK    bool `json:"ok"`
+}
+
+const minLinkSecret = 32
+
+func linkOwnerOnly() core.Result {
+	return Refuse(core.CodeOwnerOnly, "only the owner links devices to the hall",
+		"run crosshall link from your own shell")
+}
+
+func hallID(ctx context.Context, tx store.Tx) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT hall_id FROM hall WHERE singleton = 1`).Scan(&id)
+	return id, err
+}
+
+func (s *Service) linkEnroll(ctx context.Context, tx store.Tx, caller core.Caller, req Request, cmd LinkEnroll, now time.Time) (core.Result, error) {
+	if caller.Role != core.RoleOwner {
+		return linkOwnerOnly(), nil
+	}
+	if !ValidName(cmd.Name) {
+		return Fail(core.ExitUsage, "", fmt.Sprintf("invalid device name %q", cmd.Name),
+			"a device name is 1-32 of a-z, 0-9 and -"), nil
+	}
+	secret, err := hex.DecodeString(cmd.Secret)
+	if err != nil || len(secret) < minLinkSecret {
+		return Fail(core.ExitUsage, "", fmt.Sprintf("a link secret is at least %d bytes in hex", minLinkSecret),
+			"run crosshall link <ssh-target> on the device, which makes the secret"), nil
+	}
+	owner, err := ownerPrincipal(ctx, tx, now)
+	if err != nil {
+		return core.Result{}, err
+	}
+	scope := "device:" + cmd.Name
+	if r, found, err := replay(ctx, tx, owner, req.OpKey, scope, cmd); err != nil || found {
+		return r, err
+	}
+	hall, err := hallID(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	var device string
+	rotated := true
+	err = tx.QueryRowContext(ctx, `UPDATE device SET secret = ?, secret_at_ms = ? WHERE name = ? RETURNING device_id`,
+		secret, ms(now), cmd.Name).Scan(&device)
+	if errors.Is(err, sql.ErrNoRows) {
+		rotated = false
+		err = tx.QueryRowContext(ctx, `INSERT INTO device (device_id, name, secret, created_at_ms, secret_at_ms)
+			VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?) RETURNING device_id`,
+			cmd.Name, secret, ms(now), ms(now)).Scan(&device)
+	}
+	if err != nil {
+		return core.Result{}, err
+	}
+	// The audit names the device, never the secret.
+	detail := map[string]any{"device": device, "name": cmd.Name, "rotated": rotated}
+	if err := audit(ctx, tx, "device_linked", scope, owner, detail, now); err != nil {
+		return core.Result{}, err
+	}
+	r, err := OK(LinkEnrollResult{Hall: hall, Device: device, Rotated: rotated})
+	if err != nil {
+		return core.Result{}, err
+	}
+	return r, record(ctx, tx, owner, req.OpKey, scope, cmd, r, now)
+}
+
+func (s *Service) linkHall(ctx context.Context, tx store.Tx, caller core.Caller) (core.Result, error) {
+	if caller.Role != core.RoleOwner {
+		return linkOwnerOnly(), nil
+	}
+	hall, err := hallID(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	return OK(LinkHallResult{Hall: hall})
+}
+
+func (s *Service) linkVerify(ctx context.Context, tx store.Tx, caller core.Caller, cmd LinkVerify) (core.Result, error) {
+	if caller.Role != core.RoleOwner {
+		return linkOwnerOnly(), nil
+	}
+	hall, err := hallID(ctx, tx)
+	if err != nil {
+		return core.Result{}, err
+	}
+	var secret []byte
+	err = tx.QueryRowContext(ctx, `SELECT secret FROM device WHERE device_id = ?`, cmd.Device).Scan(&secret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OK(LinkVerifyResult{})
+	}
+	if err != nil {
+		return core.Result{}, err
+	}
+	return OK(LinkVerifyResult{Known: true, OK: link.CheckProof(secret, hall, cmd.Device, cmd.Nonce, cmd.Proof)})
+}

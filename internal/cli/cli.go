@@ -162,6 +162,8 @@ type Env struct {
 	ResolveTelemetryPolicyPath func(string) string
 	// SetupAdapters lists the shipped hook adapters a setup may name.
 	SetupAdapters []string
+	// ExperimentalLink enables crosshall link (CROSSHALL_EXPERIMENTAL_LINK=1).
+	ExperimentalLink bool
 }
 
 // Run executes the command line with the default environment.
@@ -186,7 +188,7 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return core.ExitOK
 	}
 	verb, rest := rest[0], rest[1:]
-	if verb != domain.VerbWait && verb != "owner" && verb != "setup" && verb != "uninstall" && !env.CommandDeadline.IsZero() {
+	if verb != domain.VerbWait && verb != "owner" && verb != "setup" && verb != "uninstall" && verb != "link" && !env.CommandDeadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, env.CommandDeadline)
 		defer cancel()
@@ -258,6 +260,8 @@ func RunEnv(ctx context.Context, env Env, args []string, stdout, stderr io.Write
 		return runOwner(ctx, env, opts, rest, stdout, stderr)
 	case "setup", "uninstall":
 		return runSetup(ctx, env, opts, verb, rest, stdout, stderr)
+	case "link":
+		return runLink(ctx, env, opts, rest, env.Stdin, stdout, stderr)
 	}
 	return o.usage(fmt.Sprintf("unknown command %q; run `crosshall help`", verb))
 }

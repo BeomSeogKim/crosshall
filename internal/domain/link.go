@@ -93,10 +93,13 @@ type LinkProveResult struct {
 	Proof string `json:"proof,omitempty"`
 }
 
-// LinkVerifyResult says whether the device is known and the proof holds.
+// LinkVerifyResult says whether the device is known and the proof holds,
+// and under which credential generation: the link carries it on every
+// call and is refused once the device enrolls again.
 type LinkVerifyResult struct {
-	Known bool `json:"known"`
-	OK    bool `json:"ok"`
+	Known         bool  `json:"known"`
+	OK            bool  `json:"ok"`
+	CredentialGen int64 `json:"credential_gen,omitempty"`
 }
 
 const minLinkSecret = 32
@@ -139,7 +142,10 @@ func (s *Service) linkEnroll(ctx context.Context, tx store.Tx, caller core.Calle
 	}
 	var device string
 	rotated := true
-	err = tx.QueryRowContext(ctx, `UPDATE device SET secret = ?, secret_at_ms = ? WHERE name = ? RETURNING device_id`,
+	// A new secret starts a new credential generation: links authenticated
+	// under the old one are refused at their next call.
+	err = tx.QueryRowContext(ctx, `UPDATE device SET secret = ?, secret_at_ms = ?, credential_gen = credential_gen + 1
+		WHERE name = ? RETURNING device_id`,
 		secret, ms(now), cmd.Name).Scan(&device)
 	if errors.Is(err, sql.ErrNoRows) {
 		rotated = false
@@ -175,16 +181,16 @@ func (s *Service) linkHall(ctx context.Context, tx store.Tx, caller core.Caller)
 
 // deviceKey reads a device's secret and this hall's identity; known is
 // false for a device with no record or no secret.
-func deviceKey(ctx context.Context, tx store.Tx, device string) (hall string, secret []byte, known bool, err error) {
+func deviceKey(ctx context.Context, tx store.Tx, device string) (hall string, secret []byte, gen int64, known bool, err error) {
 	hall, err = hallID(ctx, tx)
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, 0, false, err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT secret FROM device WHERE device_id = ?`, device).Scan(&secret)
+	err = tx.QueryRowContext(ctx, `SELECT secret, credential_gen FROM device WHERE device_id = ?`, device).Scan(&secret, &gen)
 	if errors.Is(err, sql.ErrNoRows) {
-		return hall, nil, false, nil
+		return hall, nil, 0, false, nil
 	}
-	return hall, secret, err == nil && len(secret) > 0, err
+	return hall, secret, gen, err == nil && len(secret) > 0, err
 }
 
 func (s *Service) linkProve(ctx context.Context, tx store.Tx, caller core.Caller, cmd LinkProve) (core.Result, error) {
@@ -194,7 +200,7 @@ func (s *Service) linkProve(ctx context.Context, tx store.Tx, caller core.Caller
 	if !link.ValidNonce(cmd.HomeNonce) || !link.ValidNonce(cmd.SpokeNonce) {
 		return Fail(core.ExitUsage, "", "a link proof needs two fresh nonces", "run crosshall link serve, which makes them"), nil
 	}
-	hall, secret, known, err := deviceKey(ctx, tx, cmd.Device)
+	hall, secret, _, known, err := deviceKey(ctx, tx, cmd.Device)
 	if err != nil {
 		return core.Result{}, err
 	}
@@ -209,10 +215,14 @@ func (s *Service) linkVerify(ctx context.Context, tx store.Tx, caller core.Calle
 	if caller.Role != core.RoleOwner {
 		return linkOwnerOnly(), nil
 	}
-	hall, secret, known, err := deviceKey(ctx, tx, cmd.Device)
+	hall, secret, gen, known, err := deviceKey(ctx, tx, cmd.Device)
 	if err != nil {
 		return core.Result{}, err
 	}
-	return OK(LinkVerifyResult{Known: known,
-		OK: known && link.CheckProof(secret, link.RoleSpoke, hall, cmd.Device, cmd.HomeNonce, cmd.SpokeNonce, cmd.Proof)})
+	ok := known && link.CheckProof(secret, link.RoleSpoke, hall, cmd.Device, cmd.HomeNonce, cmd.SpokeNonce, cmd.Proof)
+	r := LinkVerifyResult{Known: known, OK: ok}
+	if ok {
+		r.CredentialGen = gen
+	}
+	return OK(r)
 }

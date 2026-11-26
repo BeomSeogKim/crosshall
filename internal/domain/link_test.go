@@ -87,8 +87,16 @@ func TestEnrollingAgainRotatesTheSecret(t *testing.T) {
 	hn, sn := link.NewNonce(), link.NewNonce()
 	v := decodeAs[LinkVerifyResult](t, f.owner(LinkVerify{Device: first.Device, HomeNonce: hn, SpokeNonce: sn,
 		Proof: link.Proof(old, link.RoleSpoke, first.Hall, first.Device, hn, sn)}, ""))
-	if !v.Known || v.OK {
+	if !v.Known || v.OK || v.CredentialGen != 0 {
 		t.Fatalf("old secret: %+v", v)
+	}
+	// The new secret proves under a newer credential generation, which the
+	// links of the old one no longer match.
+	fresh, _ := hex.DecodeString(secretHex(2))
+	v = decodeAs[LinkVerifyResult](t, f.owner(LinkVerify{Device: first.Device, HomeNonce: hn, SpokeNonce: sn,
+		Proof: link.Proof(fresh, link.RoleSpoke, first.Hall, first.Device, hn, sn)}, ""))
+	if !v.OK || v.CredentialGen != 2 {
+		t.Fatalf("new secret: %+v", v)
 	}
 	if n := f.count(`SELECT COUNT(*) FROM device`); n != 1 {
 		t.Fatalf("%d devices", n)

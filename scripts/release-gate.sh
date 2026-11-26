@@ -521,7 +521,7 @@ row_two_devices() {
   local mixed=TestSpokeLinkWorkSurvivesReconnectAcrossWakeVersions refusal=TestLinkFixtureHandshakeOverSSHStdio
   local status mixed_verdict refusal_verdict failed=0
   needs_builds || return
-  [[ $base_commit != "$commit" ]] || { detail "the candidate and $base point at the same commit"; return 1; }
+  [[ $base_commit != "$commit" ]] || { detail "the candidate and $base point at the same commit"; return 2; }
   build "$base_tree" "$base" "$base_fixture" -tags=testvendorhome ||
     { detail "could not build the $base link fixture"; return 1; }
   (cd -- "$head_tree" && GOENV=off GOFLAGS='' GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 \
@@ -531,7 +531,7 @@ row_two_devices() {
   mixed_verdict=$(python3 -B "$repo/scripts/release_gate_events.py" --strict "$mixed" head-head base-home base-spoke < "$events") || failed=1
   refusal_verdict=$(python3 -B "$repo/scripts/release_gate_events.py" --strict "$refusal" out-of-window < "$events") || failed=1
   printf 'go test exit %s\n%s\n%s\n' "$status" "$mixed_verdict" "$refusal_verdict"
-  detail "$base: $mixed_verdict; $refusal_verdict (go test exit $status)"
+  detail "$base: $mixed_verdict; $refusal_verdict (go test exit $status). The E2E harness builds the head from candidate source with -tags=testvendorhome."
   ((status == 0 && failed == 0)) || return 1
 }
 

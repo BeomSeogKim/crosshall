@@ -100,9 +100,10 @@ func (h *fakeHome) ack(t *testing.T, seq uint64) []link.LeafCut {
 
 type eventFixture struct {
 	*spokeFixture
-	e    *spokeEvents
-	now  atomic.Int64
-	done chan error
+	e         *spokeEvents
+	now       atomic.Int64
+	done      chan error
+	allowWake bool
 }
 
 func newEventFixture(t *testing.T) *eventFixture {
@@ -122,7 +123,7 @@ func (f *eventFixture) start(t *testing.T, home *fakeHome) {
 	f.done = make(chan error, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	go func() { f.done <- f.e.run(ctx, home) }()
+	go func() { f.done <- f.e.run(ctx, home, f.allowWake) }()
 }
 
 func (f *eventFixture) end(t *testing.T, home *fakeHome) error {
@@ -693,7 +694,7 @@ func TestASpokeStopsOnAHomeRollback(t *testing.T) {
 	}
 	// It stays stopped: no subscribe, and commands refuse.
 	again := newFakeHome()
-	if err := f.e.run(t.Context(), again); !errors.Is(err, errHomeRolledBack) || len(again.frames()) != 0 {
+	if err := f.e.run(t.Context(), again, false); !errors.Is(err, errHomeRolledBack) || len(again.frames()) != 0 {
 		t.Fatalf("a stopped stream: %v, %v", err, again.frames())
 	}
 	r := f.send(t, "note", "k1")
@@ -816,7 +817,7 @@ func TestASpokeRecordsARollbackDuringShutdown(t *testing.T) {
 	home := newFakeHome()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- f.e.run(ctx, home) }()
+	go func() { done <- f.e.run(ctx, home, false) }()
 	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
 	home.ack(t, 10)
 	f.m.turn <- struct{}{} // an exchange in progress

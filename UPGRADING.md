@@ -2,9 +2,17 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
-## Linking after v0.4.0-rc.1
+## To v0.4.0-rc.2
 
-`crosshall link`, `crosshall link status` and `crosshall unlink` are available from the owner terminal without an environment setting. Existing links keep their enrollment. See [linking a second device](docs/linking.md).
+Upgrading from v0.4.0-rc.1 keeps the database at schema 37. Upgrading from v0.3.1 moves it from schema 30 to 37. The first start from schema 30 saves a `store-v30-*.sqlite3` backup.
+
+1. On the home, stop running crosshall commands, including background waits, and run `crosshall owner stop`.
+2. Keep a private copy of the stopped hall's `store.sqlite3`.
+3. Install v0.4.0-rc.2 at the path your members and installed hooks use. Run `crosshall owner start` and `crosshall owner doctor` and check for schema version 37. No setup is needed.
+
+`crosshall link`, `crosshall link status` and `crosshall unlink` are available by default from the owner terminal. Upgrade the home first, then linked devices. An existing v0.4.0-rc.1 linked device keeps its enrollment and can reconnect to a v0.4.0-rc.2 home. A v0.4.0-rc.2 device can also connect to a v0.4.0-rc.1 home because its SSH command supplies the old opt-in. See [linking a second device](docs/linking.md).
+
+To roll back the home to v0.4.0-rc.1, stop running crosshall commands and run `crosshall owner stop` with v0.4.0-rc.2. Put the v0.4.0-rc.1 binary back at the original path and restart it on the same schema 37 store. To roll back to v0.3.1, follow the [schema 30 restore steps](#to-v040-rc1) below, using v0.4.0-rc.2 to stop the upgraded dispatcher.
 
 ## To v0.4.0-rc.1
 

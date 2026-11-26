@@ -165,12 +165,17 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			LeafGeneration: leaf.Generation, Membership: link.Membership(*capture.Membership)}
 		if written != nil {
 			written.Member, written.Token = member, token
-			if _, err := tx.ExecContext(ctx, `UPDATE spoke_offer SET suppressed = 1 WHERE vendor = ? AND key = ? AND offer_id = ?
-				AND json_extract(body, '$.nonce') = ?`, leaf.Vendor, leaf.Key, written.OfferID, written.Nonce); err != nil {
+			// A receipt that arrives after a later frame went out cannot
+			// reach the home in order: the offer stays served, so the next
+			// hook shows it again and its receipt goes then.
+			late, err := queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, capture.WallMS, written)
+			if err != nil || late {
 				return err
 			}
 			queued = true
-			return queueHookFrame(ctx, tx, "written", member, leaf.Generation, req.PublishSeq, capture.WallMS, written)
+			_, err = tx.ExecContext(ctx, `UPDATE spoke_offer SET suppressed = 1 WHERE vendor = ? AND key = ? AND offer_id = ?
+				AND json_extract(body, '$.nonce') = ?`, leaf.Vendor, leaf.Key, written.OfferID, written.Nonce)
+			return err
 		}
 		if adapter != leaf.Vendor || req.OpKey != "hook:"+adapter+":"+launch+":"+hookEventRef(req) {
 			r := commandError(core.ExitRefused, "", "hook identity does not match the member exchange")
@@ -192,7 +197,7 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 		if fact != nil {
 			fact.Member, fact.Token = member, token
 			queued = true
-			if err := queueHookFrame(ctx, tx, "fact", member, leaf.Generation, req.PublishSeq, capture.WallMS, fact); err != nil {
+			if _, err := queueHookFrame(ctx, tx, "fact", member, leaf.Generation, req.PublishSeq, capture.WallMS, fact); err != nil {
 				return err
 			}
 		}
@@ -228,10 +233,10 @@ func hookEventRef(req wire.Request) string {
 
 // The frame's age is the time its hook captured it, which processing
 // the packet again does not change: the send horizon counts from it.
-func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, generation string, leafSeq uint64, capturedMS int64, frame any) error {
+func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.Member, generation string, leafSeq uint64, capturedMS int64, frame any) (late bool, err error) {
 	body, err := json.Marshal(frame)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// A frame at or below what this leaf generation already released is
 	// late: a lower sequence a later drain pass handled, or a packet
@@ -240,17 +245,17 @@ func queueHookFrame(ctx context.Context, tx store.Tx, kind string, member link.M
 	var sent uint64
 	if err := tx.QueryRowContext(ctx, `SELECT hook_sent_seq FROM spoke_leaf WHERE vendor = ? AND key = ? AND generation = ?`,
 		member.Vendor, member.Key, generation).Scan(&sent); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return false, err
 	}
 	if leafSeq <= sent {
-		return nil
+		return true, nil
 	}
 	// A packet processed again before its release is the same frame,
 	// queued once.
 	_, err = tx.ExecContext(ctx, `INSERT INTO spoke_hook_outbox (frame_id, vendor, key, generation, leaf_seq, kind, body, at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (frame_id) DO NOTHING`,
 		hookFrameID(member, generation, leafSeq), member.Vendor, member.Key, generation, leafSeq, kind, string(body), capturedMS)
-	return err
+	return false, err
 }
 
 // hookFrameID is the ID the home records a hook frame under: one per

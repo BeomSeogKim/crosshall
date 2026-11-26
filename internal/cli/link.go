@@ -110,8 +110,8 @@ func linkEnroll(ctx context.Context, env Env, opts options, name string, stdin i
 }
 
 // linkServe runs the handshake as the home and then answers the spoke
-// until it hangs up. It asks the dispatcher for the hall and for every
-// proof check, so no device secret reaches this process.
+// until it hangs up. It asks the dispatcher for the hall, the home's proof
+// and the check of the spoke's, so no device secret reaches this process.
 func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, o outputs) core.ExitCode {
 	if stdin == nil {
 		return o.fail(core.ExitUsage, CodeUsage, "link serve speaks on stdin and stdout", "")
@@ -122,10 +122,15 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	}
 	r, w := link.NewReader(stdin), link.NewWriter(stdout)
 	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
-		Verify: func(device, nonce, proof string) (bool, bool, error) {
+		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
+			v, err := ownerData[domain.LinkProveResult](ctx, env,
+				Call{Command: domain.LinkProve{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce}})
+			return v.Known, v.Proof, err
+		},
+		Verify: func(device, homeNonce, spokeNonce, proof string) (bool, error) {
 			v, err := ownerData[domain.LinkVerifyResult](ctx, env,
-				Call{Command: domain.LinkVerify{Device: device, Nonce: nonce, Proof: proof}})
-			return v.Known, v.OK, err
+				Call{Command: domain.LinkVerify{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce, Proof: proof}})
+			return v.OK, err
 		}}
 	session, err := home.Accept(r, w)
 	if err != nil {

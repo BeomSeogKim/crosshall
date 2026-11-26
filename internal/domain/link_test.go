@@ -33,15 +33,29 @@ func TestEnrollingADeviceGivesItAnIDAndCheckableProofs(t *testing.T) {
 		t.Fatalf("enroll %+v", got)
 	}
 	secret, _ := hex.DecodeString(secretHex(1))
-	proof := link.Proof(secret, hall, got.Device, "n1")
+	hn, sn := link.NewNonce(), link.NewNonce()
+	// The home's proof is the one the spoke expects from this hall.
+	p := decodeAs[LinkProveResult](t, f.owner(LinkProve{Device: got.Device, HomeNonce: hn, SpokeNonce: sn}, ""))
+	if !p.Known || !link.CheckProof(secret, link.RoleHome, hall, got.Device, hn, sn, p.Proof) {
+		t.Fatalf("home proof %+v", p)
+	}
+	if u := decodeAs[LinkProveResult](t, f.owner(LinkProve{Device: "nope", HomeNonce: hn, SpokeNonce: sn}, "")); u.Known || u.Proof != "" {
+		t.Fatalf("unknown device: %+v", u)
+	}
+	if r := f.owner(LinkProve{Device: got.Device, HomeNonce: "", SpokeNonce: sn}, ""); r.Status != core.ExitUsage {
+		t.Fatalf("a proof without a nonce: %d", r.Status)
+	}
+	proof := link.Proof(secret, link.RoleSpoke, hall, got.Device, hn, sn)
 	for name, c := range map[string]struct {
 		cmd       LinkVerify
 		known, ok bool
 	}{
-		"right proof":     {LinkVerify{Device: got.Device, Nonce: "n1", Proof: proof}, true, true},
-		"other nonce":     {LinkVerify{Device: got.Device, Nonce: "n2", Proof: proof}, true, false},
-		"unknown device":  {LinkVerify{Device: "nope", Nonce: "n1", Proof: proof}, false, false},
-		"another's proof": {LinkVerify{Device: got.Device, Nonce: "n1", Proof: link.Proof([]byte("x"), hall, got.Device, "n1")}, true, false},
+		"right proof":     {LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn, Proof: proof}, true, true},
+		"other nonce":     {LinkVerify{Device: got.Device, HomeNonce: link.NewNonce(), SpokeNonce: sn, Proof: proof}, true, false},
+		"unknown device":  {LinkVerify{Device: "nope", HomeNonce: hn, SpokeNonce: sn, Proof: proof}, false, false},
+		"the home's role": {LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn, Proof: p.Proof}, true, false},
+		"another's proof": {LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn,
+			Proof: link.Proof([]byte("x"), link.RoleSpoke, hall, got.Device, hn, sn)}, true, false},
 	} {
 		v := decodeAs[LinkVerifyResult](t, f.owner(c.cmd, ""))
 		if v.Known != c.known || v.OK != c.ok {
@@ -70,8 +84,9 @@ func TestEnrollingAgainRotatesTheSecret(t *testing.T) {
 		t.Fatalf("second %+v, first %+v", second, first)
 	}
 	old, _ := hex.DecodeString(secretHex(1))
-	v := decodeAs[LinkVerifyResult](t, f.owner(LinkVerify{Device: first.Device, Nonce: "n",
-		Proof: link.Proof(old, first.Hall, first.Device, "n")}, ""))
+	hn, sn := link.NewNonce(), link.NewNonce()
+	v := decodeAs[LinkVerifyResult](t, f.owner(LinkVerify{Device: first.Device, HomeNonce: hn, SpokeNonce: sn,
+		Proof: link.Proof(old, link.RoleSpoke, first.Hall, first.Device, hn, sn)}, ""))
 	if !v.Known || v.OK {
 		t.Fatalf("old secret: %+v", v)
 	}
@@ -86,7 +101,7 @@ func TestOnlyTheOwnerLinksDevices(t *testing.T) {
 	f.owner(CreateChannel{Name: "general"}, "")
 	wantOK(t, f.join(s, Join{Channel: "general"}, "j1"))
 	c := f.caller(s)
-	for _, cmd := range []Command{LinkEnroll{Name: "m", Secret: secretHex(1)}, LinkHall{}, LinkVerify{Device: "d"}} {
+	for _, cmd := range []Command{LinkEnroll{Name: "m", Secret: secretHex(1)}, LinkHall{}, LinkProve{Device: "d"}, LinkVerify{Device: "d"}} {
 		wantCode(t, f.exec(c, Request{OpKey: "x", Command: cmd}), core.ExitRefused, core.CodeOwnerOnly)
 	}
 }

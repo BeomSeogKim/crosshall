@@ -184,6 +184,8 @@ func Decode(verb string, args json.RawMessage) (Command, error) {
 		return decodeLedgerCommand[LinkEnroll](args)
 	case VerbLinkHall:
 		return decodeLedgerCommand[LinkHall](args)
+	case VerbLinkProve:
+		return decodeLedgerCommand[LinkProve](args)
 	case VerbLinkVerify:
 		return decodeLedgerCommand[LinkVerify](args)
 	case VerbCreateChannel:

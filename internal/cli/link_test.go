@@ -24,10 +24,16 @@ func (h *homeTransport) Do(_ context.Context, call Call) (core.Result, error) {
 	switch c := call.Command.(type) {
 	case domain.LinkHall:
 		return domain.OK(domain.LinkHallResult{Hall: "hall-1"})
+	case domain.LinkProve:
+		if c.Device != "dev-1" {
+			return domain.OK(domain.LinkProveResult{})
+		}
+		return domain.OK(domain.LinkProveResult{Known: true,
+			Proof: link.Proof(testSecret, link.RoleHome, "hall-1", c.Device, c.HomeNonce, c.SpokeNonce)})
 	case domain.LinkVerify:
 		known := c.Device == "dev-1"
 		return domain.OK(domain.LinkVerifyResult{Known: known,
-			OK: known && link.CheckProof(testSecret, "hall-1", c.Device, c.Nonce, c.Proof)})
+			OK: known && link.CheckProof(testSecret, link.RoleSpoke, "hall-1", c.Device, c.HomeNonce, c.SpokeNonce, c.Proof)})
 	case domain.LinkEnroll:
 		return domain.OK(domain.LinkEnrollResult{Hall: "hall-1", Device: "dev-1"})
 	}

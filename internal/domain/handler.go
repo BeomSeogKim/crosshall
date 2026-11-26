@@ -136,6 +136,8 @@ func (s *Service) handleCommand(ctx context.Context, tx store.Tx, caller core.Ca
 		return s.linkEnroll(ctx, tx, caller, req, cmd, now)
 	case LinkHall:
 		return s.linkHall(ctx, tx, caller)
+	case LinkProve:
+		return s.linkProve(ctx, tx, caller, cmd)
 	case LinkVerify:
 		return s.linkVerify(ctx, tx, caller, cmd)
 	case CreateChannel:

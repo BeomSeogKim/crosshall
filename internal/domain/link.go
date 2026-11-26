@@ -19,6 +19,7 @@ import (
 const (
 	VerbLinkEnroll = "link enroll"
 	VerbLinkHall   = "link hall"
+	VerbLinkProve  = "link prove"
 	VerbLinkVerify = "link verify"
 )
 
@@ -43,12 +44,26 @@ func (LinkHall) command() {}
 // Verb returns the wire verb.
 func (LinkHall) Verb() string { return VerbLinkHall }
 
-// LinkVerify checks a device's proof for a nonce against the secret this
-// hall keeps, so the secret never leaves the dispatcher.
+// LinkProve asks for the home's proof for one handshake with a device,
+// made with the secret this hall keeps.
+type LinkProve struct {
+	Device     string `json:"device"`
+	HomeNonce  string `json:"home_nonce"`
+	SpokeNonce string `json:"spoke_nonce"`
+}
+
+func (LinkProve) command() {}
+
+// Verb returns the wire verb.
+func (LinkProve) Verb() string { return VerbLinkProve }
+
+// LinkVerify checks a device's proof for one handshake against the secret
+// this hall keeps, so the secret never leaves the dispatcher.
 type LinkVerify struct {
-	Device string `json:"device"`
-	Nonce  string `json:"nonce"`
-	Proof  string `json:"proof"`
+	Device     string `json:"device"`
+	HomeNonce  string `json:"home_nonce"`
+	SpokeNonce string `json:"spoke_nonce"`
+	Proof      string `json:"proof"`
 }
 
 func (LinkVerify) command() {}
@@ -68,6 +83,13 @@ type LinkEnrollResult struct {
 // LinkHallResult names the hall.
 type LinkHallResult struct {
 	Hall string `json:"hall"`
+}
+
+// LinkProveResult carries the home's proof, or Known false for a device
+// this hall has no record of.
+type LinkProveResult struct {
+	Known bool   `json:"known"`
+	Proof string `json:"proof,omitempty"`
 }
 
 // LinkVerifyResult says whether the device is known and the proof holds.
@@ -150,21 +172,46 @@ func (s *Service) linkHall(ctx context.Context, tx store.Tx, caller core.Caller)
 	return OK(LinkHallResult{Hall: hall})
 }
 
+// deviceKey reads a device's secret and this hall's identity; known is
+// false for a device with no record or no secret.
+func deviceKey(ctx context.Context, tx store.Tx, device string) (hall string, secret []byte, known bool, err error) {
+	hall, err = hallID(ctx, tx)
+	if err != nil {
+		return "", nil, false, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT secret FROM device WHERE device_id = ?`, device).Scan(&secret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return hall, nil, false, nil
+	}
+	return hall, secret, err == nil && len(secret) > 0, err
+}
+
+func (s *Service) linkProve(ctx context.Context, tx store.Tx, caller core.Caller, cmd LinkProve) (core.Result, error) {
+	if caller.Role != core.RoleOwner {
+		return linkOwnerOnly(), nil
+	}
+	if !link.ValidNonce(cmd.HomeNonce) || !link.ValidNonce(cmd.SpokeNonce) {
+		return Fail(core.ExitUsage, "", "a link proof needs two fresh nonces", "run crosshall link serve, which makes them"), nil
+	}
+	hall, secret, known, err := deviceKey(ctx, tx, cmd.Device)
+	if err != nil {
+		return core.Result{}, err
+	}
+	if !known {
+		return OK(LinkProveResult{})
+	}
+	return OK(LinkProveResult{Known: true,
+		Proof: link.Proof(secret, link.RoleHome, hall, cmd.Device, cmd.HomeNonce, cmd.SpokeNonce)})
+}
+
 func (s *Service) linkVerify(ctx context.Context, tx store.Tx, caller core.Caller, cmd LinkVerify) (core.Result, error) {
 	if caller.Role != core.RoleOwner {
 		return linkOwnerOnly(), nil
 	}
-	hall, err := hallID(ctx, tx)
+	hall, secret, known, err := deviceKey(ctx, tx, cmd.Device)
 	if err != nil {
 		return core.Result{}, err
 	}
-	var secret []byte
-	err = tx.QueryRowContext(ctx, `SELECT secret FROM device WHERE device_id = ?`, cmd.Device).Scan(&secret)
-	if errors.Is(err, sql.ErrNoRows) {
-		return OK(LinkVerifyResult{})
-	}
-	if err != nil {
-		return core.Result{}, err
-	}
-	return OK(LinkVerifyResult{Known: true, OK: link.CheckProof(secret, hall, cmd.Device, cmd.Nonce, cmd.Proof)})
+	return OK(LinkVerifyResult{Known: known,
+		OK: known && link.CheckProof(secret, link.RoleSpoke, hall, cmd.Device, cmd.HomeNonce, cmd.SpokeNonce, cmd.Proof)})
 }

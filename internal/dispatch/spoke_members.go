@@ -171,6 +171,13 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 // and the read both run against the deadline; on any failure the link is
 // closed.
 func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
+	// Nothing is attempted once the deadline has passed: that is
+	// errNotSent, the only error after which no byte can have left.
+	if ctx.Err() != nil || !time.Now().Before(deadline) {
+		return core.Result{}, errNotSent
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
 	type answer struct {
 		f   link.Frame
 		err error
@@ -184,8 +191,6 @@ func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame stri
 		f, err := conn.Read()
 		got <- answer{f, err}
 	}()
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		m.drop(conn)
@@ -352,7 +357,9 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	}
 	var leaf ident.SpokeLeaf
 	var rec outboxRecord
-	err := m.db.Update(ctx, func(tx store.Tx) error {
+	journal, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	err := m.db.Update(journal, func(tx store.Tx) error {
 		var err error
 		leaf, err = ident.ResolveSpokeMember(ctx, tx, m.members, ident.Ingress{Path: path, Dir: dir},
 			ident.Proof{KeyDigest: req.KeyDigest, Generation: req.Generation})
@@ -365,6 +372,9 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	var env *ident.EnvironmentError
 	if errors.As(err, &env) {
 		return domain.Fail(core.ExitNotEnrolled, env.Code, env.Message, "crosshall join <channel>"), nil
+	}
+	if err != nil && journal.Err() != nil {
+		return unsent, nil // the record was not committed, and nothing was sent
 	}
 	if err != nil {
 		s.logFailure(err)
@@ -382,6 +392,9 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		// The same request, still unresolved: look it up, never resend.
 		call.Command, call.Args, call.Membership = rec.command, rec.args, rec.membership
 		answer, err := m.roundTrip(ctx, conn, "receipt", call, deadline)
+		if errors.Is(err, errNotSent) {
+			return unsent, nil // the record stays for recovery
+		}
 		if err != nil {
 			return unknownOutcome("the link to the home ended before its answer", req.OpKey), nil
 		}
@@ -389,6 +402,12 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 		return answer, nil
 	}
 	result, err := m.roundTrip(ctx, conn, "call", call, deadline)
+	if errors.Is(err, errNotSent) {
+		if rec.fresh {
+			s.settleOutbox(ctx, rec.id, nil) // this command's own record, and nothing left
+		}
+		return unsent, nil
+	}
 	if err != nil {
 		s.markUnknown(ctx, rec.id)
 		return unknownOutcome("the link to the home ended before its answer", req.OpKey), nil

@@ -109,31 +109,34 @@ func TestSpokeLinkWorkSurvivesReconnectAcrossWakeVersions(t *testing.T) {
 
 		homeDB := f.home.db()
 		spokeDB := spokeStore(t, f.spoke.state)
-		wantWake := f.home.binaryPath() == binary && f.spoke.binaryPath() == binary
 		var originalStream string
+		var wantWake bool
 		eventually(t, "the home acknowledged the linked member's cut", func() bool {
-			return homeDB.QueryRow(`SELECT stream FROM link_event_stream
-				WHERE wake_capable = ? AND EXISTS (SELECT 1 FROM link_event_cut WHERE absent = 0)`, wantWake).
-				Scan(&originalStream) == nil
+			return homeDB.QueryRow(`SELECT stream, wake_capable FROM link_event_stream
+				WHERE closed_at_ms IS NULL AND EXISTS (SELECT 1 FROM link_event_cut WHERE absent = 0)`).
+				Scan(&originalStream, &wantWake) == nil
 		})
+		if f.home.binaryPath() == binary && f.spoke.binaryPath() == binary && !wantWake {
+			t.Fatal("two current builds did not negotiate wake capability")
+		}
 		askID := num(t, sender.must("ask", "@receiver", "Check the linked work."), "id")
 		ask := strconv.FormatInt(askID, 10)
 		killSpokeSSH(t, f.ssh)
 		eventually(t, "the event stream reconnected with the expected wake capability", func() bool {
 			var stream string
-			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE wake_capable = ?`, wantWake).Scan(&stream) == nil &&
+			return homeDB.QueryRow(`SELECT stream FROM link_event_stream WHERE closed_at_ms IS NULL AND wake_capable = ?`, wantWake).Scan(&stream) == nil &&
 				stream != originalStream
 		})
 		waitSpokeLink(t, spoke, "connected")
-		// The event stream reconnects independently, and the command link
-		// can still be recovering its outbox after the handshake.
+		// A base spoke can still report connected at the handshake,
+		// before it finishes outbox recovery.
 		eventually(t, "the reconnected command link accepts who", func() bool {
 			got := receiver.run("who")
 			if got.exit == 0 {
 				return true
 			}
 			if got.obj["code"] != string(core.CodeUnsent) {
-				t.Fatalf("checking the reconnected command link: %s", got.stdout)
+				t.Fatalf("checking the reconnected command link: stdout %q, stderr %q", got.stdout, got.stderr)
 			}
 			return false
 		})

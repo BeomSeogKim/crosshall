@@ -292,10 +292,13 @@ func TestLinkServeWritesAWindowAheadOfTheAcknowledgements(t *testing.T) {
 			if in.Close {
 				return domain.OK(domain.LinkEventsResult{})
 			}
-			fetched = append(fetched, from)
 			page := domain.LinkEventsResult{Through: backlog}
 			for seq := from + 1; seq <= min(from+perPage, backlog); seq++ {
 				page.Events = append(page.Events, link.Event{Seq: seq, Kind: link.EventOffer})
+			}
+			if len(page.Events) > 0 {
+				// Empty polls once caught up depend on when the device closes.
+				fetched = append(fetched, from)
 			}
 			return domain.OK(page)
 		case domain.LinkAck:
@@ -405,6 +408,6 @@ func TestLinkServeWritesAWindowAheadOfTheAcknowledgements(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	if want := backlog/perPage + linkEventWindow; len(fetched) != want {
-		t.Fatalf("fetched %d pages, want %d", len(fetched), want)
+		t.Fatalf("fetched %d pages of events, want %d", len(fetched), want)
 	}
 }

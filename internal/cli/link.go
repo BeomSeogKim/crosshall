@@ -180,7 +180,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
 			if result.Code == domain.CodeLinkStale {
-				return o.fail(core.ExitRefused, domain.CodeLinkStale, "the device enrolled again; this link is closed", "")
+				return o.fail(core.ExitRefused, domain.CodeLinkStale, "the hall no longer admits this link (the device enrolled again, or its fences were pruned); this link is closed", "")
 			}
 		default:
 			return o.fail(core.ExitError, CodeLocalError,

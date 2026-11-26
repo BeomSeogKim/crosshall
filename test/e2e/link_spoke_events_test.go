@@ -228,10 +228,10 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	eventually(t, "the spoke acknowledged the join", func() bool { return acked() > 0 })
 	// Moved before the backup: the restored home selects #second at a
 	// generation above 1, which a stampless call does not match.
+	moved := acked() // before the move, which the spoke may acknowledge at once
 	if got := member.run("join", "second", "--move"); got.exit != 0 {
 		t.Fatalf("join second: %+v", got)
 	}
-	moved := acked()
 	eventually(t, "the spoke acknowledged the move", func() bool { return acked() > moved })
 
 	backup := t.TempDir()
@@ -328,6 +328,48 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	}
 	if got := member.must("who"); !strings.Contains(got.stdout, "second") {
 		t.Fatalf("who after linking again: %+v", got)
+	}
+}
+
+// Linking a stopped profile again through a target that now reaches
+// another home changes nothing: the profile, its store and the hall it
+// names stay as they were (#418).
+func TestSpokeLinkAgainRefusesAnotherHall(t *testing.T) {
+	f := newLinkFixture(t, binary, binary)
+	home, spoke := f.home.owner(), f.spoke.owner()
+	home.must("owner", "start")
+	spoke.must("owner", "start")
+	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+	waitSpokeLink(t, spoke, "connected")
+	// The profile carries the stop a home rollback leaves.
+	path := filepath.Join(f.spoke.state, "link.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := strings.Replace(string(data), "{", `{"rolled_back":true,`, 1)
+	if err := os.WriteFile(path, []byte(stopped), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	other := newWorld(t)
+	other.executable = binary
+	other.extraEnv = []string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1"}
+	other.owner().must("owner", "start")
+	repointed := f.spoke.owner()
+	repointed.extra = []string{"CROSSHALL_LINK_SSH=" + writeLocalSSH(t, other)}
+	got := repointed.run("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
+	if got.exit == 0 || !strings.Contains(got.stdout+got.stderr, "now serves another hall") {
+		t.Fatalf("linking again through a repointed target: %+v", got)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != stopped {
+		t.Fatalf("the stopped profile changed: %s, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.spoke.state, "link-enrollment.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an enrollment began: %v", err)
+	}
+	if aside, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*-rolled-back-*")); len(aside) != 0 {
+		t.Fatalf("the stopped store was set aside: %v", aside)
 	}
 }
 

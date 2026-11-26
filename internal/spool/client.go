@@ -71,6 +71,7 @@ func (c Client) member(ctx context.Context, id ident.Identity, req wire.Request,
 	ctx, cancel := commandContext(ctx)
 	defer cancel()
 	req = prepare(ctx, req)
+	c.Rendezvous = memberRendezvous(c.Rendezvous)
 	rv, err := ident.OpenPrivateDir(c.Rendezvous)
 	if err != nil {
 		return c.failure(req, core.CodeUnsent, err)

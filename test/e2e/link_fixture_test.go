@@ -62,6 +62,7 @@ if [ "$#" -eq 1 ]; then
     %s) printf '%%s\n' %s; exit 0 ;;
     %s)
       printf '%%s\n' "$$" > %s
+      printf '%%s\n' "$$" >> %s
       set -- link serve ;;
     %s*)
       key=${1#%s}
@@ -86,7 +87,7 @@ case "$#:$*" in
 esac
 `, quote(linkFixtureTarget),
 		quote(`command -v crosshall || { test -x "$HOME/.local/bin/crosshall" && printf '%s\n' "$HOME/.local/bin/crosshall"; }`), quote(home.binaryPath()),
-		quote(remote+" 'link' 'serve'"), quote(path+".pid"), quote(remote+" '--key' '"), quote(remote+" '--key' '"),
+		quote(remote+" 'link' 'serve'"), quote(path+".pid"), quote(path+".pids"), quote(remote+" '--key' '"), quote(remote+" '--key' '"),
 		quote(remote+" '--key' '"), quote("' 'link' 'enroll' '--name' 'fixture-spoke'"), quote(path+".enrolls"),
 		quote(path+".drop-enrollment"), command.String(), command.String(), quote(home.binaryPath()), command.String())
 	if err := os.WriteFile(path, []byte(shim), 0700); err != nil {

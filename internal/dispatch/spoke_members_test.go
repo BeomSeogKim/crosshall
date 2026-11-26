@@ -265,17 +265,25 @@ func TestASpokeRetrySendsAgainOnlyWhatNeverRan(t *testing.T) {
 		t.Helper()
 		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"`+key+`"}`, 2*time.Second)
 	}
-	if r := retry("k1", "r1"); r.Status != core.ExitOK || string(r.Data) != `{"id":1}` || len(link.frames) != 0 {
+	inner := func(r core.Result) string {
+		t.Helper()
+		var out domain.RetryResult
+		if err := json.Unmarshal(r.Data, &out); err != nil || out.Command != "note" {
+			t.Fatalf("retry result %s", r.Data)
+		}
+		return string(out.Result)
+	}
+	if r := retry("k1", "r1"); r.Status != core.ExitOK || inner(r) != `{"id":1}` || len(link.frames) != 0 {
 		t.Fatalf("answered retry %+v, frames %v", r, link.frames)
 	}
 	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":2}`)})
-	if r := retry("k2", "r2"); r.Status != core.ExitOK || string(r.Data) != `{"id":2}` ||
+	if r := retry("k2", "r2"); r.Status != core.ExitOK || inner(r) != `{"id":2}` ||
 		len(link.frames) != 1 || link.frames[0] != "receipt" || link.written[0].OpKey != "k2" {
 		t.Fatalf("lost retry %+v, frames %v", r, link.frames)
 	}
 	link.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
 	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":3}`)})
-	if r := retry("k3", "r3"); r.Status != core.ExitOK || string(r.Data) != `{"id":3}` {
+	if r := retry("k3", "r3"); r.Status != core.ExitOK || inner(r) != `{"id":3}` {
 		t.Fatalf("fenced retry %+v", r)
 	}
 	resend := link.written[2]
@@ -405,5 +413,62 @@ func TestASpokeSendsNothingPastItsDeadline(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox`); n != 0 || len(link.frames) != 0 || link.closed {
 		t.Fatalf("%d records, frames %v, closed %v", n, link.frames, link.closed)
+	}
+}
+
+// A fenced command is sent again once: a replay of the same retry, a
+// replay with the link down, and a repeated retry under another key all
+// resolve that resend, receipt-only, and never send another.
+func TestASpokeRetrySendsAFencedCommandAgainOnce(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	f.send(t, "note", "k1")
+	retry := func(newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"k1"}`, 2*time.Second)
+	}
+	// The resend's answer is lost too.
+	lossy := newFakeLink()
+	lossy.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	lossy.onWrite = func(frame string, _ any) {
+		if frame == "call" {
+			close(lossy.answers) // the link ends before the resend's answer
+		}
+	}
+	f.m.attach(lossy)
+	if r := retry("r1"); r.Code != core.CodeOutcomeUnknown || len(lossy.frames) != 2 || lossy.frames[1] != "call" || lossy.written[1].OpKey != "r1" {
+		t.Fatalf("first retry %+v, frames %v", r, lossy.frames)
+	}
+	f.m.attach(nil)
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("replay with the link down %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r1'`); n != 1 {
+		t.Fatalf("the resend's record is gone")
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	// k1's fenced answer is stored: only the resend is looked up.
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":5}`)})
+	if r := retry("r2"); r.Status != core.ExitOK || len(link.frames) != 1 || link.frames[0] != "receipt" || link.written[0].OpKey != "r1" {
+		t.Fatalf("repeated retry %+v, frames %v %+v", r, link.frames, link.written)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'r2'`); n != 0 {
+		t.Fatalf("a repeated retry recorded another resend")
+	}
+}
+
+// A recovered answer never rolls the member's selection back.
+func TestASpokeKeepsTheNewestMembership(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 7, Generation: 3}})
+	f.send(t, "note", "k1")
+	f.s.adoptMembership(t.Context(), "codex", "session", &core.Membership{BindingID: 4, Generation: 2})
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
+		t.Fatalf("selection %d after an older receipt", n)
 	}
 }

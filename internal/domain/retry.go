@@ -1,6 +1,10 @@
 package domain
 
-import "github.com/BeomSeogKim/crosshall/internal/core"
+import (
+	"encoding/json"
+
+	"github.com/BeomSeogKim/crosshall/internal/core"
+)
 
 // VerbRetry sends a linked device's command again as a new request, after
 // its outcome was reported unknown (#400). A linked device's dispatcher
@@ -13,6 +17,13 @@ type Retry struct {
 }
 
 func (Retry) command() {}
+
+// RetryResult is a successful retry's answer: the command it concerned and
+// that command's own result, so the CLI shows it as the command's.
+type RetryResult struct {
+	Command string          `json:"command"`
+	Result  json.RawMessage `json:"result"`
+}
 
 func (Retry) Verb() string { return VerbRetry }
 

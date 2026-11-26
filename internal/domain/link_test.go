@@ -57,18 +57,25 @@ func TestEnrollingADeviceGivesItAnIDAndCheckableProofs(t *testing.T) {
 		"another's proof": {LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn,
 			Proof: link.Proof([]byte("x"), link.RoleSpoke, hall, got.Device, hn, sn)}, true, false},
 	} {
-		before := f.count(`SELECT COUNT(*) FROM link_session`)
 		v := decodeAs[LinkVerifyResult](t, f.owner(c.cmd, ""))
 		if v.Known != c.known || v.OK != c.ok {
 			t.Errorf("%s: %+v", name, v)
 		}
-		// A verified proof opens the link's admission record before the
-		// home can send its welcome; a failed one opens none.
-		opened := f.count(`SELECT COUNT(*) FROM link_session WHERE id = ? AND device_id = ? AND credential_gen = ?`,
-			v.Session, got.Device, v.CredentialGen)
-		if after := f.count(`SELECT COUNT(*) FROM link_session`); c.ok != (opened == 1 && after == before+1) || !c.ok && after != before {
-			t.Errorf("%s: session %d, %d -> %d rows", name, v.Session, before, after)
+		// A verified proof hands the link the device's admission
+		// generation before the home can send its welcome.
+		if want := map[bool]int64{true: 1, false: 0}[c.ok]; v.Admission != want {
+			t.Errorf("%s: admission %d", name, v.Admission)
 		}
+	}
+	// Reconnects and preflights write nothing: a hall that links often
+	// keeps no admission state but the device's generation.
+	before := f.count(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`)
+	for range 50 {
+		f.owner(LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn, Proof: proof}, "")
+	}
+	if after := f.count(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`); after != before ||
+		f.count(`SELECT admission_gen FROM device WHERE device_id = ?`, got.Device) != 1 {
+		t.Fatalf("verification changed admission state")
 	}
 	// The secret is stored for verification only: no audit or op row holds it.
 	if n := f.count(`SELECT COUNT(*) FROM event WHERE detail LIKE ?`, "%"+secretHex(1)[:16]+"%"); n != 0 {

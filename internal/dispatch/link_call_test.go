@@ -36,8 +36,7 @@ func linkServer(t *testing.T) *server {
 	s.fixtureSQL(t, `INSERT INTO principal (kind, vendor, created_at_ms) VALUES ('owner', 'owner', 1);
 		INSERT INTO channel (name, created_at_ms) VALUES ('checkout', 1), ('payments', 1);
 		INSERT INTO device (device_id, name, secret, created_at_ms, secret_at_ms) VALUES
-			('dev-a', 'macbook', x'00', 1, 1), ('dev-b', 'laptop', x'00', 1, 1);
-		INSERT INTO link_session (device_id, credential_gen, opened_at_ms) VALUES ('dev-a', 1, 1), ('dev-b', 1, 1);`)
+			('dev-a', 'macbook', x'00', 1, 1), ('dev-b', 'laptop', x'00', 1, 1);`)
 	return s
 }
 
@@ -50,7 +49,7 @@ type linkReq struct {
 	membership       *core.Membership
 	ack              uint64
 	receipt          bool
-	session          int64
+	admission        int64
 }
 
 func (s *server) link(t *testing.T, r linkReq) core.Result {
@@ -70,15 +69,14 @@ func (s *server) link(t *testing.T, r linkReq) core.Result {
 	if r.epoch == 0 {
 		r.epoch = 1
 	}
-	if r.session == 0 {
-		// The fixture's open link of each device.
-		r.session = map[string]int64{"dev-a": 1, "dev-b": 2}[r.device]
+	if r.admission == 0 {
+		r.admission = 1 // a device's first admission generation
 	}
 	args, err := json.Marshal(r.args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, LinkSession: r.session, Vendor: "claude", Key: r.key,
+	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, Admission: r.admission, Vendor: "claude", Key: r.key,
 		LeafGeneration: r.gen, LeafEpoch: r.epoch, Command: r.command, Args: args, OpKey: r.op, Membership: r.membership, Ack: r.ack})
 	if err != nil {
 		t.Fatal(err)
@@ -153,10 +151,7 @@ func TestALinkCallUnderAnOldCredentialIsRefusedBeforeLookup(t *testing.T) {
 	mustLinkCode(t, s.link(t, linkReq{device: "dev-x", command: domain.VerbWho}), domain.CodeLinkStale)
 	// A link authenticated under the new credential resumes the device,
 	// and its leaf counter may start again.
-	s.fixtureSQL(t, `INSERT INTO link_session (device_id, credential_gen, opened_at_ms) VALUES ('dev-a', 2, 1)`)
-	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, session: 3, epoch: 1, gen: "g9"}))
-	// The old link, under the old credential, stays refused.
-	mustLinkCode(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, session: 1}), domain.CodeLinkStale)
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWho, cred: 2, epoch: 1, gen: "g9"}))
 }
 
 func TestStaleLeafRegistrationsAreRefused(t *testing.T) {
@@ -478,10 +473,11 @@ func TestALinkReceiptNeedsTheCurrentCredential(t *testing.T) {
 	}
 }
 
-// A retention pass that prunes a fence first ends every link the home
-// accepted: an original held on such a link since before the fence is
-// refused once the fence is gone, for a member's command and a first join
-// alike, whatever the wall clock reads at admission. A new link works.
+// A retention pass that deletes a device's fences raises that device's
+// admission generation in the same transaction: an original held on a
+// link accepted before the fence is refused once the fence is gone, for a
+// member's command and a first join alike, whatever the wall clock reads
+// at admission. A new link works, and another device's link is untouched.
 func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
 	s := linkServer(t)
 	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
@@ -502,10 +498,15 @@ func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM op WHERE scope = 'link') + (SELECT COUNT(*) FROM link_fence)
-		+ (SELECT COUNT(*) FROM link_session)`); n != 0 {
-		t.Fatalf("%d fences or link sessions survived retention", n)
+	if n := s.count(t, `SELECT (SELECT COUNT(*) FROM op WHERE scope = 'link') + (SELECT COUNT(*) FROM link_fence)`); n != 0 {
+		t.Fatalf("%d fences survived retention", n)
 	}
+	admission := int64(s.count(t, `SELECT admission_gen FROM device WHERE device_id = 'dev-a'`))
+	if admission < 2 {
+		t.Fatalf("admission generation %d after pruning the device's fences", admission)
+	}
+	// dev-b had no fence: its link carries on.
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbWho}))
 	for _, r := range []linkReq{note, join} {
 		mustLinkCode(t, s.link(t, r), domain.CodeLinkStale)
 	}
@@ -516,7 +517,6 @@ func TestAFencedRequestHeldOnAnOldLinkNeverRuns(t *testing.T) {
 		t.Fatalf("a held first join enrolled")
 	}
 	// The device reconnects: a new link carries new requests.
-	s.fixtureSQL(t, `INSERT INTO link_session (device_id, credential_gen, opened_at_ms) VALUES ('dev-a', 1, 1)`)
-	note.session, note.op = 3, "n2"
+	note.admission, note.op = admission, "n2"
 	mustLinkOK(t, s.link(t, note))
 }

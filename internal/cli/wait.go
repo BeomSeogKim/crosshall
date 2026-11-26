@@ -8,6 +8,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 const (
@@ -84,6 +85,7 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 	var latest *domain.MemberInboxSummary
 	var delivers, atPrompt bool
 	var cursorFingerprint string
+	waitID, initialPrefix := wire.NewID(), wire.WaitAttemptPrefix
 	end := func() core.ExitCode {
 		if ctx.Err() != nil {
 			return o.fail(core.ExitError, CodeLocalError, ctx.Err().Error(), "")
@@ -120,7 +122,11 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 		if hostGone != nil && polls%waitHostCheck == waitHostCheck-1 && hostGone() {
 			return o.fail(core.ExitError, CodeWaitHostGone, "the agent that started this wait has ended", "")
 		}
-		result, err := env.Transport.Do(waitCtx, Call{Command: cmd})
+		call := Call{Command: cmd}
+		if cmd.Cursor == nil {
+			call.OpKey = initialPrefix + waitID
+		}
+		result, err := env.Transport.Do(waitCtx, call)
 		if err != nil || result.Status != core.ExitOK {
 			if waitCtx.Err() != nil {
 				return end()
@@ -132,6 +138,9 @@ func runWait(ctx context.Context, env Env, opts options, args []string, stdout, 
 				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 			}
 			if result.Status == core.ExitUnavailable {
+				if result.Code == core.CodeOutcomeUnknown {
+					initialPrefix = wire.WaitRetryPrefix
+				}
 				if probe == nil {
 					return o.fail(result.Status, result.Code, string(result.Code),
 						"if the dispatcher is down, run crosshall owner start and retry crosshall wait")

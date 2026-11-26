@@ -4,6 +4,7 @@ package wire
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 )
 
 // Hello asks the dispatcher to find or prepare a member's exchange directory.
@@ -22,6 +23,31 @@ func NewID() string {
 	var id [16]byte
 	rand.Read(id[:])
 	return hex.EncodeToString(id[:])
+}
+
+const (
+	WaitAttemptPrefix = "wait:"
+	WaitRetryPrefix   = "wait-retry:"
+)
+
+// WaitAttempt recognizes the invocation ID carried in the existing key
+// field so older dispatchers can still decode the request.
+func WaitAttempt(key string) (id string, retry bool) {
+	id, retry = strings.CutPrefix(key, WaitRetryPrefix)
+	if !retry {
+		var found bool
+		id, found = strings.CutPrefix(key, WaitAttemptPrefix)
+		if !found {
+			return "", false
+		}
+	}
+	if len(id) != 32 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		return "", false
+	}
+	return id, retry
 }
 
 // HelloStart is the first-contact intent of a session start that will join

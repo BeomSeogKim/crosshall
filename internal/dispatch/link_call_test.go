@@ -685,3 +685,59 @@ func TestALinkedWaitIsPresentOnlyWithItsCursor(t *testing.T) {
 		t.Fatalf("a new wait's first poll kept the earlier presence: %+v", d)
 	}
 }
+
+func TestALinkedWaitRecoversItsBaselineAfterLosingTheFirstAnswer(t *testing.T) {
+	s := linkServer(t)
+	join := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: map[string]any{
+		"channel": "checkout", "alias": "reader",
+	}, op: "join-reader"}))
+	writer := mustLinkOK(t, s.link(t, linkReq{key: "writer", command: domain.VerbJoin, args: joinChannel("checkout"), op: "join-writer"}))
+	ask := func(op string) domain.AskResult {
+		t.Helper()
+		r := mustLinkOK(t, s.link(t, linkReq{key: "writer", command: domain.VerbAsk, membership: writer.Membership,
+			op: op, args: map[string]any{"to": []string{"reader"}, "body": "work"}}))
+		var out domain.AskResult
+		if err := json.Unmarshal(r.Data, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	poll := func(op string, cursor *domain.WaitCursor) domain.WaitSnapshot {
+		t.Helper()
+		r := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWait, membership: join.Membership, op: op,
+			args: domain.Wait{WorkOnly: true, Cursor: cursor}}))
+		var out domain.WaitSnapshot
+		if err := json.Unmarshal(r.Data, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	old := ask("old")
+	attempt := wire.NewID()
+	first := poll(wire.WaitAttemptPrefix+attempt, nil)
+	if first.Cursor.MessageID != old.ID || first.CursorFingerprint == "" || len(first.Unread) != 0 {
+		t.Fatalf("first baseline %+v", first)
+	}
+	arrived := ask("during-gap")
+	if arrived.Recipients[0].Wake.Wake == domain.WakeWait {
+		t.Fatal("the wait was advertised before the client got a cursor")
+	}
+	retry := poll(wire.WaitRetryPrefix+attempt, nil)
+	if !retry.InitialCursorRecovered || retry.Cursor != first.Cursor || retry.CursorFingerprint != first.CursorFingerprint {
+		t.Fatalf("lost baseline %+v/%q, retry got %+v/%q", first.Cursor, first.CursorFingerprint, retry.Cursor, retry.CursorFingerprint)
+	}
+	resumed := poll("", &retry.Cursor)
+	if len(resumed.Unread) != 1 || resumed.Unread[0].ID != arrived.ID {
+		t.Fatalf("resumed wait returned %+v, want only ask %d", resumed.Unread, arrived.ID)
+	}
+	next := poll(wire.WaitAttemptPrefix+wire.NewID(), nil)
+	if next.Cursor.MessageID != arrived.ID || len(next.Unread) != 0 {
+		t.Fatalf("new invocation inherited the old baseline: %+v", next)
+	}
+	missing := s.link(t, linkReq{command: domain.VerbWait, membership: join.Membership,
+		op: wire.WaitRetryPrefix + wire.NewID(), args: domain.Wait{WorkOnly: true}})
+	mustLinkCode(t, missing, domain.CodeWaitCursorInvalidated)
+	if written := s.count(t, `SELECT COUNT(*) FROM op WHERE verb = 'wait'`); written != 0 {
+		t.Fatalf("wait recorded %d operations", written)
+	}
+}

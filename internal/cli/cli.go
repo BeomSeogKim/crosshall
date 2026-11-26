@@ -104,7 +104,7 @@ Owner commands (from a separate owner terminal):
 type Call struct {
 	Owner   bool
 	Command domain.Command
-	// OpKey is empty for commands without a durable effect.
+	// OpKey identifies durable commands and the initial poll of a wait.
 	OpKey string
 	// OwnerAlerts asks for the owner line, which the caller then prints.
 	OwnerAlerts bool

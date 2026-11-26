@@ -54,7 +54,7 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 		return core.Result{}, false, err
 	}
 	caller := member.Caller
-	if caller.PrincipalID != nil {
+	if call.Command != domain.VerbWait && caller.PrincipalID != nil {
 		replay, found, err := domain.ReplayLinkReceipt(ctx, tx, *caller.PrincipalID, call)
 		if err != nil || found {
 			if err == nil {
@@ -139,8 +139,10 @@ func (s *server) linkCall(ctx context.Context, tx store.Tx, req wire.Request) (r
 				return undo(domain.Fail(core.ExitRefused, core.CodeBindingChanged, "moving channels requires a current membership selection",
 					"update crosshall on the linked device or retry the command once the link is ready"))
 			}
-			if err := domain.RecordLinkRequest(ctx, tx, principal, call); err != nil {
-				return core.Result{}, false, err
+			if call.Command != domain.VerbWait {
+				if err := domain.RecordLinkRequest(ctx, tx, principal, call); err != nil {
+					return core.Result{}, false, err
+				}
 			}
 			if selected.BindingID != 0 {
 				result.Membership = &selected

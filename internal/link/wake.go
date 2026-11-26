@@ -2,6 +2,7 @@ package link
 
 // Wake frames require both CapWake and CapEvents. Production peers advertise
 // CapWake once the spoke can durably claim, execute and reconcile a wake.
+// A command connection uses CapWake for the pickup token on a read.
 const (
 	CapWake          = "wake"
 	TypeWakeReady    = "wake_ready"

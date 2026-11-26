@@ -65,6 +65,7 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 		return nil
 	}
 	wantLive := false
+	closed := false
 	ackCount := 0
 	home := &eventHomeTransport{handle: func(cmd domain.Command) (core.Result, error) {
 		switch in := cmd.(type) {
@@ -73,6 +74,9 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 				return core.Result{}, err
 			}
 			switch {
+			case in.Close:
+				closed = true
+				return domain.OK(domain.LinkEventsResult{})
 			case in.Subscribe != nil && in.Subscribe.Boot == "boot" && in.Subscribe.FromSeq == 9 && in.Subscribe.Snapshot:
 				return domain.OK(domain.LinkEventsResult{Snapshot: &link.Snapshot{Seq: 10}, Through: 10})
 			case in.SnapshotPart != nil && *in.SnapshotPart == 1:
@@ -173,8 +177,8 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 			t.Errorf("live event: %+v", event)
 		}
 	})
-	if code != core.ExitOK || stderr != "" || ackCount != 2 {
-		t.Fatalf("exit %d, stderr %q, acknowledgements %d", code, stderr, ackCount)
+	if code != core.ExitOK || stderr != "" || ackCount != 2 || !closed {
+		t.Fatalf("exit %d, stderr %q, acknowledgements %d, closed %t", code, stderr, ackCount, closed)
 	}
 }
 

@@ -196,7 +196,7 @@ func serveLinkCommand(ctx context.Context, env Env, w *link.Writer, session link
 			return o.fail(core.ExitError, CodeLocalError, "link: malformed "+f.Type, "")
 		}
 		call.Device, call.CredentialGen, call.Admission = peer.Device, peer.CredentialGen, peer.Admission
-		if !slices.Contains(session.Caps, link.CapWake) || !slices.Contains(session.Caps, link.CapEvents) {
+		if !slices.Contains(session.Caps, link.CapWake) {
 			call.WakePickup = nil
 		}
 		var cmd domain.Command = call

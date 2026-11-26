@@ -66,6 +66,34 @@ func spokeConfig(device string) link.Spoke {
 		Release: "test", Link: link.Supported()}
 }
 
+func TestLinkCommandPreservesPickupOnlyWithWakeCapability(t *testing.T) {
+	pickup := link.HookToken{Boot: "boot-1", LeafSeq: 3}
+	body, err := json.Marshal(domain.LinkCall{Command: "read", WakePickup: &pickup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cap := range []string{link.CapEvents, link.CapWake} {
+		t.Run(cap, func(t *testing.T) {
+			transport := &fakeTransport{result: core.Result{Status: core.ExitOK}}
+			var stderr bytes.Buffer
+			code := serveLinkCommand(t.Context(), Env{Transport: transport}, link.NewWriter(io.Discard),
+				link.Session{Caps: []string{cap}}, domain.LinkEventPeer{Device: "dev-1"},
+				link.Frame{Type: linkCallFrame, Body: body}, outputs{stderr: &stderr})
+			if code != core.ExitOK || len(transport.calls) != 1 {
+				t.Fatalf("read forwarding: %d, %s, calls = %d", code, &stderr, len(transport.calls))
+			}
+			got := transport.calls[0].Command.(domain.LinkCall).WakePickup
+			if cap == link.CapWake {
+				if got == nil || *got != pickup {
+					t.Fatalf("command connection pickup = %+v", got)
+				}
+			} else if got != nil {
+				t.Fatalf("unnegotiated pickup = %+v", got)
+			}
+		})
+	}
+}
+
 func TestLinkServeShakesHandsThenAnswersPings(t *testing.T) {
 	ht := &homeTransport{}
 	stderr, code := serve(t, Env{Version: "v9", Transport: ht, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {

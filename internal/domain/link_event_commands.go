@@ -26,6 +26,7 @@ type LinkEvents struct {
 	LinkEventPeer
 	AllowWake    bool            `json:"allow_wake,omitempty"`
 	Resubscribe  bool            `json:"resubscribe,omitempty"`
+	Close        bool            `json:"close,omitempty"`
 	Subscribe    *link.Subscribe `json:"subscribe,omitempty"`
 	FromSeq      uint64          `json:"from_seq,omitempty"`
 	SnapshotPart *int            `json:"snapshot_part,omitempty"`

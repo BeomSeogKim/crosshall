@@ -158,15 +158,73 @@ func linkWakeRouteEligible(ctx context.Context, tx store.Tx, peer LinkEventPeer,
 }
 
 // An attempt that may have submitted keeps its original IDs out of later wakes.
+const linkWakeMayHaveSubmitted = `(a.state IN ('submitted', 'uncertain')
+	OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL))`
+
 func pendingLinkWakeIDs(ctx context.Context, tx store.Tx, scope linkOfferScope, route string) ([]int64, error) {
 	return selectIDs(ctx, tx, `SELECT x.message_id FROM recipient x JOIN message m ON m.id = x.message_id
 		WHERE x.principal_id = ?1 AND m.channel_id = ?2 AND `+pendingPublishItem+`
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
 			WHERE a.principal_id = ?1 AND item.value = x.message_id
-				AND (a.state IN ('submitted', 'uncertain') OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL)
+				AND (`+linkWakeMayHaveSubmitted+`
 					OR (a.state = 'not_submitted' AND a.route = ?3)))
 		ORDER BY x.message_id LIMIT ?4`, scope.principal, scope.binding.channel, route, OfferCap)
+}
+
+func linkedMemberWake(ctx context.Context, tx store.Tx, binding int64, now time.Time) (Wake, error) {
+	none := Wake{Wake: WakeNone, Why: WhyNoRoute}
+	var peer LinkEventPeer
+	var route link.WakeRoute
+	var closed bool
+	var principal int64
+	err := tx.QueryRowContext(ctx, `SELECT l.device_id, l.credential_gen, k.vendor, k.key,
+			l.boot, l.launch_ref, l.policy_epoch, l.leaf_generation, l.membership_generation, l.route_epoch,
+			l.principal_id, s.closed_at_ms IS NOT NULL
+		FROM binding b JOIN link_event_launch l ON l.principal_id = b.principal_id AND l.binding_id = b.id
+		JOIN adapter_launch a ON a.principal_id = l.principal_id AND a.launch_ref = l.projection_ref
+		JOIN device_key k ON k.principal_id = l.principal_id AND k.device_id = l.device_id
+			AND k.credential_gen = l.credential_gen AND k.leaf_generation = l.leaf_generation
+			AND k.vendor = json_extract(a.profile, '$.adapter') AND k.state = 'live'
+		JOIN link_event_stream s ON s.device_id = l.device_id AND s.boot = l.boot AND s.wake_capable = 1
+		JOIN link_event_cursor c ON c.device_id = l.device_id AND c.boot = l.boot AND c.credential_gen = l.credential_gen
+		WHERE b.id = ? AND s.snapshot_seq IS NULL`, binding).
+		Scan(&peer.Device, &peer.CredentialGen, &route.Vendor, &route.Key,
+			&route.Boot, &route.Launch, &route.PolicyEpoch, &route.Scope.LeafGeneration,
+			&route.Scope.Membership.Generation, &route.Scope.RouteEpoch, &principal, &closed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return none, nil
+	}
+	if err != nil {
+		return none, err
+	}
+	route.Scope.Membership.BindingID = binding
+	scope, err := readLinkOfferScope(ctx, tx, peer.Device, route.Member)
+	if err != nil || !scope.live() || scope.credential != peer.CredentialGen || scope.MemberScope != route.Scope {
+		return none, err
+	}
+	var held bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_wake_attempt
+		WHERE device_id = ? AND principal_id = ? AND binding_id = ? AND released_at_ms IS NULL
+		AND (state = 'dispatching' OR (state IN ('submitted', 'uncertain') AND first_result_at_ms > ?)))`,
+		peer.Device, principal, binding, ms(now.Add(-linkWakeHeldWindow))).Scan(&held); err != nil {
+		return none, err
+	}
+	if held {
+		return Wake{Wake: WakeNone, Why: WhyHeld}, nil
+	}
+	if !closed || scope.binding.dnd {
+		return none, nil
+	}
+	eligible, err := linkWakeRouteEligible(ctx, tx, peer, principal, route)
+	if err != nil || !eligible {
+		return none, err
+	}
+	running, err := inReportedTurn(ctx, tx, principal, now)
+	if err != nil || running {
+		return none, err
+	}
+	return Wake{Wake: WakeNone, Why: WhyDeviceOffline}, nil
 }
 
 func replayLinkWake(ctx context.Context, tx store.Tx, peer LinkEventPeer, principal int64, route link.WakeRoute, raw string,

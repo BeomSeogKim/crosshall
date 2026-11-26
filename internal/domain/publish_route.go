@@ -464,9 +464,11 @@ func withPublishStatus(ctx context.Context, tx store.Tx, bindingID int64, m *Mem
 	}
 	if found {
 		m.Publish = &PublishStatus{State: status.State}
+		m.Wake = reachWake(status, true)
+		return nil
 	}
-	m.Wake = reachWake(status, found)
-	return nil
+	m.Wake, err = linkedMemberWake(ctx, tx, bindingID, now)
+	return err
 }
 
 func publishWord(status *PublishStatus) *PublishStatus {

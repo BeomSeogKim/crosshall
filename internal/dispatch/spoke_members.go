@@ -35,18 +35,24 @@ type spokeMembers struct {
 	conn spokeConn // nil while the link is down or recovering
 }
 
-// spokeConn is the link the member commands go over.
+// spokeConn is the link the member commands go over. Send and Receive
+// are bounded by their deadline; Send reports whether any byte reached the
+// link.
 type spokeConn interface {
-	Write(frame string, v any) error
-	Read() (link.Frame, error)
+	Send(frame string, v any, deadline time.Time) (sent bool, err error)
+	Receive(deadline time.Time) (link.Frame, error)
 	Close()
 }
 
 type sshSpokeConn struct{ c *link.SSHConnection }
 
-func (s sshSpokeConn) Write(frame string, v any) error { return s.c.Writer.Write(frame, v) }
-func (s sshSpokeConn) Read() (link.Frame, error)       { return s.c.Reader.Read() }
-func (s sshSpokeConn) Close()                          { s.c.Close() }
+func (s sshSpokeConn) Send(frame string, v any, deadline time.Time) (bool, error) {
+	return s.c.SendFrame(frame, v, deadline)
+}
+func (s sshSpokeConn) Receive(deadline time.Time) (link.Frame, error) {
+	return s.c.ReceiveFrame(deadline)
+}
+func (s sshSpokeConn) Close() { s.c.Close() }
 
 // spokeDir is the private directory of one hall and device's spoke store.
 func spokeDir(state *os.Root, stateRoot string, linked linkConfig) (string, error) {
@@ -167,49 +173,35 @@ func (m *spokeMembers) exchange(ctx context.Context, frame string, call domain.L
 	return m.roundTrip(ctx, conn, frame, call, deadline)
 }
 
-// roundTrip writes and reads with the caller holding the turn. The write
-// and the read both run against the deadline; on any failure the link is
-// closed.
+// roundTrip writes and reads synchronously, with the caller holding the
+// turn, each bounded by the deadline on the link's own pipes. errNotSent
+// means no byte of the frame reached the link: the deadline had passed,
+// or the write failed before its first byte. Any other failure may have
+// sent the frame. Every failure closes the link, so a late answer is
+// never read as the next command's.
 func (m *spokeMembers) roundTrip(ctx context.Context, conn spokeConn, frame string, call domain.LinkCall, deadline time.Time) (core.Result, error) {
-	// Nothing is attempted once the deadline has passed: that is
-	// errNotSent, the only error after which no byte can have left.
 	if ctx.Err() != nil || !time.Now().Before(deadline) {
 		return core.Result{}, errNotSent
 	}
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
-	type answer struct {
-		f   link.Frame
-		err error
-	}
-	got := make(chan answer, 1)
-	go func() {
-		if err := conn.Write(frame, call); err != nil {
-			got <- answer{err: err}
-			return
-		}
-		f, err := conn.Read()
-		got <- answer{f, err}
-	}()
-	select {
-	case <-ctx.Done():
+	sent, err := conn.Send(frame, call, deadline)
+	if err != nil {
 		m.drop(conn)
-		return core.Result{}, ctx.Err()
-	case <-timer.C:
-		m.drop(conn)
-		return core.Result{}, errors.New("the home did not answer in time")
-	case a := <-got:
-		var result core.Result
-		if a.err != nil || a.f.Type != "result" || json.Unmarshal(a.f.Body, &result) != nil {
-			m.drop(conn)
-			return core.Result{}, fmt.Errorf("link: no result frame: %v", a.err)
+		if !sent {
+			return core.Result{}, errNotSent
 		}
-		if result.Code == domain.CodeLinkStale {
-			m.drop(conn)
-			return core.Result{}, errors.New("the home closed this link")
-		}
-		return result, nil
+		return core.Result{}, fmt.Errorf("link: frame interrupted: %w", err)
 	}
+	f, err := conn.Receive(deadline)
+	var result core.Result
+	if err != nil || f.Type != "result" || json.Unmarshal(f.Body, &result) != nil {
+		m.drop(conn)
+		return core.Result{}, fmt.Errorf("link: no result frame: %v", err)
+	}
+	if result.Code == domain.CodeLinkStale {
+		m.drop(conn)
+		return core.Result{}, errors.New("the home closed this link")
+	}
+	return result, nil
 }
 
 func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time) {

@@ -24,25 +24,34 @@ type fakeLink struct {
 	written []domain.LinkCall
 	frames  []string
 	closed  bool
+	full    bool // the pipe is full: a frame gets no byte out by its deadline
 }
 
 func newFakeLink() *fakeLink { return &fakeLink{answers: make(chan link.Frame, 8)} }
 
-func (f *fakeLink) Write(frame string, v any) error {
+func (f *fakeLink) Send(frame string, v any, deadline time.Time) (bool, error) {
+	if f.full {
+		time.Sleep(time.Until(deadline))
+		return false, os.ErrDeadlineExceeded
+	}
 	if f.onWrite != nil {
 		f.onWrite(frame, v)
 	}
 	f.frames = append(f.frames, frame)
 	f.written = append(f.written, v.(domain.LinkCall))
-	return nil
+	return true, nil
 }
 
-func (f *fakeLink) Read() (link.Frame, error) {
-	frame, ok := <-f.answers
-	if !ok {
-		return link.Frame{}, errors.New("link ended")
+func (f *fakeLink) Receive(deadline time.Time) (link.Frame, error) {
+	select {
+	case frame, ok := <-f.answers:
+		if !ok {
+			return link.Frame{}, errors.New("link ended")
+		}
+		return frame, nil
+	case <-time.After(time.Until(deadline)):
+		return link.Frame{}, os.ErrDeadlineExceeded
 	}
-	return frame, nil
 }
 
 func (f *fakeLink) Close() { f.closed = true }
@@ -470,5 +479,30 @@ func TestASpokeKeepsTheNewestMembership(t *testing.T) {
 	f.s.adoptMembership(t.Context(), "codex", "session", &core.Membership{BindingID: 4, Generation: 2})
 	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
 		t.Fatalf("selection %d after an older receipt", n)
+	}
+}
+
+// A frame that gets no byte out by its deadline (the home stopped
+// reading) leaves nothing behind: unsent, the link closed, and the
+// command's own record removed. A home that reads but never answers
+// leaves the outcome unknown.
+func TestASpokeTellsUnsentFromUnanswered(t *testing.T) {
+	f := newSpokeFixture(t)
+	full := newFakeLink()
+	full.full = true
+	f.m.attach(full)
+	if r := f.sendArgs(t, "note", "k1", `{"all":true,"body":"hi"}`, 50*time.Millisecond); r.Code != core.CodeUnsent || !full.closed {
+		t.Fatalf("a full pipe: %+v, closed %v", r, full.closed)
+	}
+	silent := newFakeLink()
+	f.m.attach(silent)
+	if r := f.sendArgs(t, "note", "k2", `{"all":true,"body":"hi"}`, 50*time.Millisecond); r.Code != core.CodeOutcomeUnknown || !silent.closed {
+		t.Fatalf("a silent home: %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k1'`); n != 0 {
+		t.Fatalf("an unsent command kept its record")
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k2' AND state = 'unknown'`); n != 1 {
+		t.Fatalf("an unanswered command lost its record")
 	}
 }

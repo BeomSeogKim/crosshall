@@ -129,7 +129,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	// The credential generation the link authenticated under; every call
 	// carries it, and the dispatcher refuses it once the device enrolls
 	// again.
-	var credentialGen int64
+	var credentialGen, linkSession int64
 	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(),
 		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
@@ -140,14 +140,13 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 		Verify: func(device, homeNonce, spokeNonce, proof string) (bool, error) {
 			v, err := ownerData[domain.LinkVerifyResult](ctx, env,
 				Call{Command: domain.LinkVerify{Device: device, HomeNonce: homeNonce, SpokeNonce: spokeNonce, Proof: proof}})
-			credentialGen = v.CredentialGen
+			credentialGen, linkSession = v.CredentialGen, v.Session
 			return v.OK, err
 		}}
 	session, err := home.Accept(r, w)
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
-	linkAt := time.Now().UnixMilli()
 	for {
 		f, err := r.Read()
 		if errors.Is(err, io.EOF) {
@@ -168,7 +167,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 			}
 			// The device and credential come from this link's
 			// authentication, never from the device's frame.
-			call.Device, call.CredentialGen, call.LinkAtMS = session.Device, credentialGen, linkAt
+			call.Device, call.CredentialGen, call.LinkSession = session.Device, credentialGen, linkSession
 			var cmd domain.Command = call
 			if f.Type == linkReceiptFrame {
 				cmd = domain.LinkReceipt{LinkCall: call}

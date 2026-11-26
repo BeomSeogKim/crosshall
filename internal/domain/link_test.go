@@ -57,9 +57,17 @@ func TestEnrollingADeviceGivesItAnIDAndCheckableProofs(t *testing.T) {
 		"another's proof": {LinkVerify{Device: got.Device, HomeNonce: hn, SpokeNonce: sn,
 			Proof: link.Proof([]byte("x"), link.RoleSpoke, hall, got.Device, hn, sn)}, true, false},
 	} {
+		before := f.count(`SELECT COUNT(*) FROM link_session`)
 		v := decodeAs[LinkVerifyResult](t, f.owner(c.cmd, ""))
 		if v.Known != c.known || v.OK != c.ok {
 			t.Errorf("%s: %+v", name, v)
+		}
+		// A verified proof opens the link's admission record before the
+		// home can send its welcome; a failed one opens none.
+		opened := f.count(`SELECT COUNT(*) FROM link_session WHERE id = ? AND device_id = ? AND credential_gen = ?`,
+			v.Session, got.Device, v.CredentialGen)
+		if after := f.count(`SELECT COUNT(*) FROM link_session`); c.ok != (opened == 1 && after == before+1) || !c.ok && after != before {
+			t.Errorf("%s: session %d, %d -> %d rows", name, v.Session, before, after)
 		}
 	}
 	// The secret is stored for verification only: no audit or op row holds it.

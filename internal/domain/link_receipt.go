@@ -34,21 +34,23 @@ func linkFenced() core.Result {
 		"run the command again to send it as a new request")
 }
 
-// LinkSessionLimit bounds how long a link may carry requests after the
-// home accepted it. A request is admitted only within it, however long a
-// frame waited in a buffer, so a fence kept for store.RetentionWindow
-// outlives every copy of the request it fences.
-const LinkSessionLimit = 24 * time.Hour
-
-// linkCredential refuses a link authenticated under a device credential
-// that no longer holds, or accepted longer ago than LinkSessionLimit.
-func linkCredential(ctx context.Context, tx store.Tx, call LinkCall, now time.Time) (*core.Result, error) {
-	if call.LinkAtMS <= 0 || now.Sub(time.UnixMilli(call.LinkAtMS)) > LinkSessionLimit {
-		r := Refuse(CodeLinkStale, "this link was accepted too long ago to carry requests", "reconnect the link")
+// linkCredential refuses a request whose link the home no longer admits
+// (its session row is gone: a retention pass that pruned fences removed
+// it, so a request held on that link can never outlive its fence), or
+// whose device credential no longer holds.
+func linkCredential(ctx context.Context, tx store.Tx, call LinkCall) (*core.Result, error) {
+	var open int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM link_session WHERE id = ? AND device_id = ? AND credential_gen = ?`,
+		call.LinkSession, call.Device, call.CredentialGen).Scan(&open)
+	if err != nil {
+		return nil, err
+	}
+	if open == 0 {
+		r := Refuse(CodeLinkStale, "the hall no longer admits requests from this link", "reconnect the link")
 		return &r, nil
 	}
 	var gen int64
-	err := tx.QueryRowContext(ctx, `SELECT credential_gen FROM device WHERE device_id = ?`, call.Device).Scan(&gen)
+	err = tx.QueryRowContext(ctx, `SELECT credential_gen FROM device WHERE device_id = ?`, call.Device).Scan(&gen)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && gen != call.CredentialGen {
 		r := Refuse(CodeLinkStale, "this link was authenticated under a device credential that no longer holds",
 			"reconnect the link")
@@ -63,7 +65,7 @@ func linkCredential(ctx context.Context, tx store.Tx, call LinkCall, now time.Ti
 // runs the command: recovery is receipt-only (#400, design 12h). The
 // credential is the link's current one.
 func FindOrFenceLinkReceipt(ctx context.Context, tx store.Tx, call LinkCall, now time.Time) (core.Result, error) {
-	if refusal, err := linkCredential(ctx, tx, call, now); err != nil || refusal != nil {
+	if refusal, err := linkCredential(ctx, tx, call); err != nil || refusal != nil {
 		if refusal != nil {
 			return *refusal, nil
 		}

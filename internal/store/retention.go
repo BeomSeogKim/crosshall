@@ -126,6 +126,16 @@ func (s *Store) RetentionChunk(ctx context.Context, p *RetentionPass) (bool, err
 
 func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 	step := retentionSteps[p.step]
+	if step.name == "ops" || step.name == "link fences" {
+		// Every link session ends, in the same transaction, before a
+		// linked device's fence goes: a request held on a link the home
+		// accepted before the fence is never admitted after it (#400).
+		if _, err := tx.ExecContext(ctx, `DELETE FROM link_session WHERE
+			EXISTS (SELECT 1 FROM link_fence WHERE at_ms < ?1) OR EXISTS (SELECT 1 FROM op WHERE scope = 'link' AND at_ms < ?1)`,
+			retentionCut(p.now, step.window)); err != nil {
+			return err
+		}
+	}
 	res, err := tx.ExecContext(ctx, step.delete, retentionCut(p.now, step.window), p.keep.ops, p.keep.observations,
 		p.limit, p.keep.running)
 	if err != nil {
@@ -146,7 +156,7 @@ func (p *RetentionPass) chunk(ctx context.Context, tx Tx) error {
 	// A launch that lost facts or turns has its turns reassigned from all
 	// its facts again: every launch this pass may delete from, in the same
 	// transaction as the delete.
-	if n > 0 && step.name != "ops" {
+	if n > 0 && step.name != "ops" && step.name != "link fences" {
 		if _, err := tx.ExecContext(ctx, `UPDATE adapter_launch SET reconciled_seq = NULL, reconciled_at_ms = NULL
 			WHERE reconciled_seq IS NOT NULL AND principal_id || ':' || launch_ref NOT IN (SELECT value FROM json_each(?))`,
 			p.keep.running); err != nil {

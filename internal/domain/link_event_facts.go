@@ -232,6 +232,17 @@ func (s *Service) applyLinkHookInput(ctx context.Context, tx store.Tx, peer Link
 	if !found || scope.LeafGeneration != in.token.LeafGeneration || scope.Membership != in.token.Membership {
 		return link.RecordedStale, "membership_scope", nil
 	}
+	// A proven pre-end write can be confirmed even after the spoke has
+	// acknowledged the departure cut, which fences all new lifecycle input.
+	if in.written != nil && scope.binding.state == "departed" && scope.binding.byHook && !scope.binding.byOwner {
+		ok, err := confirmLinkHookOffer(ctx, tx, peer, in, scope, in.token.LeafSeq, now)
+		if err != nil {
+			return "", "", err
+		}
+		if ok {
+			return link.RecordedApplied, "", nil
+		}
+	}
 	if status, reason, err := linkHookCut(ctx, tx, peer, in, scope, snapshot); status != "" || err != nil {
 		return status, reason, err
 	}
@@ -253,7 +264,7 @@ func (s *Service) applyLinkHookInput(ctx context.Context, tx store.Tx, peer Link
 		// A display receipt is not a lifecycle step: one handled after a
 		// later fact of its leaf still confirms its nonce-checked offer,
 		// and leaves the leaf's head where it is.
-		ok, err := confirmLinkHookOffer(ctx, tx, peer, in, scope, now)
+		ok, err := confirmLinkHookOffer(ctx, tx, peer, in, scope, 0, now)
 		if err != nil || !ok {
 			return link.RecordedStale, "fact_scope", err
 		}
@@ -272,7 +283,7 @@ func (s *Service) applyLinkHookInput(ctx context.Context, tx store.Tx, peer Link
 	at := max(ms(now), lastAt+1)
 	var ok bool
 	if in.written != nil {
-		ok, err = confirmLinkHookOffer(ctx, tx, peer, in, scope, now)
+		ok, err = confirmLinkHookOffer(ctx, tx, peer, in, scope, 0, now)
 	} else {
 		ok, err = applyLinkFact(ctx, tx, peer, in, scope, at, now)
 	}
@@ -476,8 +487,11 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	return true, presenceChanged(ctx, tx, scope.binding.channel, scope.principal, before, now)
 }
 
-func confirmLinkHookOffer(ctx context.Context, tx store.Tx, peer LinkEventPeer, in linkHookInput, scope linkHookScope, now time.Time) (bool, error) {
-	if scope.binding.state != "live" {
+// preEndSeq selects historical confirmation. The head's effective time
+// identifies the projected SessionEnd; the write and end are ordered by
+// the leaf sequence, independent of either device's wall clock.
+func confirmLinkHookOffer(ctx context.Context, tx store.Tx, peer LinkEventPeer, in linkHookInput, scope linkHookScope, preEndSeq uint64, now time.Time) (bool, error) {
+	if preEndSeq == 0 && scope.binding.state != "live" {
 		return false, nil
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE offer SET written_at_ms = COALESCE(written_at_ms, ?1)
@@ -488,9 +502,17 @@ func confirmLinkHookOffer(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 				JOIN adapter_policy p ON p.adapter = ?10 AND p.enabled = 1 AND p.epoch = l.policy_epoch
 				WHERE l.principal_id = ?4 AND l.device_id = ?11 AND l.credential_gen = ?8 AND l.boot = ?12
 					AND l.leaf_generation = ?5 AND l.binding_id = ?6 AND l.route_epoch = ?7 AND l.membership_generation = ?9
-					AND l.launch_ref = offer.launch_ref AND l.policy_epoch = offer.epoch AND a.ended_hook_at_ms IS NULL AND a.fenced = 0)`,
+					AND l.launch_ref = offer.launch_ref AND l.policy_epoch = offer.epoch AND a.fenced = 0
+					AND ((?13 = 0 AND a.ended_hook_at_ms IS NULL)
+						OR (?13 > 0 AND l.verified = 1 AND EXISTS (
+							SELECT 1 FROM link_event_fact_head h JOIN observation o ON o.principal_id = l.principal_id
+								AND o.launch_ref = l.projection_ref AND o.kind = ?15 AND o.hook_at_ms = h.effective_at_ms
+							WHERE h.device_id = l.device_id AND h.vendor = ?10 AND h.key = ?14
+								AND h.credential_gen = l.credential_gen AND h.boot = l.boot AND h.leaf_generation = l.leaf_generation
+								AND h.binding_id = l.binding_id AND h.membership_generation = l.membership_generation AND h.route_epoch = l.route_epoch
+								AND h.quarantined = 0 AND h.effective_at_ms = a.ended_hook_at_ms AND ?13 < h.leaf_seq))))`,
 		ms(now), in.written.OfferID, in.written.Nonce, scope.principal, scope.LeafGeneration, scope.binding.id, scope.RouteEpoch,
-		peer.CredentialGen, scope.binding.selectionGen, in.member.Vendor, peer.Device, in.token.Boot)
+		peer.CredentialGen, scope.binding.selectionGen, in.member.Vendor, peer.Device, in.token.Boot, preEndSeq, in.member.Key, FactSessionEnded)
 	if err != nil {
 		return false, err
 	}

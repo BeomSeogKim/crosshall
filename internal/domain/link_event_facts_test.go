@@ -227,6 +227,68 @@ func TestALateLinkReceiptConfirmsItsOfferWithoutRewinding(t *testing.T) {
 	h.fact(4, 10, stop(launch, "t1", ms(h.now)), link.RecordedApplied)
 }
 
+func TestALinkReceiptCapturedBeforeSessionEndCanConfirmItsOffer(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		seq       uint64
+		nonce     string
+		absentCut bool
+		change    string
+		confirmed bool
+	}{
+		{name: "receipt before end", seq: 8, nonce: "nonce", confirmed: true},
+		{name: "depart cut already acknowledged", seq: 8, nonce: "nonce", absentCut: true, confirmed: true},
+		{name: "same sequence", seq: 9, nonce: "nonce"},
+		{name: "receipt after end", seq: 10, nonce: "nonce"},
+		{name: "wrong nonce", seq: 8, nonce: "wrong"},
+		{name: "old membership", seq: 8, nonce: "nonce", change: `UPDATE member_selection SET generation = generation + 1 WHERE binding_id IN (SELECT id FROM binding WHERE state = 'departed')`},
+		{name: "route changed", seq: 8, nonce: "nonce", change: `UPDATE binding SET route_epoch = route_epoch + 1 WHERE state = 'departed'`},
+		{name: "policy changed", seq: 8, nonce: "nonce", change: `UPDATE adapter_policy SET epoch = epoch + 1 WHERE adapter = 'claude'`},
+		{name: "terminal proof missing", seq: 8, nonce: "nonce", change: `DELETE FROM observation WHERE kind = 'session_ended'`},
+		{name: "leaf quarantined", seq: 8, nonce: "nonce", change: `UPDATE link_event_fact_head SET quarantined = 1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLinkedHookFixture(t)
+			const launch = "pid-42-first"
+			h.fact(1, 2, linkedStart(launch, ms(h.now)), link.RecordedApplied)
+			h.sql(`INSERT INTO offer (id, principal_id, binding_id, route_epoch, generation, launch_ref, epoch,
+				reason, evidence, at_ms, receipt_mode, nonce, device_credential_gen, device_membership_gen)
+				SELECT 17, principal_id, binding_id, route_epoch, leaf_generation, launch_ref, policy_epoch,
+				'prompt', 'fixture', 0, 'provisional', 'nonce', credential_gen, membership_generation FROM link_event_launch`)
+			h.fact(2, 7, prompt(launch, "t1", ms(h.now)), link.RecordedApplied)
+			h.fact(3, 9, ended(launch, ms(h.now)), link.RecordedApplied)
+			if tc.absentCut {
+				h.installCut(9, true)
+			}
+			if tc.change != "" {
+				h.sql(tc.change)
+			}
+			h.token.LeafSeq = tc.seq
+			receipt := LinkWritten{LinkEventPeer: h.peer, Written: link.Written{
+				ID: 4, Member: h.member, OfferID: 17, Nonce: tc.nonce, WrittenAtMS: ms(h.now), Token: h.token,
+			}}
+			r := decodeAs[link.Recorded](t, h.owner(receipt, ""))
+			if (r.Status == link.RecordedApplied) != tc.confirmed {
+				t.Fatalf("receipt at %d following end at 9: %+v", tc.seq, r)
+			}
+			if n := h.count(`SELECT COUNT(*) FROM offer WHERE id = 17 AND written_at_ms IS NOT NULL`); (n == 1) != tc.confirmed {
+				t.Fatalf("confirmed %d offers", n)
+			}
+			if tc.confirmed {
+				if r := decodeAs[link.Recorded](t, h.owner(receipt, "")); r.Status != link.RecordedApplied {
+					t.Fatalf("receipt replay: %+v", r)
+				}
+			}
+			if n := h.count(`SELECT COUNT(*) FROM link_event_fact_head WHERE leaf_seq = 9`); n != 1 {
+				t.Fatal("receipt moved the terminal head")
+			}
+			if n := h.count(`SELECT COUNT(*) FROM binding WHERE id = ? AND state = 'departed' AND departed_by_hook = 1`, h.token.Membership.BindingID); n != 1 {
+				t.Fatal("receipt changed the departed binding")
+			}
+		})
+	}
+}
+
 func TestLinkFactRejectsLocalProcessFields(t *testing.T) {
 	h := newLinkedHookFixture(t)
 	cmd := linkedStart("pid-42-first", ms(h.now))

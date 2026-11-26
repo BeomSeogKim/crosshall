@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -220,6 +221,39 @@ func TestLinkServeForwardsMemberCommands(t *testing.T) {
 	who := owner.must("owner", "who", "--all")
 	if !strings.Contains(who.stdout, "remote") || strings.Contains(who.stdout, "k-launch") {
 		t.Fatalf("owner who:\n%s", who.stdout)
+	}
+
+	// A read whose answer the link cannot carry is refused, picks nothing
+	// up, and the link stays up.
+	other := base
+	other.Key, other.Command, other.Args, other.OpKey = "k2", "join", json.RawMessage(`{"channel":"checkout","alias":"sender"}`), "j2"
+	if r := s.call(t, other); r.Status != core.ExitOK {
+		t.Fatalf("second join %+v", r)
+	}
+	big, _ := json.Marshal(map[string]any{"all": true, "body": strings.Repeat("<", domain.MaxBody)})
+	for i := range 3 {
+		note := other
+		note.Command, note.Args, note.OpKey, note.Membership = "note", big, fmt.Sprintf("n%d", i), nil
+		note.Membership = s.call(t, domain.LinkCall{Vendor: "claude", Key: "k2", LeafGeneration: "g1", LeafEpoch: 1, Command: "who"}).Membership
+		if r := s.call(t, note); r.Status != core.ExitOK {
+			t.Fatalf("note %d: %+v", i, r)
+		}
+	}
+	read := base
+	read.Command, read.Args, read.OpKey, read.Membership = "read", json.RawMessage(`{}`), "r1", r.Membership
+	if r := s.call(t, read); r.Code != domain.CodeLinkResultTooLarge {
+		t.Fatalf("large read: %+v", r)
+	}
+	if err := s.w.Write("ping", map[string]int{}); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := s.r.Read(); err != nil || f.Type != "pong" {
+		t.Fatalf("the link did not survive the large read: %+v, %v", f, err)
+	}
+	inbox := base
+	inbox.Command, inbox.Membership = "inbox", r.Membership
+	if r := s.call(t, inbox); !strings.Contains(string(r.Data), `"id":3`) {
+		t.Fatalf("the refused read picked messages up: %s", r.Data)
 	}
 
 	// Enrolling the device again retires this link's credential.

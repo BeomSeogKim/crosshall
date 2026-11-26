@@ -24,6 +24,7 @@ CREATE TABLE device_key (
 );
 CREATE INDEX device_key_principal ON device_key(principal_id);
 
--- The membership a forwarded command was admitted under, so a retry after
--- a lost response gets exactly its committed receipt (#400).
-ALTER TABLE op ADD COLUMN membership TEXT;
+-- For a command forwarded by a linked device: the hash of the forwarded
+-- request as it arrived and the membership it was admitted under, so an
+-- exact retry after a lost response gets its committed receipt (#400).
+ALTER TABLE op ADD COLUMN link_request TEXT;

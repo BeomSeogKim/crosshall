@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -44,6 +46,7 @@ type linkReq struct {
 	args             any
 	op               string
 	membership       *core.Membership
+	ack              uint64
 }
 
 func (s *server) link(t *testing.T, r linkReq) core.Result {
@@ -68,7 +71,7 @@ func (s *server) link(t *testing.T, r linkReq) core.Result {
 		t.Fatal(err)
 	}
 	call, err := json.Marshal(domain.LinkCall{Device: r.device, CredentialGen: r.cred, Vendor: "claude", Key: r.key,
-		LeafGeneration: r.gen, LeafEpoch: r.epoch, Command: r.command, Args: args, OpKey: r.op, Membership: r.membership})
+		LeafGeneration: r.gen, LeafEpoch: r.epoch, Command: r.command, Args: args, OpKey: r.op, Membership: r.membership, Ack: r.ack})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,5 +249,115 @@ func TestOnlyTheOwnerIngressCarriesALinkCall(t *testing.T) {
 	r := s.fixtureRequest(t, Arrival{}, wire.Request{Verb: domain.VerbLinkCall, Args: call})
 	if r.Status == core.ExitOK {
 		t.Fatalf("a member ingress ran a link call: %+v", r)
+	}
+}
+
+// A read's receipt is shown again with its bodies, against the channel it
+// was read in, also after a move and with duplicate IDs in the request;
+// the retry records no new pickup.
+func TestARetriedLinkedReadShowsTheOriginalMessages(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbNote, args: map[string]any{"all": true, "body": "hello there"}, op: "n1"}))
+	body := func(r core.Result) string {
+		var out domain.ReadResult
+		if err := json.Unmarshal(r.Data, &out); err != nil || len(out.Messages) != 1 {
+			t.Fatalf("read %s", r.Data)
+		}
+		return out.Messages[0].Body
+	}
+	read := map[string]any{"ids": []int64{1, 1}}
+	if b := body(mustLinkOK(t, s.link(t, linkReq{command: domain.VerbRead, args: read, op: "r1", membership: m}))); b != "hello there" {
+		t.Fatalf("first read %q", b)
+	}
+	if b := body(mustLinkOK(t, s.link(t, linkReq{command: domain.VerbRead, args: read, op: "r1", membership: m}))); b != "hello there" {
+		t.Fatalf("exact retry %q", b)
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: map[string]any{"channel": "payments", "move": true}, op: "j2", membership: m}))
+	if b := body(mustLinkOK(t, s.link(t, linkReq{command: domain.VerbRead, args: read, op: "r1", membership: m}))); b != "hello there" {
+		t.Fatalf("retry after a move %q", b)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM op WHERE op_key = 'r1'`); n != 1 {
+		t.Fatalf("%d read ops", n)
+	}
+}
+
+// A read whose answer would not fit one link frame is refused and leaves
+// nothing picked up.
+func TestALinkedReadTooLargeForTheLinkPicksNothingUp(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	// "<" is written as \u003c in JSON: six bytes for one.
+	big := strings.Repeat("<", domain.MaxBody)
+	for i := range 3 {
+		mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbNote,
+			args: map[string]any{"all": true, "body": big}, op: fmt.Sprintf("n%d", i)}))
+	}
+	r := s.link(t, linkReq{command: domain.VerbRead, args: map[string]any{}, op: "r1", membership: m})
+	mustLinkCode(t, r, domain.CodeLinkResultTooLarge)
+	if n := s.count(t, `SELECT COUNT(*) FROM recipient r JOIN principal p ON p.id = r.principal_id
+		WHERE p.device_id = 'dev-a' AND r.picked_up_at_ms IS NOT NULL`); n != 0 {
+		t.Fatalf("%d messages picked up by a refused read", n)
+	}
+	if n := s.count(t, `SELECT COUNT(*) FROM op WHERE op_key = 'r1'`); n != 0 {
+		t.Fatalf("the refused read recorded its key")
+	}
+	// One message at a time fits.
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbRead, args: map[string]any{"ids": []int64{1}}, op: "r2", membership: m}))
+}
+
+// A newer leaf registration is kept whatever its command's outcome; the
+// older registration is stale afterwards.
+func TestALeafReplacementHoldsWhateverTheCommandsOutcome(t *testing.T) {
+	for name, second := range map[string]linkReq{
+		"refused command": {command: domain.VerbFocus, args: map[string]any{}, op: "f1"},
+		"receipt replay":  {command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := linkServer(t)
+			m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+			second.epoch, second.gen = 2, "g2"
+			if second.command != domain.VerbJoin {
+				second.membership = m
+			}
+			s.link(t, second)
+			if n := s.count(t, `SELECT leaf_epoch FROM device_key WHERE device_id = 'dev-a'`); n != 2 {
+				t.Fatalf("leaf epoch %d after a newer registration", n)
+			}
+			mustLinkCode(t, s.link(t, linkReq{command: domain.VerbWho, membership: m}), domain.CodeStaleLeaf)
+		})
+	}
+}
+
+// After a linked leave, a join with the member's earlier roster cursor
+// brings it back.
+func TestALinkedMemberRejoinsAfterLeaving(t *testing.T) {
+	s := linkServer(t)
+	m := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1"})).Membership
+	mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"}))
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbWho, membership: m}))
+	left := mustLinkOK(t, s.link(t, linkReq{command: domain.VerbLeave, op: "l1", membership: m, ack: 1}))
+	membership := left.Membership
+	if membership == nil {
+		membership = m
+	}
+	mustLinkOK(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j2", membership: membership, ack: 1}))
+}
+
+// An unknown key joins only with an empty selection; a refused first join
+// writes nothing.
+func TestAFirstLinkedJoinMustCarryNoSelection(t *testing.T) {
+	s := linkServer(t)
+	other := mustLinkOK(t, s.link(t, linkReq{device: "dev-b", command: domain.VerbJoin, args: joinChannel("checkout"), op: "jb"})).Membership
+	before := s.count(t, `SELECT (SELECT COUNT(*) FROM principal) * 1000 + (SELECT COUNT(*) FROM binding) * 100
+		+ (SELECT COUNT(*) FROM device_key) * 10 + (SELECT COUNT(*) FROM op)`)
+	mustLinkCode(t, s.link(t, linkReq{command: domain.VerbJoin, args: joinChannel("checkout"), op: "j1", membership: other}),
+		core.CodeBindingChanged)
+	after := s.count(t, `SELECT (SELECT COUNT(*) FROM principal) * 1000 + (SELECT COUNT(*) FROM binding) * 100
+		+ (SELECT COUNT(*) FROM device_key) * 10 + (SELECT COUNT(*) FROM op)`)
+	if after != before {
+		t.Fatalf("a refused first join wrote rows: %d -> %d", before, after)
 	}
 }

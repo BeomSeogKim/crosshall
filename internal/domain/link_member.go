@@ -2,10 +2,13 @@ package domain
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
@@ -45,6 +48,9 @@ const (
 	CodeLinkStale    core.Code = "link_stale"
 	CodeStaleLeaf    core.Code = "stale_leaf"
 	CodeNotOnADevice core.Code = "not_on_a_linked_device_yet"
+	// CodeLinkResultTooLarge refuses a command whose answer would not fit
+	// one link frame; the command is undone.
+	CodeLinkResultTooLarge core.Code = "link_result_too_large"
 )
 
 func notOnADeviceYet(what string) core.Result {
@@ -168,14 +174,23 @@ func ResolveLinkMember(ctx context.Context, tx store.Tx, call LinkCall, now time
 			return LinkMember{}, nil, err
 		}
 	}
-	membership, err := SelectedMembership(ctx, tx, principal)
-	if err != nil {
+	// As the native resolver: the selection is kept for admission and
+	// replay, and the caller is a member only while that binding is live.
+	caller := core.Caller{Role: core.RoleUnenrolled, PrincipalID: &principal}
+	var selected core.Membership
+	var live bool
+	err = tx.QueryRowContext(ctx, `SELECT s.binding_id, s.generation, b.state = 'live'
+		FROM member_selection s JOIN binding b ON b.id = s.binding_id AND b.principal_id = s.principal_id
+		WHERE s.principal_id = ?`, principal).Scan(&selected.BindingID, &selected.Generation, &live)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return LinkMember{}, nil, err
 	}
-	caller := core.Caller{Role: core.RoleMember, PrincipalID: &principal}
-	if membership.BindingID != 0 {
-		binding := membership.BindingID
-		caller.BindingID, caller.Membership = &binding, &membership
+	if err == nil {
+		caller.Membership = &selected
+	}
+	if live {
+		caller.Role = core.RoleMember
+		caller.BindingID = &selected.BindingID
 	}
 	return LinkMember{Caller: caller}, nil, nil
 }
@@ -193,34 +208,46 @@ func enrollDeviceKey(call LinkCall, now time.Time) func(context.Context, store.T
 	}
 }
 
+// linkRequest identifies a forwarded request exactly as it arrived: its
+// verb and raw arguments, and the membership it was admitted under. An
+// exact retry resends the same bytes, so no handler's canonical form is
+// needed to recognize it.
+type linkRequest struct {
+	Hash       string           `json:"hash"`
+	Membership *core.Membership `json:"membership"`
+}
+
+func newLinkRequest(call LinkCall) (string, error) {
+	sum := sha256.Sum256(append([]byte(call.Command+"\x00"), call.Args...))
+	raw, err := json.Marshal(linkRequest{Hash: hex.EncodeToString(sum[:]), Membership: call.Membership})
+	return string(raw), err
+}
+
 // ReplayLinkReceipt returns the committed receipt of a forwarded command
 // for this member and key, before any admission check: a retry after a
 // lost response gets the original receipt even if the member has since
-// moved, and is never run again. A key used for another command or
-// another membership is a conflict.
-func ReplayLinkReceipt(ctx context.Context, tx store.Tx, principal int64, key string, cmd Command, membership *core.Membership) (core.Result, bool, error) {
-	if key == "" {
+// moved, and is never run again. A read's receipt is its snapshot,
+// shown again against the channel it was read in, with no new pickup. A
+// key used for another request or membership is a conflict.
+func ReplayLinkReceipt(ctx context.Context, tx store.Tx, principal int64, call LinkCall) (core.Result, bool, error) {
+	if call.OpKey == "" {
 		return core.Result{}, false, nil
 	}
-	hash, err := payloadHash(cmd)
+	want, err := newLinkRequest(call)
 	if err != nil {
 		return core.Result{}, false, err
 	}
-	var verb, gotHash, stored string
-	var gotMembership sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT verb, payload_hash, result, membership FROM op WHERE principal_id = ? AND op_key = ?`,
-		principal, key).Scan(&verb, &gotHash, &stored, &gotMembership)
+	var scope, stored string
+	var got sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT scope, result, link_request FROM op WHERE principal_id = ? AND op_key = ?`,
+		principal, call.OpKey).Scan(&scope, &stored, &got)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Result{}, false, nil
 	}
 	if err != nil {
 		return core.Result{}, false, err
 	}
-	want, err := json.Marshal(membership)
-	if err != nil {
-		return core.Result{}, false, err
-	}
-	if verb != cmd.Verb() || gotHash != hash || !gotMembership.Valid || gotMembership.String != string(want) {
+	if !got.Valid || got.String != want {
 		return Refuse(core.CodeKeyConflict,
 			"this operation key was already used for a different command",
 			"retry the original command, or drop --key to send a new one"), true, nil
@@ -229,20 +256,36 @@ func ReplayLinkReceipt(ctx context.Context, tx store.Tx, principal int64, key st
 	if err := json.Unmarshal([]byte(stored), &r); err != nil {
 		return core.Result{}, false, fmt.Errorf("domain: stored result for key: %w", err)
 	}
-	return r, true, nil
+	if call.Command != VerbRead || r.Status != core.ExitOK {
+		return r, true, nil
+	}
+	var snapshot readSnapshot
+	if err := json.Unmarshal(r.Data, &snapshot); err != nil {
+		return core.Result{}, false, err
+	}
+	member := memberView{principal: principal, name: strings.TrimPrefix(scope, "channel:")}
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM channel WHERE name = ?`, member.name).Scan(&member.channel); err != nil {
+		return core.Result{}, false, err
+	}
+	out, err := hydrateRead(ctx, tx, member, snapshot)
+	if err != nil {
+		return core.Result{}, false, err
+	}
+	r, err = OK(out)
+	return r, true, err
 }
 
-// RecordLinkMembership notes the membership a forwarded command was
-// admitted under on its op record, for ReplayLinkReceipt.
-func RecordLinkMembership(ctx context.Context, tx store.Tx, principal int64, key string, membership *core.Membership) error {
-	if key == "" {
+// RecordLinkRequest notes the forwarded request on its op record, for
+// ReplayLinkReceipt.
+func RecordLinkRequest(ctx context.Context, tx store.Tx, principal int64, call LinkCall) error {
+	if call.OpKey == "" {
 		return nil
 	}
-	raw, err := json.Marshal(membership)
+	raw, err := newLinkRequest(call)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE op SET membership = ? WHERE principal_id = ? AND op_key = ?`, string(raw), principal, key)
+	_, err = tx.ExecContext(ctx, `UPDATE op SET link_request = ? WHERE principal_id = ? AND op_key = ?`, raw, principal, call.OpKey)
 	return err
 }
 

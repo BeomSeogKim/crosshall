@@ -216,13 +216,13 @@ CREATE TABLE link_event_input (
     key TEXT NOT NULL,
     boot TEXT NOT NULL,
     leaf_generation TEXT NOT NULL,
-    leaf_seq INTEGER NOT NULL CHECK (leaf_seq > 0),
+    leaf_seq INTEGER NOT NULL CHECK (leaf_seq > 0 OR (leaf_seq = 0 AND status = 'stale')),
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('applied', 'stale', 'quarantined')),
     code TEXT NOT NULL,
     recorded_at_ms INTEGER NOT NULL,
-    PRIMARY KEY (device_id, credential_gen, id)
+    PRIMARY KEY (device_id, credential_gen, boot, id)
 );
 CREATE INDEX link_event_input_age ON link_event_input(recorded_at_ms);
 CREATE INDEX link_event_input_pending ON link_event_input(device_id, credential_gen, vendor, key, leaf_seq)

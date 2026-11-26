@@ -86,10 +86,17 @@ func ownerData[T any](ctx context.Context, env Env, call Call) (T, error) {
 	return v, json.Unmarshal(r.Data, &v)
 }
 
+type linkCommandRefusal struct {
+	code core.Code
+	text string
+}
+
+func (err linkCommandRefusal) Error() string { return err.text }
+
 func linkOwnerRefusal(cmd domain.Command, r core.Result) error {
 	var msg struct{ Message string }
 	_ = json.Unmarshal(r.Data, &msg)
-	return fmt.Errorf("%s: %s", cmd.Verb(), msg.Message)
+	return linkCommandRefusal{code: r.Code, text: cmd.Verb() + ": " + msg.Message}
 }
 
 // linkEnroll reads the device secret as one hex line on stdin, so it never
@@ -171,6 +178,12 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	}
 }
 
+func failStaleLink(o outputs) core.ExitCode {
+	return o.fail(core.ExitRefused, domain.CodeLinkStale,
+		"the hall no longer admits this link (the device enrolled again, or its fences were pruned); this link is closed",
+		"reconnect the link")
+}
+
 func serveLinkCommand(ctx context.Context, env Env, w *link.Writer, session link.Session, peer domain.LinkEventPeer, f link.Frame, o outputs) core.ExitCode {
 	switch f.Type {
 	case linkPing:
@@ -195,7 +208,7 @@ func serveLinkCommand(ctx context.Context, env Env, w *link.Writer, session link
 			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 		}
 		if result.Code == domain.CodeLinkStale {
-			return o.fail(core.ExitRefused, domain.CodeLinkStale, "the device enrolled again; this link is closed", "")
+			return failStaleLink(o)
 		}
 	default:
 		return o.fail(core.ExitError, CodeLocalError,

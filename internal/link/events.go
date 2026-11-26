@@ -25,7 +25,8 @@ const (
 // Subscribe asks the home for every event after FromSeq, under the
 // device's boot incarnation Boot. The home sends a Snapshot instead when
 // Snapshot is set, when FromSeq is 0 or no longer kept, or when Boot is
-// not the boot of the device's last acknowledged snapshot. A device sets
+// not the boot of the device's last acknowledged snapshot, or when
+// FromSeq is ahead of the home's last durable acknowledgement. A device sets
 // Snapshot on its first subscribe after it starts. Either way the home
 // then sends CaughtUp, also when there was nothing to send.
 type Subscribe struct {
@@ -261,8 +262,8 @@ type Recorded struct {
 const (
 	// RecordedApplied: the home applied it.
 	RecordedApplied = "applied"
-	// RecordedStale: its token is behind the home's fence; it changed
-	// nothing and will never apply.
+	// RecordedStale: the record changed nothing and may be retired. The
+	// code distinguishes an older scope, invalid content or an ID conflict.
 	RecordedStale = "stale"
 	// RecordedQuarantined: the home kept it without applying it until the
 	// device's cut or baseline orders it.

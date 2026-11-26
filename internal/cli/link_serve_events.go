@@ -91,7 +91,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 			}
 			handled, err := stream.handleFrame(ctx, env, w, received.frame)
 			if err != nil {
-				return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+				return failLinkEventServe(o, err)
 			}
 			if !handled {
 				if code := serveLinkCommand(ctx, env, w, session, peer, received.frame, o); code != core.ExitOK {
@@ -103,9 +103,17 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 			}
 		}
 		if err := stream.fetch(ctx, env, w); err != nil {
-			return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
+			return failLinkEventServe(o, err)
 		}
 	}
+}
+
+func failLinkEventServe(o outputs, err error) core.ExitCode {
+	var refusal linkCommandRefusal
+	if errors.As(err, &refusal) && refusal.code == domain.CodeLinkStale {
+		return failStaleLink(o)
+	}
+	return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 }
 
 func (s *servedLinkEvents) handleFrame(ctx context.Context, env Env, w *link.Writer, f link.Frame) (bool, error) {

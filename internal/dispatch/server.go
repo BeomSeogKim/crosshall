@@ -740,12 +740,12 @@ func (s *server) command(ctx context.Context, arrival Arrival, id string, raw []
 		switch req.Verb {
 		case domain.VerbLinkEvents, domain.VerbLinkAck, domain.VerbLinkFact, domain.VerbLinkWritten:
 			if !arrival.Owner || resolved.Caller.Role != core.RoleOwner {
-				result = commandError(core.ExitRefused, core.CodeOwnerOnly, "link events require owner ingress")
+				result = domain.Refuse(core.CodeOwnerOnly, "link events require owner ingress", "run crosshall link serve on the home device")
 				return errRefusalRollback
 			}
 			request, err := s.cfg.Decode(req, resolved)
 			if err != nil {
-				result = commandError(core.ExitUsage, "", "invalid link event arguments")
+				result = domain.Fail(core.ExitUsage, "", "invalid link event arguments", "reconnect the link and subscribe again")
 				return errRefusalRollback
 			}
 			result, err = s.cfg.Handle.Handle(ctx, tx, resolved.Caller, request)

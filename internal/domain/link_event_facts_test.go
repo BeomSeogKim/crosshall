@@ -203,10 +203,22 @@ func TestLinkFactRejectsLocalProcessFields(t *testing.T) {
 	h := newLinkedHookFixture(t)
 	cmd := linkedStart("pid-42-first", ms(h.now))
 	cmd.Host = &wire.Host{PID: 42, Start: 1}
-	got := h.owner(h.factCommand(1, 2, cmd), "")
-	if got.Status != core.ExitUsage {
-		t.Fatalf("forwarded local process data status = %v", got)
+	invalid := h.factCommand(1, 2, cmd)
+	for range 2 {
+		got := decodeAs[link.Recorded](t, h.owner(invalid, ""))
+		if got.ID != 1 || got.Status != link.RecordedStale || got.Code != "invalid_input" {
+			t.Fatalf("forwarded local process data receipt = %+v", got)
+		}
 	}
+	if got := h.count(`SELECT COUNT(*) FROM link_event_input WHERE id = 1 AND code = 'invalid_input'`); got != 1 {
+		t.Fatalf("invalid input receipt rows = %d", got)
+	}
+	conflict := h.factCommand(1, 2, linkedStart("pid-42-first", ms(h.now)))
+	got := decodeAs[link.Recorded](t, h.owner(conflict, ""))
+	if got.Status != link.RecordedStale || got.Code != string(core.CodeKeyConflict) {
+		t.Fatalf("different input reused the terminal receipt: %+v", got)
+	}
+	h.fact(2, 2, linkedStart("pid-42-first", ms(h.now)), link.RecordedApplied)
 }
 
 func TestLinkFactNewBootWaitsForSnapshot(t *testing.T) {
@@ -220,7 +232,7 @@ func TestLinkFactNewBootWaitsForSnapshot(t *testing.T) {
 	h.sql(`DELETE FROM link_event_stream WHERE device_id = ?`, h.peer.Device)
 	h.sql(`INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms) VALUES (?, ?, ?, ?, 0, ?)`,
 		h.peer.Device, h.peer.Stream, h.peer.Admission, h.token.Boot, now)
-	h.fact(2, 3, linkedStart("pid-42-new", now+1), link.RecordedQuarantined)
+	h.fact(1, 3, linkedStart("pid-42-new", now+1), link.RecordedQuarantined)
 	if got := h.count(`SELECT COUNT(*) FROM link_event_launch WHERE principal_id = ? AND boot = 'boot-a'`, h.principal); got != 1 {
 		t.Fatal("an unacknowledged boot changed the active launch")
 	}
@@ -231,6 +243,9 @@ func TestLinkFactNewBootWaitsForSnapshot(t *testing.T) {
 	}
 	if got := h.count(`SELECT COUNT(*) FROM link_event_launch WHERE principal_id = ? AND boot = 'boot-b' AND launch_ref = 'pid-42-new'`, h.principal); got != 1 {
 		t.Fatal("the post-cut fact did not install the new launch")
+	}
+	if got := h.count(`SELECT COUNT(*) FROM link_event_input WHERE id = 1 AND status = 'applied'`); got != 2 {
+		t.Fatalf("outbox IDs reused across two boots recorded %d rows", got)
 	}
 	wantCode(t, h.owner(old, ""), core.ExitRefused, "link_event_resync")
 	replay.LinkEventPeer = h.peer

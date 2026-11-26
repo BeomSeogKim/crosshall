@@ -236,3 +236,36 @@ func TestLinkAckSplitsTheOwnerRequestAndKeepsTheFrameMoreBit(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkServeEventsReportsStaleAdmission(t *testing.T) {
+	home := &eventHomeTransport{handle: func(cmd domain.Command) (core.Result, error) {
+		if in, ok := cmd.(domain.LinkEvents); ok && in.Subscribe != nil {
+			return domain.OK(domain.LinkEventsResult{Snapshot: &link.Snapshot{Last: true}})
+		}
+		return domain.Refuse(domain.CodeLinkStale, "stale admission", "reconnect the link"), nil
+	}}
+	stderr, code := serve(t, Env{Transport: home, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+		spoke := spokeConfig("dev-1")
+		spoke.Caps = []string{link.CapEvents}
+		if _, err := spoke.Connect(r, w); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := w.Write(link.TypeSubscribe, link.Subscribe{Boot: "boot"}); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, ok := eventWireFrame[link.Snapshot](t, r, link.TypeSnapshot); !ok {
+			return
+		}
+		if _, ok := eventWireFrame[link.CaughtUp](t, r, link.TypeCaughtUp); !ok {
+			return
+		}
+		if _, err := r.Read(); err == nil {
+			t.Error("stale admission did not close the link")
+		}
+	})
+	if code != core.ExitRefused || !strings.Contains(stderr, "reconnect the link") || !strings.Contains(stderr, "fences were pruned") {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+}

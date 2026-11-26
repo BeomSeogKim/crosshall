@@ -113,9 +113,9 @@ func (s *Service) recordLinkHookInput(ctx context.Context, tx store.Tx, caller c
 		}
 		return core.Result{}, err
 	}
-	in, err := parseLinkHookInput(kind, payload)
-	if err != nil {
-		return hookUsage(err.Error()), nil
+	in, invalid := parseLinkHookInput(kind, payload)
+	if in.id == 0 || in.id > math.MaxInt64 {
+		return Fail(core.ExitUsage, "", "invalid linked hook record ID", "check the linked device's outbox"), nil
 	}
 	stream, err := readLinkEventStream(ctx, tx, peer)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,28 +124,31 @@ func (s *Service) recordLinkHookInput(ctx context.Context, tx store.Tx, caller c
 	if err != nil {
 		return core.Result{}, err
 	}
-	boot := stream.boot
 	result := link.Recorded{ID: in.id}
 	var storedKind, storedPayload string
 	err = tx.QueryRowContext(ctx, `SELECT kind, payload, status, code FROM link_event_input
-		WHERE device_id = ? AND credential_gen = ? AND id = ?`, peer.Device, peer.CredentialGen, in.id).
+		WHERE device_id = ? AND credential_gen = ? AND boot = ? AND id = ?`, peer.Device, peer.CredentialGen, in.token.Boot, in.id).
 		Scan(&storedKind, &storedPayload, &result.Status, &result.Code)
 	if err == nil {
 		if storedKind != kind || storedPayload != string(payload) {
-			return Refuse(core.CodeKeyConflict, "a linked hook reused an outbox ID for a different record",
-				"retry the original record from the device outbox"), nil
+			return OK(link.Recorded{ID: in.id, Status: link.RecordedStale, Code: string(core.CodeKeyConflict)})
 		}
 		return OK(result)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return core.Result{}, err
 	}
-	if boot != in.token.Boot {
+	if invalid == nil && stream.boot != in.token.Boot {
 		return OK(link.Recorded{ID: in.id, Status: link.RecordedStale, Code: "boot_scope"})
 	}
-	result.Status, result.Code, err = s.applyLinkHookInput(ctx, tx, peer, in, false, now)
-	if err != nil {
-		return core.Result{}, err
+	if invalid != nil {
+		result.Status, result.Code = link.RecordedStale, "invalid_input"
+		in.token.LeafSeq = 0
+	} else {
+		result.Status, result.Code, err = s.applyLinkHookInput(ctx, tx, peer, in, false, now)
+		if err != nil {
+			return core.Result{}, err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO link_event_input
 		(device_id, credential_gen, id, vendor, key, boot, leaf_generation, leaf_seq, kind, payload, status, code, recorded_at_ms)
@@ -328,7 +331,8 @@ func (s *Service) resolveLinkFactCuts(ctx context.Context, tx store.Tx, peer Lin
 			}
 			if status != link.RecordedQuarantined {
 				if _, err := tx.ExecContext(ctx, `UPDATE link_event_input SET status = ?, code = ?
-					WHERE device_id = ? AND credential_gen = ? AND id = ?`, status, code, peer.Device, peer.CredentialGen, in.id); err != nil {
+					WHERE device_id = ? AND credential_gen = ? AND boot = ? AND id = ?`,
+					status, code, peer.Device, peer.CredentialGen, p.boot, in.id); err != nil {
 					return err
 				}
 			}

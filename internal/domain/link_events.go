@@ -86,9 +86,11 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 		}
 		return startLinkEventStream(ctx, tx, cmd.LinkEventPeer, *cmd.Subscribe, now)
 	}
-	if _, err := readLinkEventStream(ctx, tx, cmd.LinkEventPeer); errors.Is(err, sql.ErrNoRows) {
+	stream, err := readLinkEventStream(ctx, tx, cmd.LinkEventPeer)
+	if errors.Is(err, sql.ErrNoRows) {
 		return refuseLinkEvents("events require an active subscription"), nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return core.Result{}, err
 	}
 	if cmd.SnapshotPart != nil {
@@ -97,7 +99,7 @@ func (s *Service) linkEvents(ctx context.Context, tx store.Tx, caller core.Calle
 		}
 		return linkSnapshotPage(ctx, tx, cmd.LinkEventPeer, *cmd.SnapshotPart, now)
 	}
-	if err := refreshLinkEvents(ctx, tx, cmd.Device, now); err != nil {
+	if err := refreshLinkEvents(ctx, tx, cmd.Device, stream.boot, now); err != nil {
 		return core.Result{}, err
 	}
 	cursor, err := readLinkEventCursor(ctx, tx, cmd.Device)
@@ -119,7 +121,7 @@ func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO link_event_cursor (device_id) VALUES (?) ON CONFLICT DO NOTHING`, peer.Device); err != nil {
 		return core.Result{}, err
 	}
-	if err := refreshLinkEvents(ctx, tx, peer.Device, now); err != nil {
+	if err := refreshLinkEvents(ctx, tx, peer.Device, sub.Boot, now); err != nil {
 		return core.Result{}, err
 	}
 	cursor, err := readLinkEventCursor(ctx, tx, peer.Device)
@@ -145,7 +147,7 @@ func startLinkEventStream(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if !snapshotNeeded {
 		return linkEventPage(ctx, tx, peer.Device, sub.FromSeq, cursor.head, now)
 	}
-	if err := prepareLinkSnapshot(ctx, tx, peer, cursor.head, now); err != nil {
+	if err := prepareLinkSnapshot(ctx, tx, peer, sub.Boot, cursor.head, now); err != nil {
 		return core.Result{}, err
 	}
 	return linkSnapshotPage(ctx, tx, peer, 0, now)
@@ -197,8 +199,8 @@ func linkEventPage(ctx context.Context, tx store.Tx, device string, from, head u
 	return OK(page)
 }
 
-func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, seq uint64, now time.Time) error {
-	members, err := snapshotLinkMembers(ctx, tx, peer.Device, now)
+func prepareLinkSnapshot(ctx context.Context, tx store.Tx, peer LinkEventPeer, boot string, seq uint64, now time.Time) error {
+	members, err := snapshotLinkMembers(ctx, tx, peer.Device, boot, now)
 	if err != nil {
 		return err
 	}

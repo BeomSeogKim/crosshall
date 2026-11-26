@@ -62,11 +62,11 @@ func TestLinkOfferReplacementKeepsHistoricalWrittenReceipts(t *testing.T) {
 		t.Helper()
 		var members []link.SnapshotMember
 		update(func(tx store.Tx) error {
-			if err := refreshLinkEvents(ctx, tx, device, f.now); err != nil {
+			if err := refreshLinkEvents(ctx, tx, device, "boot", f.now); err != nil {
 				return err
 			}
 			var err error
-			members, err = snapshotLinkMembers(ctx, tx, device, f.now)
+			members, err = snapshotLinkMembers(ctx, tx, device, "boot", f.now)
 			return err
 		})
 		return members
@@ -84,6 +84,24 @@ func TestLinkOfferReplacementKeepsHistoricalWrittenReceipts(t *testing.T) {
 		first.LeafGeneration != "leaf" || first.Membership.Generation <= 0 || first.RouteEpoch <= 0 {
 		t.Fatalf("incomplete offer %+v", first)
 	}
+	update(func(tx store.Tx) error {
+		members, err := snapshotLinkMembers(ctx, tx, device, "new-boot", f.now)
+		if err != nil {
+			return err
+		}
+		if len(members) != 1 || len(members[0].Offers) != 0 {
+			t.Fatalf("new boot snapshot carried a prior-boot offer: %+v", members)
+		}
+		scope, err := readLinkOfferScope(ctx, tx, device, member)
+		if err != nil {
+			return err
+		}
+		candidate, _, err := selectLinkOffer(ctx, tx, device, "new-boot", member, scope)
+		if len(candidate.IDs) != 0 {
+			t.Fatalf("prepared an offer for a prior-boot launch: %+v", candidate)
+		}
+		return err
+	})
 	f.now = f.now.Add(10 * time.Second)
 	if again := offer(request.ID, message.ID); again.OfferID != first.OfferID || again.LeaseMS != 50_000 {
 		t.Fatalf("snapshot renewed an unexpired offer %+v", again)
@@ -92,7 +110,7 @@ func TestLinkOfferReplacementKeepsHistoricalWrittenReceipts(t *testing.T) {
 		if err := markLinkOfferDirty(ctx, tx, device, member, ""); err != nil {
 			return err
 		}
-		members, err := snapshotLinkMembers(ctx, tx, device, f.now)
+		members, err := snapshotLinkMembers(ctx, tx, device, "boot", f.now)
 		if err == nil && (len(members) != 1 || len(members[0].Offers) != 0) {
 			t.Fatalf("snapshot included an offer waiting on a dirty page: %+v", members)
 		}
@@ -163,7 +181,7 @@ func TestLinkOffersRefreshOneDevicePageAtATime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := refreshLinkEvents(ctx, tx, device, f.now); err != nil {
+	if err := refreshLinkEvents(ctx, tx, device, "boot", f.now); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

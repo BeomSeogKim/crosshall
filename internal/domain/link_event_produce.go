@@ -34,7 +34,7 @@ type linkOfferChange struct {
 	membership bool
 }
 
-func refreshLinkEvents(ctx context.Context, tx store.Tx, device string, now time.Time) error {
+func refreshLinkEvents(ctx context.Context, tx store.Tx, device, boot string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO device_offer_dirty (device_id, vendor, key)
 		SELECT device_id, vendor, key FROM device_offer WHERE device_id = ? AND expires_at_ms <= ?
 		ORDER BY expires_at_ms LIMIT ?
@@ -46,7 +46,7 @@ func refreshLinkEvents(ctx context.Context, tx store.Tx, device string, now time
 		return err
 	}
 	for _, change := range changes {
-		if err := refreshLinkOffer(ctx, tx, device, change, now); err != nil {
+		if err := refreshLinkOffer(ctx, tx, device, boot, change, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM device_offer_dirty WHERE device_id = ? AND vendor = ? AND key = ?`,
@@ -110,7 +110,7 @@ func (s linkOfferScope) live() bool {
 	return s.current && s.binding.state == "live" && !s.absent
 }
 
-func refreshLinkOffer(ctx context.Context, tx store.Tx, device string, change linkOfferChange, now time.Time) error {
+func refreshLinkOffer(ctx context.Context, tx store.Tx, device, boot string, change linkOfferChange, now time.Time) error {
 	scope, err := readLinkOfferScope(ctx, tx, device, change.Member)
 	if err != nil {
 		return err
@@ -119,7 +119,7 @@ func refreshLinkOffer(ctx context.Context, tx store.Tx, device string, change li
 	if err != nil {
 		return err
 	}
-	next, profile, err := selectLinkOffer(ctx, tx, device, change.Member, scope)
+	next, profile, err := selectLinkOffer(ctx, tx, device, boot, change.Member, scope)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func refreshLinkOffer(ctx context.Context, tx store.Tx, device string, change li
 	return prepareLinkOffer(ctx, tx, device, scope, next, profile, now)
 }
 
-func selectLinkOffer(ctx context.Context, tx store.Tx, device string, member link.Member, scope linkOfferScope) (link.Offer, wire.HookProfile, error) {
+func selectLinkOffer(ctx context.Context, tx store.Tx, device, boot string, member link.Member, scope linkOfferScope) (link.Offer, wire.HookProfile, error) {
 	var next link.Offer
 	var profile wire.HookProfile
 	if !scope.live() || scope.binding.dnd {
@@ -181,9 +181,9 @@ func selectLinkOffer(ctx context.Context, tx store.Tx, device string, member lin
 		FROM link_event_launch l
 		JOIN adapter_launch a ON a.principal_id = l.principal_id AND a.launch_ref = l.projection_ref
 		JOIN adapter_policy p ON p.adapter = ? AND p.enabled = 1 AND p.epoch = l.policy_epoch
-		WHERE l.principal_id = ? AND l.device_id = ? AND l.credential_gen = ? AND l.leaf_generation = ?
+		WHERE l.principal_id = ? AND l.device_id = ? AND l.boot = ? AND l.credential_gen = ? AND l.leaf_generation = ?
 			AND l.binding_id = ? AND l.membership_generation = ? AND l.route_epoch = ? AND a.ended_hook_at_ms IS NULL`,
-		member.Vendor, scope.principal, device, scope.credential, scope.LeafGeneration, scope.Membership.BindingID,
+		member.Vendor, scope.principal, device, boot, scope.credential, scope.LeafGeneration, scope.Membership.BindingID,
 		scope.Membership.Generation, scope.RouteEpoch).Scan(&next.Launch, &next.Epoch, &next.PolicyEpoch, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return next, profile, nil
@@ -268,7 +268,7 @@ func prepareLinkOffer(ctx context.Context, tx store.Tx, device string, scope lin
 	return err
 }
 
-func snapshotLinkMembers(ctx context.Context, tx store.Tx, device string, now time.Time) ([]link.SnapshotMember, error) {
+func snapshotLinkMembers(ctx context.Context, tx store.Tx, device, boot string, now time.Time) ([]link.SnapshotMember, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT k.vendor, k.key, k.leaf_generation, b.id, s.generation, b.route_epoch,
 			o.body, o.expires_at_ms
 		FROM device_key k JOIN device d ON d.device_id = k.device_id AND d.credential_gen = k.credential_gen
@@ -283,7 +283,7 @@ func snapshotLinkMembers(ctx context.Context, tx store.Tx, device string, now ti
 				SELECT 1 FROM link_event_launch l
 				JOIN adapter_launch a ON a.principal_id = l.principal_id AND a.launch_ref = l.projection_ref
 				JOIN adapter_policy policy ON policy.adapter = k.vendor AND policy.enabled = 1 AND policy.epoch = l.policy_epoch
-				WHERE l.principal_id = p.id AND l.device_id = k.device_id AND l.credential_gen = k.credential_gen
+				WHERE l.principal_id = p.id AND l.device_id = k.device_id AND l.credential_gen = k.credential_gen AND l.boot = ?
 					AND l.leaf_generation = k.leaf_generation AND l.binding_id = b.id
 					AND l.membership_generation = s.generation AND l.route_epoch = b.route_epoch
 					AND a.ended_hook_at_ms IS NULL AND l.launch_ref = json_extract(o.body, '$.launch')
@@ -291,7 +291,7 @@ func snapshotLinkMembers(ctx context.Context, tx store.Tx, device string, now ti
 		WHERE k.device_id = ? AND k.state = 'live' AND NOT EXISTS (
 			SELECT 1 FROM link_event_cut c WHERE c.device_id = k.device_id AND c.vendor = k.vendor AND c.key = k.key
 				AND c.absent = 1 AND c.leaf_generation = k.leaf_generation)
-		ORDER BY k.vendor, k.key`, ms(now), device)
+		ORDER BY k.vendor, k.key`, ms(now), boot, device)
 	if err != nil {
 		return nil, err
 	}

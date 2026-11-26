@@ -91,9 +91,16 @@ func TestLinkHomeStreamsAndConfirmsPreparedOffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeHomeEventFrame(t, s, link.TypeFact, link.Fact{ID: 1, Member: member, Token: token, Kind: wire.VerbHookEnroll, Body: body})
+	writeHomeEventFrame(t, s, link.TypeFact, link.Fact{ID: 20, Member: member, Token: token, Kind: "unknown", Body: body})
 	frame = readHomeEventFrame(t, s)
 	var recorded link.Recorded
+	if frame.Type != link.TypeRecorded || json.Unmarshal(frame.Body, &recorded) != nil ||
+		recorded.ID != 20 || recorded.Status != link.RecordedStale || recorded.Code != "invalid_input" {
+		t.Fatalf("invalid fact recording: %+v, %+v", frame, recorded)
+	}
+	writeHomeEventFrame(t, s, link.TypeFact, link.Fact{ID: 1, Member: member, Token: token, Kind: wire.VerbHookEnroll, Body: body})
+	frame = readHomeEventFrame(t, s)
+	recorded = link.Recorded{}
 	if frame.Type != link.TypeRecorded || json.Unmarshal(frame.Body, &recorded) != nil ||
 		recorded.ID != 1 || recorded.Status != link.RecordedApplied {
 		t.Fatalf("launch recording: %+v, %+v", frame, recorded)

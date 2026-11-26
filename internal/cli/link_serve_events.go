@@ -15,6 +15,12 @@ import (
 
 const linkEventPollInterval = 250 * time.Millisecond
 
+// linkEventWindow bounds the event pages the home writes ahead of the
+// device's acknowledgements. The device acknowledges each event it
+// applies, so a long-offline device catching up on a large backlog holds
+// at most this many pages in its relay, each within one frame (#422).
+const linkEventWindow = 4
+
 type servedLinkEvents struct {
 	peer         domain.LinkEventPeer
 	allowWake    bool
@@ -28,7 +34,14 @@ type servedLinkEvents struct {
 	snapshotPart int
 	ackSeq       uint64
 	ackMore      bool
+	// unacked holds the last sequence of each event page written and not
+	// yet acknowledged.
+	unacked []uint64
 }
+
+// full says the device has not acknowledged a window of pages: the home
+// reads its frames and writes no more events until it does.
+func (s *servedLinkEvents) full() bool { return len(s.unacked) >= linkEventWindow }
 
 type linkFrameRead struct {
 	frame link.Frame
@@ -84,7 +97,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 	for {
 		var received linkFrameRead
 		poll := false
-		if stream.more {
+		if stream.more && !stream.full() {
 			select {
 			case <-ctx.Done():
 				return o.fail(core.ExitError, CodeLocalError, ctx.Err().Error(), "")
@@ -98,7 +111,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 				return o.fail(core.ExitError, CodeLocalError, ctx.Err().Error(), "")
 			case received = <-frames:
 			case <-ticker.C:
-				if stream.boot == "" {
+				if stream.boot == "" || stream.full() {
 					continue
 				}
 				poll = true
@@ -120,7 +133,7 @@ func serveLinkEvents(ctx context.Context, env Env, stdin io.Reader, r *link.Read
 					return code
 				}
 			}
-			if !stream.more {
+			if !stream.more || stream.full() {
 				continue
 			}
 		}
@@ -187,7 +200,7 @@ func (s *servedLinkEvents) subscribe(ctx context.Context, env Env, w *link.Write
 	s.sent = in.FromSeq
 	s.catchThrough = page.Through
 	s.caughtUp = false
-	s.ackSeq = 0
+	s.ackSeq, s.unacked = 0, nil
 	if page.Snapshot != nil {
 		s.sent = 0
 		return s.writeSnapshot(w, page)
@@ -253,6 +266,9 @@ func (s *servedLinkEvents) writeEvents(w *link.Writer, page domain.LinkEventsRes
 			return err
 		}
 	}
+	if len(page.Events) > 0 {
+		s.unacked = append(s.unacked, s.sent)
+	}
 	s.more = s.sent < page.Through
 	return nil
 }
@@ -287,6 +303,9 @@ func (s *servedLinkEvents) ack(ctx context.Context, env Env, in link.Ack) error 
 		}
 	}
 	s.ackSeq, s.ackMore = in.Seq, in.More
+	for len(s.unacked) > 0 && s.unacked[0] <= in.Seq {
+		s.unacked = s.unacked[1:]
+	}
 	return nil
 }
 

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A linked device catching up holds a bounded backlog (#422):** the home writes at most four pages of events ahead of what a device linked with `CROSSHALL_EXPERIMENTAL_LINK=1` has acknowledged, so a device reconnecting to a large backlog no longer queues all of it in memory while it applies the events one by one.
+
 ## v0.4.0-rc.1 (2026-11-26)
 
 - **Upgrade from v0.3.1:** the first start backs up the store and migrates it from schema 30 to 37; no setup is needed. Linking a second device stays experimental, behind `CROSSHALL_EXPERIMENTAL_LINK=1`. See [UPGRADING.md](UPGRADING.md#to-v040-rc1).

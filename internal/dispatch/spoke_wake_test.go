@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -159,6 +160,56 @@ func TestSpokeWakeStreamRetriesUntilTheMatchingReceipt(t *testing.T) {
 	}
 }
 
+func TestSpokeWakeStreamSendsAResultCommittedAfterCatchUp(t *testing.T) {
+	f := newEventFixture(t)
+	f.allowWake = true
+	f.e.wakeResultReady = make(chan struct{}, 1)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.push(t, link.TypeCaughtUp, link.CaughtUp{Seq: 10})
+	wake := testSpokeWake(9)
+	home.push(t, link.TypeEvent, event(t, 11, link.EventWake, wake))
+	home.ack(t, 11)
+
+	ctx := t.Context()
+	if changed, err := f.e.finishWake(ctx, wake.AttemptID, link.WakeSubmitted); changed || err != nil {
+		t.Fatalf("unclaimed outcome changed the journal: %t, %v", changed, err)
+	}
+	if err := f.m.db.Update(ctx, func(tx store.Tx) error {
+		if _, won, err := claimSpokeWake(ctx, tx, wake.AttemptID, wake.Route, 7); err != nil || !won {
+			t.Fatalf("claim = %t, %v", won, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := f.e.finishWake(ctx, wake.AttemptID, link.WakeSubmitted); !changed || err != nil {
+		t.Fatalf("claimed outcome: %t, %v", changed, err)
+	}
+	want := link.WakeResult{AttemptID: wake.AttemptID, Route: wake.Route, Outcome: link.WakeSubmitted, SubmissionSeq: 7}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		for _, frame := range home.frames() {
+			if frame.Type != link.TypeWakeResult {
+				continue
+			}
+			var got link.WakeResult
+			if err := json.Unmarshal(frame.Body, &got); err != nil || got != want {
+				t.Fatalf("live result = %+v, %v", got, err)
+			}
+			home.push(t, link.TypeWakeRecorded, link.WakeRecorded{AttemptID: wake.AttemptID, Status: link.RecordedApplied})
+			home.push(t, link.TypeEvent, event(t, 12, link.EventWakeClosed, link.WakeClosed{AttemptID: 10}))
+			home.ack(t, 12)
+			f.end(t, home)
+			if n := f.count(t, `SELECT recorded FROM spoke_wake_attempt WHERE attempt_id = 9`); n != 1 {
+				t.Fatal("the live result receipt was not persisted")
+			}
+			return
+		}
+	}
+	t.Fatal("the open stream did not send the committed outcome")
+}
+
 func TestSpokeWakeRequiresFreshAuthorizationAfterReconnect(t *testing.T) {
 	db, _ := openSpokeWakeStore(t)
 	ctx := t.Context()
@@ -293,8 +344,8 @@ func TestSpokeWakeStoresKnownOutcomes(t *testing.T) {
 						t.Fatalf("claim = %t, %v", won, err)
 					}
 				}
-				if err := finishSpokeWake(ctx, tx, attempt, outcome); err != nil {
-					return err
+				if changed, err := finishSpokeWake(ctx, tx, attempt, outcome); !changed || err != nil {
+					t.Fatalf("outcome update = %t, %v", changed, err)
 				}
 				if _, won, err := claimSpokeWake(ctx, tx, attempt, wake.Route, 4); err != nil || won {
 					t.Fatalf("finished wake could execute: %t, %v", won, err)

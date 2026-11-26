@@ -120,16 +120,37 @@ func claimSpokeWake(ctx context.Context, tx store.Tx, attempt int64, current lin
 
 // finishSpokeWake may commit a negative before the claim when the caller
 // can prove no invocation can occur. Other outcomes need a stored cut.
-func finishSpokeWake(ctx context.Context, tx store.Tx, attempt int64, outcome string) error {
+func finishSpokeWake(ctx context.Context, tx store.Tx, attempt int64, outcome string) (bool, error) {
 	switch outcome {
 	case link.WakeNotSubmitted, link.WakeSubmitted, link.WakeUncertain:
 	default:
-		return errors.New("link: invalid wake outcome")
+		return false, errors.New("link: invalid wake outcome")
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE spoke_wake_attempt SET state = 'finished', outcome = ?1
+	result, err := tx.ExecContext(ctx, `UPDATE spoke_wake_attempt SET state = 'finished', outcome = ?1
 		WHERE attempt_id = ?2 AND (state = 'claimed' OR (?1 = 'not_submitted' AND state IN ('staged', 'dormant')))`,
 		outcome, attempt)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+func (e *spokeEvents) finishWake(ctx context.Context, attempt int64, outcome string) (bool, error) {
+	var changed bool
+	err := e.db.Update(ctx, func(tx store.Tx) error {
+		var err error
+		changed, err = finishSpokeWake(ctx, tx, attempt, outcome)
+		return err
+	})
+	if err != nil || !changed {
+		return false, err
+	}
+	select {
+	case e.wakeResultReady <- struct{}{}:
+	default:
+	}
+	return true, nil
 }
 
 // Recover abandoned claims once at dispatcher start, before any sender can

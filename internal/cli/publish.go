@@ -131,6 +131,8 @@ func whyText(w domain.Wake, note bool) string {
 		return "no notice route"
 	case domain.WhyUnproven:
 		return "notices not proven for its build"
+	case domain.WhyDeviceOffline:
+		return "device offline"
 	case domain.WhySuspended:
 		return "notices suspended" + until
 	case domain.WhyOff:

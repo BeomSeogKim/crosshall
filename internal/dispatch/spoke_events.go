@@ -70,6 +70,8 @@ type spokeEvents struct {
 	stop    *spokeMembers // halted on a home rollback
 	// policy publishes (true) or withdraws (false) the hook policy files.
 	policy func(ctx context.Context, publish bool) error
+
+	wakeResultReady chan struct{}
 }
 
 // newSpokeEvents starts the client of a dispatcher process, whose start
@@ -79,7 +81,8 @@ func newSpokeEvents(m *spokeMembers, policy func(context.Context, bool) error) (
 	if err != nil {
 		return nil, err
 	}
-	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono, policy: policy}, nil
+	return &spokeEvents{db: m.db, members: m.members, stop: m, boot: boot, mono: hostclock.Mono, policy: policy,
+		wakeResultReady: make(chan struct{}, 1)}, nil
 }
 
 // rolledBack stops the device: first in this process, so no command
@@ -245,6 +248,14 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 	// it stored.
 	hooksReady := false
 	sent := map[int64]bool{}
+	sendNextWake := func() error {
+		if !caughtUp || sendingWake != 0 {
+			return nil
+		}
+		var err error
+		sendingWake, err = e.sendWakeResult(ctx, conn)
+		return err
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -254,6 +265,10 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 				if err := e.sendHooks(ctx, conn, sent); err != nil {
 					return err
 				}
+			}
+		case <-e.wakeResultReady:
+			if err := sendNextWake(); err != nil {
+				return err
 			}
 		case <-keepalive.C:
 			if e.resumed && len(parts) == 0 {
@@ -346,11 +361,8 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return errors.New("link: catch-up does not match the applied wake cursor")
 				}
 				caughtUp = true
-				if sendingWake == 0 {
-					var err error
-					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
-						return err
-					}
+				if err := sendNextWake(); err != nil {
+					return err
 				}
 			case link.TypeWakeReplay:
 				if !allowWake || !caughtUp {
@@ -379,11 +391,8 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn, allowWake bool) e
 					return err
 				}
 				sendingWake = 0
-				if caughtUp {
-					var err error
-					if sendingWake, err = e.sendWakeResult(ctx, conn); err != nil {
-						return err
-					}
+				if err := sendNextWake(); err != nil {
+					return err
 				}
 			case link.TypeRecorded:
 				var rec link.Recorded

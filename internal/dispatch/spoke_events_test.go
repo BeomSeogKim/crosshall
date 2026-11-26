@@ -640,7 +640,61 @@ func TestASpokeRecoversFromAnOlderHome(t *testing.T) {
 	if s := subscribe(); s.Snapshot || s.FromSeq != 10 {
 		t.Fatalf("resume %+v", s)
 	}
+	// Offline after the refused resume: nothing cached counts.
+	if n := f.count(t, `SELECT eligible FROM spoke_event_cursor`); n != 0 {
+		t.Fatal("the cache counted after a refused resume")
+	}
 	if s := subscribe(); !s.Snapshot || s.FromSeq != 0 {
 		t.Fatalf("after a refused resume %+v", s)
 	}
+}
+
+// A snapshot below the acknowledged cursor (a home restored to an older
+// store) sets the home's selections as they are, also when older,
+// withdraws the stamp of a session it does not list, and keeps no offer
+// of the newer state.
+func TestASpokeRebaselinesOnAnOlderHome(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	newer := offer(1, 3, 60_000)
+	newer.Nonce = "after-backup"
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{
+		{Member: eventMember, Scope: f.scope(2, 2), Offers: []link.Offer{newer}}}})
+	home.ack(t, 10)
+	stamp := func() *core.Membership {
+		t.Helper()
+		m, err := ident.LookupMembership(f.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := stamp(); m == nil || *m != (core.Membership{BindingID: 2, Generation: 2}) {
+		t.Fatalf("stamp %+v", m)
+	}
+	older := offer(1, 0, 60_000)
+	older.Nonce = "before-backup"
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 3, Last: true, Members: []link.SnapshotMember{
+		{Member: eventMember, Scope: f.scope(1, 1), Offers: []link.Offer{older}}}})
+	home.ack(t, 3)
+	if m := stamp(); m == nil || *m != (core.Membership{BindingID: 1, Generation: 1}) {
+		t.Fatalf("stamp %+v after the rollback", m)
+	}
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 11 {
+		t.Fatalf("selection %d after the rollback", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_offer WHERE json_extract(body, '$.nonce') = 'before-backup' AND lease_epoch = 0`); n != 1 {
+		t.Fatal("the offer of the newer state stayed")
+	}
+	// An older home that no longer knows the session.
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 1, Last: true})
+	home.ack(t, 1)
+	if m := stamp(); m != nil {
+		t.Fatalf("an unknown session kept its stamp %+v", m)
+	}
+	if n := f.count(t, `SELECT binding_id + membership_gen + (SELECT COUNT(*) FROM spoke_offer) FROM spoke_leaf`); n != 0 {
+		t.Fatalf("an unknown session kept %d", n)
+	}
+	f.end(t, home)
 }

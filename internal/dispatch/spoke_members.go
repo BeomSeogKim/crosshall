@@ -277,7 +277,8 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		}
 		// Only a stamp that differs takes the leaf's lock: the locked
 		// write reads the store again, so it never puts back l.
-		if current, err := ident.LookupMembership(dir); err != nil || current == nil || *current != l.membership {
+		if current, err := ident.LookupMembership(dir); err != nil || (current == nil) != (l.membership.Generation == 0) ||
+			current != nil && *current != l.membership {
 			s.logFailure(stampLeaf(ctx, m.db, m.members, l.vendor, l.key))
 		}
 		if reap {

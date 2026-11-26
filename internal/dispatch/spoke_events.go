@@ -99,6 +99,13 @@ type snapshotPart struct {
 	at int64
 }
 
+// snapshotMember is one member of a snapshot with the time its part was
+// read.
+type snapshotMember struct {
+	link.SnapshotMember
+	at int64
+}
+
 // run serves one event connection until it ends: subscribe, then apply
 // and acknowledge what the home sends.
 func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
@@ -142,8 +149,9 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	// subscribe asks for a snapshot.
 	answered := false
 	defer func() {
-		if !answered {
+		if !answered && !snapshot {
 			e.resumed = false
+			_ = e.ineligible(ctx) // until a snapshot applies; run again invalidates if this failed
 		}
 	}()
 	frames := make(chan linkRead, 1)
@@ -380,7 +388,7 @@ func confirm(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 
 // applyScope records a member's scope, and its membership on the held
 // leaf when newer than the device's (as command answers do).
-func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
+func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf, exact bool) error {
 	if err := confirm(ctx, tx, h); err != nil {
 		return err
 	}
@@ -394,8 +402,12 @@ func applyScope(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 	if h.absent || s.Membership.BindingID == 0 {
 		return nil
 	}
+	newer := `AND membership_gen < ?`
+	if exact {
+		newer = `AND ? >= 0` // a rollback sets the home's selection as it is
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = ?, membership_gen = ?
-		WHERE digest = ? AND file_identity = ? AND membership_gen < ?`,
+		WHERE digest = ? AND file_identity = ? `+newer,
 		s.Membership.BindingID, s.Membership.Generation, h.digest, h.identity, s.Membership.Generation)
 	return err
 }
@@ -446,7 +458,7 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 					return err
 				}
 			}
-			if err := applyScope(ctx, tx, h); err != nil {
+			if err := applyScope(ctx, tx, h, false); err != nil {
 				return err
 			}
 		}
@@ -514,14 +526,10 @@ func (e *spokeEvents) putOffer(ctx context.Context, tx store.Tx, o link.Offer, a
 // returns a cut for every member. Each offer's lease runs from the time
 // its part was read.
 func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) ([]link.LeafCut, error) {
-	type member struct {
-		link.SnapshotMember
-		at int64
-	}
-	var members []member
+	var members []snapshotMember
 	for _, p := range parts {
 		for _, m := range p.Members {
-			members = append(members, member{m, p.at})
+			members = append(members, snapshotMember{m, p.at})
 		}
 	}
 	// Leaves are locked in one order; a hook holds only its own. A member
@@ -537,9 +545,23 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 			return nil, errors.New("link: a snapshot lists a member twice")
 		}
 	}
+	seq := parts[0].Seq
+	// A snapshot below the acknowledged cursor proves the home lost
+	// events (it was restored to an older store): its selections replace
+	// the device's even when older, a session it does not list keeps no
+	// selection, and no offer of the newer state is kept.
+	var acked uint64
+	err := e.db.View(ctx, func(tx store.Tx) error {
+		return tx.QueryRowContext(ctx, `SELECT acked_seq FROM spoke_event_cursor WHERE id = 1`).Scan(&acked)
+	})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	rollback := seq < acked
 	held := make([]*heldLeaf, 0, len(members))
+	var omitted []*heldLeaf
 	defer func() {
-		for _, h := range held {
+		for _, h := range append(held, omitted...) {
 			h.release()
 		}
 	}()
@@ -550,10 +572,15 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		}
 		held = append(held, h)
 	}
-	seq := parts[0].Seq
-	err := e.db.Update(ctx, func(tx store.Tx) error {
+	if rollback {
+		if omitted, err = e.holdOmitted(ctx, members); err != nil {
+			return nil, err
+		}
+	}
+	err = e.db.Update(ctx, func(tx store.Tx) error {
 		// Offers the snapshot no longer lists are retired; one it lists
-		// keeps its earlier deadline and its suppression.
+		// keeps its earlier deadline and its suppression, unless the home
+		// rolled back.
 		type offerKey struct {
 			link.Member
 			id int64
@@ -579,7 +606,7 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 				rows.Close()
 				return err
 			}
-			if boot != e.boot || !listed[k] {
+			if boot != e.boot || !listed[k] || rollback {
 				retired = append(retired, k)
 			}
 		}
@@ -595,8 +622,20 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		if _, err := tx.ExecContext(ctx, `DELETE FROM spoke_member_scope`); err != nil {
 			return err
 		}
+		for _, h := range omitted {
+			if err := confirm(ctx, tx, h); err != nil {
+				return err
+			}
+			if h.absent {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE spoke_leaf SET binding_id = 0, membership_gen = 0
+				WHERE digest = ? AND file_identity = ?`, h.digest, h.identity); err != nil {
+				return err
+			}
+		}
 		for i, m := range members {
-			if err := applyScope(ctx, tx, held[i]); err != nil {
+			if err := applyScope(ctx, tx, held[i], rollback); err != nil {
 				return err
 			}
 			for _, o := range m.Offers {
@@ -619,10 +658,60 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		}
 		cuts = append(cuts, h.cut(seq))
 	}
+	for _, h := range omitted {
+		if err := e.stamp(ctx, h); err != nil {
+			return nil, err
+		}
+	}
 	// The cache counts only once every stamp is out, the leaves still held.
 	err = e.db.Update(ctx, func(tx store.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 1 WHERE id = 1 AND acked_seq = ?`, seq)
 		return err
 	})
 	return cuts, err
+}
+
+// holdOmitted holds every registered session a rollback snapshot does not
+// list, at its current generation, so its selection can be withdrawn.
+func (e *spokeEvents) holdOmitted(ctx context.Context, listed []snapshotMember) ([]*heldLeaf, error) {
+	in := map[link.Member]bool{}
+	for _, m := range listed {
+		in[m.Member] = true
+	}
+	var others []link.MemberScope
+	var names []link.Member
+	err := e.db.View(ctx, func(tx store.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT vendor, key, generation FROM spoke_leaf ORDER BY vendor, key`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var m link.Member
+			var generation string
+			if err := rows.Scan(&m.Vendor, &m.Key, &generation); err != nil {
+				return err
+			}
+			if !in[m] {
+				names = append(names, m)
+				others = append(others, link.MemberScope{LeafGeneration: generation})
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	held := make([]*heldLeaf, 0, len(names))
+	for i, m := range names {
+		h, err := e.hold(ctx, m, others[i])
+		if err != nil {
+			for _, h := range held {
+				h.release()
+			}
+			return nil, err
+		}
+		held = append(held, h)
+	}
+	return held, nil
 }

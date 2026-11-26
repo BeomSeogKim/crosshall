@@ -49,7 +49,9 @@ These stay on the home, and the device refuses them with a hint:
 - `status`, `waiting`, `whoami` and `publish`, which the device does not forward yet.
 - `join --takeover`, binding a join to an agent process, a repository's default channel, exit tracking, and owner takeover, move or restore of a device's member.
 
-Adapter hooks run on the device. They answer from what the home last sent the device, so they do not wait for the network, and they go quiet while that copy is out of date. The hall's adapter settings come from the home. Repository auto-join, turn-end checks, and reach and join hints are off for linked sessions. A message to a member on a disconnected device is stored, and the sender's line says `device offline`.
+Adapter hooks run on the device. They answer from what the home last sent the device, so they do not wait for the network, and they go quiet while that copy is out of date. The hall's adapter settings come from the home. Repository auto-join, turn-end checks, and reach and join hints are off for linked sessions.
+
+An idle session on the device can be woken by a [notice](adapters.md#publish-notices) when both builds support linked wakes: the device checks the session's route itself and sends the notice there. With a build that does not, the session sees new work at its next prompt or crosshall command. A message to a member on a disconnected device is stored, and the sender's line says `device offline`.
 
 ## When the link is down
 

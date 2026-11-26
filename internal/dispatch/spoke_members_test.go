@@ -476,7 +476,13 @@ func TestASpokeKeepsTheNewestMembership(t *testing.T) {
 	f.m.attach(link)
 	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 7, Generation: 3}})
 	f.send(t, "note", "k1")
-	f.s.adoptMembership(t.Context(), "codex", "session", &core.Membership{BindingID: 4, Generation: 2})
+	var id int64
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT id FROM link_outbox WHERE op_key = 'k1'`).Scan(&id)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.settleOutbox(t.Context(), id, &core.Result{Status: core.ExitOK, Membership: &core.Membership{BindingID: 4, Generation: 2}})
 	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
 		t.Fatalf("selection %d after an older receipt", n)
 	}
@@ -504,5 +510,76 @@ func TestASpokeTellsUnsentFromUnanswered(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE op_key = 'k2' AND state = 'unknown'`); n != 1 {
 		t.Fatalf("an unanswered command lost its record")
+	}
+}
+
+// A retry that sends nothing leaves the original untouched, and a key that
+// already names another command is refused without claiming the original:
+// a later retry sends the command again.
+func TestASpokeRetryClaimsTheOriginalOnlyWithItsResend(t *testing.T) {
+	f := newSpokeFixture(t)
+	ended := newFakeLink()
+	close(ended.answers)
+	f.m.attach(ended)
+	f.send(t, "note", "k1")
+	fence := newFakeLink()
+	fence.answer(t, domain.Refuse(domain.CodeLinkFenced, "unknown", "run it again"))
+	fence.full = false
+	f.m.attach(fence)
+	retry := func(newKey string) core.Result {
+		t.Helper()
+		return f.sendArgs(t, domain.VerbRetry, newKey, `{"key":"k1"}`, 2*time.Second)
+	}
+	// The fence is found and stored, but the resend's frame gets no byte out.
+	fence.onWrite = func(frame string, _ any) {
+		if frame == "receipt" {
+			fence.full = true
+		}
+	}
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("unsent resend %+v", r)
+	}
+	f.m.attach(nil)
+	if r := retry("r1"); r.Code != core.CodeUnsent {
+		t.Fatalf("link down %+v", r)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE replaced_by IS NOT NULL OR op_key = 'r1'`); n != 0 {
+		t.Fatalf("an unsent retry left %d claims", n)
+	}
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":55}`)})
+	f.sendArgs(t, "note", "taken", `{"all":true,"body":"other"}`, 2*time.Second)
+	if r := retry("taken"); r.Code != core.CodeKeyConflict || len(link.frames) != 1 {
+		t.Fatalf("occupied key %+v, frames %v", r, link.frames)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM link_outbox WHERE replaced_by IS NOT NULL`); n != 0 {
+		t.Fatalf("a refused retry claimed the original")
+	}
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"id":56}`)})
+	if r := retry("r2"); r.Status != core.ExitOK || link.frames[1] != "call" || link.written[1].OpKey != "r2" {
+		t.Fatalf("later retry %+v, frames %v", r, link.frames)
+	}
+}
+
+// A stored answer whose move was never applied is applied when a retry
+// shows it, never backwards.
+func TestASpokeRetryAppliesAStoredMove(t *testing.T) {
+	f := newSpokeFixture(t)
+	link := newFakeLink()
+	f.m.attach(link)
+	link.answer(t, core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`), Membership: &core.Membership{BindingID: 7, Generation: 3}})
+	f.send(t, "note", "k1")
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `UPDATE spoke_leaf SET binding_id = 4, membership_gen = 2`)
+		return err
+	}); err != nil {
+		t.Fatal(err) // the move's first application failed
+	}
+	if r := f.sendArgs(t, domain.VerbRetry, "r1", `{"key":"k1"}`, 2*time.Second); r.Status != core.ExitOK || len(link.frames) != 1 {
+		t.Fatalf("retry %+v, frames %v", r, link.frames)
+	}
+	if n := f.count(t, `SELECT binding_id * 10 + membership_gen FROM spoke_leaf`); n != 73 {
+		t.Fatalf("selection %d after the stored move", n)
 	}
 }

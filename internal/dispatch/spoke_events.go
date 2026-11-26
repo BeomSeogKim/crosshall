@@ -49,25 +49,26 @@ type spokeEvents struct {
 	mono    func() (int64, error)
 }
 
-// newSpokeEvents starts the client of a new dispatcher process: what the
-// store cached is not served until this process applies a snapshot.
-func newSpokeEvents(ctx context.Context, db *store.Store, members string) (*spokeEvents, error) {
+// newSpokeEvents starts the client of a dispatcher process, whose start
+// already made the cache ineligible (invalidateEvents).
+func newSpokeEvents(db *store.Store, members string) (*spokeEvents, error) {
 	boot, err := hostclock.Boot()
 	if err != nil {
 		return nil, err
 	}
-	e := &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono}
-	return e, e.ineligible(ctx)
+	return &spokeEvents{db: db, members: members, boot: boot, mono: hostclock.Mono}, nil
 }
 
-// ineligible records that nothing cached may be served until a snapshot
-// applies.
-func (e *spokeEvents) ineligible(ctx context.Context) error {
-	return e.db.Update(ctx, func(tx store.Tx) error {
+// invalidateEvents records that nothing cached may be served until a
+// snapshot applies. A dispatcher calls it before it is ready.
+func invalidateEvents(ctx context.Context, db *store.Store) error {
+	return db.Update(ctx, func(tx store.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 0 WHERE eligible = 1`)
 		return err
 	})
 }
+
+func (e *spokeEvents) ineligible(ctx context.Context) error { return invalidateEvents(ctx, e.db) }
 
 type eventCursor struct {
 	boot     string
@@ -126,13 +127,25 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 	if err != nil {
 		return err
 	}
+	from := cur.acked
 	if snapshot {
-		e.resumed = false
+		// A snapshot needs no cursor, and a home restored to an older
+		// store refuses one ahead of its head.
+		e.resumed, from = false, 0
 	}
-	if err := e.send(conn, link.TypeSubscribe, link.Subscribe{FromSeq: cur.acked, Boot: e.boot, Snapshot: snapshot}); err != nil {
+	if err := e.send(conn, link.TypeSubscribe, link.Subscribe{FromSeq: from, Boot: e.boot, Snapshot: snapshot}); err != nil {
 		return err
 	}
-	log.Printf("dispatcher: event stream subscribed from %d (snapshot %t)", cur.acked, snapshot)
+	log.Printf("dispatcher: event stream subscribed from %d (snapshot %t)", from, snapshot)
+	// A home that ends a resumed stream before its first frame may have
+	// refused the cursor (a home restored to an older store): the next
+	// subscribe asks for a snapshot.
+	answered := false
+	defer func() {
+		if !answered {
+			e.resumed = false
+		}
+	}()
 	frames := make(chan linkRead, 1)
 	go func() {
 		for {
@@ -169,6 +182,7 @@ func (e *spokeEvents) run(ctx context.Context, conn spokeConn) error {
 			if r.err != nil {
 				return r.err
 			}
+			answered = true
 			switch r.frame.Type {
 			case link.TypeSnapshot:
 				var part link.Snapshot
@@ -269,13 +283,13 @@ func (e *spokeEvents) ack(conn spokeConn, seq uint64, cuts []link.LeafCut) error
 // heldLeaf is a member's leaf held under its publish lock while a change
 // to it commits.
 type heldLeaf struct {
-	member           link.Member
-	scope            link.MemberScope
-	digest, identity string
-	seq              uint64
-	dir              *os.Root
-	unlock           func()
-	absent           bool
+	member                       link.Member
+	scope                        link.MemberScope
+	rendezvous, digest, identity string
+	seq                          uint64
+	dir                          *os.Root
+	unlock                       func()
+	absent                       bool
 }
 
 func (h *heldLeaf) release() {
@@ -297,7 +311,7 @@ func (h *heldLeaf) cut(seq uint64) link.LeafCut {
 // is of the scope's generation and the directory at its path is the
 // registered one; otherwise the change finds the leaf absent.
 func (e *spokeEvents) hold(ctx context.Context, member link.Member, scope link.MemberScope) (*heldLeaf, error) {
-	h := &heldLeaf{member: member, scope: scope, absent: true}
+	h := &heldLeaf{member: member, scope: scope, absent: true, rendezvous: e.members}
 	var generation string
 	err := e.db.View(ctx, func(tx store.Tx) error {
 		return tx.QueryRowContext(ctx, `SELECT digest, file_identity, generation FROM spoke_leaf WHERE vendor = ? AND key = ?`,
@@ -344,6 +358,22 @@ func confirm(ctx context.Context, tx store.Tx, h *heldLeaf) error {
 	}
 	if err != nil || generation != h.scope.LeafGeneration || identity != h.identity {
 		h.absent = true
+		return nil
+	}
+	// The directory at the registered path, now that the lock is held:
+	// a directory moved away from it is not this registration's leaf.
+	live, err := ident.OpenSpokeLeaf(h.rendezvous, h.digest)
+	if errors.Is(err, os.ErrNotExist) {
+		h.absent = true
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer live.Close()
+	if got, err := ident.FileIdentity(live); err != nil || got != h.identity {
+		h.absent = true
+		return err
 	}
 	return nil
 }
@@ -436,7 +466,9 @@ func (e *spokeEvents) applyEvent(ctx context.Context, ev link.Event, at int64) (
 		return nil, nil
 	}
 	if err := e.stamp(ctx, h); err != nil {
-		return nil, err
+		// The store moved and the stamp did not: nothing cached counts
+		// until a snapshot stamps it again.
+		return nil, errors.Join(err, e.ineligible(ctx))
 	}
 	return []link.LeafCut{h.cut(ev.Seq)}, nil
 }
@@ -573,8 +605,8 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 				}
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO spoke_event_cursor (id, boot, acked_seq, eligible) VALUES (1, ?, ?, 1)
-			ON CONFLICT (id) DO UPDATE SET boot = excluded.boot, acked_seq = excluded.acked_seq, eligible = 1`, e.boot, seq)
+		_, err = tx.ExecContext(ctx, `INSERT INTO spoke_event_cursor (id, boot, acked_seq, eligible) VALUES (1, ?, ?, 0)
+			ON CONFLICT (id) DO UPDATE SET boot = excluded.boot, acked_seq = excluded.acked_seq, eligible = 0`, e.boot, seq)
 		return err
 	})
 	if err != nil {
@@ -587,5 +619,10 @@ func (e *spokeEvents) applySnapshot(ctx context.Context, parts []snapshotPart) (
 		}
 		cuts = append(cuts, h.cut(seq))
 	}
-	return cuts, nil
+	// The cache counts only once every stamp is out, the leaves still held.
+	err = e.db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_event_cursor SET eligible = 1 WHERE id = 1 AND acked_seq = ?`, seq)
+		return err
+	})
+	return cuts, err
 }

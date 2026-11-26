@@ -19,6 +19,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/link"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
 // fakeHome is the home end of an event connection.
@@ -469,7 +470,7 @@ func TestASpokeCacheIsIneligibleUntilASnapshotApplies(t *testing.T) {
 	home.ack(t, 20)
 	f.end(t, home)
 	// A new process.
-	if _, err := newSpokeEvents(t.Context(), f.m.db, f.m.members); err != nil {
+	if err := invalidateEvents(t.Context(), f.m.db); err != nil {
 		t.Fatal(err)
 	}
 	if eligible() != 0 {
@@ -522,4 +523,124 @@ func TestASpokeSplitsALargeAck(t *testing.T) {
 		t.Fatalf("%d ack frames", frames)
 	}
 	f.end(t, home)
+}
+
+// A leaf moved away from its path while a change waits to commit is cut
+// absent: the cut names the directory at the registered path.
+func TestASpokeRechecksTheLeafPathUnderItsLock(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(7, 3)}}})
+	home.ack(t, 10)
+	writing, done := make(chan struct{}), make(chan struct{})
+	go f.m.db.Update(t.Context(), func(store.Tx) error {
+		close(writing)
+		<-done
+		return nil
+	})
+	<-writing
+	home.push(t, link.TypeEvent, event(t, 11, link.EventMembership, link.MembershipChange{Member: eventMember, Scope: f.scope(8, 4)}))
+	time.Sleep(50 * time.Millisecond) // the client holds the leaf, waiting for the store
+	if err := os.Rename(f.path, f.path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(f.path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	close(done)
+	if cuts := home.ack(t, 11); len(cuts) != 1 || !cuts[0].Absent {
+		t.Fatalf("cut %+v", cuts)
+	}
+	if n := f.count(t, `SELECT membership_gen FROM spoke_leaf`); n != 3 {
+		t.Fatalf("a moved leaf took membership generation %d", n)
+	}
+	f.end(t, home)
+}
+
+// blockStamp makes the leaf's membership stamp unwritable.
+func blockStamp(t *testing.T, f *spokeFixture) {
+	t.Helper()
+	_ = os.Remove(filepath.Join(f.path, "membership"))
+	if err := os.Mkdir(filepath.Join(f.path, "membership"), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A snapshot whose stamps cannot be written is neither acknowledged nor
+// counted.
+func TestASpokeCountsASnapshotOnlyOnceItsStampsAreOut(t *testing.T) {
+	f := newEventFixture(t)
+	blockStamp(t, f.spokeFixture)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true, Members: []link.SnapshotMember{{Member: eventMember, Scope: f.scope(7, 3)}}})
+	select {
+	case err := <-f.done:
+		if err == nil {
+			t.Fatal("the stream went on without the stamp")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not stop")
+	}
+	for _, fr := range home.frames() {
+		if fr.Type == link.TypeAck {
+			t.Fatal("an unstamped snapshot was acknowledged")
+		}
+	}
+	if n := f.count(t, `SELECT eligible FROM spoke_event_cursor`); n != 0 {
+		t.Fatal("an unstamped snapshot counted")
+	}
+}
+
+// First contact fails when the session's stamp cannot be written, so the
+// spool tries it again before a hook reads a missing stamp.
+func TestASpokeFirstContactFailsWithoutItsStamp(t *testing.T) {
+	f := newSpokeFixture(t)
+	if err := f.m.db.Update(t.Context(), func(tx store.Tx) error {
+		_, err := tx.ExecContext(t.Context(), `UPDATE spoke_leaf SET binding_id = 7, membership_gen = 3`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blockStamp(t, f)
+	id := wire.NewID()
+	raw, err := json.Marshal(wire.Hello{Version: wire.Version, Attempt: id, Vendor: "codex", Key: "session", Intent: "join"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := f.s.spokeHello(t.Context(), id, raw); err == nil {
+		t.Fatalf("first contact succeeded without its stamp: %+v", r)
+	}
+}
+
+// A home restored to an older store ends a resumed stream at once; the
+// next subscribe asks for a snapshot from zero, which any home serves.
+func TestASpokeRecoversFromAnOlderHome(t *testing.T) {
+	f := newEventFixture(t)
+	home := newFakeHome()
+	f.start(t, home)
+	home.push(t, link.TypeSnapshot, link.Snapshot{Seq: 10, Last: true})
+	home.ack(t, 10)
+	f.end(t, home)
+	subscribe := func() link.Subscribe {
+		t.Helper()
+		home := newFakeHome()
+		f.start(t, home)
+		for len(home.frames()) == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		f.end(t, home) // the home refuses and ends the link
+		var s link.Subscribe
+		if err := json.Unmarshal(home.frames()[0].Body, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := subscribe(); s.Snapshot || s.FromSeq != 10 {
+		t.Fatalf("resume %+v", s)
+	}
+	if s := subscribe(); !s.Snapshot || s.FromSeq != 0 {
+		t.Fatalf("after a refused resume %+v", s)
+	}
 }

@@ -315,7 +315,9 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 	if err := reg.PublishLeaf(); err != nil {
 		return core.Result{}, err // the next pass finishes a committed registration
 	}
-	s.logFailure(stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, hello.Vendor, hello.Key))
+	if err := stampLeaf(ctx, s.spokeMembers.db, s.spokeMembers.members, hello.Vendor, hello.Key); err != nil {
+		return core.Result{}, err // the hook reads the stamp next; the spool retries first contact
+	}
 	return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}, nil
 }
 

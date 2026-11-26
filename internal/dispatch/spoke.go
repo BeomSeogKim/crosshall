@@ -41,6 +41,11 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 		return err
 	}
 	defer members.db.Close()
+	// What the event stream cached counts again only after this process
+	// applies a snapshot.
+	if err := invalidateEvents(ctx, members.db); err != nil {
+		return err
+	}
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
 	ready.Hello = nil
 	ready.Spoke = linked.Target
@@ -199,7 +204,7 @@ func (s *server) reconnectSpoke(ctx context.Context, cfg linkConfig) {
 // own (#400, design 12j), so the command connection stays a plain call
 // and result exchange. A home that serves no events is asked again rarely.
 func (s *server) reconnectEvents(ctx context.Context, cfg linkConfig) {
-	events, err := newSpokeEvents(ctx, s.spokeMembers.db, s.spokeMembers.members)
+	events, err := newSpokeEvents(s.spokeMembers.db, s.spokeMembers.members)
 	if err != nil {
 		log.Printf("dispatcher: the event stream is off: %v", err)
 		return

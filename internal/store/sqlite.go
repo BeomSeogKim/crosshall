@@ -109,6 +109,9 @@ var reconcileCheckpointSchema string
 //go:embed migrations/031_link_devices.sql
 var linkDevicesSchema string
 
+//go:embed migrations/032_device_members.sql
+var deviceMembersSchema string
+
 var migrations = []string{
 	initialSchema, adapterSchema, ownerDepartSchema, turnEndNoticeSchema,
 	joinPoolSchema, linkedHandoffSchema, publishRoutesSchema, publishAttemptsSchema, rootRefillSchema,
@@ -116,7 +119,7 @@ var migrations = []string{
 	capabilityBuildSchema, routeSocketAttachSchema, turnEndSwitchSchema, reachToldSchema, memberHostSchema, loopGuardSchema,
 	loopGuardCutoverSchema, publishRecoveryHintSchema, ownerAlertSchema, threadLanesSchema,
 	unknownReceiptCauseSchema, offerReceiptsSchema, sessionMoveSchema, idlePromptSchema, reconcileCheckpointSchema,
-	linkDevicesSchema,
+	linkDevicesSchema, deviceMembersSchema,
 }
 
 // Store owns the dispatcher's single SQLite write connection, and opens a

@@ -175,3 +175,12 @@ func TestHomeSessionsCannotTakeOverOrRestoreADeviceMember(t *testing.T) {
 		t.Fatalf("keys or selection changed:\nbefore %s\nafter  %s", before, after)
 	}
 }
+
+// crosshall retry belongs to a linked device's dispatcher; the home
+// device's hall refuses it with a next step.
+func TestRetryIsRefusedOnTheHomeDevice(t *testing.T) {
+	f := newFixture(t)
+	if r := f.owner(Retry{Key: "k1"}, ""); r.Code != CodeNotOnADevice {
+		t.Fatalf("retry at home: %+v", r)
+	}
+}

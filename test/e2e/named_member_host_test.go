@@ -163,7 +163,7 @@ func runNamedHost(t *testing.T, w *world, host, relay, identity string, args ...
 		t.Fatal(err)
 	}
 	defer out.Close()
-	cmd := exec.CommandContext(t.Context(), host, append([]string{relay, binary}, args...)...)
+	cmd := exec.CommandContext(t.Context(), host, append([]string{relay, w.binaryPath()}, args...)...)
 	cmd.Env = append(w.baseEnv(), identity)
 	cmd.Dir = w.home
 	cmd.Stdout, cmd.Stderr = out, out

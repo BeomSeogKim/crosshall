@@ -80,7 +80,7 @@ func TestWaitEndsWithItsAgent(t *testing.T) {
 	// leaves no process behind.
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `read host; CROSSHALL_HOST=$host "$0" --json wait --work-only --timeout 12s; echo unreachable`, binary)
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `read host; CROSSHALL_HOST=$host "$0" --json wait --work-only --timeout 12s; echo unreachable`, w.binaryPath())
 	cmd.Dir, cmd.Env = w.home, form.env()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

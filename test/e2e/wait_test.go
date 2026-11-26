@@ -36,7 +36,7 @@ func startWaitProcess(t *testing.T, member *participant, args ...string) (*os.Pr
 	// Bound even the no-timeout invocation if a regression leaves it running.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, binary, append([]string{"--json", "wait"}, args...)...)
+	cmd := exec.CommandContext(ctx, member.w.binaryPath(), append([]string{"--json", "wait"}, args...)...)
 	cmd.Dir, cmd.Env = member.w.home, member.env()
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut

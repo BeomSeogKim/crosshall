@@ -120,10 +120,12 @@ needs_builds() {
 }
 
 # The environment of scripts/release.sh for a host-platform build.
-build() { # build <source-dir> <version> <output>
-  (cd -- "$1" && GOENV=off GOFLAGS='' GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 GOEXPERIMENT='' \
+build() { # build <source-dir> <version> <output> [go build flags...]
+  local source=$1 release=$2 output=$3
+  shift 3
+  (cd -- "$source" && GOENV=off GOFLAGS='' GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 GOEXPERIMENT='' \
     GOAMD64=v1 GOARM64=v8.0 go build -mod=readonly -buildvcs=false -trimpath -pgo=off \
-    -ldflags "-X main.version=$2 -buildid=" -o "$3" ./cmd/crosshall)
+    -ldflags "-X main.version=$release -buildid=" -o "$output" "$@" ./cmd/crosshall)
 }
 
 # A plain owner shell: no route or agent variable reaches crosshall.
@@ -514,6 +516,25 @@ row_cross_vendor_native() {
   cross_vendor_test TestCrossVendorNativeRoundTrip cross-vendor-native.json claude_to_codex_notice codex_to_claude_notice
 }
 
+row_two_devices() {
+  local base_fixture=$work/crosshall-link-base events=$out/two-devices.json
+  local mixed=TestSpokeLinkWorkSurvivesReconnectAcrossWakeVersions refusal=TestLinkFixtureHandshakeOverSSHStdio
+  local status mixed_verdict refusal_verdict failed=0
+  needs_builds || return
+  [[ $base_commit != "$commit" ]] || { detail "the candidate and $base point at the same commit"; return 1; }
+  build "$base_tree" "$base" "$base_fixture" -tags=testvendorhome ||
+    { detail "could not build the $base link fixture"; return 1; }
+  (cd -- "$head_tree" && GOENV=off GOFLAGS='' GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 \
+    CROSSHALL_E2E_BASE_BINARY="$base_fixture" go test -tags e2e,testvendorhome -count=1 -timeout 3m \
+      -run "^($mixed|$refusal)\$/^(head-head|base-home|base-spoke|out-of-window)\$" -json ./test/e2e/) > "$events"
+  status=$?
+  mixed_verdict=$(python3 -B "$repo/scripts/release_gate_events.py" --strict "$mixed" head-head base-home base-spoke < "$events") || failed=1
+  refusal_verdict=$(python3 -B "$repo/scripts/release_gate_events.py" --strict "$refusal" out-of-window < "$events") || failed=1
+  printf 'go test exit %s\n%s\n%s\n' "$status" "$mixed_verdict" "$refusal_verdict"
+  detail "$base: $mixed_verdict; $refusal_verdict (go test exit $status)"
+  ((status == 0 && failed == 0)) || return 1
+}
+
 row_full_run() {
   local lock start status
   $full_run || { detail "skipped by --skip-full-run"; return 3; }
@@ -541,6 +562,7 @@ row 'CLI continuity across upgrade' row_continuity
 row 'Hook cost against the base' row_hook_cost
 row 'Cross-vendor round trip' row_cross_vendor
 row 'Cross-vendor native notices' row_cross_vendor_native
+row 'Two devices on one machine against the base' row_two_devices
 row 'One locked full run' row_full_run
 
 verdict=PASS

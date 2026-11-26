@@ -2,6 +2,10 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## Linking after v0.4.0-rc.1
+
+`crosshall link`, `crosshall link status` and `crosshall unlink` are available from the owner terminal without an environment setting. Existing links keep their enrollment. See [linking a second device](docs/linking.md).
+
 ## To v0.4.0-rc.1
 
 Upgrading from v0.3.1 moves the database from schema 30 to schema 37, for linking a second device (#400). Migration 031 adds two tables: `hall`, with one row holding a random identity for this hall, and `device`, which stays empty until a device links. Migration 032 adds `device.credential_gen`, `principal.device_id` and `op.link_request` (all empty or default for existing rows) and the `device_key` table, which stays empty until a linked device's member joins. Migration 033 adds `device.admission_gen` (1 for existing rows) and the `link_fence` table, which stays empty until a linked device looks up a request of a session the hall does not know yet. Migration 034 adds the home event log, acknowledgement cursors, remote offers and fact fences. Migration 035 adds the device-scoped wake attempt ledger. Existing links start with wake support disabled. Migration 036 adds `link_event_stream.closed_at_ms`, the time a device's event stream closed. Migration 037 adds `link_event_stream.policy_capable` (0 for existing rows), which records whether a device's last event stream negotiated adapter policies.
@@ -10,7 +14,7 @@ Upgrading from v0.3.1 moves the database from schema 30 to schema 37, for linkin
 2. Keep a private copy of the stopped hall's `store.sqlite3`. On its first start, the new dispatcher also saves a `store-v30-*.sqlite3` backup beside the database.
 3. Install v0.4.0-rc.1 at the path your members and installed hooks use, then run `crosshall owner start` and `crosshall owner doctor`. No setup is needed.
 
-Linking a second device stays experimental: it is off unless `CROSSHALL_EXPERIMENTAL_LINK=1` is set on the device that links. The experimental device link requires a POSIX-compatible login shell for the home account that SSH logs in as. See [linking a second device](docs/linking.md).
+On v0.4.0-rc.1, follow [the link guide for that release](https://github.com/BeomSeogKim/crosshall/blob/v0.4.0-rc.1/docs/linking.md). The SSH login on the home requires a POSIX-compatible shell.
 
 A linked device keeps its own store, `spoke/<hall>-<device>/store.sqlite3` in its state directory, with its own migrations; it is created when the device links and migrates when the device's new build starts. Upgrade the home first, then each device: the two must share a link version, which `crosshall link status` shows. Two kinds of rollback affect a device differently. If the home keeps a release with linking but its store is restored from an older backup, a device whose `crosshall link status` reports that the home was restored from an older state recovers when you run `crosshall link <home>` on it again, which starts a new device store. A device the restored home no longer knows (the backup predates its enrollment) cannot connect: run `crosshall unlink` on it, then link it again. If the home goes back to a release without linking (the steps below), run `crosshall unlink` on each device, and link again once the home runs a release with linking.
 

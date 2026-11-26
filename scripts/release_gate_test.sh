@@ -39,13 +39,19 @@ for f in keep work/keep work/store.sqlite3 work/store.sqlite3-wal; do
 done
 grep -q '^| Store snapshot upgrade and rollback | BLOCKED |' "$out/summary.md" ||
   fail "the store row did not wait for the builds: $(cat "$out/summary.md")"
+grep -q '^| Two devices on one machine against the base | BLOCKED |' "$out/summary.md" ||
+  fail "the two-device row did not wait for the builds"
 
 # 2. The cross-vendor verdict.
-judge() { # judge <want-exit> [subtest-prefix...] < events
+judge() { # judge <want-exit> [--strict] [subtest...] < events
   local want=$1 got=0 said
   shift
-  if (($# == 0)); then set -- claude_to_codex codex_to_claude; fi
-  said=$(python3 -B "$here/release_gate_events.py" T "$@") || got=$?
+  case ${1:-} in
+    --strict) shift; set -- --strict T "$@" ;;
+    '') set -- T claude_to_codex codex_to_claude ;;
+    *) set -- T "$@" ;;
+  esac
+  said=$(python3 -B "$here/release_gate_events.py" "$@") || got=$?
   [[ $got == "$want" ]] || fail "verdict exit $got, want $want: $said"
 }
 ev() { # ev <action> <test> [output]
@@ -93,6 +99,30 @@ printf '{"Action":"output","Output":"build failed"}\n' | judge 1
   ev pass T/codex_to_claude_running_wait
   ev pass T
 } | judge 1 claude_to_codex_notice codex_to_claude_notice
+
+{
+  ev pass T/head-head
+  ev pass T/base-home
+  ev pass T/base-spoke
+  ev pass T
+} | judge 0 --strict head-head base-home base-spoke
+{
+  ev pass T/head-head
+  ev pass T/base-home
+  ev pass T/base-spoke-other
+  ev pass T
+} | judge 1 --strict head-head base-home base-spoke
+{
+  ev pass T/head-head
+  ev pass T/base-home
+  ev skip T/base-spoke
+  ev pass T
+} | judge 1 --strict head-head base-home base-spoke
+{
+  ev skip T/out-of-window/setup
+  ev pass T/out-of-window
+  ev pass T
+} | judge 1 --strict out-of-window
 
 # 3. The store row fails when any command it runs fails. A shim makes the
 #    n-th call of sqlite3, cp, chmod, mkdir, find, cmp or join exit 7, for

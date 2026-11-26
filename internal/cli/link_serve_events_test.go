@@ -115,7 +115,7 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 		}
 		return core.Result{}, fmt.Errorf("unexpected event command: %+v", cmd)
 	}}
-	stderr, code := serve(t, Env{Transport: home, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: home}, func(r *link.Reader, w *link.Writer) {
 		write := func(typ string, body any) bool {
 			if err := w.Write(typ, body); err != nil {
 				t.Error(err)
@@ -184,7 +184,7 @@ func TestLinkServeStreamsSnapshotCatchUpAndLiveEvents(t *testing.T) {
 }
 
 func TestLinkServeRejectsEventsWithoutNegotiation(t *testing.T) {
-	stderr, code := serve(t, Env{Transport: &homeTransport{}, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: &homeTransport{}}, func(r *link.Reader, w *link.Writer) {
 		session, err := spokeConfig("dev-1").Connect(r, w)
 		if err != nil || len(session.Caps) != 0 {
 			t.Errorf("handshake: %+v, %v", session, err)
@@ -249,7 +249,7 @@ func TestLinkServeEventsReportsStaleAdmission(t *testing.T) {
 		}
 		return domain.Refuse(domain.CodeLinkStale, "stale admission", "reconnect the link"), nil
 	}}
-	stderr, code := serve(t, Env{Transport: home, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: home}, func(r *link.Reader, w *link.Writer) {
 		spoke := spokeConfig("dev-1")
 		spoke.Caps = []string{link.CapEvents}
 		if _, err := spoke.Connect(r, w); err != nil {
@@ -306,7 +306,7 @@ func TestLinkServeWritesAWindowAheadOfTheAcknowledgements(t *testing.T) {
 		}
 		return core.Result{}, fmt.Errorf("unexpected event command: %+v", cmd)
 	}}
-	stderr, code := serve(t, Env{Transport: home, ExperimentalLink: true}, func(r *link.Reader, w *link.Writer) {
+	stderr, code := serve(t, Env{Transport: home}, func(r *link.Reader, w *link.Writer) {
 		spoke := spokeConfig("dev-1")
 		spoke.Caps = []string{link.CapEvents}
 		if _, err := spoke.Connect(r, w); err != nil {

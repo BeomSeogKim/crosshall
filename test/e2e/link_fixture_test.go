@@ -17,7 +17,10 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 )
 
-const linkFixtureTarget = "fixture-home.invalid"
+const (
+	linkFixtureTarget       = "fixture-home.invalid"
+	linkFixtureLegacyEnable = "CROSSHALL_EXPERIMENTAL_LINK=1"
+)
 
 type linkFixture struct {
 	home, spoke *world
@@ -28,22 +31,36 @@ func newLinkFixture(t *testing.T, homeBinary, spokeBinary string, homeEnv ...str
 	t.Helper()
 	f := &linkFixture{home: newWorld(t), spoke: newWorld(t)}
 	f.home.executable, f.spoke.executable = homeBinary, spokeBinary
-	f.home.extraEnv = append([]string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1"}, homeEnv...)
+	f.home.extraEnv = append([]string{"DO_NOT_TRACK=1"}, homeEnv...)
 	f.ssh = writeLocalSSH(t, f.home)
-	f.spoke.extraEnv = []string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1", "CROSSHALL_LINK_SSH=" + f.ssh}
+	f.spoke.extraEnv = []string{"DO_NOT_TRACK=1", "CROSSHALL_LINK_SSH=" + f.ssh}
+	if spokeBinary != binary {
+		f.spoke.extraEnv = append(f.spoke.extraEnv, linkFixtureLegacyEnable)
+	}
 	return f
+}
+
+func linkFixtureQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+
+func linkFixtureRemote(executable string, args ...string) string {
+	words := []string{linkFixtureLegacyEnable, linkFixtureQuote(executable)}
+	for _, arg := range args {
+		words = append(words, linkFixtureQuote(arg))
+	}
+	return strings.Join(words, " ")
 }
 
 func writeLocalSSH(t *testing.T, home *world) string {
 	t.Helper()
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+	quote := linkFixtureQuote
 	path := filepath.Join(t.TempDir(), "ssh")
 	var command strings.Builder
 	for _, entry := range home.baseEnv() {
 		command.WriteString(" " + quote(entry))
 	}
+	command.WriteString(" " + quote(linkFixtureLegacyEnable))
 	command.WriteString(" " + quote(home.binaryPath()))
-	remote := "CROSSHALL_EXPERIMENTAL_LINK=1 " + quote(home.binaryPath())
+	remote := linkFixtureRemote(home.binaryPath())
 	shim := fmt.Sprintf(`#!/bin/sh
 set -eu
 refuse() { printf '%%s\n' 'fixture ssh: expected the configured home command' >&2; exit 2; }
@@ -55,11 +72,11 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
-[ "$#" -ge 2 ] && [ "$1" = %s ] || refuse
+[ "$#" -eq 2 ] && [ "$1" = %s ] || refuse
 shift
-if [ "$#" -eq 1 ]; then
-  case "$1" in
+case "$1" in
     %s) printf '%%s\n' %s; exit 0 ;;
+    %s) set -- version ;;
     %s)
       printf '%%s\n' "$$" > %s
       printf '%%s\n' "$$" >> %s
@@ -76,20 +93,14 @@ if [ "$#" -eq 1 ]; then
         exit 1
       fi ;;
     *) refuse ;;
-  esac
-  exec /usr/bin/env -i%s "$@"
-fi
-[ "$1" = %s ] || refuse
-shift
-case "$#:$*" in
-  '1:version'|'2:link serve') exec /usr/bin/env -i%s "$@" ;;
-  *) refuse ;;
 esac
+exec /usr/bin/env -i%s "$@"
 `, quote(linkFixtureTarget),
 		quote(`command -v crosshall || { test -x "$HOME/.local/bin/crosshall" && printf '%s\n' "$HOME/.local/bin/crosshall"; }`), quote(home.binaryPath()),
+		quote(linkFixtureRemote(home.binaryPath(), "version")),
 		quote(remote+" 'link' 'serve'"), quote(path+".pid"), quote(path+".pids"), quote(remote+" '--key' '"), quote(remote+" '--key' '"),
 		quote(remote+" '--key' '"), quote("' 'link' 'enroll' '--name' 'fixture-spoke'"), quote(path+".enrolls"),
-		quote(path+".drop-enrollment"), command.String(), command.String(), quote(home.binaryPath()), command.String())
+		quote(path+".drop-enrollment"), command.String(), command.String())
 	if err := os.WriteFile(path, []byte(shim), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -201,23 +212,29 @@ func TestLinkFixtureSSHUsesHomeEnvironmentAndStdio(t *testing.T) {
 	if err := os.WriteFile(homeProbe, []byte(`#!/bin/sh
 set -eu
 [ "$#" -eq 2 ] && [ "$1" = link ] && [ "$2" = serve ]
-printf '%s\n' "$HOME" "$CROSSHALL_STATE_DIR" "${SSH_AUTH_SOCK-unset}" "${CROSSHALL_LINK_SSH-unset}"
+printf '%s\n' "$HOME" "$CROSSHALL_STATE_DIR" "${SSH_AUTH_SOCK-unset}" "${CROSSHALL_LINK_SSH-unset}" "$CROSSHALL_EXPERIMENTAL_LINK"
 exec /bin/cat
 `), 0700); err != nil {
 		t.Fatal(err)
 	}
 	f := newLinkFixture(t, homeProbe, binary)
-	cmd := exec.CommandContext(t.Context(), f.ssh, "-T", "-o", "BatchMode=yes", linkFixtureTarget, homeProbe, "link", "serve")
+	remote := linkFixtureRemote(homeProbe, "link", "serve")
+	cmd := exec.CommandContext(t.Context(), f.ssh, "-T", "-o", "BatchMode=yes", "--", linkFixtureTarget, remote)
 	cmd.Env = append(f.spoke.baseEnv(), "SSH_AUTH_SOCK=spoke-only")
 	cmd.Stdin = strings.NewReader("fixture request\n")
-	want := fmt.Sprintf("%s\n%s\nunset\nunset\nfixture request\n", f.home.home, f.home.state)
+	want := fmt.Sprintf("%s\n%s\nunset\nunset\n1\nfixture request\n", f.home.home, f.home.state)
 	if out, err := cmd.CombinedOutput(); err != nil || string(out) != want {
 		t.Fatalf("local SSH stdio %q (%v), want %q", out, err, want)
 	}
-	wrongTarget := exec.CommandContext(t.Context(), f.ssh, "-T", "somewhere-else.invalid", homeProbe, "link", "serve")
+	wrongTarget := exec.CommandContext(t.Context(), f.ssh, "-T", "--", "somewhere-else.invalid", remote)
 	wrongTarget.Env = f.spoke.baseEnv()
 	if out, err := wrongTarget.Output(); err == nil || len(out) != 0 {
 		t.Fatalf("local SSH shim accepted an unknown target: %q, %v", out, err)
+	}
+	separateArgs := exec.CommandContext(t.Context(), f.ssh, "-T", "--", linkFixtureTarget, homeProbe, "link", "serve")
+	separateArgs.Env = f.spoke.baseEnv()
+	if out, err := separateArgs.Output(); err == nil || len(out) != 0 {
+		t.Fatalf("local SSH shim accepted separate command arguments: %q, %v", out, err)
 	}
 }
 
@@ -239,7 +256,8 @@ func TestTwoDeviceFixture(t *testing.T) {
 		}
 
 		version := home.mustPlain("version")
-		ssh := exec.CommandContext(t.Context(), f.ssh, "-T", "-o", "BatchMode=yes", linkFixtureTarget, f.home.binaryPath(), "version")
+		remote := linkFixtureRemote(f.home.binaryPath(), "version")
+		ssh := exec.CommandContext(t.Context(), f.ssh, "-T", "-o", "BatchMode=yes", "--", linkFixtureTarget, remote)
 		ssh.Env = f.spoke.baseEnv()
 		if got, err := ssh.Output(); err != nil || string(got) != version {
 			t.Fatalf("local SSH shim selected %q (%v), want home build %q", got, err, version)

@@ -1,8 +1,8 @@
 # Linking a second device
 
-Linking is experimental. It lets agent sessions on a second machine, the **linked device**, join the hall that another machine keeps, the **home**. The home keeps the one ledger. The linked device sends its sessions' commands to the home over SSH and keeps nothing of the hall but what it needs to answer its hooks.
+Linking lets agent sessions on a second machine, the **linked device**, join the hall that another machine keeps, the **home**. The home keeps the one ledger. The linked device sends its sessions' commands to the home over SSH and stores the state it needs to forward commands and answer its hooks.
 
-The feature is behind `CROSSHALL_EXPERIMENTAL_LINK=1`, set on the linked device only. Its commands are not in `crosshall help` yet.
+The owner starts linking from a separate terminal. See `crosshall owner help` for the commands. For a v0.4.0-rc.1 binary, follow [the guide for that release](https://github.com/BeomSeogKim/crosshall/blob/v0.4.0-rc.1/docs/linking.md).
 
 ## Before you link
 
@@ -17,7 +17,7 @@ The feature is behind `CROSSHALL_EXPERIMENTAL_LINK=1`, set on the linked device 
 In your own shell on the device, not in a member session:
 
 ```sh
-CROSSHALL_EXPERIMENTAL_LINK=1 crosshall link <ssh-target> [--name <device>] [--yes]
+crosshall link <ssh-target> [--name <device>] [--yes]
 ```
 
 `<ssh-target>` is a host or an alias from your SSH config, optionally with `user@`. The command:
@@ -34,10 +34,10 @@ Run the same `link` again to restart the device's dispatcher. To link to a diffe
 ## Status
 
 ```sh
-CROSSHALL_EXPERIMENTAL_LINK=1 crosshall link status
+crosshall link status
 ```
 
-shows the home, the state (`unlinked`, `stopped`, `connecting`, `connected` or `disconnected`), the link version and home release, the clock offset, and the last error. It reads the device's own record and does not contact the home. `--json` gives the same fields. A disconnected device reconnects by itself, waiting from one second up to a minute between tries.
+shows the home, the state (`unlinked`, `stopped`, `connecting`, `connected` or `disconnected`), the link version and home release, the clock offset, and the last error. It reads the device's own record and does not contact the home. `--json` gives the same fields. A disconnected device reconnects by itself, waiting from one second up to a minute between tries. It stays `connecting` during receipt recovery and reports `connected` when the command connection is available. The event stream reconnects independently.
 
 ## What runs on a linked device
 
@@ -55,7 +55,7 @@ An idle session on the device can be woken by a [notice](adapters.md#publish-not
 
 ## When the link is down
 
-Nothing waits on the device to be sent later. A command run while the device is disconnected fails with `the link to the home is down; nothing was sent`. Run it again once `crosshall link status` says `connected`; right after a reconnect the device may still be checking its earlier commands, so a command that again says nothing was sent can be run again a moment later.
+Nothing waits on the device to be sent later. A command run while the device is disconnected fails with `the link to the home is down; nothing was sent`. Run it again once `crosshall link status` says `connected`.
 
 Every command that changes the hall is recorded on the device before it is sent, under its `--key` or a generated one. If the link ends before the home answers, the command says so and names its key. Then:
 
@@ -68,7 +68,7 @@ shows what the hall did with it. If the hall has no receipt for it, `retry` send
 ## Unlink
 
 ```sh
-CROSSHALL_EXPERIMENTAL_LINK=1 crosshall unlink
+crosshall unlink
 ```
 
 removes the device's link record and restarts its dispatcher alone. Sessions on the device then lose access to the home's hall. The home does not end their memberships: they stay listed in `crosshall who` and keep their aliases until the owner removes them on the home (`crosshall owner depart`). The home also keeps the device's enrollment and history; there is no home command to remove a device yet.

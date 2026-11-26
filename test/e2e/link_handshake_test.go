@@ -90,7 +90,8 @@ func TestLinkFixtureHandshakeOverSSHStdio(t *testing.T) {
 			f := newLinkFixture(t, peer, binary, linkFixturePeerEnv+"="+mode)
 			ctx, cancel := context.WithTimeout(t.Context(), fixtureEventTimeout)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, f.ssh, "-T", "-o", "BatchMode=yes", linkFixtureTarget, peer, "link", "serve")
+			remote := linkFixtureRemote(peer, "link", "serve")
+			cmd := exec.CommandContext(ctx, f.ssh, "-T", "-o", "BatchMode=yes", "--", linkFixtureTarget, remote)
 			cmd.Env = f.spoke.baseEnv()
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr

@@ -88,9 +88,7 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		OwnerGate:       ident.OwnerGate,
 		RunChild:        ident.RunChild,
 		Stdin:           os.Stdin,
-		// #400 stays opt-in until the release gate covers two devices.
-		ExperimentalLink: os.Getenv("CROSSHALL_EXPERIMENTAL_LINK") == "1",
-		SetupTerminal:    func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		SetupTerminal:   func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
 	}
 	for _, spec := range hook.InstallSpecs() {
 		env.SetupAdapters = append(env.SetupAdapters, spec.Adapter)

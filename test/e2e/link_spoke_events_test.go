@@ -354,7 +354,7 @@ func TestSpokeLinkAgainRefusesAnotherHall(t *testing.T) {
 
 	other := newWorld(t)
 	other.executable = binary
-	other.extraEnv = []string{"CROSSHALL_EXPERIMENTAL_LINK=1", "DO_NOT_TRACK=1"}
+	other.extraEnv = []string{"DO_NOT_TRACK=1"}
 	other.owner().must("owner", "start")
 	repointed := f.spoke.owner()
 	repointed.extra = []string{"CROSSHALL_LINK_SSH=" + writeLocalSSH(t, other)}

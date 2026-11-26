@@ -79,8 +79,8 @@ func TestCrosshallRunMemberDepartsWhenItsCommandEnds(t *testing.T) {
 	owner.must("owner", "channel", "create", "checkout")
 	writer := w.member()
 	writer.must("join", "checkout", "--as", "writer")
-	process := exec.CommandContext(t.Context(), binary, "run", "--", "/bin/sh", "-c", `"$0" join checkout --as runner || exit $?
-exec /bin/sleep 60`, binary)
+	process := exec.CommandContext(t.Context(), w.binaryPath(), "run", "--", "/bin/sh", "-c", `"$0" join checkout --as runner || exit $?
+exec /bin/sleep 60`, w.binaryPath())
 	process.Env = w.baseEnv()
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestClaudeMemberWithoutALaunchDepartsWithItsProcess(t *testing.T) {
 "$1" join checkout --as hand || exit $?
 export CLAUDE_PID=$$
 "$1" who >/dev/null || exit $?
-exec /bin/sleep 60`, "sh", binary)
+exec /bin/sleep 60`, "sh", w.binaryPath())
 	process.Dir = c.repo
 	process.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
 	if err := process.Start(); err != nil {
@@ -135,7 +135,7 @@ exec /bin/sleep 60`, "sh", binary)
 	// member back under its alias, without a join.
 	resumed := exec.CommandContext(t.Context(), "/bin/sh", "-c", `export CLAUDE_PID=$$
 "$1" inbox >/dev/null || exit $?
-exec /bin/sleep 60`, "sh", binary)
+exec /bin/sleep 60`, "sh", w.binaryPath())
 	resumed.Dir = c.repo
 	resumed.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
 	if err := resumed.Start(); err != nil {
@@ -160,7 +160,7 @@ func TestMemberWithAnUnendingLaunchDepartsWithItsProcess(t *testing.T) {
 	}
 	w, writer, c := m2World(t)
 	c.pid = ""
-	join := exec.CommandContext(t.Context(), binary, "join", "checkout", "--as", "hand")
+	join := exec.CommandContext(t.Context(), w.binaryPath(), "join", "checkout", "--as", "hand")
 	join.Dir = c.repo
 	join.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
 	if out, err := join.CombinedOutput(); err != nil {
@@ -181,7 +181,7 @@ func TestMemberWithAnUnendingLaunchDepartsWithItsProcess(t *testing.T) {
 	}
 	process := exec.CommandContext(t.Context(), "/bin/sh", "-c", `export CLAUDE_PID=$$
 "$1" who >/dev/null || exit $?
-exec /bin/sleep 60`, "sh", binary)
+exec /bin/sleep 60`, "sh", w.binaryPath())
 	process.Dir = c.repo
 	process.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
 	if err := process.Start(); err != nil {

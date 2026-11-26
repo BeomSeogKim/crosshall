@@ -79,7 +79,7 @@ func TestReachLineFollowsWhetherTheHallReachesTheSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", event)
+		cmd := exec.CommandContext(t.Context(), w.binaryPath(), "hook", "claude", event)
 		cmd.Dir, cmd.Stdin = repo, strings.NewReader(string(payload))
 		cmd.Env = append(w.baseEnv(), "TMPDIR="+tmp, "CLAUDE_CODE_SESSION_ID="+c.key,
 			"CLAUDE_PID="+c.pid, "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_MESSAGING_SOCKET="+socket,

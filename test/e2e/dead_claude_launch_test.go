@@ -41,7 +41,7 @@ func TestDispatcherRetiresKilledHandJoinedClaudeLaunchOnLinux(t *testing.T) {
 	w, writer, c := m2World(t)
 	process := exec.CommandContext(t.Context(), "/bin/sh", "-c", `export CLAUDE_PID=$$
 "$1" join checkout --as hand || exit $?
-exec /bin/sleep 60`, "sh", binary)
+exec /bin/sleep 60`, "sh", w.binaryPath())
 	process.Dir = c.repo
 	process.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key)
 	if err := process.Start(); err != nil {
@@ -133,7 +133,7 @@ func checkKilledClaudeLaunch(t *testing.T, knownIdentity bool, revision string) 
 	start := fmt.Sprintf(`{"hook_event_name":"SessionStart","session_id":%q,"source":"startup","cwd":%q,"permission_mode":"default"}`, c.key, c.repo)
 	fireStart := func() {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), binary, "hook", "claude", "SessionStart")
+		cmd := exec.CommandContext(t.Context(), w.binaryPath(), "hook", "claude", "SessionStart")
 		cmd.Dir = c.repo
 		cmd.Stdin = strings.NewReader(start)
 		cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+c.key,

@@ -42,7 +42,7 @@ func TestPublishRouteThroughRealSpoolClient(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), fixtureEventTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, binary, "hook", "claude", event)
+		cmd := exec.CommandContext(ctx, w.binaryPath(), "hook", "claude", event)
 		cmd.Dir = repo
 		cmd.Stdin = strings.NewReader(payload)
 		cmd.Env = append(w.baseEnv(),
@@ -158,7 +158,7 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 	socket := "/tmp/cc-socks/" + pid + ".sock"
 	runHook := func(ctx context.Context, event, payload, socketPath string) {
 		t.Helper()
-		cmd := exec.CommandContext(ctx, binary, "hook", "claude", event)
+		cmd := exec.CommandContext(ctx, w.binaryPath(), "hook", "claude", event)
 		cmd.Dir = repo
 		cmd.Stdin = strings.NewReader(payload)
 		cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+sessionID, "CLAUDE_PID="+pid,

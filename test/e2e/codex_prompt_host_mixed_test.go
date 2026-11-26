@@ -40,11 +40,7 @@ func TestNewCodexHookUnderAnOlderDispatcherStaysFailOpen(t *testing.T) {
 }
 
 func upgradeInPlaceUnderOlderDispatcher(t *testing.T, old string) {
-	head := binary
-	binary = old // newSetupWorld installs it; its setup starts its dispatcher
-	t.Cleanup(func() { binary = head })
-	f := newSetupWorld(t)
-	binary = head
+	f := installSetupWorld(newWorld(t), old)
 	f.apply("", "setup", "codex", "--apply")
 	repo := f.enrollmentRepo()
 	f.codexServer = buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
@@ -54,7 +50,7 @@ func upgradeInPlaceUnderOlderDispatcher(t *testing.T, old string) {
 	}
 	// Replaced by rename, as an installer does: the running dispatcher
 	// keeps the base build.
-	content, err := os.ReadFile(head)
+	content, err := os.ReadFile(f.binaryPath())
 	if err != nil {
 		t.Fatal(err)
 	}

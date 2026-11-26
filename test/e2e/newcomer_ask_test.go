@@ -14,7 +14,7 @@ func TestAskMissingRecipientPrefix(t *testing.T) {
 	owner.must("owner", "channel", "create", "demo")
 	member.must("join", "demo", "--as", "writer")
 	w.member().must("join", "demo", "--as", "reviewer")
-	cmd := exec.Command(binary, "ask", "reviewer", "text")
+	cmd := exec.Command(w.binaryPath(), "ask", "reviewer", "text")
 	cmd.Dir, cmd.Env = w.home, member.env()
 	out, err := cmd.CombinedOutput()
 	exit, ok := err.(*exec.ExitError)

@@ -24,11 +24,10 @@ import (
 func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
-	owner.extra = []string{"CROSSHALL_EXPERIMENTAL_LINK=1"}
 	owner.must("owner", "start")
 	secret := bytes.Repeat([]byte{0x5a}, 32)
 
-	enroll := exec.Command(binary, "link", "enroll", "--name", "macbook")
+	enroll := exec.Command(w.binaryPath(), "link", "enroll", "--name", "macbook")
 	enroll.Dir, enroll.Env = w.home, owner.env()
 	enroll.Stdin = strings.NewReader(hex.EncodeToString(secret) + "\n")
 	var out, errOut bytes.Buffer
@@ -46,7 +45,7 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 		t.Fatalf("link enroll wrote more than one frame: %v", err)
 	}
 
-	serve := exec.CommandContext(t.Context(), binary, "--json", "link", "serve")
+	serve := exec.CommandContext(t.Context(), w.binaryPath(), "--json", "link", "serve")
 	serve.Dir, serve.Env = w.home, owner.env()
 	stdin, _ := serve.StdinPipe()
 	stdout, _ := serve.StdoutPipe()
@@ -90,7 +89,7 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	}
 
 	// A device with another secret gets no welcome, and stdout stays frames.
-	bad := exec.CommandContext(t.Context(), binary, "--json", "link", "serve")
+	bad := exec.CommandContext(t.Context(), w.binaryPath(), "--json", "link", "serve")
 	bad.Dir, bad.Env = w.home, owner.env()
 	bin, _ := bad.StdinPipe()
 	bout, _ := bad.StdoutPipe()
@@ -107,19 +106,6 @@ func TestLinkHomeEnrollsADeviceAndServesItsLink(t *testing.T) {
 	bin.Close()
 }
 
-// Without the opt-in, link refuses on stderr and writes nothing to stdout,
-// with --json too.
-func TestLinkNeedsTheOptIn(t *testing.T) {
-	w := newWorld(t)
-	cmd := exec.Command(binary, "--json", "link", "serve")
-	cmd.Dir, cmd.Env = w.home, w.owner().env()
-	var out, errOut bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Run(); err == nil || out.Len() != 0 || !strings.Contains(errOut.String(), "CROSSHALL_EXPERIMENTAL_LINK=1") {
-		t.Fatalf("err %v, stdout %q, stderr %q", err, out.String(), errOut.String())
-	}
-}
-
 // servedLink is a running `crosshall link serve` with an authenticated
 // spoke on its stdio. One goroutine owns Wait, so a failing test reaps
 // the child predictably.
@@ -133,7 +119,7 @@ type servedLink struct {
 
 func serveLink(t *testing.T, w *world, owner *participant, spoke link.Spoke) *servedLink {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), binary, "link", "serve")
+	cmd := exec.CommandContext(t.Context(), w.binaryPath(), "link", "serve")
 	cmd.Dir, cmd.Env = w.home, owner.env()
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
@@ -174,7 +160,7 @@ func (s *servedLink) send(t *testing.T, frame string, c domain.LinkCall) core.Re
 
 func enrollDevice(t *testing.T, w *world, owner *participant, name string, secret []byte) (hall, device string) {
 	t.Helper()
-	cmd := exec.Command(binary, "link", "enroll", "--name", name)
+	cmd := exec.Command(w.binaryPath(), "link", "enroll", "--name", name)
 	cmd.Dir, cmd.Env = w.home, owner.env()
 	cmd.Stdin = strings.NewReader(hex.EncodeToString(secret) + "\n")
 	out, err := cmd.Output()
@@ -195,7 +181,6 @@ func enrollDevice(t *testing.T, w *world, owner *participant, name string, secre
 func TestLinkServeForwardsMemberCommands(t *testing.T) {
 	w := newWorld(t)
 	owner := w.owner()
-	owner.extra = []string{"CROSSHALL_EXPERIMENTAL_LINK=1"}
 	owner.must("owner", "start")
 	owner.must("owner", "channel", "create", "checkout")
 	secret := bytes.Repeat([]byte{0x33}, 32)

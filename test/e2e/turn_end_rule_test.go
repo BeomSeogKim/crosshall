@@ -42,7 +42,7 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	}
 	const wait = "crosshall wait --existing --work-only --timeout 9m"
 	require(tax.mustPlain("inbox"), wait)
-	cmd := exec.Command(binary, "wait", "--existing", "--work-only", "--timeout", "350ms")
+	cmd := exec.Command(w.binaryPath(), "wait", "--existing", "--work-only", "--timeout", "350ms")
 	cmd.Dir, cmd.Env = w.home, tax.env()
 	out, err := cmd.CombinedOutput()
 	var failed *exec.ExitError
@@ -79,7 +79,7 @@ func TestMemberResultsGuideShellOnlyMember(t *testing.T) {
 	if refused.exit != 3 || refused.obj["owed_count"] != float64(1) || len(ids(refused.obj["pending"])) != 1 {
 		t.Errorf("refusal lost its member inbox summary: %+v", refused)
 	}
-	cmd = exec.Command(binary, "read", "99999")
+	cmd = exec.Command(w.binaryPath(), "read", "99999")
 	cmd.Dir, cmd.Env = w.home, tax.env()
 	out, err = cmd.CombinedOutput()
 	if !errors.As(err, &failed) || failed.ExitCode() != 3 || strings.Count(string(out), "crosshall inbox") != 1 ||

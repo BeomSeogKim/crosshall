@@ -78,7 +78,7 @@ func (h *hookWorld) runTo(limit time.Duration, stdin io.Reader, stdout io.Writer
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(h.t.Context(), limit)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, append([]string{"hook"}, args...)...)
+	cmd := exec.CommandContext(ctx, h.binaryPath(), append([]string{"hook"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, &stderr
 	cmd.Dir, cmd.Env = h.home, h.baseEnv()

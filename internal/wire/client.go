@@ -67,3 +67,8 @@ const HelloLaunchProof = "launch_proof"
 // a session whose start it missed (#252); a hook sends them only when it is
 // listed.
 const HelloPromptHost = "prompt_host"
+
+// HelloLaunchAck is listed by a dispatcher whose hook.event reply names the
+// member's current launch (HookResult.Launch): a hook waits for that reply
+// before its route report until it names the hook's launch (#437).
+const HelloLaunchAck = "launch_ack"

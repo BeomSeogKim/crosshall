@@ -35,22 +35,27 @@ const Budget = 150 * time.Millisecond
 const StartBudget = 400 * time.Millisecond
 
 // CallbackBudget is the deadline of adapter's callback for event. A prompt
-// gets the start budget only until it finds it enrolls nothing (dispatchCallback).
+// gets the start budget only until it finds it enrolls nothing (dispatchCallback),
+// and so does a turn end or idle prompt that may bind a missed launch.
 func CallbackBudget(adapter, event string) time.Duration {
 	m, ok := loadManifest(adapter)
 	spec, known := m.event(event)
 	if !ok || !known {
 		return Budget
 	}
+	if m.bindsLateLaunch(spec) {
+		return StartBudget
+	}
 	return spec.budget()
 }
 
 // CallbackBase is the deadline adapter's callback for event runs on until
-// it extends to CallbackBudget: a prompt starts on the ordinary budget.
+// it extends to CallbackBudget: a prompt starts on the ordinary budget, as
+// does a turn end or idle prompt.
 func CallbackBase(adapter, event string) time.Duration {
 	m, ok := loadManifest(adapter)
 	spec, known := m.event(event)
-	if !ok || !known || (spec.RecoverEnroll && !spec.Enroll) {
+	if !ok || !known || (spec.RecoverEnroll && !spec.Enroll) || m.bindsLateLaunch(spec) {
 		return Budget
 	}
 	return spec.budget()
@@ -61,6 +66,25 @@ func (s eventSpec) budget() time.Duration {
 		return StartBudget
 	}
 	return Budget
+}
+
+// bindsLateLaunch reports whether the event's callback may bind a launch
+// whose start was missed (lateLaunchFact): it extends to the start budget
+// when it does, as a start would take, so the route report that follows is
+// still current when the dispatcher reads it (#437).
+func (m manifest) bindsLateLaunch(spec eventSpec) bool {
+	if m.LaunchEnv == "" || spec.Enroll {
+		return false
+	}
+	if lateLaunchFact(spec.Fact) {
+		return true
+	}
+	for _, fact := range spec.FactsByMatch {
+		if lateLaunchFact(fact) {
+			return true
+		}
+	}
+	return false
 }
 
 type hookTransport interface {
@@ -225,12 +249,12 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if err != nil {
 		return refused("launch")
 	}
-	if spec.Fact == wire.HookPromptSubmitted && e.LaunchVerified {
+	if lateLaunchFact(e.Fact) && e.LaunchVerified {
 		// The proof the dispatcher needs for a launch it has no row for.
 		e.LaunchAtMS, e.PIDNamespace = launch.atMS, proc.PIDNamespace()
 		if launch.late {
 			markLaunch(rv, pid)
-			extendBudget(ctx) // this prompt binds a launch whose start was missed
+			extendBudget(ctx) // this callback binds a launch whose start was missed
 		}
 	}
 	if spec.Enroll && e.LaunchVerified {
@@ -249,7 +273,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	// so does a Stop the dispatcher recorded no ask to announce for (#261).
 	turnEnd := spec.Stop && e.stopActive == "false" && e.VendorVersion != "unverified" && e.Mode != "unverified" &&
 		turnEndListed(rv, m.Adapter, runtime.GOOS+"-"+runtime.GOARCH, e.Mode, m.Revision) && !noTurnEndAsk(rv, leaf, gen)
-	// A prompt that binds a launch whose start was missed asks: while the
+	// A callback that binds a launch whose start was missed asks: while the
 	// session had no open launch, new work did not mark its stamp.
 	clean := !spec.Enroll && notice && !launch.late && stampClean(rv, leaf, gen, "notice", "")
 	if spec.RecoverEnroll && !clean && repo.none() && e.CWD != "" && !hasSeenNotice(leaf, gen) {
@@ -257,10 +281,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if spec.RecoverEnroll && !spec.Enroll && !repo.none() {
 		extendBudget(ctx) // this prompt repairs its session's enrolment
-	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll && !launch.late &&
+	} else if end, ok := ctx.Deadline(); ok && (spec.RecoverEnroll || m.bindsLateLaunch(spec)) && !spec.Enroll && !launch.late &&
 		end.After(entry.Add(Budget-counterAllowance)) {
-		// This prompt enrolls, repairs and binds nothing: no request after
-		// the ordinary budget.
+		// This prompt, turn end or idle prompt enrolls, repairs and binds
+		// nothing: no request after the ordinary budget.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
 		defer cancel()
@@ -283,9 +307,20 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want)
+	// A callback that may bind a launch waits for its reply until one names
+	// that launch as the member's current one: its route report is applied
+	// only for that launch, and the dispatcher does not order a report after
+	// a one-way event (#437).
+	acked := !lateLaunchFact(e.Fact) || !slices.Contains(offers, wire.HelloLaunchAck) || launchAcked(leaf, launch)
+	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want && acked)
 	if err != nil {
 		return transportOutcome(ctx, err)
+	}
+	if !acked && reply.Response.Status == core.ExitOK {
+		var answered wire.HookResult
+		if json.Unmarshal(reply.Response.Data, &answered) == nil && answered.Launch == launch.ref {
+			ackLaunch(leaf, launch)
+		}
 	}
 	if clean || !want {
 		if !hookExpired(ctx) {
@@ -294,7 +329,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 			}
 		}
-		return "clean" // published without waiting for a response
+		return "clean" // no output: published, or answered only for its launch
 	}
 	if reply.Response.Status != core.ExitOK {
 		return refusedWith("reply", reply.Response.Code)

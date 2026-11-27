@@ -178,8 +178,9 @@ type event struct {
 	LaunchVerified bool
 	LaunchHosted   bool
 	PIDNamespace   string
-	// LaunchAtMS is when the launch's record was written; a prompt sends it
-	// so the dispatcher can register a launch whose start it never saw.
+	// LaunchAtMS is when the launch's record was written; a prompt, turn end
+	// or idle prompt sends it so the dispatcher can register a launch whose
+	// start it never saw.
 	LaunchAtMS    int64
 	TurnRef       string
 	EventRef      string

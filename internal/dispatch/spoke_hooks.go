@@ -210,6 +210,12 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 			if err := recordSpokeNativeHook(ctx, tx, member, token, launch, epoch, native); err != nil {
 				return err
 			}
+			if req.Verb == wire.VerbHookEvent {
+				// The launch the session's route report must name (#437).
+				if result.Launch, err = spokeNativeLaunch(ctx, tx, member, token); err != nil {
+					return err
+				}
+			}
 		}
 		if fact != nil {
 			fact.Member, fact.Token = member, token

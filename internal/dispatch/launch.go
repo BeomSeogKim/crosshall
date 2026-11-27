@@ -249,7 +249,7 @@ func (cfg LaunchConfig) LinkedTarget() string {
 
 func newReadyMarker(instance string) readyMarker {
 	return readyMarker{Instance: instance, Version: wire.Version, PID: os.Getpid(), Lease: true, Probe: true,
-		Hello: []string{wire.HelloStart, wire.HelloLaunchProof, wire.HelloPromptHost}}
+		Hello: []string{wire.HelloStart, wire.HelloLaunchProof, wire.HelloPromptHost, wire.HelloLaunchAck}}
 }
 
 func (r readyMarker) live(state *os.Root) bool {

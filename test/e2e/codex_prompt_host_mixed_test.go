@@ -119,9 +119,10 @@ func waitObservation(t *testing.T, f *setupWorld, db *sql.DB, turn, kind string)
 }
 
 // The other direction: the hooks still name the base commit's crosshall
-// while this build's dispatcher runs. The older hook names no server on a
-// turn end, so a hand-joined session gets nothing from it, and its next
-// prompt, which names the server, registers the route (#437).
+// while this build's dispatcher runs. A hook from before #437 names no
+// server on a turn end, so a hand-joined session gets nothing from it and
+// its next prompt registers the route; a later one registers it at the turn
+// end, and the prompt keeps it. Either way the session has one route.
 func TestOlderCodexHookUnderANewDispatcherRegistersAtItsPrompt(t *testing.T) {
 	old := os.Getenv(baseBinaryEnv)
 	if old == "" {
@@ -158,13 +159,13 @@ func TestOlderCodexHookUnderANewDispatcherRegistersAtItsPrompt(t *testing.T) {
 	}
 	f.invokeHook(repo, "codex", "Stop", `"turn_id":"turn-1","stop_hook_active":false`)
 	waitObservation(t, f, db, "turn-1", "turn_finishing")
-	if n := routes(); n != 0 {
+	if n := routes(); n > 1 {
 		t.Fatalf("the older hook's turn end registered %d routes", n)
 	}
 	f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"turn-2","prompt":"fixture private text"`)
 	waitObservation(t, f, db, "turn-2", "prompt_submitted")
 	if n := routes(); n != 1 {
-		t.Fatalf("the older hook's prompt registered %d routes, want the server's", n)
+		t.Fatalf("the older hook left %d routes after its prompt, want the server's", n)
 	}
 	if got := f.dispatcherPIDs(); len(got) != 1 || got[0] != dispatcher[0] {
 		t.Fatalf("dispatchers %v, want this build's %d throughout", got, dispatcher[0])

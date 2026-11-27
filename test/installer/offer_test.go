@@ -214,6 +214,7 @@ esac
 			installedDir := filepath.Join(home, ".local", "bin")
 			t.Setenv("PATH", f.Bin+":"+installedDir+":/usr/bin:/bin")
 			t.Setenv("BASH_ENV", "")
+			t.Setenv("SHELL", "/bin/bash")
 			zhome := filepath.Join(home, "zsh config")
 			if err := os.Mkdir(zhome, 0700); err != nil {
 				t.Fatal(err)
@@ -290,14 +291,25 @@ esac
 			}
 			shown := strings.ReplaceAll(out, "\r\n", "\n")
 			block := strings.TrimPrefix(string(profile), existing)
-			if got := strings.Index(shown, block); got < 0 || got >= strings.Index(shown, tc.prompt) {
-				t.Fatalf("written PATH block was not shown before confirmation:\n%s", shown)
+			// The block is shown once, after the list of files it goes to.
+			body := block[strings.Index(block, "\n")+1:]
+			if got := strings.Index(shown, body); got < 0 || got >= strings.Index(shown, tc.prompt) ||
+				strings.Count(shown, body) != 1 || !strings.Contains(shown, "\n  "+strings.ReplaceAll(login, " ", `\ `)+"\n") {
+				t.Fatalf("written PATH block was not shown once before confirmation:\n%s", shown)
 			}
-			shells := [][]string{{"bash", "-lc"}, {"bash", "-ic"}, {"sh", "-lc"}}
-			if _, err := exec.LookPath("zsh"); err == nil {
-				shells = append(shells, []string{"zsh", "-c"}, []string{"zsh", "-lc"}, []string{"zsh", "-ic"}, []string{"zsh", "-lic"})
+			// A bash user gets no zsh files.
+			for _, path := range []string{filepath.Join(zhome, ".zshenv"), filepath.Join(zhome, ".zlogin")} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("a bash user got a zsh startup file: %s (%v)", path, err)
+				}
 			}
-			for _, shell := range shells {
+			if got, err := os.ReadFile(filepath.Join(zhome, ".zshrc")); err != nil || string(got) != reorder {
+				t.Fatalf("a bash user's .zshrc changed: %q, %v", got, err)
+			}
+			if !strings.Contains(shown, newTerminalLine) {
+				t.Fatalf("no new-terminal line after the PATH change:\n%s", shown)
+			}
+			for _, shell := range [][]string{{"bash", "-lc"}, {"bash", "-ic"}, {"sh", "-lc"}} {
 				cmd := exec.Command(shell[0], shell[1], "command -v crosshall && crosshall version")
 				if version, err := cmd.Output(); err != nil || string(version) != filepath.Join(installedDir, "crosshall")+"\nv0.1.0\n" {
 					t.Fatalf("new %v: %q, %v", shell, version, err)
@@ -382,7 +394,68 @@ esac
 			}
 		})
 	}
+
+	t.Run("zsh user gets only zsh startup files", func(t *testing.T) {
+		if _, err := exec.LookPath("zsh"); err != nil {
+			t.Skip("zsh is not installed")
+		}
+		home := setuptest.New(t).Home
+		installedDir := filepath.Join(home, ".local", "bin")
+		t.Setenv("PATH", f.Bin+":"+installedDir+":/usr/bin:/bin")
+		t.Setenv("BASH_ENV", "")
+		t.Setenv("SHELL", "/bin/zsh")
+		zhome := filepath.Join(home, "zsh config")
+		if err := os.Mkdir(zhome, 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ZDOTDIR", zhome)
+		t.Setenv("CROSSHALL_TEST_SHADOW_DIR", f.Bin)
+		const reorder = "export PATH=\"$CROSSHALL_TEST_SHADOW_DIR:$HOME/.local/bin:$PATH\"\n"
+		zshenv, zlogin, zshrc := filepath.Join(zhome, ".zshenv"), filepath.Join(zhome, ".zlogin"), filepath.Join(zhome, ".zshrc")
+		write(filepath.Join(zhome, ".zprofile"), reorder)
+		write(zshrc, reorder)
+		t.Setenv("OFFER_LOG", filepath.Join(home, "offer"))
+		t.Setenv("OFFER_EXIT", "0")
+		t.Setenv("OFFER_CONFIRM_PATH", "")
+		t.Setenv("OFFER_INSTALLED", "")
+		out, err := exec.Command(python, "-B", terminal, "--answers", "y\n", "--", script, "--source").CombinedOutput()
+		if err != nil {
+			t.Fatalf("install: %v\n%s", err, out)
+		}
+		if !strings.Contains(strings.ReplaceAll(string(out), "\r\n", "\n"), newTerminalLine) {
+			t.Fatalf("no new-terminal line after the PATH change:\n%s", out)
+		}
+		for _, name := range []string{".profile", ".bashrc", ".bash_profile", ".bash_login"} {
+			if _, err := os.Stat(filepath.Join(home, name)); !os.IsNotExist(err) {
+				t.Fatalf("a zsh user got %s (%v)\n%s", name, err, out)
+			}
+		}
+		for path, marker := range map[string]string{zshenv: "created", zlogin: "created", zshrc: "existing"} {
+			if got, err := os.ReadFile(path); err != nil || !strings.Contains(string(got), "# crosshall: user PATH "+marker+"\n") {
+				t.Fatalf("%s: %q, %v", path, got, err)
+			}
+		}
+		for _, mode := range []string{"-c", "-lc", "-ic", "-lic"} {
+			cmd := exec.Command("zsh", mode, "command -v crosshall && crosshall version")
+			if version, err := cmd.Output(); err != nil || string(version) != filepath.Join(installedDir, "crosshall")+"\nv0.1.0\n" {
+				t.Fatalf("new zsh %s: %q, %v", mode, version, err)
+			}
+		}
+		if output, err := exec.Command(script, "--remove-path", zshenv, zlogin, zshrc).CombinedOutput(); err != nil {
+			t.Fatalf("undo PATH: %v\n%s", err, output)
+		}
+		if got, err := os.ReadFile(zshrc); err != nil || string(got) != reorder {
+			t.Errorf("undo .zshrc: %q, %v", got, err)
+		}
+		for _, path := range []string{zshenv, zlogin} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("undo left an installer-created file: %s (%v)", path, err)
+			}
+		}
+	})
 }
+
+const newTerminalLine = `Open a new terminal for the PATH change, or run in this one: export PATH="$HOME/.local/bin:$PATH"`
 
 // reachLine is the installer's last line after an install, naming the
 // installed path as the installer quotes it.

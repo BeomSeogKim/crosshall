@@ -21,7 +21,7 @@ func TestTelemetryQuestion(t *testing.T) {
 		name, input, mode string
 		questions         int
 	}{
-		{"default after Enter", "\n", telemetryconfig.On, 1},
+		{"default after Enter", "\n", telemetryconfig.Off, 1},
 		{"typed yes", "YeS\n", telemetryconfig.On, 1},
 		{"decline", "n\n", telemetryconfig.Off, 1},
 		{"y key under a Korean input method", "ㅛ\n", telemetryconfig.On, 1},
@@ -39,7 +39,7 @@ func TestTelemetryQuestion(t *testing.T) {
 			// An answer it does not accept is followed by the prompt line only.
 			want := wantQuestion
 			if tt.questions == 2 {
-				want += "Answer y or n.\nSend usage statistics? [Y/n]\n"
+				want += "Answer y or n.\nSend usage statistics? [y/N]\n"
 			}
 			if err != nil || mode != tt.mode || out.String() != want {
 				t.Fatalf("mode=%q, error=%v, question=%q", mode, err, out.String())
@@ -56,7 +56,7 @@ func TestTelemetryOfferAtOwnerEntryPoints(t *testing.T) {
 		mode      string
 		source    string
 	}{
-		{name: "first owner command", args: []string{"owner", "start"}, mode: "on", source: "owner-prompt"},
+		{name: "first owner command", args: []string{"owner", "start"}, mode: "off", source: "owner-prompt"},
 		{name: "installer offer", args: []string{"setup", "--offer"}, mode: "off", source: "installer"},
 		{name: "plain setup", args: []string{"setup"}, mode: "off", source: "owner-prompt"},
 		{name: "JSON", args: []string{"--json", "owner", "start"}},

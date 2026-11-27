@@ -375,30 +375,32 @@ func TestSpokeLinkAgainRefusesAnotherHall(t *testing.T) {
 	}
 }
 
-// stopHomeAndDevice stops the linked device's dispatcher, waits until the home's link
-// serve processes it ran have exited, then stops the home. A connected
-// device's link serve starts the home dispatcher on demand at each call,
-// so a home stop alone can race with it: the stop fails on the
-// replacement, or a restarted dispatcher writes the store while the test
-// copies it.
+// stopHomeAndDevice stops the linked device's dispatcher, waits until it
+// releases its lock, then stops the home. A connected device's link serve
+// starts the home dispatcher on demand at each call, so a home stop alone
+// can race with it: the stop fails on the replacement, or a restarted
+// dispatcher writes the store while the test copies it. The device's
+// dispatcher joins its link workers, which wait for their link serve,
+// before it releases its lock.
 func stopHomeAndDevice(t *testing.T, f *linkFixture) {
 	t.Helper()
 	// A linked device refuses owner commands: its dispatcher gets SIGTERM.
-	device := linkDispatcher(f.spoke)
-	device.signal(syscall.SIGTERM)
-	eventually(t, "the device's dispatcher stopped", func() bool { return !device.alive() })
-	eventually(t, "the device's link serve processes exited", func() bool {
-		data, err := os.ReadFile(f.ssh + ".pids")
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			t.Fatal(err)
+	linkDispatcher(f.spoke).signal(syscall.SIGTERM)
+	lock, err := os.Open(filepath.Join(f.spoke.state, "dispatcher.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	eventually(t, "the device's dispatcher released its lock", func() bool {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) {
+			t.Fatalf("probe the device's dispatcher lock: %v", err)
 		}
-		for _, field := range strings.Fields(string(data)) {
-			if pid, err := strconv.Atoi(field); err == nil && syscall.Kill(pid, 0) == nil {
-				return false
-			}
-		}
-		return true
+		return err == nil
 	})
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
 	f.home.owner().must("owner", "stop")
 }
 

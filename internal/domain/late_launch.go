@@ -113,6 +113,18 @@ func launchKnown(ctx context.Context, tx store.Tx, principal int64, launch strin
 
 // startUnseen reports whether the member's current launch has no seen
 // start: a prompt joined it and its launch could not be bound.
+// linkedStartUnseen says a live member on a linked device has no launch
+// the home could wake for its binding: it joined after its session
+// started, and its device has sent no prompt since (#437). Its next prompt
+// opens the launch, as a local member's does.
+func linkedStartUnseen(ctx context.Context, tx store.Tx, principal, binding int64) (bool, error) {
+	var unseen bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device_key k WHERE k.principal_id = ?1 AND k.state = 'live')
+		AND NOT EXISTS (SELECT 1 FROM link_event_launch l WHERE l.principal_id = ?1 AND l.binding_id = ?2)`,
+		principal, binding).Scan(&unseen)
+	return unseen, err
+}
+
 func startUnseen(ctx context.Context, tx store.Tx, principal int64) (bool, error) {
 	var unseen bool
 	err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT ended_hook_at_ms IS NULL AND started_hook_at_ms = 0

@@ -399,3 +399,20 @@ func TestLinkFactDoesNotEnableTurnEndOrHomePromptProbe(t *testing.T) {
 		t.Fatalf("linked turn-end claims = %d", got)
 	}
 }
+
+// The owner sees why a member on a linked device that joined after its
+// session started has no route yet; its first prompt opens the launch and
+// clears the hint (#437).
+func TestTheOwnerSeesALinkedMemberWhoseStartWasNotSeen(t *testing.T) {
+	h := newLinkedHookFixture(t)
+	if !h.startUnseen("reader") {
+		t.Fatal("a linked member with no launch shows no unseen start")
+	}
+	const launch = "pid-42-joined"
+	at := ms(h.now)
+	h.token.WallMS = at
+	h.fact(1, 2, prompt(launch, "t1", at), link.RecordedApplied)
+	if h.startUnseen("reader") {
+		t.Fatal("a linked member with a launch still shows an unseen start")
+	}
+}

@@ -68,6 +68,12 @@ const HelloLaunchProof = "launch_proof"
 // listed.
 const HelloPromptHost = "prompt_host"
 
+// HelloTurnHost is listed by a dispatcher that also accepts a turn end's
+// server (host and vendor_home in hook.event), which registers the notice
+// route of a session that joined by hand during a turn (#437); a hook sends
+// them on a turn end only when it is listed.
+const HelloTurnHost = "turn_host"
+
 // HelloLaunchAck is listed by a dispatcher whose hook.event reply names the
 // member's current launch (HookResult.Launch): a hook waits for that reply
 // before its route report until it names the hook's launch (#437).

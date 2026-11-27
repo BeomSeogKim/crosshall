@@ -137,16 +137,23 @@ func TestARouteARecoveringCodexPromptRegisteredCarriesANotice(t *testing.T) {
 	}
 }
 
-// A member recovered without its server waits for its next start: a later
-// prompt that names the server registers nothing.
-func TestARecoveredCodexMemberWaitsForItsNextStart(t *testing.T) {
+// A member recovered without its server gets its route from its next
+// prompt that names the server, as a hand-joined member does (#437); its
+// next start replaces it as any start does.
+func TestARecoveredCodexMemberGetsItsRouteFromItsNextNamingPrompt(t *testing.T) {
 	f, s := codexFixture(t)
 	at := f.now.UnixMilli()
 	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, nil, "t1", at+10, true))
+	if route, found := f.codexRoute(s); found {
+		t.Fatalf("a prompt without its server registered %+v", route)
+	}
 	server := codexServer
 	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t2", at+20, false))
-	if route, found := f.codexRoute(s); found {
-		t.Fatalf("a later prompt registered %+v", route)
+	if route, found := f.codexRoute(s); !found || route.state != "active" || route.hostPID != codexServer.PID || route.thread != s.key {
+		t.Fatalf("after a prompt that names the server the route is %+v (found %t)", route, found)
+	}
+	if got := f.launches(s); len(got) != 1 || got[0] != (launchRow{SessionLaunch, false, at + 20, publish.ModeDaemon}) {
+		t.Fatalf("launches %+v, want the session launch started at the naming prompt", got)
 	}
 	f.hook(s, codexStart("resume", publish.ModeDaemon, at+30))
 	if route, found := f.codexRoute(s); !found || route.state != "active" || route.hostPID != codexServer.PID {

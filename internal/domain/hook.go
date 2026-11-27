@@ -541,6 +541,32 @@ func openMissedSessionLaunch(ctx context.Context, tx store.Tx, principal int64, 
 	return registerLaunch(ctx, tx, principal, profile, SessionLaunch, false, "", 0)
 }
 
+// openMissedThreadRoute gives a live member of a thread-routed adapter that
+// joined by hand while its start was missed the route that start would have
+// registered, from the first prompt or turn end that names its server
+// (#437). The trust rule is the recovering prompt's (#355): the session
+// launch starts at the callback, which the server's proof is judged
+// against. A member with a seen start, or with a route in any state, is
+// left as it is.
+func (s *Service) openMissedThreadRoute(ctx context.Context, tx store.Tx, req Request, b hookBinding, principal int64,
+	cmd HookEvent, now time.Time) error {
+	if cmd.LaunchRef != SessionLaunch || !promptNamesServer(cmd) {
+		return nil
+	}
+	var started bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publish_route WHERE binding_id = ?)
+		OR EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ? AND started_hook_at_ms > 0)`, b.id, principal).Scan(&started); err != nil || started {
+		return err
+	}
+	if err := registerLaunch(ctx, tx, principal, cmd.Profile, SessionLaunch, false, "", cmd.HookAtMS); err != nil {
+		return err
+	}
+	enroll := HookEnroll{wire.HookEnrollArgs{Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
+		Source: "late", HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch, Host: cmd.Host, VendorHome: cmd.VendorHome}}
+	return registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, enroll,
+		s.routeHost(enroll), now)
+}
+
 func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, pidNamespace string, at int64) error {
 	// A newer start of a known launch (a resumed session-scoped launch)
 	// reactivates it; an older or equal one changes nothing.
@@ -759,6 +785,11 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 	live := found && b.state == "live"
 	if live && cmd.Fact == FactPromptSubmitted && cmd.LaunchRef == SessionLaunch {
 		if err := openMissedSessionLaunch(ctx, tx, principal, cmd); err != nil {
+			return core.Result{}, err
+		}
+	}
+	if live && (cmd.Fact == FactPromptSubmitted || cmd.Fact == FactTurnFinishing) {
+		if err := s.openMissedThreadRoute(ctx, tx, req, b, principal, cmd, now); err != nil {
 			return core.Result{}, err
 		}
 	}

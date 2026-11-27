@@ -66,8 +66,9 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 	// The turn end or idle prompt of a process launch carries the launch's
 	// time as a prompt does, so a session that joined during a turn has a
 	// route without a new prompt (#437). A thread-routed adapter's route
-	// rests on the server only a prompt names.
-	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted ||
+	// rests on the server its hooks name, which a turn end names too.
+	threadTurnEnd := adapter.ThreadRouted() && hook.fact == wire.HookTurnFinishing && hook.host != nil
+	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted || threadTurnEnd ||
 		(hook.fact == wire.HookTurnFinishing || hook.fact == wire.HookIdlePrompt) && hook.verified && hook.startedAtMS > 0 &&
 			!adapter.ThreadRouted()
 	if !profile && hook.report == nil {
@@ -112,6 +113,11 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 		// opened, which a turn end of another process does not replace.
 		if profile && !hook.enroll && hook.fact != wire.HookPromptSubmitted && sameScope && old.Launch != launch &&
 			evidence.Material.Verified {
+			profile = false
+		}
+		// A turn end gives a thread its server only when none is named yet:
+		// a start or a prompt says which server the session runs in now.
+		if threadTurnEnd && sameScope && old.Launch == launch && evidence.Material.Route.Host.PID > 0 {
 			profile = false
 		}
 		if (!sameScope || old.Launch != launch) &&

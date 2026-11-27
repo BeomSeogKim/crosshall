@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A Codex session that joins by hand during a turn can be woken when that turn ends (#437):** when the hall missed the session's start, a hand-joined Codex member got no notice route until its next start; locally even its prompts did not register one, and on a linked device only a prompt did. Its turn end (`Stop`) now names the managed app server as a prompt does, and the first prompt or turn end that names it registers the route the start would have, judged against that callback's time. A route that exists is never changed by one. The hook sends the server on a turn end only to a dispatcher that offers `turn_host`, so an older dispatcher or device sees the turn end as before.
+
 ## v0.5.1 (2026-11-27)
 
 - **Release of v0.5.1-rc.1:** no product change since rc.1.

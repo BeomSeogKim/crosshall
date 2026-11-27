@@ -58,10 +58,17 @@ func TestManagedCodexDaemon(t *testing.T) {
 			}
 			return
 		}
-		cmd := exec.CommandContext(t.Context(), os.Getenv("CROSSHALL_FIXTURE_CODEX_HOOK"), "hook", "codex", "SessionStart")
+		// Each line is one hook's input; it runs the hook its event names.
+		var line struct {
+			Event string `json:"hook_event_name"`
+		}
+		if err := json.Unmarshal(stdin.Bytes(), &line); err != nil || line.Event == "" {
+			t.Fatalf("fixture hook input %q: %v", stdin.Bytes(), err)
+		}
+		cmd := exec.CommandContext(t.Context(), os.Getenv("CROSSHALL_FIXTURE_CODEX_HOOK"), "hook", "codex", line.Event)
 		cmd.Stdin = bytes.NewReader(stdin.Bytes())
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("linked Codex SessionStart: %v: %s", err, out)
+			t.Fatalf("managed Codex %s: %v: %s", line.Event, err, out)
 		}
 	}
 }

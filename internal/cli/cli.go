@@ -60,7 +60,7 @@ const ownerUsage = `Usage: crosshall [--json] <owner command>
 
 Owner commands (from a separate owner terminal):
   setup [--dry-run]                                 Preview or install user-level adapter hooks
-  setup <vendor> [--apply]                           Set up a vendor, or apply without prompting
+  setup <vendor> [--apply]                          Set up a vendor, or apply without prompting
   setup status                                      Inspect installed hooks and adapter policy
   setup off                                         Disable adapter effects
   uninstall [--dry-run|--apply] [names]             Preview or remove hooks installed by Crosshall
@@ -69,31 +69,34 @@ Owner commands (from a separate owner terminal):
   unlink                                            Return this device to its local hall
   owner start                                       Start the dispatcher
   owner stop                                        Stop the dispatcher and wait for it to exit
-  owner channel create <name> [--topic "..."]         Create a channel
+  owner channel create <name> [--topic "..."]       Create a channel
   owner who --all                                   List all channel bindings
-  owner depart <binding-id> --seen <token>           Mark a binding departed
+  owner depart <binding-id> --seen <token>          Mark a binding departed
   owner depart --ended                              Depart members with no open request whose session
                                                     ended, or whose session start was never recorded
                                                     and that were silent, over 12 hours ago
   owner log <channel> [--since <id>] [--limit <n>]  Show a channel's history
-  owner channel default <channel> [--repo <dir>]     Set a repository's default channel
+  owner channel default <channel> [--repo <dir>]    Set a repository's default channel
   owner channel auto on|off                         Give each Git repository its own channel
                                                     at a session's start, or stop doing so
   owner doctor                                      Check local dispatcher state
-  owner status [--all | --channel <channel>]         Show the owner ledger
+  owner status [--all | --channel <channel>]        Show the owner ledger
   owner cancel <channel>/<id>                       Cancel an open request
-  owner budget policy <channel>[/@<alias>]           Show the loop guard limits
-  owner budget grant <channel>/x<id> [--rounds <n>]   Reset a thread (default 8)
+  owner budget policy <channel>[/@<alias>]          Show the loop guard limits
+  owner budget grant <channel>/x<id> [--rounds <n>]
+                                                    Reset a thread (default 8)
   owner budget grant <channel>/@<alias> [--rounds <n>]
                                                     Reset a member's new threads (default 8)
   owner budget grant <binding-id> [--rounds <n>]    Reset the new threads of a live or departed
                                                     member, by the binding owner status shows
-  owner restore <binding-id> --new-key <vendor>:<key>  Restore a member's identity
+  owner restore <binding-id> --new-key <vendor>:<key>
+                                                    Restore a member's identity
   owner takeover <id>                               Give a member whose session ended to the
                                                     session that asked with join --takeover
   owner adapter set <adapter> [--enabled on|off] [--reminder on|off] [--publish on|off|default] [--turn-end on|off|default]
                                                     Change adapter policy
-  owner telemetry [on|off|show|sent]                 Manage usage statistics
+  owner telemetry [on|off|show|sent]                Manage usage statistics
+  owner telemetry sent --day YYYY-MM-DD             Print the report sent for that day
   owner publish hall on|off                         Turn notices on or off for the hall
   owner publish member <binding-id> on|off|default  Set notices for one member; the member
                                                     switch beats the adapter switch, which

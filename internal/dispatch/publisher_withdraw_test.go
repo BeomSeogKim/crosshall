@@ -420,19 +420,31 @@ func TestPublisherLogsOnceWhenAStaleCandidateIsWithdrawnAgain(t *testing.T) {
 		<-gates[call.Add(1)-1]
 		return publish.NotPending
 	}, true)
+	release := func(gate chan struct{}) {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}
+	t.Cleanup(func() {
+		for _, gate := range gates {
+			release(gate)
+		}
+	})
 	var logged bytes.Buffer
 	previous := log.Writer()
 	log.SetOutput(&logged)
 	defer log.SetOutput(previous)
 	tickPublisher(t, p, f.now.Add(time.Second), false)
-	<-entered
+	awaitPublishTest(t, entered)
 	// The next tick reads the notice as a candidate while the first
 	// withdrawal is held; once it has read, the first one settles the
 	// notice and releases its guard before the tick claims the worker slot.
 	homes, settle := p.homes, sync.Once{}
 	p.homes = func(adapter string) string {
 		settle.Do(func() {
-			close(gates[0])
+			release(gates[0])
 			deadline := time.Now().Add(5 * time.Second)
 			for _, running := p.withdrawRunning.Load(int64(1)); running; _, running = p.withdrawRunning.Load(int64(1)) {
 				if time.Now().After(deadline) {
@@ -445,12 +457,12 @@ func TestPublisherLogsOnceWhenAStaleCandidateIsWithdrawnAgain(t *testing.T) {
 		return homes(adapter)
 	}
 	tickPublisher(t, p, f.now.Add(2*time.Second), false)
-	<-entered
+	awaitPublishTest(t, entered)
 	if !attemptRetired(t, f) {
 		t.Fatal("the first withdrawal did not settle the notice")
 	}
 	tickPublisher(t, p, f.now.Add(3*time.Second), false)
-	close(gates[1])
+	release(gates[1])
 	p.workers.Wait()
 	tickThrough(t, f, p, 4*time.Second)
 	log.SetOutput(previous)

@@ -194,4 +194,29 @@ for case in migration same; do
   done
 done
 
+# 4. The full-run row's neighbours: a process counts as left by an earlier
+#    row only when its executable is one the gate built; a mere path in the
+#    command line is named, not blamed; test runs are told by their argv.
+w=/gate/work o=/gate/out
+classes=$(awk -v work="$w" -v out="$o" -f "$here/release_gate_others.awk" <<PS
+  101 00:01 $o/bin/crosshall __dispatch
+  102 00:01 $w/crosshall-link-base __dispatch
+  103 00:01 tail -f $o/summary.md
+  104 00:01 git diff -- scripts/ci-checks.sh
+  105 00:01 /opt/homebrew/bin/go test ./internal/dispatch
+  106 00:01 /var/folders/x/go-build1/b001/e2e.test -test.paniconexit0 -test.run=Link
+  107 00:01 bash scripts/ci-checks.sh
+  108 00:01 /usr/bin/vim notes-on-go-test.txt
+  109 00:01 /bin/zsh -c echo $o/bin/crosshall
+PS
+)
+want="gate: 101
+gate: 102
+names: 103
+test: 105
+test: 106
+test: 107
+names: 109"
+[[ $(awk '{print $1, $2}' <<< "$classes") == "$want" ]] || fail "process classes: $classes"
+
 echo "release gate checks passed"

@@ -520,10 +520,13 @@ type reportedError struct {
 func (e reportedError) Error() string  { return e.err.Error() }
 func (e reportedError) Reported() bool { return e.reported }
 
-// alreadyInstalled reports a fresh install plan that would change no file:
-// every hook entry and rule is in place as setup writes it.
+// alreadyInstalled reports a fresh install plan whose apply would only
+// switch policies on: every hook entry and rule is in place as setup writes
+// it, and the recorded builds and journal format need no update.
 func alreadyInstalled(plan VendorPlan) bool {
-	if plan.Action != "setup" || plan.Resume || plan.Recovery || len(plan.Retained) > 0 {
+	if plan.Action != "setup" || plan.Resume || plan.Recovery || len(plan.Retained) > 0 ||
+		hasFileEdits(plan.op) || !buildsUnchanged(plan.journal.Builds, plan.op.Builds) ||
+		plan.journal.Version != plan.journal.formatVersion() {
 		return false
 	}
 	for _, f := range plan.Files {

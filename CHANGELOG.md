@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **Known limit: a request stored just as a member's notice route is recorded waits for that member's next prompt (#484):** a route recorded at a session start, a recovering prompt or a turn end activates about half a second later, once the dispatcher has proven it. A request or final reply stored in that window is not offered by a notice. Nothing is lost: the member sees it at its next prompt or crosshall command. The fix needs a schema change and will ship with the next one.
 - **A local Codex session that joins by hand during a turn can be woken when that turn ends (#437):** when the hall missed the session's start, a hand-joined Codex member got no notice route until its next start, and its prompts did not register one either. Its turn end (`Stop`) now names the managed app server as a prompt does, and the first prompt or turn end that names a server the dispatcher can check registers the route the start would have, judged against that callback's time. A route that exists is never changed by one, and a callback from before a rejoin registers nothing. The hook sends the server on a turn end only to a dispatcher that offers `turn_host`, so an older dispatcher sees the turn end as before. A Codex session on a linked device still gets its route at its next prompt.
 
 ## v0.5.1 (2026-11-27)

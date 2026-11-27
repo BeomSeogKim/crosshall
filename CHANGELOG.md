@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.5.2 (2026-11-28)
+
+- **Release of v0.5.2-rc.1:** no product change since rc.1.
+- **Upgrading:** a v0.5.2-rc.1, v0.5.1 or v0.5.0 store stays on schema 37 and the install journal in format 4; replace the binary and restart, the home first, then linked devices. Setup need not run again, except for the v0.5.0 shared-skill case (#474) that UPGRADING names. A rollback to v0.5.1 or v0.5.0 needs no uninstall. See [UPGRADING.md](UPGRADING.md#to-v052).
+
 ## v0.5.2-rc.1 (2026-11-28)
 
 A Codex session that joins by hand during a turn can now be woken when that turn ends, on this machine and on a linked device, and setup asks only about the skill when the skill is all it changes.

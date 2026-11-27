@@ -5,6 +5,7 @@ package e2e
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,7 +31,8 @@ func TestSpokeLinkRealHome(t *testing.T) {
 
 	link := []string{"link", linkFixtureTarget, "--name", "fixture-spoke"}
 	enrollLog := f.ssh + ".enrolls"
-	if got := spoke.run(link...); got.exit == 0 || !strings.Contains(got.stderr, "Link and enroll this device?") {
+	if got := spoke.run(link...); got.exit == 0 || !strings.Contains(got.stderr, "Link and enroll this device?") ||
+		got.obj["message"] != `link canceled (answer: "")` {
 		t.Fatalf("link without confirmation: %+v", got)
 	}
 	if _, err := os.Stat(enrollLog); !errors.Is(err, os.ErrNotExist) {
@@ -116,6 +118,43 @@ func TestSpokeLinkRealHome(t *testing.T) {
 	if got := f.spoke.member().run("join", "wrong-device"); got.obj["code"] != "not_found" {
 		t.Fatalf("a spoke owner command changed the preserved local hall: %+v", got)
 	}
+}
+
+func TestSpokeLinkIgnoresTerminalInputQueuedBeforeConfirmation(t *testing.T) {
+	f := newLinkFixture(t, binary, binary)
+	f.home.owner().must("owner", "start")
+	spoke := f.spoke.owner()
+	spoke.must("owner", "start")
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness, err := filepath.Abs("../setupfixture/terminal.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirm := func(queued, answer string) (string, error) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), python, "-B", harness, "--pipe-out",
+			"--queued-input", queued, "--answer-after", "Link and enroll this device? [y/N] ", "--answers", answer,
+			"--", f.spoke.binaryPath(), "link", linkFixtureTarget, "--name", "fixture-spoke")
+		cmd.Dir, cmd.Env = f.spoke.home, spoke.env()
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, answer := range []string{"n", "yeſ"} {
+		output, err := confirm("y\n", answer+"\n")
+		if err == nil || !strings.Contains(output, "link canceled (answer: "+strconv.Quote(answer)+")") {
+			t.Fatalf("link accepted answer %q: %v\n%s", answer, err, output)
+		}
+	}
+	if _, err := os.Stat(f.ssh + ".enrolls"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("link enrolled despite the refusal: %v", err)
+	}
+	if output, err := confirm("\r", "y\n"); err != nil {
+		t.Fatalf("queued Enter overrode the answer: %v\n%s", err, output)
+	}
+	waitSpokeLink(t, spoke, "connected")
 }
 
 func waitSpokeLink(t *testing.T, spoke *participant, state string) {

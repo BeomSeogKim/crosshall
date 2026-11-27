@@ -5,9 +5,15 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **The home no longer says a linked member has no notice route while its device can wake it (#438):** `who`, `ask` and `reply` on the home said `not woken: no notice route` for a member on a linked device even when the device woke it. While the device holds its event stream and the member's launch could be woken, they now say `the linked device will try to wake it` (`wake: device` in `--json`), with no advice to wake the member by hand: only the device can check its session's route. A held wake, an offline device and a member with no launch the home could wake are reported as before. The daily report still counts these sends as `send.wake.none`.
-- **Linking a device is available by default (#400):** from the owner's terminal, run `crosshall link <ssh-target>` to join another device's hall. Use `crosshall link status` to see the current connection and `crosshall unlink` to return to the local hall.
-- **Linking again after a home rollback stays with the same hall (#418):** `crosshall link` refuses to replace a stopped profile when its SSH target now reaches a home serving another hall, before it asks for confirmation or sets the stopped store aside. A dispatcher that starts during a link change no longer removes that change's new enrollment record.
-- **A linked device catching up holds a bounded backlog (#422):** the home writes at most four pages of events ahead of what the linked device has acknowledged, so a device reconnecting to a large backlog no longer queues all of it in memory while it applies the events one by one.
+
+## v0.4.0-rc.2 (2026-11-27)
+
+- **Upgrading:** a v0.4.0-rc.1 store stays on schema 37. The first start from v0.3.1 backs up the store and upgrades it from schema 30 to 37. See [UPGRADING.md](UPGRADING.md#to-v040-rc2).
+- **Linking a device is available by default (#400, #436):** from the owner's terminal, run `crosshall link <ssh-target>` to join another device's hall. Use `crosshall link status` to see the current connection and `crosshall unlink` to return to the local hall.
+- **Linking again after a home rollback stays with the same hall (#418, #435):** `crosshall link` refuses to replace a stopped profile when its SSH target now reaches a home serving another hall, before it asks for confirmation or sets the stopped store aside. A dispatcher that starts during a link change no longer removes that change's new enrollment record.
+- **A linked display receipt can arrive after its session ends (#434):** the home confirms a receipt captured before the session ended, even if the end reached the home first. The membership stays departed.
+- **A linked wait keeps its first cursor after a lost reply (#433):** the home recovers the original cursor when the device retries the first poll, so the wait still sees work that arrived in the gap. If the home cannot recover the cursor, it directs the member to its inbox.
+- **A linked device catching up holds a bounded backlog (#422, #432):** the home writes at most four pages of events ahead of what the linked device has acknowledged, so a device reconnecting to a large backlog no longer queues all of it in memory while it applies the events one by one.
 
 ## v0.4.0-rc.1 (2026-11-26)
 

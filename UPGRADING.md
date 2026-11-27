@@ -2,6 +2,14 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.5.0
+
+From v0.5.0-rc.1, v0.4.0 or any v0.4.0 release candidate, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the hooks keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed. From v0.4.0, run `crosshall setup` again in your own terminal to install the [crosshall skill](docs/adapters.md#the-crosshall-skill); the hooks work without it.
+
+From v0.3.1, follow [the v0.4.0 upgrade steps](#to-v040) with the v0.5.0 binary. The first start backs up the store and migrates it from schema 30 to 37.
+
+To roll back to v0.4.0, follow [the v0.5.0-rc.1 rollback steps](#to-v050-rc1) with the v0.5.0 binary in place of rc.1: run a bare `crosshall uninstall` with v0.5.0 first if you ran its setup.
+
 ## To v0.5.0-rc.1
 
 From v0.4.0 or any v0.4.0 release candidate, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the hooks keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices.

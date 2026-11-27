@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.5.0 (2026-11-27)
+
+- **Release of v0.5.0-rc.1:** no product change since rc.1.
+- **Upgrading:** a v0.4.0 or v0.5.0-rc.1 store stays on schema 37; replace the binary and restart. Before a rollback to v0.4.0, run `crosshall uninstall` with v0.5.0, since v0.4.0 setup cannot read the new install journal. See [UPGRADING.md](UPGRADING.md#to-v050).
+
 ## v0.5.0-rc.1 (2026-11-27)
 
 Agents pick up crosshall with no instruction: `crosshall setup` installs a crosshall skill, so a Claude Code, Codex or Antigravity session that is asked to hand work to another agent uses crosshall on its own. The first install and `crosshall owner doctor` are quieter for new users.

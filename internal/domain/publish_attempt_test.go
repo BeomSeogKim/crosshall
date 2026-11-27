@@ -126,7 +126,7 @@ func (p *publishFixture) state(id int64, want string) {
 
 func TestPublishEligibilityAndReservationBoundary(t *testing.T) {
 	p := newPublishFixture(t)
-	p.turnEndAsk(p.writer, "reader", "before-proof")
+	beforeProof := p.turnEndAsk(p.writer, "reader", "before-proof")
 	if id := p.reserve(); id != 0 {
 		t.Fatalf("candidate reserved without a proof: %d", id)
 	}
@@ -148,13 +148,14 @@ func TestPublishEligibilityAndReservationBoundary(t *testing.T) {
 	if id == 0 {
 		t.Fatal("no eligible work reserved")
 	}
-	if ids := p.begin(id); !slices.Equal(ids, []int64{first, lateCancel}) {
+	// Work stored while the route waited for its proof is offered too (#484).
+	if ids := p.begin(id); !slices.Equal(ids, []int64{beforeProof, first, lateCancel}) {
 		t.Fatalf("reserved ID list %v", ids)
 	}
 	wantOK(t, p.run(p.reader, Read{IDs: []int64{first}}, "read-after-submitting"))
 	wantOK(t, p.owner(Cancel{Channel: "checkout", ID: lateCancel}, "cancel-after-submitting"))
-	if n := p.count(`SELECT COUNT(*) FROM announcement WHERE via = 'publish' AND ref = ?`, id); n != 2 {
-		t.Fatalf("claims = %d, want 2", n)
+	if n := p.count(`SELECT COUNT(*) FROM announcement WHERE via = 'publish' AND ref = ?`, id); n != 3 {
+		t.Fatalf("claims = %d, want 3", n)
 	}
 }
 
@@ -313,7 +314,7 @@ func TestPublishReleasesCancelledReservationBeforeSubmission(t *testing.T) {
 func TestPublishReplacementQueueGetsANewActivationWatermark(t *testing.T) {
 	p := newPublishFixture(t)
 	p.proveRoute()
-	p.turnEndAsk(p.writer, "reader", "previous-queue")
+	previous := p.turnEndAsk(p.writer, "reader", "previous-queue")
 	enrollAndRoute(t, p.fixture, p.reader, "pid-43-replacement", "resume", publishTestSocket, "default", p.now.UnixMilli()+1000, 1)
 	p.refreshBinding()
 	before := p.turnEndAsk(p.writer, "reader", "replacement-candidate")
@@ -322,16 +323,18 @@ func TestPublishReplacementQueueGetsANewActivationWatermark(t *testing.T) {
 	}
 	p.queue = PublishQueue{PID: 43, StartMS: p.queue.StartMS + 1}
 	p.proveRoute()
-	if _, _, _, _, _, _, watermark := routeState(t, p.fixture, p.binding.ID); watermark != before {
-		t.Fatalf("replacement watermark = %d, want %d", watermark, before)
+	// The replacement's registration set the watermark; its activation
+	// keeps it, so work stored while it awaited its proof is offered (#484).
+	if _, _, _, _, _, _, watermark := routeState(t, p.fixture, p.binding.ID); watermark != previous {
+		t.Fatalf("replacement watermark = %d, want %d", watermark, previous)
 	}
 	after := p.turnEndAsk(p.writer, "reader", "replacement-proven")
 	p.proveRoute()
 	p.mutate(`UPDATE publish_route SET generation = generation + 1 WHERE binding_id = ?`, p.binding.ID)
 	p.proveRoute()
 	id := p.reserve()
-	if id == 0 || !slices.Equal(p.begin(id), []int64{after}) {
-		t.Fatal("replacement queue did not reserve exactly its post-activation work")
+	if id == 0 || !slices.Equal(p.begin(id), []int64{before, after}) {
+		t.Fatal("replacement queue did not reserve exactly its own route's work")
 	}
 }
 
@@ -777,5 +780,28 @@ func TestInboxReportsWhetherTheHallDelivers(t *testing.T) {
 	p.now = p.now.Add(time.Hour + time.Second)
 	if !delivers() {
 		t.Fatal("a new hour does not read as delivering")
+	}
+}
+
+// #484: work stored while the route waits only for its proof, before the
+// proof is recorded and between the proof and its activation, is offered
+// once the route activates; work from before the route is not.
+func TestWorkStoredWhileARouteAwaitsItsProofIsOfferedAtActivation(t *testing.T) {
+	p := newPublishFixture(t)
+	probe := p.unproven()
+	if got := p.publishState(); got.State != "candidate" || got.Reason != "route not proven" {
+		t.Fatalf("before the proof: %+v", got)
+	}
+	unproven := p.turnEndAsk(p.writer, "reader", "before-proof")
+	if !p.confirm(probe, p.proven()) {
+		t.Fatal("the listener's identity was not recorded")
+	}
+	if got := p.publishState(); got.State != "candidate" || got.Reason != store.PublishNotActivated {
+		t.Fatalf("before activation: %+v", got)
+	}
+	proven := p.turnEndAsk(p.writer, "reader", "before-activation")
+	p.activate()
+	if ids := p.begin(p.reserve()); !slices.Equal(ids, []int64{unproven, proven}) {
+		t.Fatalf("offered %v, want %v (not %d from before the route)", ids, []int64{unproven, proven}, p.beforeID)
 	}
 }

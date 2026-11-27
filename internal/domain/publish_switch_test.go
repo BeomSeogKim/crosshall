@@ -580,8 +580,9 @@ func TestPublishSendResultIsPullUnlessThisMessageIsQueued(t *testing.T) {
 		t.Fatalf("candidate route: %+v", d)
 	}
 	p.proveRoute()
-	if d := send("candidate"); d.Next != pull {
-		t.Fatalf("replay of a message below the activation watermark: %+v", d)
+	// Stored while the route awaited its proof, it is offered now (#484).
+	if d := send("candidate"); d.Next != "notice queued" {
+		t.Fatalf("replay of a message stored while the proof was pending: %+v", d)
 	}
 	if d := send("queued"); d.Next != "notice queued" {
 		t.Fatalf("available route, eligible message: %+v", d)

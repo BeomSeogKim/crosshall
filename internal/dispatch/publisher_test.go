@@ -934,6 +934,41 @@ func TestPublisherProvesARouteBeforeReserving(t *testing.T) {
 	}
 }
 
+// #484: work stored while a route waits for its proof, before the proof is
+// recorded and between the proof and its activation, goes in the route's
+// first notice.
+func TestPublisherOffersWorkStoredWhileItsProofWasPending(t *testing.T) {
+	f := newPublishTestFixture(t)
+	f.provable(t)
+	sent := make(chan string, 4)
+	useTransport(t, publish.Transport{
+		Prove: func(context.Context, publish.Probe) (publish.Proven, bool) {
+			return publish.Proven{Queue: publishTestTarget.Queue, StartedAtMS: 1234}, true
+		},
+		Send: func(_ context.Context, _ publish.Target, line string) publish.Outcome {
+			sent <- line
+			return publish.Submitted
+		},
+	})
+	p := &publisher{db: f.db, homes: func(adapter string) string { return "/installed/" + adapter }}
+	t.Cleanup(p.workers.Wait)
+	// A running dispatcher's ticks: a start's tick would resume owed work.
+	f.ask(t, 11) // the route is not proven
+	tickPublisher(t, p, f.now, false)
+	p.workers.Wait()
+	if n := countPublish(t, f, "publish_route_proof"); n != 1 {
+		t.Fatalf("%d proofs recorded, want 1", n)
+	}
+	f.ask(t, 12) // proven, not yet activated
+	for _, after := range []time.Duration{500 * time.Millisecond, publishCoalesce + time.Second} {
+		tickPublisher(t, p, f.now.Add(after), false)
+		p.workers.Wait()
+	}
+	if line := awaitPublishTest(t, sent); line != claudeNotice([]int64{11, 12}) {
+		t.Fatalf("sent %q", line)
+	}
+}
+
 func requireNone[T any](t *testing.T, ch <-chan T) {
 	t.Helper()
 	select {

@@ -144,7 +144,8 @@ func TestOwnerWhoCountsUnreadRequestsNothingWillTell(t *testing.T) {
 
 	p.proveRoute()
 	p.turnEndAsk(p.writer, "reader", "noticed")
-	if got := p.ownerRow("reader").UnreadNotWoken; got == nil || got.Requests != 1 {
+	// The second, stored while the route awaited its proof, is offered too (#484).
+	if got := p.ownerRow("reader").UnreadNotWoken; got != nil {
 		t.Fatalf("a request a notice will offer is counted: %+v", got)
 	}
 

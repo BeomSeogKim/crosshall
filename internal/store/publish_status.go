@@ -13,8 +13,12 @@ import (
 
 // PublishNotActivated is the candidate reason of a proven route that has
 // not been available since its proof: every other check passes, so the
-// publisher activates it, and sets its watermark, on its next tick.
+// publisher activates it on its next tick.
 const PublishNotActivated = "route not yet activated"
+
+// PublishNotProven is the candidate reason of a route that every other
+// check passes but its transport has not proven yet.
+const PublishNotProven = "route not proven"
 
 // PublishNoSender begins the candidate reason of a route whose adapter has
 // no sender; the adapter's name follows it.
@@ -312,7 +316,7 @@ func ReadPublishState(ctx context.Context, tx Tx, bindingID int64, now time.Time
 	case !build.Covered:
 		state.Reason = build.candidateReason()
 	case !proven:
-		state.Reason = "route not proven"
+		state.Reason = PublishNotProven
 	case !activated:
 		state.Reason = PublishNotActivated
 	default:

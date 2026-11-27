@@ -123,11 +123,10 @@ func ConfirmPublishRoute(ctx context.Context, tx store.Tx, binding PublishBindin
 }
 
 // ActivatePublishRoutes activates each proven route at the first moment it
-// is available, the verdict status shows: its watermark becomes the newest
-// message, so only work stored from then on is offered. A route that is
-// off, suspended, capped or held stays unactivated, and status keeps
-// showing that state, so no message stored meanwhile was announced as
-// queued.
+// is available, the verdict status shows. A route that is off, suspended,
+// capped or held stays unactivated, and status keeps showing that state.
+// Its watermark stays where fencePublishRoutes left it, so work stored
+// while the route waited only for its proof is offered now (#484).
 func ActivatePublishRoutes(ctx context.Context, tx store.Tx, now time.Time) error {
 	bindings, err := selectIDs(ctx, tx, `SELECT p.binding_id FROM publish_route_proof p
 		JOIN publish_route r ON r.binding_id = p.binding_id AND r.generation = p.generation
@@ -143,12 +142,41 @@ func ActivatePublishRoutes(ctx context.Context, tx store.Tx, now time.Time) erro
 		if status.State != "candidate" || status.Reason != store.PublishNotActivated {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE publish_route SET watermark_message_id = (SELECT COALESCE(MAX(id), 0) FROM message)
-			WHERE binding_id = ?`, binding); err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, `UPDATE publish_route_proof SET activated_at_ms = ? WHERE binding_id = ?`,
 			ms(now), binding); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fencePublishRoutes moves the watermark of each recipient route of msg
+// that has not activated past msg, unless the route waits only for its
+// proof. Work stored while a route is off, suspended, capped, held or
+// otherwise unavailable is never offered when it first activates (#433,
+// #438); work stored while its proof is pending is (#484).
+func fencePublishRoutes(ctx context.Context, tx store.Tx, msg int64, now time.Time) error {
+	bindings, err := selectIDs(ctx, tx, `SELECT r.binding_id FROM recipient x JOIN message m ON m.id = x.message_id
+		JOIN binding b ON b.principal_id = x.principal_id AND b.channel_id = m.channel_id AND b.state = 'live'
+		JOIN publish_route r ON r.binding_id = b.id
+		WHERE x.message_id = ? AND r.watermark_message_id < x.message_id
+			AND NOT EXISTS (SELECT 1 FROM publish_route_proof p WHERE p.binding_id = r.binding_id
+				AND p.generation = r.generation AND p.activated_at_ms IS NOT NULL)
+		ORDER BY r.binding_id`, msg)
+	if err != nil {
+		return err
+	}
+	for _, binding := range bindings {
+		status, found, err := store.ReadPublishState(ctx, tx, binding, now)
+		if err != nil {
+			return err
+		}
+		if found && status.State == "candidate" &&
+			(status.Reason == store.PublishNotProven || status.Reason == store.PublishNotActivated) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE publish_route SET watermark_message_id = ?
+			WHERE binding_id = ? AND watermark_message_id < ?`, msg, binding, msg); err != nil {
 			return err
 		}
 	}
@@ -195,8 +223,8 @@ type PublishProof struct {
 
 // UnprovenPublishRoutes lists the routes that wait only for that proof, so
 // the adapter can prove them before any notice is reserved. A route proves
-// before it has work: proof moves its watermark, which would hide work
-// that was waiting for it.
+// before it has work, so work stored while it waits is offered once it
+// activates.
 func UnprovenPublishRoutes(ctx context.Context, tx store.Tx, now time.Time) ([]PublishProof, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT r.binding_id, r.generation, `+publishRouteColumns+`, r.launch_ref, l.started_hook_at_ms `+
 		publishRoutes(now, false)+` AND NOT EXISTS (SELECT 1 FROM publish_route_proof p

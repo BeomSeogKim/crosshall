@@ -194,6 +194,9 @@ func (s *Service) reply(ctx context.Context, tx store.Tx, caller core.Caller, re
 		if err := recordWakes(ctx, tx, m.principal, id, []Delivery{out.Delivery}, now); err != nil {
 			return core.Result{}, err
 		}
+		if err := fencePublishRoutes(ctx, tx, id, now); err != nil {
+			return core.Result{}, err
+		}
 	}
 	r, err := OK(out)
 	if err != nil {

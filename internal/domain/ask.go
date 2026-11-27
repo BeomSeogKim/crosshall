@@ -346,6 +346,9 @@ func (s *Service) ask(ctx context.Context, tx store.Tx, caller core.Caller, req 
 	if err := recordWakes(ctx, tx, m.principal, id, sent.Recipients, now); err != nil {
 		return core.Result{}, err
 	}
+	if err := fencePublishRoutes(ctx, tx, id, now); err != nil {
+		return core.Result{}, err
+	}
 	return r, record(ctx, tx, m.principal, req.OpKey, scope, cmd, r, now)
 }
 

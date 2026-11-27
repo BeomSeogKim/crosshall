@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A request sent while the recipient's notice route awaits its proof is offered once the route activates (#484):** a route recorded at a session start, a recovering prompt or a turn end is proven within about half a second, and a request or final reply stored in that time used to wait for the member's next crosshall command. Work stored while the route could not publish for another reason (a switch off, suspended, capped, held, an uncovered build or an unverified launch) is still never offered at activation. A route that stays unproven for long offers the open, unread requests since it was recorded once it is proven, within the notice and hourly limits.
+
 ## v0.5.1 (2026-11-27)
 
 - **Release of v0.5.1-rc.1:** no product change since rc.1.

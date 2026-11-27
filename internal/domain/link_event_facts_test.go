@@ -7,6 +7,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -21,8 +22,14 @@ type linkedHookFixture struct {
 
 func newLinkedHookFixture(t *testing.T) *linkedHookFixture {
 	t.Helper()
+	return newLinkedHookFixtureFor(t, "claude")
+}
+
+func newLinkedHookFixtureFor(t *testing.T, vendor string) *linkedHookFixture {
+	t.Helper()
 	f, writer := adapterChannel(t)
-	reader := f.newSession("claude")
+	f.policy(vendor, true, 1)
+	reader := f.newSession(vendor)
 	wantOK(t, f.join(reader, Join{Channel: "checkout", Alias: "reader"}, ""))
 	principal := f.principalOf(reader)
 	membership, err := SelectedMembership(t.Context(), f.db, principal)
@@ -491,6 +498,37 @@ func TestATurnEndOfAProcessLaunchOpensALinkedLaunch(t *testing.T) {
 			}
 			if h.startUnseen("reader") == c.opens {
 				t.Fatalf("unseen start shown %t", !c.opens)
+			}
+		})
+	}
+}
+
+// A linked Codex session that joined during a turn has only a session
+// launch: its turn end opens the linked launch as its prompt would, so the
+// route the device captured from that turn end can carry a notice. Its
+// approval request opens none (#437).
+func TestATurnEndOfALinkedCodexSessionOpensItsLaunch(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		fact  string
+		opens bool
+	}{{"a Stop", FactTurnFinishing, true}, {"an approval request", FactApprovalRequested, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newLinkedHookFixtureFor(t, "codex")
+			at := ms(h.now)
+			h.token.WallMS = at
+			cmd := stop(SessionLaunch, "t1", at)
+			cmd.Profile, cmd.LaunchVerified, cmd.Epoch = codexProfile(publish.ModeDaemon), false, 1
+			if c.fact != FactTurnFinishing {
+				cmd.Fact, cmd.EventRef = c.fact, "t1:approval"
+			}
+			status := link.RecordedStale
+			if c.opens {
+				status = link.RecordedApplied
+			}
+			h.fact(1, 2, cmd, status)
+			if got := h.count(`SELECT COUNT(*) FROM link_event_launch WHERE principal_id = ? AND launch_ref = ?`, h.principal, SessionLaunch); got != map[bool]int{true: 1}[c.opens] {
+				t.Fatalf("%d linked launches, want opened %t", got, c.opens)
 			}
 		})
 	}

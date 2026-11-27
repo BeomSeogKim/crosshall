@@ -139,26 +139,36 @@ func TestARouteAHandJoinedCodexTurnEndRegisteredCarriesANotice(t *testing.T) {
 // A turn end captured before a hand rejoin belongs to the membership the
 // rejoin replaced: it registers nothing and does not start the launch, so
 // the first naming callback after the rejoin still registers the route.
+// A turn end in the same millisecond as the rejoin is as ambiguous as it is
+// for the selection fence, and is treated as one from before it.
 func TestACodexCallbackFromBeforeARejoinLeavesTheRouteToALaterOne(t *testing.T) {
-	f, s, _ := handJoinedCodex(t)
-	at := f.now.UnixMilli()
-	wantOK(t, f.run(s, Leave{}, ""))
-	f.now = time.UnixMilli(at + 40)
-	wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "codex1"}, ""))
-	server := codexServer
-	f.hookAs(s, codexServerTurnEnd(&server, "t1", at+20))
-	if route, found := f.codexRoute(s); found {
-		t.Fatalf("a turn end from before the rejoin registered %+v", route)
-	}
-	for _, l := range f.launches(s) {
-		if l.started > 0 {
-			t.Fatalf("a turn end from before the rejoin started the launch: %+v", l)
-		}
-	}
-	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t2", at+60, false))
-	route, found := f.codexRoute(s)
-	if !found || route.state != "active" || route.hostPID != codexServer.PID {
-		t.Fatalf("after a naming prompt past the rejoin the route is %+v (found %t)", route, found)
+	for _, tc := range []struct {
+		name   string
+		offset int64
+	}{{"before", 20}, {"tied", 40}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, _ := handJoinedCodex(t)
+			at := f.now.UnixMilli()
+			wantOK(t, f.run(s, Leave{}, ""))
+			f.now = time.UnixMilli(at + 40)
+			wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "codex1"}, ""))
+			stale := wire.Host{PID: 5151, Start: 77}
+			f.hookAs(s, codexServerTurnEnd(&stale, "t1", at+tc.offset))
+			if route, found := f.codexRoute(s); found {
+				t.Fatalf("a turn end from before the rejoin registered %+v", route)
+			}
+			for _, l := range f.launches(s) {
+				if l.started > 0 {
+					t.Fatalf("a turn end from before the rejoin started the launch: %+v", l)
+				}
+			}
+			server := codexServer
+			f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t2", at+60, false))
+			route, found := f.codexRoute(s)
+			if !found || route.state != "active" || route.hostPID != codexServer.PID {
+				t.Fatalf("after a naming prompt past the rejoin the route is %+v (found %t)", route, found)
+			}
+		})
 	}
 }
 

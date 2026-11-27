@@ -12,6 +12,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -420,6 +421,12 @@ func startLinkHookLaunch(ctx context.Context, tx store.Tx, peer LinkEventPeer, i
 	return projection, err
 }
 
+// threadTurnEnd reports a turn end of a thread-routed adapter's session.
+func threadTurnEnd(cmd HookEvent) bool {
+	a, ok := publish.Lookup(cmd.Profile.Adapter)
+	return ok && a.ThreadRouted() && cmd.Fact == FactTurnFinishing && cmd.LaunchRef == SessionLaunch
+}
+
 func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, in linkHookInput, scope linkHookScope,
 	cmd HookEvent, at int64, now time.Time,
 ) (bool, error) {
@@ -436,7 +443,10 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if errors.Is(err, sql.ErrNoRows) || err == nil && live && launch == cmd.LaunchRef && policy != cmd.Epoch {
 		// A prompt opens the launch, as does the turn end or idle prompt
 		// of a verified process launch that joined during a turn (#437).
-		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) {
+		// A thread-routed session launch is never verified: its turn end
+		// opens it as its prompt does, since its route rests on the thread
+		// and the server the device captured, not on a process.
+		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) && !threadTurnEnd(cmd) {
 			return false, nil
 		}
 		verified = cmd.LaunchVerified

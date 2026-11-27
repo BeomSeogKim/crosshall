@@ -19,7 +19,33 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
+// A linked Codex session is woken through its managed server's queue,
+// whether the hall saw its start or it joined by hand during a turn whose
+// end alone named the server (#437).
+// With a home or device of the base build, a turn end does not open the
+// route, and the session is still woken after its next prompt's turn, as
+// before.
 func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
+	t.Run("started", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "SessionStart") })
+	t.Run("joined-during-a-turn", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "Stop") })
+	older := os.Getenv(baseBinaryEnv)
+	for _, c := range []struct{ name, home, spoke string }{
+		{"joined-during-a-turn/base-home", older, binary},
+		{"joined-during-a-turn/base-spoke", binary, older},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if older == "" {
+				t.Skip("set " + baseBinaryEnv + " to a previous build with -tags=testvendorhome")
+			}
+			requireFixtureBuild(t, older)
+			spokeLinkWakesCodex(t, c.home, c.spoke, "Stop", "UserPromptSubmit", "Stop")
+		})
+	}
+}
+
+// spokeLinkWakesCodex runs receiverHooks, in order, for the receiver's
+// thread under the managed server; its sibling starts as usual.
+func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary string, receiverHooks ...string) {
 	platform := map[string]string{"darwin": "apple-darwin", "linux": "unknown-linux-gnu"}[runtime.GOOS]
 	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
 	if platform == "" || arch == "" {
@@ -27,7 +53,7 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 	}
 	const version = "0.171.0"
 	const channel = "linked-codex-wake"
-	f := newLinkFixture(t, binary, binary)
+	f := newLinkFixture(t, homeBinary, spokeBinary)
 	t.Cleanup(func() {
 		if t.Failed() {
 			f.home.logDispatcher()
@@ -142,10 +168,26 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 		member := &participant{w: f.spoke, extra: []string{"CODEX_THREAD_ID=" + thread.id}}
 		member.must("join", channel, "--as", thread.alias)
 		participants = append(participants, member)
-		if err := json.NewEncoder(input).Encode(map[string]any{
-			"hook_event_name": "SessionStart", "session_id": thread.id, "cwd": f.spoke.home, "source": "startup",
-		}); err != nil {
-			t.Fatal(err)
+		events := []string{"SessionStart"}
+		if thread.alias == "receiver" {
+			events = receiverHooks
+		}
+		turn := 0
+		for _, event := range events {
+			hook := map[string]any{"hook_event_name": event, "session_id": thread.id, "cwd": f.spoke.home}
+			switch event {
+			case "SessionStart":
+				hook["source"] = "startup"
+			case "UserPromptSubmit":
+				turn++
+				hook["turn_id"], hook["prompt"] = "turn-"+strconv.Itoa(turn), "fixture private text"
+			case "Stop":
+				// Before any prompt: the turn the session joined during ends.
+				hook["turn_id"], hook["stop_hook_active"] = "turn-"+strconv.Itoa(turn), false
+			}
+			if err := json.NewEncoder(input).Encode(hook); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	eventually(t, "the home observed managed Codex launches and scope cuts for both threads", func() bool {

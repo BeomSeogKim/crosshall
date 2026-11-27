@@ -28,6 +28,7 @@ type installTarget struct {
 	Wanted       []Entry
 	Evidence     []store.DoctorEvidence
 	CommandRules *commandRuleTarget
+	Skill        *skillTarget
 	disclosure   installDisclosure
 }
 
@@ -119,9 +120,11 @@ func (s Service) preflightInstall(spec hook.InstallSpec, j journal) (installTarg
 	if err := s.preflightCommandRules(&target, j); err != nil {
 		return target, fmt.Errorf("%s command rules: %w", spec.Adapter, err)
 	}
+	preflightSkill(&target, j)
 	for _, retained := range j.Retained {
 		if retained.Adapter == spec.Adapter && retained.Path != target.Path &&
-			(target.CommandRules == nil || retained.Path != target.CommandRules.Location.Path) {
+			(target.CommandRules == nil || retained.Path != target.CommandRules.Location.Path) &&
+			(target.Skill == nil || retained.Path != target.Skill.Location.Path) {
 			return target, fmt.Errorf("%s has retained settings to inspect in another configuration home (%q); resolved hooks to %q", spec.Adapter, retained.Path, target.Path)
 		}
 	}
@@ -203,11 +206,9 @@ func makeInstall(j journal, targets []installTarget) (operation, error) {
 			return operation{}, fmt.Errorf("%s configuration: %w", adapter, err)
 		}
 		op.Edits = append(op.Edits, e)
-		if rules := target.CommandRules; rules != nil {
-			if rules.Skipped != nil {
-				op.Retained = append(op.Retained, *rules.Skipped)
-				continue
-			}
+		if rules := target.CommandRules; rules != nil && rules.Skipped != nil {
+			op.Retained = append(op.Retained, *rules.Skipped)
+		} else if rules != nil {
 			record, known := j.RuleFiles[adapter]
 			if rules.Text != "" {
 				e, err = planTextRuleInstall(adapter, *rules, record, known)
@@ -219,6 +220,17 @@ func makeInstall(j journal, targets []installTarget) (operation, error) {
 				return operation{}, fmt.Errorf("%s command rules: %w", adapter, err)
 			}
 			op.Edits = append(op.Edits, e)
+		}
+		if skill := target.Skill; skill != nil && skill.Skipped != nil {
+			op.Retained = append(op.Retained, *skill.Skipped)
+		} else if skill != nil {
+			e, kept := planSkillInstall(adapter, *skill, j)
+			if kept != nil {
+				op.Retained = append(op.Retained, *kept)
+			}
+			if e != nil {
+				op.Edits = append(op.Edits, *e)
+			}
 		}
 	}
 	return op, nil
@@ -368,10 +380,12 @@ func recordedHookExecutable(spec hook.InstallSpec, entry Entry) (string, error) 
 
 func makeUninstall(j journal) operation {
 	op := operation{Action: "uninstall", Retained: slices.Clone(j.Retained)}
+	// One consent covers every adapter here.
+	sameOp := adapterNames()
 	for _, spec := range hook.InstallSpecs() {
-		addRemoval(&op, spec, j)
+		addRemoval(&op, spec, j, sameOp)
 	}
-	for _, files := range []map[string]ownedFile{j.Files, j.RuleFiles} {
+	for _, files := range []map[string]ownedFile{j.Files, j.RuleFiles, j.SkillFiles} {
 		for adapter, record := range files {
 			if !slices.Contains(op.Adapters, adapter) {
 				op.Retained = append(op.Retained, retainedFile{adapter, record.Path, "unknown adapter in install journal"})
@@ -381,8 +395,15 @@ func makeUninstall(j journal) operation {
 	return op
 }
 
-func addRemoval(op *operation, spec hook.InstallSpec, j journal) {
+// addRemoval plans one adapter's removal; sameOp names the adapters the same
+// operation, under one consent, removes.
+func addRemoval(op *operation, spec hook.InstallSpec, j journal, sameOp []string) {
 	op.Adapters = append(op.Adapters, spec.Adapter)
+	// The skill goes first, so its directories are gone before the hooks'
+	// removal cleans up a vendor home setup created.
+	if record, ok := j.SkillFiles[spec.Adapter]; ok {
+		addSkillRemoval(op, spec, record, j, sameOp)
+	}
 	if record, ok := j.RuleFiles[spec.Adapter]; ok {
 		addFileRemoval(op, spec, record, true)
 	}
@@ -401,7 +422,7 @@ func addFileRemoval(op *operation, spec hook.InstallSpec, record ownedFile, rule
 }
 
 func planRemoval(spec hook.InstallSpec, record ownedFile, rules bool) (edit, error) {
-	location, err := resolveEditPath(spec, rules)
+	location, err := resolveEditPath(spec, edit{Rules: rules})
 	if err != nil {
 		return edit{}, err
 	}
@@ -530,7 +551,7 @@ func verifyTargets(op operation) error {
 			if spec.Adapter != e.Adapter {
 				continue
 			}
-			location, err := resolveEditPath(spec, e.Rules)
+			location, err := resolveEditPath(spec, e)
 			if err != nil {
 				return err
 			}

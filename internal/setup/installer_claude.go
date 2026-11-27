@@ -15,6 +15,8 @@ func (claudeInstaller) defaultHome(home string) string { return filepath.Join(ho
 
 func (claudeInstaller) rulePath(hooks configTarget) string { return hooks.Path }
 
+func (claudeInstaller) skillPath(hooks configTarget) string { return vendorSkillPath(hooks) }
+
 // upgrade widens an earlier revision's Notification matcher in place, and
 // keeps the auto-mode defaults ahead of the wanted entries when it does.
 func (claudeInstaller) upgrade(target installTarget, record ownedFile, known bool) ([]byte, [][]span, []Entry, []Entry, error) {

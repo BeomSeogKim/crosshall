@@ -21,15 +21,18 @@ const (
 	legacyJournalVersion       = 1
 	commandRulesJournalVersion = 2
 	classifierJournalVersion   = 3
+	skillJournalVersion        = 4
 )
 
 type journal struct {
 	Version   int                  `json:"v"`
 	Files     map[string]ownedFile `json:"files,omitempty"`
 	RuleFiles map[string]ownedFile `json:"rule_files,omitempty"`
-	Builds    map[string]build     `json:"builds,omitempty"`
-	Pending   *operation           `json:"pending,omitempty"`
-	Retained  []retainedFile       `json:"retained,omitempty"`
+	// SkillFiles records the crosshall skill files setup wrote, owned whole.
+	SkillFiles map[string]ownedFile `json:"skill_files,omitempty"`
+	Builds     map[string]build     `json:"builds,omitempty"`
+	Pending    *operation           `json:"pending,omitempty"`
+	Retained   []retainedFile       `json:"retained,omitempty"`
 }
 
 type ownedFile struct {
@@ -90,6 +93,10 @@ type edit struct {
 	Adapter        string             `json:"adapter"`
 	Path           string             `json:"path"`
 	Rules          bool               `json:"rules,omitempty"`
+	Skill          bool               `json:"skill,omitempty"`
+	Content        string             `json:"content,omitempty"`
+	Transfer       string             `json:"transfer,omitempty"`
+	Prior          *ownedFile         `json:"prior,omitempty"`
 	AddText        string             `json:"add_text,omitempty"`
 	RemoveText     string             `json:"remove_text,omitempty"`
 	Before         fingerprint        `json:"before"`
@@ -166,10 +173,17 @@ func readJournal(stateRoot string) (journal, string, error) {
 }
 
 func emptyJournal() journal {
-	return journal{Version: legacyJournalVersion, Files: make(map[string]ownedFile), RuleFiles: make(map[string]ownedFile), Builds: make(map[string]build)}
+	return journal{Version: legacyJournalVersion, Files: make(map[string]ownedFile), RuleFiles: make(map[string]ownedFile),
+		SkillFiles: make(map[string]ownedFile), Builds: make(map[string]build)}
 }
 
 func (j journal) formatVersion() int {
+	if len(j.SkillFiles) != 0 {
+		return skillJournalVersion
+	}
+	if j.Pending != nil && slices.ContainsFunc(j.Pending.Edits, func(e edit) bool { return e.Skill }) {
+		return skillJournalVersion
+	}
 	classifier := func(e Entry) bool { return e.AutoMode }
 	for _, file := range j.Files {
 		if slices.ContainsFunc(file.Entries, classifier) {
@@ -213,8 +227,8 @@ func readJournalAt(state *os.Root) (journal, string, error) {
 	// Require an explicit supported version; maps default to initialized.
 	j.Version = 0
 	if len(data) > maxJournal || json.Unmarshal(data, &j) != nil ||
-		(j.Version < legacyJournalVersion || j.Version > classifierJournalVersion) ||
-		j.Files == nil || j.RuleFiles == nil || j.Builds == nil {
+		(j.Version < legacyJournalVersion || j.Version > skillJournalVersion) ||
+		j.Files == nil || j.RuleFiles == nil || j.SkillFiles == nil || j.Builds == nil {
 		return j, "", errors.New("invalid install journal")
 	}
 	return j, sum(data), nil
@@ -273,10 +287,28 @@ func (e edit) matchesCleanupAbsence(dir string) bool {
 			return true
 		}
 	}
-	return false
+	// The hooks' removal in the same plan can remove the vendor home above
+	// the skill's directories, which leaves a shallower absence.
+	return e.Skill && len(e.CleanupDirs) != 0 && missingDepth(dir) > len(e.CleanupDirs)
 }
 
-func (e edit) ownsDirectories() bool { return installerFor(e.Adapter).ownsConfigDirs() || e.Rules }
+// missingDepth counts the directories missing above a file, from a missing
+// directory identity.
+func missingDepth(dir string) int {
+	rest, ok := strings.CutPrefix(dir, missingConfigDir)
+	if !ok {
+		return 0
+	}
+	_, relative, nested := strings.Cut(rest, "/")
+	if !nested {
+		return 1
+	}
+	return strings.Count(relative, "/") + 1
+}
+
+func (e edit) ownsDirectories() bool {
+	return installerFor(e.Adapter).ownsConfigDirs() || e.Rules || e.Skill
+}
 
 func (e edit) publicationDirectoryMatches(dir string) bool {
 	if e.StageDir != "" {
@@ -342,6 +374,9 @@ func (e edit) stageCleanup() error {
 func (e edit) materialize(raw []byte) ([]byte, error) {
 	if !e.After.Exists {
 		return nil, nil
+	}
+	if e.Skill {
+		return []byte(e.Content), nil
 	}
 	if e.AddText != "" || e.RemoveText != "" {
 		if e.RemoveText != "" {

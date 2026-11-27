@@ -35,7 +35,8 @@ func TestCommandRuleJournalVersionTracksOwnership(t *testing.T) {
 	}
 	install()
 	current, _, err := readJournal(f.State)
-	if err != nil || current.Version != 2 || len(current.RuleFiles) != len(adapters) {
+	if err != nil || current.Version != skillJournalVersion || len(current.RuleFiles) != len(adapters) ||
+		len(current.SkillFiles) != len(adapters) {
 		t.Fatalf("journal with command rule ownership: %+v (%v)", current, err)
 	}
 
@@ -49,7 +50,7 @@ func TestCommandRuleJournalVersionTracksOwnership(t *testing.T) {
 	}
 	install()
 	migrated, _, err := readJournal(f.State)
-	if err != nil || migrated.Version != 2 || len(migrated.RuleFiles) != len(adapters) {
+	if err != nil || migrated.Version != skillJournalVersion || len(migrated.RuleFiles) != len(adapters) {
 		t.Fatalf("setup did not upgrade the existing ownership record: %+v (%v)", migrated, err)
 	}
 
@@ -68,7 +69,7 @@ func TestCommandRuleJournalVersionTracksOwnership(t *testing.T) {
 		}
 	}
 	cleaned, _, err := readJournal(f.State)
-	if err != nil || cleaned.Version != 1 || len(cleaned.RuleFiles) != 0 || cleaned.Pending != nil {
+	if err != nil || cleaned.Version != 1 || len(cleaned.RuleFiles) != 0 || len(cleaned.SkillFiles) != 0 || cleaned.Pending != nil {
 		t.Fatalf("journal after removing command rules: %+v (%v)", cleaned, err)
 	}
 }

@@ -386,6 +386,7 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 					want += line + "\n"
 				}
 			}
+			want += "- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It adds only its short description to the agent's context, and the agent loads the rest when a request needs it.\n"
 			if !found || !ends || block != want || strings.Count(out, "[y/N]") != 1 {
 				t.Fatalf("offer:\n%s\nwant disclosure:\n%s", out, want)
 			}

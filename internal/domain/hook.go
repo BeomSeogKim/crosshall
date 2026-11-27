@@ -547,12 +547,13 @@ func openMissedSessionLaunch(ctx context.Context, tx store.Tx, principal int64, 
 // (#437). The trust rule is the recovering prompt's (#355): the session
 // launch starts at the callback, which the server's proof is judged
 // against. A member with a route or a seen start in its current membership
-// is left as it is. A callback from before a rejoin, or one whose server the
+// is left as it is. A callback from before a rejoin (a tie with the join is
+// as ambiguous as it is for the selection fence), or one whose server the
 // dispatcher cannot judge, changes nothing and leaves the route to a later
 // callback.
 func (s *Service) openMissedThreadRoute(ctx context.Context, tx store.Tx, req Request, b hookBinding, principal int64,
 	cmd HookEvent, now time.Time) error {
-	if cmd.LaunchRef != SessionLaunch || !promptNamesServer(cmd) || b.routeEpoch > 1 && cmd.HookAtMS < b.joinedAtMS {
+	if cmd.LaunchRef != SessionLaunch || !promptNamesServer(cmd) || b.routeEpoch > 1 && cmd.HookAtMS <= b.joinedAtMS {
 		return nil
 	}
 	enroll := HookEnroll{wire.HookEnrollArgs{Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
@@ -564,7 +565,7 @@ func (s *Service) openMissedThreadRoute(ctx context.Context, tx store.Tx, req Re
 	var started bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publish_route WHERE binding_id = ?1 AND binding_epoch = ?2)
 		OR EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ?3 AND started_hook_at_ms > 0
-			AND (?2 = 1 OR started_hook_at_ms >= ?4))`, b.id, b.routeEpoch, principal, b.joinedAtMS).Scan(&started); err != nil || started {
+			AND (?2 = 1 OR started_hook_at_ms > ?4))`, b.id, b.routeEpoch, principal, b.joinedAtMS).Scan(&started); err != nil || started {
 		return err
 	}
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, SessionLaunch, false, "", cmd.HookAtMS); err != nil {

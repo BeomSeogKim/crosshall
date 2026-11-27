@@ -12,6 +12,7 @@ import (
 
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/link"
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -24,6 +25,7 @@ type linkHookInput struct {
 	payload []byte
 	command Command
 	written *link.Written
+	routed  bool
 }
 
 func parseLinkHookInput(kind string, payload []byte) (linkHookInput, error) {
@@ -42,7 +44,7 @@ func parseLinkHookInput(kind string, payload []byte) (linkHookInput, error) {
 		if err := json.Unmarshal(payload, &fact); err != nil {
 			return in, err
 		}
-		in.id, in.member, in.token = fact.ID, fact.Member, fact.Token
+		in.id, in.member, in.token, in.routed = fact.ID, fact.Member, fact.Token, fact.Routed
 		if fact.Kind != VerbHookEnroll && fact.Kind != VerbHookEvent {
 			return in, errors.New("invalid linked hook verb")
 		}
@@ -420,6 +422,27 @@ func startLinkHookLaunch(ctx context.Context, tx store.Tx, peer LinkEventPeer, i
 	return projection, err
 }
 
+// threadTurnEnd reports a turn end of a thread-routed adapter's session
+// after which its device holds a managed server route, in a profile the
+// wake accepts. The launch keeps the profile it opens with, which no later
+// prompt changes, and without the device's route the home would report a
+// wake the device cannot make.
+func threadTurnEnd(ctx context.Context, tx store.Tx, in linkHookInput, cmd HookEvent) (bool, error) {
+	a, ok := publish.Lookup(cmd.Profile.Adapter)
+	if !in.routed || !ok || !a.ThreadRouted() || cmd.Fact != FactTurnFinishing || cmd.LaunchRef != SessionLaunch ||
+		cmd.Profile.Mode != publish.ModeDaemon {
+		return false, nil
+	}
+	profile, err := json.Marshal(cmd.Profile)
+	if err != nil {
+		return false, err
+	}
+	var covered bool
+	err = tx.QueryRowContext(ctx, `SELECT `+store.CapabilityCovered("?1", "?2", "'publish'"), cmd.Profile.Adapter, string(profile)).
+		Scan(&covered)
+	return covered, err
+}
+
 func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, in linkHookInput, scope linkHookScope,
 	cmd HookEvent, at int64, now time.Time,
 ) (bool, error) {
@@ -436,8 +459,13 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 	if errors.Is(err, sql.ErrNoRows) || err == nil && live && launch == cmd.LaunchRef && policy != cmd.Epoch {
 		// A prompt opens the launch, as does the turn end or idle prompt
 		// of a verified process launch that joined during a turn (#437).
+		// A thread-routed session launch is never verified: its turn end
+		// opens it as its prompt does, since its route rests on the thread
+		// and the server the device captured, not on a process.
 		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) {
-			return false, nil
+			if opens, err := threadTurnEnd(ctx, tx, in, cmd); err != nil || !opens {
+				return false, err
+			}
 		}
 		verified = cmd.LaunchVerified
 		projection, err = startLinkHookLaunch(ctx, tx, peer, in, scope, cmd.Profile, cmd.LaunchRef, cmd.Epoch, verified, false, at)

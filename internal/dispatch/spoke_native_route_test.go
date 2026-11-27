@@ -271,3 +271,244 @@ func TestSpokeNativeRouteKeepsItsLaunchAgainstAnotherProcessTurnEnd(t *testing.T
 		t.Fatal(err)
 	}
 }
+
+// A Codex session that joined by hand during a turn on a linked device has
+// no prompt to name its server until its user types one: its turn end
+// names that server, which is the fresh capture its thread route needs. A
+// turn end without the server captures nothing, and one naming another
+// server leaves the captured route as it is (#437).
+func TestSpokeNativeRouteOfAThreadIsCapturedByATurnEndThatNamesItsServer(t *testing.T) {
+	for _, named := range []bool{true, false} {
+		t.Run(map[bool]string{true: "named", false: "unnamed"}[named], func(t *testing.T) {
+			db, _ := openSpokeWakeStore(t)
+			ctx := t.Context()
+			member := link.Member{Vendor: "codex", Key: "thread"}
+			token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+			if err := db.Update(ctx, func(tx store.Tx) error {
+				_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+					VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+					INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+					INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+					INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+						VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			capture := func(seq uint64, material spokeNativeHook) {
+				t.Helper()
+				token.LeafSeq = seq
+				if err := db.Update(ctx, func(tx store.Tx) error {
+					return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, material)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			route := func() (spokeNativeRoute, bool) {
+				t.Helper()
+				var r spokeNativeRoute
+				var ok bool
+				if err := db.View(ctx, func(tx store.Tx) error {
+					var err error
+					r, ok, err = readSpokeNativeRoute(ctx, tx, token.Boot, member)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return r, ok
+			}
+			const home = "/configure/codex"
+			server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
+			end := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: 1000, vendorHome: home}
+			if named {
+				end.host = &server
+			}
+			capture(6, end)
+			got, ok := route()
+			if ok != named || named && (got.Probe.Address != member.Key || got.Probe.Route.Home != home ||
+				got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start}) || got.CaptureSeq != 6) {
+				t.Fatalf("route %+v, %v after the turn end; want presence %v", got, ok, named)
+			}
+			if routed := threadServerRouted(t, db, member, token); routed != named {
+				t.Fatalf("the turn end's fact says routed %v, want %v", routed, named)
+			}
+			if !named {
+				return
+			}
+			other := wire.Host{PID: 789, Start: 1011, NS: proc.PIDNamespace()}
+			later := end
+			later.host, later.hookAtMS = &other, 2000
+			capture(7, later)
+			if after, ok := route(); !ok || after.Probe.Route.Host != got.Probe.Route.Host {
+				t.Fatalf("a later turn end moved the route %+v to %+v", got, after)
+			}
+		})
+	}
+}
+
+// A turn end that names a server in another PID namespace captures nothing
+// the reader offers, so it does not keep a later turn end naming a usable
+// server from capturing the route (#437).
+func TestSpokeNativeRouteOfAThreadIsNotHeldByAForeignTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+			INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+				VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host wire.Host, at int64) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: at, vendorHome: "/configure/codex", host: &host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture(6, wire.Host{PID: 321, Start: 654, NS: "another-namespace"}, 1000)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a foreign server's turn end says the thread is routed")
+	}
+	server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
+	capture(7, server, 2000)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("a usable server's turn end does not say the thread is routed")
+	}
+	if err := db.View(ctx, func(tx store.Tx) error {
+		got, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+		if err == nil && (!ok || got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start})) {
+			t.Fatalf("route %+v, %v; want the usable server's", got, ok)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// threadServerRouted is the route flag a turn end's fact carries.
+func threadServerRouted(t *testing.T, db *store.Store, member link.Member, token link.HookToken) bool {
+	t.Helper()
+	var routed bool
+	if err := db.View(t.Context(), func(tx store.Tx) error {
+		var err error
+		routed, err = spokeThreadServerRouted(t.Context(), tx, member, token, "session", 3)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return routed
+}
+
+// A route captured before a leave and rejoin is not the new scope's: once
+// the rejoin's cut is applied, a turn end that names no server leaves the
+// old route in place, and its fact does not say the thread is routed, as the
+// offer reader does not offer that route (#437).
+func TestSpokeThreadRouteFromBeforeARejoinDoesNotRouteALaterTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+			INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+				VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host *wire.Host, at int64) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: at, vendorHome: "/configure/codex", host: host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture(6, &wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}, 1000)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("the named turn end does not say the thread is routed")
+	}
+	// A leave and rejoin on the same binding keeps the selection
+	// generation and advances the route epoch, cut after the old capture.
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_member_scope SET route_epoch = 2, cut_seq = 7 WHERE vendor = 'codex' AND key = 'thread'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture(8, nil, 2000)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a hostless turn end after the rejoin says the thread is routed by the old scope's server")
+	}
+}
+
+// A linked join's membership stamp can be seen before the home's event
+// installs the member's scope. A turn end naming the server in that window
+// captures the route provisionally, which the scope's cut then admits: its
+// fact says the thread is routed, as the home applies it after that cut too.
+// A later turn end that captures nothing new says nothing (#437).
+func TestSpokeThreadRouteCapturedBeforeItsScopeRoutesTheTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host *wire.Host) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: int64(seq) * 1000, vendorHome: "/configure/codex", host: host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
+	capture(6, &server)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("a turn end naming the server before the scope arrived does not say the thread is routed")
+	}
+	capture(7, nil)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a later hostless turn end before the scope says the thread is routed")
+	}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+			VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.View(ctx, func(tx store.Tx) error {
+		got, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+		if err == nil && (!ok || got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start})) {
+			t.Fatalf("after the cut the offer reader returns %+v, %v; want the provisional capture", got, ok)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

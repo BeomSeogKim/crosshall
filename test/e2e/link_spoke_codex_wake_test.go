@@ -5,7 +5,9 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +21,37 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
+// A linked Codex session is woken through its managed server's queue,
+// whether the hall saw its start or it joined by hand during a turn whose
+// end alone named the server (#437).
+// With a home, device or hook of the base build, the session is woken
+// after its next prompt's turn, as before; before that prompt an ask never
+// reports a wake the device holds no server route for.
 func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
+	t.Run("started", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "", []string{"SessionStart"}, nil) })
+	t.Run("joined-during-a-turn", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "", []string{"Stop"}, nil) })
+	older := os.Getenv(baseBinaryEnv)
+	for _, c := range []struct{ name, home, spoke, hook string }{
+		{"joined-during-a-turn/base-home", older, binary, ""},
+		{"joined-during-a-turn/base-spoke", binary, older, ""},
+		{"joined-during-a-turn/base-hook", binary, binary, older},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if older == "" {
+				t.Skip("set " + baseBinaryEnv + " to a previous build with -tags=testvendorhome")
+			}
+			requireFixtureBuild(t, older)
+			spokeLinkWakesCodex(t, c.home, c.spoke, c.hook, []string{"Stop"}, []string{"UserPromptSubmit", "Stop"})
+		})
+	}
+}
+
+// spokeLinkWakesCodex runs the receiver's hooks under the managed server,
+// with hookBinary as the hook when it is set: before, then, when later is
+// set and the home opened no launch from them, an ask that must not report
+// a device wake, then later. A launch the home opened needs the device's
+// server route. Its sibling starts as usual.
+func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary, hookBinary string, before, later []string) {
 	platform := map[string]string{"darwin": "apple-darwin", "linux": "unknown-linux-gnu"}[runtime.GOOS]
 	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
 	if platform == "" || arch == "" {
@@ -27,7 +59,7 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 	}
 	const version = "0.171.0"
 	const channel = "linked-codex-wake"
-	f := newLinkFixture(t, binary, binary)
+	f := newLinkFixture(t, homeBinary, spokeBinary)
 	t.Cleanup(func() {
 		if t.Failed() {
 			f.home.logDispatcher()
@@ -94,10 +126,14 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
 	socket := filepath.Join(codexHome, "app-server-control", "app-server-control.sock")
 	requests := filepath.Join(tmp, "requests.jsonl")
+	hook := f.spoke.binaryPath()
+	if hookBinary != "" {
+		hook = hookBinary
+	}
 	cmd := exec.CommandContext(t.Context(), daemon, "-test.run=^TestManagedCodexDaemon$", "app-server", "--managed-daemon")
 	cmd.Dir = f.spoke.home
 	cmd.Env = append(f.spoke.baseEnv(), "TMPDIR="+tmp,
-		"CROSSHALL_FIXTURE_CODEX_HOOK="+f.spoke.binaryPath(),
+		"CROSSHALL_FIXTURE_CODEX_HOOK="+hook,
 		"CROSSHALL_FIXTURE_CODEX_CONTROL="+socket,
 		"CROSSHALL_FIXTURE_CODEX_REQUESTS="+requests)
 	logPath := filepath.Join(tmp, "daemon.log")
@@ -137,15 +173,76 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 	threads := []struct{ id, alias string }{
 		{"linked-codex-target", "receiver"}, {"linked-codex-sibling", "sibling"},
 	}
+	turn := 0
+	send := func(thread string, events []string) {
+		t.Helper()
+		for _, event := range events {
+			hook := map[string]any{"hook_event_name": event, "session_id": thread, "cwd": f.spoke.home}
+			switch event {
+			case "SessionStart":
+				hook["source"] = "startup"
+			case "UserPromptSubmit":
+				turn++
+				hook["turn_id"], hook["prompt"] = "turn-"+strconv.Itoa(turn), "fixture private text"
+			case "Stop":
+				// Before any prompt: the turn the session joined during ends.
+				hook["turn_id"], hook["stop_hook_active"] = "turn-"+strconv.Itoa(turn), false
+			}
+			if err := json.NewEncoder(input).Encode(hook); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	participants := make([]*participant, 0, len(threads))
 	for _, thread := range threads {
 		member := &participant{w: f.spoke, extra: []string{"CODEX_THREAD_ID=" + thread.id}}
 		member.must("join", channel, "--as", thread.alias)
 		participants = append(participants, member)
-		if err := json.NewEncoder(input).Encode(map[string]any{
-			"hook_event_name": "SessionStart", "session_id": thread.id, "cwd": f.spoke.home, "source": "startup",
-		}); err != nil {
+		events := []string{"SessionStart"}
+		if thread.alias == "receiver" {
+			events = before
+		}
+		send(thread.id, events)
+	}
+	if len(later) > 0 {
+		// A fact held until its scope's cut arrives is applied later, and a
+		// launch it opens marks the device's offers until the device
+		// confirms the change: until then every ask says no_route.
+		eventually(t, "the home applied the receiver's turn end and the device confirmed its offers", func() bool {
+			var n, dirty int
+			return homeDB.QueryRow(`SELECT COUNT(*) FROM link_event_input WHERE vendor = 'codex' AND key = ?
+				AND json_extract(payload, '$.body.fact') = 'turn_finishing' AND status != 'quarantined'`, threads[0].id).Scan(&n) == nil && n == 1 &&
+				homeDB.QueryRow(`SELECT COUNT(*) FROM device_offer_dirty WHERE vendor = 'codex' AND key = ?`, threads[0].id).Scan(&dirty) == nil && dirty == 0
+		})
+		var server int64
+		if err := spokeDB.QueryRow(`SELECT COALESCE(json_extract(evidence, '$.Material.Route.Host.PID'), 0)
+			FROM spoke_native_route WHERE vendor = 'codex' AND key = ?`, threads[0].id).Scan(&server); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			t.Fatal(err)
+		}
+		var opened int
+		if err := homeDB.QueryRow(`SELECT COUNT(*) FROM link_event_launch l JOIN link_event_cut c ON c.device_id = l.device_id
+			AND c.binding_id = l.binding_id AND c.boot = l.boot AND c.route_epoch = l.route_epoch
+			WHERE c.vendor = 'codex' AND c.key = ? AND c.absent = 0`, threads[0].id).Scan(&opened); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case opened > 0 && server == 0:
+			t.Fatal("the home opened the receiver's launch at a turn end the device holds no server route after")
+		case opened > 0:
+			// Builds that name and accept the server at a turn end: the
+			// turn end alone makes the session wakeable, as without a base
+			// build.
+		default:
+			early := sender.must("ask", "@receiver", "Before the prompt.")
+			var reply struct {
+				Recipients []struct{ Alias, Wake, Next string }
+			}
+			if err := json.Unmarshal([]byte(early.stdout), &reply); err != nil || len(reply.Recipients) != 1 ||
+				reply.Recipients[0].Wake == "device" || strings.Contains(reply.Recipients[0].Next, "linked device") {
+				t.Fatalf("before its prompt the ask reports a wake with no linked launch (server %d): %s (%v)", server, early.stdout, err)
+			}
+			participants[0].must("read", strconv.FormatInt(num(t, early, "id"), 10))
+			send(threads[0].id, later)
 		}
 	}
 	eventually(t, "the home observed managed Codex launches and scope cuts for both threads", func() bool {

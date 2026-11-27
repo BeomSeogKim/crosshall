@@ -256,6 +256,10 @@ type Fact struct {
 	Token HookToken       `json:"token"`
 	Kind  string          `json:"kind"`
 	Body  json.RawMessage `json:"body,omitempty"`
+	// Routed: after this turn end the device holds its thread's route to
+	// a managed server it can judge (#437). An older home ignores it, and
+	// an older device never sets it.
+	Routed bool `json:"routed,omitempty"`
 }
 
 // Written acknowledges that a hook wrote an offer completely to its

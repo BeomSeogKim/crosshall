@@ -253,7 +253,7 @@ func recordedPlanPath(j journal, adapter string) string {
 			return file.Path
 		}
 	}
-	return ""
+	return j.SkillFiles[adapter].Path
 }
 
 // RenderVendorPlan writes the hook and approval preview for a prepared plan.
@@ -297,6 +297,7 @@ func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPla
 	vendor := p.op.Adapters[0]
 	if !reflect.DeepEqual(j.Files[vendor], p.journal.Files[vendor]) ||
 		!reflect.DeepEqual(j.RuleFiles[vendor], p.journal.RuleFiles[vendor]) ||
+		!reflect.DeepEqual(j.SkillFiles[vendor], p.journal.SkillFiles[vendor]) ||
 		j.Builds[vendor] != p.journal.Builds[vendor] ||
 		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) {
 		return errors.New("installation changed after planning; rerun to review the new plan")

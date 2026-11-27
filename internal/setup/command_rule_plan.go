@@ -154,8 +154,11 @@ func removeRuleText(raw []byte, rule string) ([]byte, bool) {
 	return slices.Concat(raw[:at], raw[at+len(needle):]), true
 }
 
-func resolveEditPath(spec hook.InstallSpec, rules bool) (configTarget, error) {
-	if rules {
+func resolveEditPath(spec hook.InstallSpec, e edit) (configTarget, error) {
+	if e.Skill {
+		return resolveSkillPath(spec)
+	}
+	if e.Rules {
 		return resolveCommandRulePath(spec)
 	}
 	return resolveConfigPath(spec)

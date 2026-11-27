@@ -343,7 +343,7 @@ func openConfigParent(path, parent string) (location configLocation, err error) 
 		return location, err
 	}
 	configParent := parent == filepath.Dir(path)
-	nested := len(managedConfigDirectories(path)) != 0
+	managed := len(managedConfigDirectories(path))
 	parent = systemConfigDirectory(parent)
 	parts := strings.Split(strings.TrimPrefix(parent, "/"), "/")
 	if parent == "/" {
@@ -363,7 +363,7 @@ func openConfigParent(path, parent string) (location configLocation, err error) 
 			return location, err
 		}
 		final := i == len(parts)-1
-		managedAncestor := configParent && nested && i == len(parts)-2
+		managedAncestor := configParent && managed > 1 && i >= len(parts)-managed
 		mayBeMissing := final || managedAncestor
 		var relative string
 		if mayBeMissing {

@@ -61,7 +61,7 @@ func TestClaudeAutoModeRulesShareSetupConsentAndRestoreSettings(t *testing.T) {
 				t.Fatalf("installed classifier allow list = %q, want %q", got, want)
 			}
 			j, _, err := readJournal(f.State)
-			if err != nil || j.Version != 3 || !slices.ContainsFunc(j.Files["claude"].Entries, func(e Entry) bool { return e.AutoMode }) {
+			if err != nil || j.Version != skillJournalVersion || !slices.ContainsFunc(j.Files["claude"].Entries, func(e Entry) bool { return e.AutoMode }) {
 				t.Fatalf("classifier journal = %+v (%v)", j, err)
 			}
 			if out, err := realRun(t, s, f, Request{Apply: true, Adapters: req.Adapters}, ""); err != nil {
@@ -104,7 +104,7 @@ func TestClaudeAutoModeUninstallReleasesAbsentClaims(t *testing.T) {
 			cleanVersion := 1
 			if tc.keepCodexRule {
 				adapters = append(adapters, "codex")
-				cleanVersion = 2
+				cleanVersion = skillJournalVersion // Codex keeps its skill
 			}
 			f := setuptest.New(t, adapters...)
 			s := scopedService(f)
@@ -133,7 +133,7 @@ func TestClaudeAutoModeUninstallReleasesAbsentClaims(t *testing.T) {
 				}
 				return record
 			}
-			checkJournal(3, true)
+			checkJournal(skillJournalVersion, true)
 
 			installed := configBytes(t, path)
 			if bytes.Count(installed, guidance.Value) != 1 {
@@ -163,7 +163,7 @@ func TestClaudeAutoModeUninstallReleasesAbsentClaims(t *testing.T) {
 				t.Fatalf("uninstall did not preserve the owner settings and rules %q: %s", want, after)
 			}
 			if tc.duplicate {
-				record := checkJournal(3, true)
+				record := checkJournal(classifierJournalVersion, true)
 				if len(record.Entries) != 1 || !record.Entries[0].AutoMode || !bytes.Equal(record.Entries[0].Value, guidance.Value) {
 					t.Fatalf("uninstall did not keep just the ambiguous original claim: %+v", record.Entries)
 				}

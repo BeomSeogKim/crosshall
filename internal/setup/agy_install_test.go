@@ -60,7 +60,7 @@ func TestAgySetupOwnsOnlyItsNamedSessionStartGroup(t *testing.T) {
 			selected := []string{"agy"}
 			plans, err := s.PlanInstall(ctx, selected)
 			plan := requireAgyPlan(t, plans, err)
-			if plan.Path != target || plan.PathSource != "default" || plan.Name != "Antigravity" || len(plan.Files) != 2 {
+			if plan.Path != target || plan.PathSource != "default" || plan.Name != "Antigravity" || len(plan.Files) != 3 {
 				t.Fatalf("install preview = %+v", plan)
 			}
 			if test.before == "" {

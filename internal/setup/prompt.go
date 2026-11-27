@@ -340,15 +340,24 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome, o.Retry = "recovered", retry(c.plan)
 	case c.plan.Action == "uninstall":
 		o.Outcome = "removed"
+		details := skillOutcomes(c.plan.Files)
+		for _, kept := range c.plan.Retained {
+			if kept.Reason == skillEditedReason {
+				details = append(details, fmt.Sprintf("%s (%s)", kept.Reason, kept.Path))
+			}
+		}
+		o.Detail = strings.Join(details, "\n")
 	default:
 		o.Outcome = "installed"
-		if len(c.plan.Retained) > 0 {
-			skipped := c.plan.Retained[0]
-			o.Detail = fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path)
-		} else if c.plan.resumedLegacyCodex() {
-			o.Detail = "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin."
+		details := skillOutcomes(c.plan.Files)
+		for _, skipped := range c.plan.Retained {
+			details = append(details, fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path))
+		}
+		if len(c.plan.Retained) == 0 && c.plan.resumedLegacyCodex() {
+			details = append(details, "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin.")
 			o.Retry = "crosshall setup codex"
 		}
+		o.Detail = strings.Join(details, "\n")
 	}
 	return o
 }

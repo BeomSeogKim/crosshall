@@ -172,7 +172,7 @@ func TestScopedSetupAndUninstallPreserveOtherVendor(t *testing.T) {
 		t.Fatal(err)
 	}
 	rm, err := s.PlanUninstall(ctx, []string{"claude"})
-	if err != nil || len(rm) != 1 || len(rm[0].Files) != 1 || len(rm[0].Files[0].Kept) == 0 {
+	if err != nil || len(rm) != 1 || len(rm[0].Files) != 2 || rm[0].Files[0].Skill != "remove" || len(rm[0].Files[1].Kept) == 0 {
 		t.Fatalf("scope or drift missing from uninstall plan: %+v, %v", rm, err)
 	}
 	f.CheckTargets(t)
@@ -342,7 +342,7 @@ func TestScopedBlockedUninstallDisablesOnlySelectedVendor(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", filepath.Join(f.Home, "other codex"))
 	rm, err := s.PlanUninstall(ctx, []string{"codex"})
-	if err != nil || len(rm) != 1 || !rm[0].Recovery || len(rm[0].Retained) != 2 {
+	if err != nil || len(rm) != 1 || !rm[0].Recovery || len(rm[0].Retained) != 3 {
 		t.Fatalf("expected a scope-preserving recovery: %+v, %v", rm, err)
 	}
 	disabled := map[string]bool{}
@@ -387,7 +387,7 @@ func TestScopedPlanEvidenceMatchesVendorBuildAndMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := knownBuildPlans(t, scopedService(f), "claude")
-	if len(plans) != 1 || plans[0].Err != nil || len(plans[0].Files) != 1 {
+	if len(plans) != 1 || plans[0].Err != nil || len(plans[0].Files) != 2 {
 		t.Fatalf("scoped preview: %+v", plans)
 	}
 	file := plans[0].Files[0]

@@ -59,11 +59,12 @@ Saying yes turns these on for the listed agents:
 - Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
 - Turn-end check (Claude Code, interactive sessions and print mode). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off
+- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It costs nothing until a request uses it.
 A no skips future installer offers for the listed agents. Enter skips this offer.
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files the installer lists when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, installs a crosshall skill, and adds `~/.local/bin` to the startup files the installer lists when a PATH change is needed. The skill is a `SKILL.md` in each agent's own skill directory (`~/.claude/skills/crosshall`, `~/.codex/skills/crosshall` and `~/.gemini/config/skills/crosshall`), so your agents learn the crosshall commands from it without being taught; see [the crosshall skill](docs/adapters.md#the-crosshall-skill). The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
 
 <!-- install-receipt -->
 ```text

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **Setup installs a crosshall skill (#452):** `crosshall setup <vendor>` and the installer's offer install `skills/crosshall/SKILL.md` in each agent's own user skill directory: Claude Code's configuration home, the Codex home, and `$HOME/.gemini/config` for Antigravity CLI. An agent then learns `who`, `join`, `ask`, `note`, `reply` and `wait` when a request to message another agent session needs them, without being taught. The skill shares the hooks' consent and install journal. Setup never overwrites a skill you edited or one it did not write, and still installs the hooks; it replaces its own unedited file on upgrade. `crosshall uninstall` deletes the file only while it is unedited and removes the directories setup created when they are empty. The install journal moves to format 4, which an earlier release's setup refuses to read.
+
 ## v0.4.0 (2026-11-27)
 
 - **Release of v0.4.0-rc.3:** no product change since rc.3.

@@ -19,6 +19,9 @@ type installer interface {
 	defaultHome(home string) string
 	// rulePath places member command rules, given the hooks file target.
 	rulePath(hooks configTarget) string
+	// skillPath places the crosshall skill, given the hooks file target, or
+	// is empty when setup installs no skill for the vendor.
+	skillPath(hooks configTarget) string
 	// trustHint asks the owner to review installed hooks in the vendor, or
 	// is empty when the vendor runs them without review.
 	trustHint() string
@@ -129,6 +132,8 @@ func layoutHookEntry(i installer, event, matcher string, h hookHandler) (Entry, 
 // "hooks" object, no state pin, a literal shell executable, relocation
 // checks and no revision upgrade.
 type baseInstaller struct{}
+
+func (baseInstaller) skillPath(configTarget) string { return "" }
 
 func (baseInstaller) trustHint() string   { return "" }
 func (baseInstaller) sandboxNote() string { return "" }

@@ -21,8 +21,8 @@ import (
 const installConsentHeading = "Saying yes turns these on for the listed agents:"
 
 type installDisclosure struct {
-	known, inspectFailed, autoJoinOff, prompt bool
-	adapters                                  []installAdapterDisclosure
+	known, inspectFailed, autoJoinOff, prompt, skill bool
+	adapters                                         []installAdapterDisclosure
 	// sharedStop names the CLIs whose shared hooks file holds Stop hooks of
 	// a group that runs after crosshall's.
 	sharedStop []string
@@ -43,7 +43,8 @@ func (s Service) attachInstallDisclosure(ctx context.Context, targets []installT
 	}
 	for i, target := range targets {
 		d := &targets[i].disclosure
-		*d = installDisclosure{prompt: hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision)}
+		*d = installDisclosure{prompt: hook.HasPromptLine(target.Spec.Adapter, target.Build.Revision),
+			skill: installerFor(target.Spec.Adapter).skillPath(configTarget{Path: target.Path}) != ""}
 		if sharesStop(target) {
 			d.sharedStop = []string{manifests.DisplayName(target.Spec.Adapter)}
 		}
@@ -88,6 +89,7 @@ func groupInstallDisclosure(plans []VendorPlan) installDisclosure {
 
 func (d *installDisclosure) include(other installDisclosure) {
 	d.prompt = d.prompt || other.prompt
+	d.skill = d.skill || other.skill
 	d.inspectFailed = d.inspectFailed || other.inspectFailed
 	if other.known {
 		d.known, d.autoJoinOff = true, other.autoJoinOff
@@ -158,6 +160,9 @@ func (d installDisclosure) write(out io.Writer) error {
 	}
 	if len(d.sharedStop) > 0 {
 		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
+	}
+	if d.skill {
+		fmt.Fprintln(&text, "- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It costs nothing until a request uses it.")
 	}
 	_, err := io.WriteString(out, text.String())
 	return err

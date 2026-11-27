@@ -342,7 +342,7 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome = "removed"
 		details := skillOutcomes(c.plan.Files)
 		for _, kept := range c.plan.Retained {
-			if kept.Reason == skillEditedReason {
+			if strings.Contains(kept.Reason, "crosshall skill") {
 				details = append(details, fmt.Sprintf("%s (%s)", kept.Reason, kept.Path))
 			}
 		}

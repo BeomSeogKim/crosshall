@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"path/filepath"
+	"slices"
 
 	"github.com/BeomSeogKim/crosshall/internal/hook"
 	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
@@ -15,8 +16,9 @@ import (
 var skillContent []byte
 
 const (
-	skillMode         = 0644
-	skillEditedReason = "kept the crosshall skill because it was edited"
+	skillMode           = 0644
+	skillEditedReason   = "kept the crosshall skill because it was edited"
+	skillReplacedReason = "kept the crosshall skill because it is not the file setup wrote"
 )
 
 // skillTarget is the vendor's crosshall skill file as setup found it.
@@ -73,13 +75,19 @@ func preflightSkill(target *installTarget, j journal) {
 }
 
 // planSkillInstall writes the skill when the path is free, or replaces the
-// file setup wrote when its bytes are still the ones setup recorded. A file
-// the owner edited, or one setup did not write, is left as it is.
-func planSkillInstall(adapter string, target skillTarget, record ownedFile, known bool) (*edit, *retainedFile) {
+// file setup wrote when it is still the same file with the bytes setup
+// recorded. A file the owner edited or recreated, one setup did not write,
+// and one another vendor's setup claims are left as they are.
+func planSkillInstall(adapter string, target skillTarget, j journal) (*edit, *retainedFile) {
 	before := stamp(target.Current)
 	want := sum(skillContent)
 	path := target.Location.Path
+	record, known := j.SkillFiles[adapter]
 	switch {
+	case skillClaimedByAnother(j, adapter, path):
+		return nil, nil
+	case known && before.Exists && !sameSkillFile(before, record.Latest):
+		return releaseSkill(adapter, path, before), &retainedFile{adapter, path, skillReplacedReason}
 	case before.Exists && before.Hash == want:
 		// Already current, or an identical file setup did not write: no edit.
 		return nil, nil
@@ -100,8 +108,45 @@ func planSkillInstall(adapter string, target skillTarget, record ownedFile, know
 		Content: string(skillContent), Record: &record}, nil
 }
 
-func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile) {
-	e, kept, err := planSkillRemoval(spec, record)
+// sameSkillFile reports that the file and its directory are the ones setup
+// recorded, not a copy someone recreated with the same bytes.
+func sameSkillFile(now, recorded fingerprint) bool {
+	return now.File == recorded.File && now.Dir == recorded.Dir
+}
+
+// releaseSkill leaves the file as it is and gives up setup's record of it.
+func releaseSkill(adapter, path string, now fingerprint) *edit {
+	return &edit{Adapter: adapter, Skill: true, Path: path, Before: now, After: now}
+}
+
+func skillClaimedByAnother(j journal, adapter, path string) bool {
+	for other, record := range j.SkillFiles {
+		if other != adapter && record.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedSkillUser names another adapter, installed and staying installed,
+// whose configuration home puts its skill at the same path.
+func sharedSkillUser(adapter, path string, j journal, removing []string) string {
+	for _, spec := range hook.InstallSpecs() {
+		other := spec.Adapter
+		_, hooks := j.Files[other]
+		_, rules := j.RuleFiles[other]
+		if other == adapter || slices.Contains(removing, other) || !hooks && !rules {
+			continue
+		}
+		if location, err := resolveSkillPath(spec); err == nil && location.Path == path {
+			return other
+		}
+	}
+	return ""
+}
+
+func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile, j journal, removing []string) {
+	e, kept, err := planSkillRemoval(spec, record, j, removing)
 	if err != nil {
 		op.Retained = append(op.Retained, retainedFile{spec.Adapter, record.Path, err.Error()})
 		return
@@ -112,9 +157,11 @@ func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile) {
 	op.Edits = append(op.Edits, e)
 }
 
-// planSkillRemoval deletes the skill only while its bytes are the ones setup
-// recorded. Either way setup gives up its record of the file.
-func planSkillRemoval(spec hook.InstallSpec, record ownedFile) (edit, *retainedFile, error) {
+// planSkillRemoval deletes the skill only while it is the file setup wrote,
+// with the bytes setup recorded, and no other installed vendor shares it.
+// Otherwise setup gives up its record of the file, or passes it to the
+// vendor that still uses it.
+func planSkillRemoval(spec hook.InstallSpec, record ownedFile, j journal, removing []string) (edit, *retainedFile, error) {
 	location, err := resolveSkillPath(spec)
 	if err != nil {
 		return edit{}, nil, err
@@ -131,14 +178,23 @@ func planSkillRemoval(spec hook.InstallSpec, record ownedFile) (edit, *retainedF
 	}
 	now := stamp(current)
 	e := edit{Adapter: spec.Adapter, Skill: true, Path: location.Path, Before: now, After: now}
+	kept := func(reason string) (edit, *retainedFile, error) {
+		return e, &retainedFile{spec.Adapter, location.Path, reason}, nil
+	}
 	switch {
 	case !current.Exists:
 		e.CleanupDirs = record.Dirs
-	case now.Hash == record.Latest.Hash:
+	case !sameSkillFile(now, record.Latest):
+		return kept(skillReplacedReason)
+	case now.Hash != record.Latest.Hash:
+		return kept(skillEditedReason)
+	default:
+		if other := sharedSkillUser(spec.Adapter, location.Path, j, removing); other != "" {
+			e.Record, e.Transfer = &record, other
+			return kept("kept the crosshall skill: " + manifests.DisplayName(other) + " still uses it")
+		}
 		e.After = fingerprint{Dir: now.Dir}
 		e.CleanupDirs = record.Dirs
-	default:
-		return e, &retainedFile{spec.Adapter, location.Path, skillEditedReason}, nil
 	}
 	return e, nil, nil
 }

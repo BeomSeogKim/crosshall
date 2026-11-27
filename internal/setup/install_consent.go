@@ -162,7 +162,7 @@ func (d installDisclosure) write(out io.Writer) error {
 		fmt.Fprintln(&text, "- Other Stop hooks ("+strings.Join(d.sharedStop, ", ")+"). A hook group in the same hooks file whose name sorts after crosshall has Stop hooks. When the turn-end check continues a turn, this CLI skips them for that Stop; they run again at the turn's next Stop.")
 	}
 	if d.skill {
-		fmt.Fprintln(&text, "- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It costs nothing until a request uses it.")
+		fmt.Fprintln(&text, "- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It adds only its short description to the agent's context, and the agent loads the rest when a request needs it.")
 	}
 	_, err := io.WriteString(out, text.String())
 	return err

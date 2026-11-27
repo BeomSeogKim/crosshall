@@ -88,6 +88,9 @@ func rememberUnprovenPublication(j *journal, e edit) {
 	files := ownedFiles(j, e)
 	if record, ok := files[e.Adapter]; ok && record.Path == e.Path && record.Latest.File == e.After.File {
 		delete(files, e.Adapter)
+		if e.Prior != nil {
+			files[e.Adapter] = *e.Prior
+		}
 	}
 	if slices.ContainsFunc(j.Retained, func(file retainedFile) bool {
 		return file.Adapter == e.Adapter && file.Path == e.Path
@@ -111,12 +114,19 @@ func ownedFiles(j *journal, e edit) map[string]ownedFile {
 
 func recordApplied(j *journal, e edit, observed fingerprint) {
 	files := ownedFiles(j, e)
-	if e.Record == nil {
+	// Setup owns a skill only with the bytes it wrote; an edit made while
+	// the plan was pending makes the file the owner's.
+	if e.Record == nil || e.Skill && observed.Hash != e.After.Hash {
 		delete(files, e.Adapter)
 		return
 	}
 	record := *e.Record
 	record.Latest = observed
+	if e.Transfer != "" {
+		delete(files, e.Adapter)
+		files[e.Transfer] = record
+		return
+	}
 	files[e.Adapter] = record
 }
 

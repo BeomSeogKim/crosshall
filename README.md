@@ -59,7 +59,7 @@ Saying yes turns these on for the listed agents:
 - Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
 - Turn-end check (Claude Code, interactive sessions and print mode). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off
-- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It costs nothing until a request uses it.
+- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It adds only its short description to the agent's context, and the agent loads the rest when a request needs it.
 A no skips future installer offers for the listed agents. Enter skips this offer.
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```

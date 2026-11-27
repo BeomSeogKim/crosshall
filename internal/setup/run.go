@@ -338,6 +338,14 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) && j.Version == j.formatVersion() {
 			return s.setPolicies(ctx, op.Adapters, true)
 		}
+		// Recovery restores these when it cannot prove a publication.
+		op.Edits = slices.Clone(op.Edits)
+		for i := range op.Edits {
+			e := &op.Edits[i]
+			if record, ok := ownedFiles(&j, *e)[e.Adapter]; ok {
+				e.Prior = &record
+			}
+		}
 		j.Pending = &op
 	}
 	if !prepared || j.Version != j.formatVersion() {
@@ -371,7 +379,8 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 
 func hasFileEdits(op operation) bool {
 	for _, e := range op.Edits {
-		if e.Before != e.After {
+		// A skill edit with no change gives up or passes on a record.
+		if e.Before != e.After || e.Skill {
 			return true
 		}
 	}

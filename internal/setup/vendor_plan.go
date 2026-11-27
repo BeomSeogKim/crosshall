@@ -102,6 +102,10 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 
 	plans := make([]VendorPlan, len(specs))
 	if action == "uninstall" {
+		removing := make([]string, 0, len(specs))
+		for _, spec := range specs {
+			removing = append(removing, spec.Adapter)
+		}
 		for i, spec := range specs {
 			op := operation{Action: action}
 			for _, retained := range j.Retained {
@@ -109,7 +113,7 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 					op.Retained = append(op.Retained, retained)
 				}
 			}
-			addRemoval(&op, spec, j)
+			addRemoval(&op, spec, j, removing)
 			plans[i] = newVendorPlan(op, nil, j, digest, false)
 		}
 		return plans, nil

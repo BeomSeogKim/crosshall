@@ -95,6 +95,8 @@ type edit struct {
 	Rules          bool               `json:"rules,omitempty"`
 	Skill          bool               `json:"skill,omitempty"`
 	Content        string             `json:"content,omitempty"`
+	Transfer       string             `json:"transfer,omitempty"`
+	Prior          *ownedFile         `json:"prior,omitempty"`
 	AddText        string             `json:"add_text,omitempty"`
 	RemoveText     string             `json:"remove_text,omitempty"`
 	Before         fingerprint        `json:"before"`

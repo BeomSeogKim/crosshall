@@ -13,10 +13,13 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      # The README install check runs the installer of the tag the README pins.
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
+      # The README install check runs the installer of the tag the README
+      # pins; before that tag exists (release prep) it uses this tree's.
+      - name: Fetch the release the README pins
+        run: |
+          tag=$(sed -n 's/^git clone --branch \([^ ]*\) .*/\1/p' README.md)
+          git fetch --no-tags --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" || echo "README pins $tag, which is not released yet"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -49,10 +52,13 @@ jobs:
   checks-macos:
     runs-on: macos-latest
     steps:
-      # The README install check runs the installer of the tag the README pins.
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
+      # The README install check runs the installer of the tag the README
+      # pins; before that tag exists (release prep) it uses this tree's.
+      - name: Fetch the release the README pins
+        run: |
+          tag=$(sed -n 's/^git clone --branch \([^ ]*\) .*/\1/p' README.md)
+          git fetch --no-tags --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" || echo "README pins $tag, which is not released yet"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

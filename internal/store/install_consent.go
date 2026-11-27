@@ -22,10 +22,11 @@ type InstallConsent struct {
 	// TurnEndSwitch is the owner's turn-end switch for the adapter: on, off,
 	// or empty when the evidence decides.
 	TurnEndSwitch string
-	// TurnEndTrustedFrom names the build whose tested evidence covers the
-	// turn-end check of a build without tested evidence of its own, as
-	// doctor's trusted_from does; empty otherwise.
-	TurnEndTrustedFrom string
+	// TurnEndInteractiveTrustedFrom and TurnEndPrintTrustedFrom name, per
+	// mode, the build whose tested evidence covers the turn-end check of a
+	// build without tested evidence of its own, as doctor's trusted_from
+	// does; empty otherwise.
+	TurnEndInteractiveTrustedFrom, TurnEndPrintTrustedFrom string
 }
 
 // InspectInstallConsent previews the settings and evidence after the new
@@ -134,9 +135,9 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 			AND COALESCE((SELECT cb.confirmed FROM capability_build cb WHERE `+capabilityProfileMatch("cb", "?1", "?2", "'publish'")+`
 				AND cb.vendor_version = `+profileField("?2", "vendor_version")+`), 0) < ?4,
 			`+CapabilityCovered("?1", interactiveProfile, "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd+`,
-			COALESCE(NULLIF(`+trustedFrom(interactiveProfile)+`, ''), `+trustedFrom(printProfile)+`)`,
+			`+trustedFrom(interactiveProfile)+`, `+trustedFrom(printProfile),
 		vendor, profile, builtin, PublishBuildConfirmations).
 		Scan(&consent.AutoJoinOff, &consent.PublishCovered, &consent.PublishSwitch, &consent.PublishStopped,
 			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint, &consent.TurnEndSwitch,
-			&consent.TurnEndTrustedFrom)
+			&consent.TurnEndInteractiveTrustedFrom, &consent.TurnEndPrintTrustedFrom)
 }

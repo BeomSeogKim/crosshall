@@ -5,6 +5,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **The owner sees why a linked member has no wake route yet (#437):** `crosshall owner who` adds `no notice route: its session start was not seen` for a member on a linked device that joined after its session started and has sent no prompt since. As for a local member, its next prompt opens the route.
+
 ## v0.4.0-rc.2 (2026-11-27)
 
 - **Upgrading:** a v0.4.0-rc.1 store stays on schema 37. The first start from v0.3.1 backs up the store and upgrades it from schema 30 to 37. See [UPGRADING.md](UPGRADING.md#to-v040-rc2).

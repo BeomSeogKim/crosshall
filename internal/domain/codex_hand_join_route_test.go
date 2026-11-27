@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
@@ -132,5 +133,76 @@ func TestARouteAHandJoinedCodexTurnEndRegisteredCarriesANotice(t *testing.T) {
 	f.turnEndAsk(writer, "codex1", "to-hand-joined")
 	if !codexReserve(t, f, binding) {
 		t.Fatal("the hand-joined route reserved no notice")
+	}
+}
+
+// A turn end captured before a hand rejoin belongs to the membership the
+// rejoin replaced: it registers nothing and does not start the launch, so
+// the first naming callback after the rejoin still registers the route.
+func TestACodexCallbackFromBeforeARejoinLeavesTheRouteToALaterOne(t *testing.T) {
+	f, s, _ := handJoinedCodex(t)
+	at := f.now.UnixMilli()
+	wantOK(t, f.run(s, Leave{}, ""))
+	f.now = time.UnixMilli(at + 40)
+	wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "codex1"}, ""))
+	server := codexServer
+	f.hookAs(s, codexServerTurnEnd(&server, "t1", at+20))
+	if route, found := f.codexRoute(s); found {
+		t.Fatalf("a turn end from before the rejoin registered %+v", route)
+	}
+	for _, l := range f.launches(s) {
+		if l.started > 0 {
+			t.Fatalf("a turn end from before the rejoin started the launch: %+v", l)
+		}
+	}
+	f.hookAs(s, codexServerPrompt(publish.ModeDaemon, &server, "t2", at+60, false))
+	route, found := f.codexRoute(s)
+	if !found || route.state != "active" || route.hostPID != codexServer.PID {
+		t.Fatalf("after a naming prompt past the rejoin the route is %+v (found %t)", route, found)
+	}
+}
+
+// A member whose start was seen before it left, and that rejoined by hand,
+// gets its route from a naming turn end after the rejoin: the old start and
+// the ended route belong to the old membership.
+func TestACodexMemberRejoinedByHandGetsItsRouteFromATurnEnd(t *testing.T) {
+	f, s := codexFixture(t)
+	at := f.now.UnixMilli()
+	f.hook(s, codexStart("startup", publish.ModeDaemon, at))
+	wantOK(t, f.run(s, Leave{}, ""))
+	f.now = time.UnixMilli(at + 40)
+	wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "codex1"}, ""))
+	server := codexServer
+	f.hookAs(s, codexServerTurnEnd(&server, "t1", at+60))
+	var epoch int64
+	var state string
+	var host int64
+	if err := f.db.QueryRow(`SELECT r.binding_epoch, r.state, COALESCE(r.host_pid, 0) FROM publish_route r JOIN binding b ON b.id = r.binding_id
+		WHERE b.principal_id = ?`, f.principalOf(s)).Scan(&epoch, &state, &host); err != nil || epoch != 2 || state != "active" || host != codexServer.PID {
+		t.Fatalf("route at epoch %d %s host %d (%v), want the server's route at epoch 2", epoch, state, host, err)
+	}
+}
+
+// A named server the dispatcher cannot judge, such as one in another PID
+// namespace, registers nothing and starts no launch, so a later callback
+// that names a usable server still can.
+func TestAnUnjudgeableCodexServerLeavesTheRouteToALaterCallback(t *testing.T) {
+	f, s, _ := handJoinedCodex(t)
+	at := f.now.UnixMilli()
+	foreign := codexServer
+	foreign.NS = "another-namespace"
+	f.hookAs(s, codexServerTurnEnd(&foreign, "t1", at+10))
+	if route, found := f.codexRoute(s); found {
+		t.Fatalf("an unjudgeable server registered %+v", route)
+	}
+	for _, l := range f.launches(s) {
+		if l.started > 0 {
+			t.Fatalf("an unjudgeable server started the launch: %+v", l)
+		}
+	}
+	server := codexServer
+	f.hookAs(s, codexServerTurnEnd(&server, "t2", at+20))
+	if route, found := f.codexRoute(s); !found || route.state != "active" || route.hostPID != codexServer.PID {
+		t.Fatalf("after a usable server the route is %+v (found %t)", route, found)
 	}
 }

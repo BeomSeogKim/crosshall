@@ -54,7 +54,7 @@ func serveSpoke(ctx context.Context, cancel context.CancelFunc, cfg Config, stat
 		return err
 	}
 	ready := newReadyMarker(hex.EncodeToString(instance[:]))
-	ready.Hello = []string{wire.HelloLaunchProof, wire.HelloPromptHost, wire.HelloTurnHost, wire.HelloLaunchAck}
+	ready.Hello = []string{wire.HelloLaunchProof, wire.HelloPromptHost, wire.HelloLaunchAck}
 	ready.Spoke = linked.Target
 	ready.Members = members.members
 	s := server{cfg: cfg, state: state, ready: ready, cancel: cancel, spokeMembers: members}

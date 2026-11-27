@@ -546,25 +546,31 @@ func openMissedSessionLaunch(ctx context.Context, tx store.Tx, principal int64, 
 // registered, from the first prompt or turn end that names its server
 // (#437). The trust rule is the recovering prompt's (#355): the session
 // launch starts at the callback, which the server's proof is judged
-// against. A member with a seen start, or with a route in any state, is
-// left as it is.
+// against. A member with a route or a seen start in its current membership
+// is left as it is. A callback from before a rejoin, or one whose server the
+// dispatcher cannot judge, changes nothing and leaves the route to a later
+// callback.
 func (s *Service) openMissedThreadRoute(ctx context.Context, tx store.Tx, req Request, b hookBinding, principal int64,
 	cmd HookEvent, now time.Time) error {
-	if cmd.LaunchRef != SessionLaunch || !promptNamesServer(cmd) {
+	if cmd.LaunchRef != SessionLaunch || !promptNamesServer(cmd) || b.routeEpoch > 1 && cmd.HookAtMS < b.joinedAtMS {
+		return nil
+	}
+	enroll := HookEnroll{wire.HookEnrollArgs{Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
+		Source: "late", HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch, Host: cmd.Host, VendorHome: cmd.VendorHome}}
+	server := s.routeHost(enroll)
+	if server.Host.PID <= 0 {
 		return nil
 	}
 	var started bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publish_route WHERE binding_id = ?)
-		OR EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ? AND started_hook_at_ms > 0)`, b.id, principal).Scan(&started); err != nil || started {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publish_route WHERE binding_id = ?1 AND binding_epoch = ?2)
+		OR EXISTS(SELECT 1 FROM adapter_launch WHERE principal_id = ?3 AND started_hook_at_ms > 0
+			AND (?2 = 1 OR started_hook_at_ms >= ?4))`, b.id, b.routeEpoch, principal, b.joinedAtMS).Scan(&started); err != nil || started {
 		return err
 	}
 	if err := registerLaunch(ctx, tx, principal, cmd.Profile, SessionLaunch, false, "", cmd.HookAtMS); err != nil {
 		return err
 	}
-	enroll := HookEnroll{wire.HookEnrollArgs{Profile: cmd.Profile, LaunchRef: SessionLaunch, EventRef: cmd.EventRef,
-		Source: "late", HookAtMS: cmd.HookAtMS, Epoch: cmd.Epoch, Host: cmd.Host, VendorHome: cmd.VendorHome}}
-	return registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, enroll,
-		s.routeHost(enroll), now)
+	return registerPublishRouteFromEnroll(ctx, tx, b.id, b.routeEpoch, b.joinedAtMS, principal, req.SessionKey, enroll, server, now)
 }
 
 func registerLaunch(ctx context.Context, tx store.Tx, principal int64, p wire.HookProfile, launch string, verified bool, pidNamespace string, at int64) error {

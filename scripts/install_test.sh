@@ -111,6 +111,8 @@ check_release v0.1.0 first
 check_output_line "Installed crosshall v0.1.0 at $target"
 printf -v absolute_start '  %q owner start' "$target"
 check_output_line "$absolute_start"
+printf -v path_advice '%s is not on PATH: add export PATH=%q:"$PATH" to your shell startup file.' "$dest" "$dest"
+check_output_line "$path_advice"
 cp "$target" "$tmp/first"
 
 git -C "$repo" tag v0.2.0-rc.9

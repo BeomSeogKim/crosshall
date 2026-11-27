@@ -496,7 +496,9 @@ print_still_to_run() {
   printf 'No terminal to ask in, so only the binary was installed. Still to run, in a terminal:\n'
   printf '  %s setup          # lists the hooks for the agents it finds and asks first\n' "$cmd"
   printf '  %s owner start\n' "$cmd"
-  if [[ $on_path != true ]]; then
+  # A directory with a colon cannot be one PATH entry: the full paths above
+  # are the advice then.
+  if [[ $on_path != true && ${target%/*} != *:* ]]; then
     local dir=${target%/*} shown
     if [[ $dir == "$HOME/.local/bin" ]]; then shown='"$HOME/.local/bin:$PATH"'; else shown=$(printf '%q:"$PATH"' "$dir"); fi
     printf '%s is not on PATH: add export PATH=%s to your shell startup file.\n' "$dir" "$shown"

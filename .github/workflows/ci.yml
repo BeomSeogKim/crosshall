@@ -13,7 +13,10 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
+      # The README install check runs the installer of the tag the README pins.
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -46,7 +49,10 @@ jobs:
   checks-macos:
     runs-on: macos-latest
     steps:
+      # The README install check runs the installer of the tag the README pins.
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

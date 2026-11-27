@@ -256,3 +256,38 @@ func TestSetupSummarizesThePlanAndKnowsAnInstalledAgent(t *testing.T) {
 		}
 	}
 }
+
+// Agents whose hooks are in place and whose skill is missing (moved aside, or
+// installed before setup shipped one) get a question that names the skill,
+// and no Codex trust step: hooks.json is unchanged, so its trust holds.
+func TestASkillOnlyPlanAsksForTheSkillWithoutTheTrustStep(t *testing.T) {
+	s, f, _ := realSetup(t)
+	if out, err := realRun(t, s, f, Request{Terminal: true}, "y\n"); err != nil ||
+		!strings.Contains(out, "Install the listed hooks and command rules? [y/N]") {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	skills := []string{filepath.Join(f.Home, ".claude", "skills", "crosshall", "SKILL.md"),
+		filepath.Join(f.Home, ".codex", "skills", "crosshall", "SKILL.md")}
+	for _, path := range skills {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := realRun(t, s, f, Request{Terminal: true}, "y\n")
+	if err != nil || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the crosshall skill? [y/N]") {
+		t.Fatalf("skill-only setup: %v\n%s", err, out)
+	}
+	for _, stale := range []string{"hooks and command rules", "run /hooks"} {
+		if strings.Contains(out, stale) {
+			t.Errorf("skill-only setup shows %q", stale)
+		}
+	}
+	for _, path := range skills {
+		if !bytes.Equal(configBytes(t, path), skillContent) {
+			t.Errorf("skill not reinstalled at %s", path)
+		}
+	}
+	if t.Failed() {
+		t.Fatalf("skill-only setup output:\n%s", out)
+	}
+}

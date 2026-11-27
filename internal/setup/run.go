@@ -555,7 +555,7 @@ func printPlan(out io.Writer, p plan) error {
 			if !summary {
 				fmt.Fprintf(&contents, "Then switches the %s adapter on.\n", adapter)
 			}
-			if i, ok := installers[adapter]; ok && i.trustHint() != "" {
+			if i, ok := installers[adapter]; ok && i.trustHint() != "" && changesHooks(p.Files, adapter) {
 				fmt.Fprintln(&contents, i.trustHint())
 			}
 		}
@@ -633,6 +633,15 @@ func fileSummary(f PlanFile) string {
 		text += "no change"
 	}
 	return text
+}
+
+// changesHooks reports whether files add, remove or prune adapter's hook
+// entries. An agent that trusts its hooks keeps that trust while they stay
+// as they are.
+func changesHooks(files []PlanFile, adapter string) bool {
+	return slices.ContainsFunc(files, func(f PlanFile) bool {
+		return f.Adapter == adapter && f.Skill == "" && len(f.Add)+len(f.Remove)+len(f.Prune) > 0
+	})
 }
 
 func skillVerb(e edit) string {

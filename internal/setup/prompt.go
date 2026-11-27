@@ -281,10 +281,14 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			return err
 		}
 	}
-	label := "Install the listed hooks and command rules?"
+	install := "the listed hooks and command rules"
+	if skillOnly(eligible) {
+		install = "the crosshall skill"
+	}
+	label := "Install " + install + "?"
 	pathConsent := p.req.Offer && p.req.PathConsent != nil
 	if pathConsent {
-		label = "Apply the shown PATH change and install the listed hooks and command rules?"
+		label = "Apply the shown PATH change and install " + install + "?"
 	}
 	a, err := p.question(label)
 	if err != nil {
@@ -555,6 +559,32 @@ func alreadyInstalled(plan VendorPlan) bool {
 		}
 	}
 	return true
+}
+
+// skillOnly reports plans whose only change is the crosshall skill: no hook
+// entry, command rule or retained file, only a skill to install, update or
+// take from another plan of the group.
+func skillOnly(plans []VendorPlan) bool {
+	skill := false
+	for _, plan := range plans {
+		if len(plan.Retained) > 0 {
+			return false
+		}
+		for _, f := range plan.Files {
+			switch f.Skill {
+			case "install", "update", "shared":
+				skill = true
+				continue
+			case "":
+			default:
+				return false
+			}
+			if len(f.Add)+len(f.Remove)+len(f.Kept)+len(f.Prune) > 0 || f.AddText != "" || f.RemoveText != "" {
+				return false
+			}
+		}
+	}
+	return skill
 }
 
 // TrustHint is the step an agent needs before it runs adapter's installed

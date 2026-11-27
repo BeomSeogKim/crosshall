@@ -155,3 +155,56 @@ func TestSpokeNativeRouteRequiresFreshClaudeCaptureForANewRouteEpoch(t *testing.
 	capture(16, spokeNativeHook{fact: wire.HookSessionEnded})
 	check("", 0)
 }
+
+// A Claude session on a linked device that joined during a turn sends no
+// prompt until its user types one: the turn end or idle prompt of its
+// process launch, which carries the launch's time, is the fresh capture its
+// route needs. One without that proof captures nothing (#437).
+func TestSpokeNativeRouteIsCapturedByTheTurnEndOfAJoinedLaunch(t *testing.T) {
+	for _, fact := range []string{wire.HookTurnFinishing, wire.HookIdlePrompt} {
+		for _, proof := range []bool{true, false} {
+			t.Run(fact+map[bool]string{true: "-with-proof", false: "-without-proof"}[proof], func(t *testing.T) {
+				db, _ := openSpokeWakeStore(t)
+				ctx := t.Context()
+				member := link.Member{Vendor: "claude", Key: "client"}
+				token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+				const socket = "/tmp/cc-socks/joined.sock"
+				if err := db.Update(ctx, func(tx store.Tx) error {
+					_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+						VALUES ('digest', 'claude', 'client', 'gen', 1, 'file', 1, 4, 2);
+						INSERT INTO spoke_policy VALUES ('claude', 1, 1, 3);
+						INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+						INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+							VALUES ('claude', 'client', 'gen', 4, 2, 1, 5)`)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				capture := func(seq uint64, material spokeNativeHook) {
+					t.Helper()
+					token.LeafSeq = seq
+					if err := db.Update(ctx, func(tx store.Tx) error {
+						return recordSpokeNativeHook(ctx, tx, member, token, "launch", 3, material)
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				hook := spokeNativeHook{fact: fact}
+				if proof {
+					hook.verified, hook.startedAtMS, hook.pidNamespace = true, 1, proc.PIDNamespace()
+				}
+				capture(6, hook)
+				capture(7, spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: socket, PermissionMode: "default"}})
+				if err := db.View(ctx, func(tx store.Tx) error {
+					route, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+					if err == nil && (ok != proof || ok && (route.Probe.Address != socket || route.CaptureSeq != 7)) {
+						t.Fatalf("route %+v, %v; want presence %v", route, ok, proof)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}

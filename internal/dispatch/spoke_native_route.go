@@ -63,7 +63,13 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 	if !ok || adapter.Transport().Send == nil || launch == "" || epoch > math.MaxInt64 || token.LeafSeq > math.MaxInt64 {
 		return nil
 	}
-	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted
+	// The turn end or idle prompt of a process launch carries the launch's
+	// time as a prompt does, so a session that joined during a turn has a
+	// route without a new prompt (#437). A thread-routed adapter's route
+	// rests on the server only a prompt names.
+	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted ||
+		(hook.fact == wire.HookTurnFinishing || hook.fact == wire.HookIdlePrompt) && hook.verified && hook.startedAtMS > 0 &&
+			!adapter.ThreadRouted()
 	if !profile && hook.report == nil {
 		switch hook.fact {
 		case wire.HookApprovalRequested, wire.HookTurnFinishing, wire.HookIdlePrompt, wire.HookSessionEnded:

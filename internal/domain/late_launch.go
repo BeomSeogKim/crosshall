@@ -13,14 +13,21 @@ import (
 )
 
 // lateLaunchOf is the launch a prompt names with the time its hook recorded
-// it (#252): a verified process launch, recorded no later than the prompt,
-// which is not ahead of the dispatcher's clock.
+// it (#252), or a turn end or idle prompt does (#437): a verified process
+// launch, recorded no later than the callback, which is not ahead of the
+// dispatcher's clock.
 func lateLaunchOf(cmd HookEvent, now time.Time) (JoinLaunch, bool) {
-	if cmd.Fact != FactPromptSubmitted || !cmd.LaunchVerified || cmd.LaunchRef == SessionLaunch ||
+	if !lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified || cmd.LaunchRef == SessionLaunch ||
 		cmd.LaunchAtMS <= 0 || cmd.LaunchAtMS > cmd.HookAtMS || cmd.HookAtMS > ms(now)+futureSlackMS {
 		return JoinLaunch{}, false
 	}
 	return JoinLaunch{Ref: cmd.LaunchRef, AtMS: cmd.LaunchAtMS, Profile: cmd.Profile, PIDNamespace: cmd.PIDNamespace}, true
+}
+
+// lateLaunchFact: a session that joined by hand during a turn has no later
+// prompt to wait for, so its turn end or idle prompt binds as a prompt would.
+func lateLaunchFact(fact string) bool {
+	return fact == FactPromptSubmitted || fact == FactTurnFinishing || fact == FactIdlePrompt
 }
 
 // bindLateLaunch binds the launch of a prompt whose start the dispatcher
@@ -77,6 +84,10 @@ func (s *Service) bindMemberLateLaunch(ctx context.Context, tx store.Tx, req Req
 		return false, err
 	}
 	if b.state != "live" {
+		// Only a prompt rejoins: a turn end or idle prompt binds a live member.
+		if cmd.Fact != FactPromptSubmitted {
+			return false, nil
+		}
 		var lastEnd sql.NullInt64
 		if err := tx.QueryRowContext(ctx, `SELECT MAX(CASE WHEN ended_by_process = 1 THEN started_hook_at_ms ELSE ended_hook_at_ms END)
 			FROM adapter_launch WHERE principal_id = ?`, principal).Scan(&lastEnd); err != nil {
@@ -119,8 +130,8 @@ func launchKnown(ctx context.Context, tx store.Tx, principal int64, launch strin
 // can send a notice, has no launch the home could wake in its current
 // scope: it joined, moved or rejoined after its session started, or its
 // device acknowledged a new boot, and its device has sent no prompt since
-// (#437). Its next prompt opens the launch
-// in that scope, as a local member's does.
+// (#437). Its next prompt, or the turn end or idle prompt of its process
+// launch, opens the launch in that scope, as a local member's does.
 func linkedStartUnseen(ctx context.Context, tx store.Tx, principal, binding int64) (bool, error) {
 	var vendor string
 	err := tx.QueryRowContext(ctx, `SELECT k.vendor FROM device_key k

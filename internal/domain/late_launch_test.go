@@ -205,6 +205,34 @@ func TestARecoveredMemberIsBoundByItsNextPrompt(t *testing.T) {
 	}
 }
 
+// A session that joins by hand during a turn, whose join bound no launch,
+// has no prompt after the join until its user types one: the turn end or
+// idle prompt of its process launch binds the launch and registers its
+// route (#437).
+func TestATurnEndOrIdlePromptBindsTheLaunchOfAHandJoin(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cmd  func(at int64) HookEvent
+	}{
+		{"a Stop", func(at int64) HookEvent { return lateProof(stop("pid-9-b", "t1", at+30), at+20) }},
+		{"an idle prompt", func(at int64) HookEvent { return lateProof(idlePrompt("pid-9-b", at+30), at+20) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, _, _ := lateFixture(t)
+			s := f.newSession("claude")
+			at := f.now.UnixMilli()
+			wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "claude1"}, ""))
+			f.hookAs(s, c.cmd(at))
+			if got := f.launches(s); len(got) != 1 || got[0] != (launchRow{"pid-9-b", true, at + 20, "print"}) {
+				t.Fatalf("launches %+v, want the process launch bound", got)
+			}
+			if f.routeLaunch(s) != "pid-9-b" || f.lateBinds() != 1 {
+				t.Fatalf("route %q, %d events", f.routeLaunch(s), f.lateBinds())
+			}
+		})
+	}
+}
+
 // A known member whose resume start was missed: its prompts used to be
 // stored only. The prompt rejoins it under its new launch.
 func TestAMemberWhoseResumeStartWasMissedRejoins(t *testing.T) {
@@ -236,9 +264,14 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 		absent func(*fixture, session, int64)
 		cmd    func(at int64) HookEvent
 	}{
-		{"a Stop", func(*fixture, session, int64) {}, func(at int64) HookEvent {
-			return lateProof(stop("pid-9-b", "t1", at+30), at+20)
+		{"an approval request", func(*fixture, session, int64) {}, func(at int64) HookEvent {
+			cmd := lateProof(stop("pid-9-b", "t1", at+30), at+20)
+			cmd.Fact, cmd.EventRef = FactApprovalRequested, "t1:approval"
+			return cmd
 		}},
+		{"a Stop of a member that ended", func(f *fixture, s session, at int64) {
+			f.hookAs(s, ended("pid-7-a", at+10))
+		}, func(at int64) HookEvent { return lateProof(stop("pid-9-b", "t1", at+30), at+20) }},
 		{"a prompt ahead of the dispatcher's clock", func(*fixture, session, int64) {}, func(at int64) HookEvent {
 			return lateProof(prompt("pid-9-b", "t1", at+60_000), at+20)
 		}},

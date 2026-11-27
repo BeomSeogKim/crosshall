@@ -80,9 +80,10 @@ type HookEventArgs struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ContinuationActive reports that a vendor Stop hook is already continuing the turn.
 	ContinuationActive bool `json:"continuation_active,omitempty"`
-	// LaunchAtMS and PIDNamespace come with a prompt of a verified process
-	// launch: the time its record was written and the hook's PID namespace,
-	// so a launch whose start the dispatcher never saw can be bound late.
+	// LaunchAtMS and PIDNamespace come with a prompt, turn end or idle
+	// prompt of a verified process launch: the time its record was written
+	// and the hook's PID namespace, so a launch whose start the dispatcher
+	// never saw can be bound late.
 	LaunchAtMS   int64  `json:"launch_at_ms,omitempty"`
 	PIDNamespace string `json:"pid_namespace,omitempty"`
 	// Host and VendorHome come with a prompt as with a start (see

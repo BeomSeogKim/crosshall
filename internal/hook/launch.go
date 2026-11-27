@@ -23,7 +23,7 @@ type launchBinding struct {
 	ref      string
 	verified bool
 	atMS     int64
-	// late reports that this prompt wrote the record a missed start left out.
+	// late reports that this callback wrote the record a missed start left out.
 	late bool
 }
 
@@ -34,7 +34,7 @@ var hostedBy = proc.HostedBy
 
 // A launch PID, which an adapter whose manifest names a launch_env reports,
 // is a label within this session. A SessionStart pairs it with a launch, and
-// so does a prompt that finds no record, under a hand join's proof: the hook
+// so does a prompt, turn end or idle prompt that finds no record, under a hand join's proof: the hook
 // runs directly under that process, and no start holds or missed the lock.
 // Compact and terminal events cannot create that evidence. Without a launch
 // PID the launch stays session-scoped and unverified.
@@ -59,7 +59,7 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 	if start {
 		flags = os.O_CREATE | os.O_RDWR
 	}
-	late := !start && spec.Fact == wire.HookPromptSubmitted
+	late := !start && lateLaunchFact(e.Fact)
 	guard, err := spool.OpenServerFile(leaf, name+".lock", flags)
 	if errors.Is(err, os.ErrNotExist) {
 		if late {
@@ -155,8 +155,15 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: latest}, nil
 }
 
+// lateLaunchFact reports whether a callback may bind a launch whose start
+// was missed: a prompt, or the turn end or idle prompt of a session that
+// joined by hand during a turn, which has no later prompt to wait for (#437).
+func lateLaunchFact(fact string) bool {
+	return fact == wire.HookPromptSubmitted || fact == wire.HookTurnFinishing || fact == wire.HookIdlePrompt
+}
+
 // lateLaunch writes the record of a launch whose start was never recorded,
-// for its first prompt: at that prompt's time, under an exclusive lock taken
+// for its first prompt, turn end or idle prompt: at that callback's time, under an exclusive lock taken
 // without waiting, unless a start ever missed the lock.
 func lateLaunch(leaf *os.Root, name string, pid uint64, e event, entry time.Time) (launchBinding, error) {
 	if !hostedBy(int(pid)) {

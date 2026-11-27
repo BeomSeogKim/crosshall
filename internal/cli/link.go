@@ -142,7 +142,7 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	// carries it, and the dispatcher refuses it once the device enrolls
 	// again.
 	var credentialGen, admission int64
-	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(), Caps: []string{link.CapEvents, link.CapPolicy, link.CapWake},
+	home := link.Home{Hall: hall.Hall, Release: env.Version, Link: link.Supported(), Caps: []string{link.CapEvents, link.CapPolicy, link.CapWake, link.CapThreadTurnEnd},
 		TimeMS: func() int64 { return time.Now().UnixMilli() },
 		Prove: func(device, homeNonce, spokeNonce string) (bool, string, error) {
 			v, err := ownerData[domain.LinkProveResult](ctx, env,
@@ -159,7 +159,8 @@ func linkServe(ctx context.Context, env Env, stdin io.Reader, stdout io.Writer, 
 	if err != nil {
 		return o.fail(core.ExitError, CodeLocalError, err.Error(), "")
 	}
-	peer := domain.LinkEventPeer{Device: session.Device, CredentialGen: credentialGen, Admission: admission}
+	peer := domain.LinkEventPeer{Device: session.Device, CredentialGen: credentialGen, Admission: admission,
+		ThreadTurnEnd: slices.Contains(session.Caps, link.CapThreadTurnEnd)}
 	if slices.Contains(session.Caps, link.CapEvents) {
 		peer.Stream = link.NewNonce()
 		return serveLinkEvents(ctx, env, stdin, r, w, session, peer, o)

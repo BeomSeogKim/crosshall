@@ -504,21 +504,33 @@ func TestATurnEndOfAProcessLaunchOpensALinkedLaunch(t *testing.T) {
 }
 
 // A linked Codex session that joined during a turn has only a session
-// launch: its turn end opens the linked launch as its prompt would, so the
-// route the device captured from that turn end can carry a notice. Its
-// approval request opens none (#437).
+// launch: its turn end under the managed server, from a device that
+// captures the server's route at a turn end, opens the linked launch as its
+// prompt would. A turn end in another mode would open a launch whose mode no
+// later prompt changes, and one from an older device would open a launch
+// that device cannot wake; neither opens one, nor does an approval request
+// (#437).
 func TestATurnEndOfALinkedCodexSessionOpensItsLaunch(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		fact  string
-		opens bool
-	}{{"a Stop", FactTurnFinishing, true}, {"an approval request", FactApprovalRequested, false}} {
+		name    string
+		fact    string
+		mode    string
+		capable bool
+		opens   bool
+	}{
+		{"a Stop", FactTurnFinishing, publish.ModeDaemon, true, true},
+		{"a Stop from an older device", FactTurnFinishing, publish.ModeDaemon, false, false},
+		{"a Stop in process", FactTurnFinishing, publish.ModeInProcess, true, false},
+		{"a Stop of an unverified mode", FactTurnFinishing, "unverified", true, false},
+		{"an approval request", FactApprovalRequested, publish.ModeDaemon, true, false},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newLinkedHookFixtureFor(t, "codex")
+			h.peer.ThreadTurnEnd = c.capable
 			at := ms(h.now)
 			h.token.WallMS = at
 			cmd := stop(SessionLaunch, "t1", at)
-			cmd.Profile, cmd.LaunchVerified, cmd.Epoch = codexProfile(publish.ModeDaemon), false, 1
+			cmd.Profile, cmd.LaunchVerified, cmd.Epoch = codexProfile(c.mode), false, 1
 			if c.fact != FactTurnFinishing {
 				cmd.Fact, cmd.EventRef = c.fact, "t1:approval"
 			}
@@ -531,5 +543,26 @@ func TestATurnEndOfALinkedCodexSessionOpensItsLaunch(t *testing.T) {
 				t.Fatalf("%d linked launches, want opened %t", got, c.opens)
 			}
 		})
+	}
+}
+
+// A turn end that opens nothing leaves the launch to the next prompt, which
+// opens it in the managed server's mode the home's wake requires.
+func TestALinkedCodexPromptAfterAnUnmanagedTurnEndOpensAManagedLaunch(t *testing.T) {
+	h := newLinkedHookFixtureFor(t, "codex")
+	h.peer.ThreadTurnEnd = true
+	at := ms(h.now)
+	h.token.WallMS = at
+	end := stop(SessionLaunch, "t1", at)
+	end.Profile, end.LaunchVerified, end.Epoch = codexProfile(publish.ModeInProcess), false, 1
+	h.fact(1, 2, end, link.RecordedStale)
+	next := prompt(SessionLaunch, "t2", at+1)
+	next.Profile, next.LaunchVerified, next.Epoch = codexProfile(publish.ModeDaemon), false, 1
+	h.fact(2, 3, next, link.RecordedApplied)
+	var mode string
+	if err := h.db.QueryRow(`SELECT json_extract(a.profile, '$.mode') FROM link_event_launch l
+		JOIN adapter_launch a ON a.principal_id = l.principal_id AND a.launch_ref = l.projection_ref
+		WHERE l.principal_id = ?`, h.principal).Scan(&mode); err != nil || mode != publish.ModeDaemon {
+		t.Fatalf("linked launch mode %q (%v), want the prompt's managed mode", mode, err)
 	}
 }

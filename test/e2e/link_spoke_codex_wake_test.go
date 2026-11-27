@@ -22,12 +22,12 @@ import (
 // A linked Codex session is woken through its managed server's queue,
 // whether the hall saw its start or it joined by hand during a turn whose
 // end alone named the server (#437).
-// With a home or device of the base build, a turn end does not open the
-// route, and the session is still woken after its next prompt's turn, as
-// before.
+// With a home or device of the base build, a turn end opens no route, so
+// an ask before the next prompt does not report a wake the device cannot
+// make, and the session is still woken after that prompt's turn, as before.
 func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
-	t.Run("started", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "SessionStart") })
-	t.Run("joined-during-a-turn", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, "Stop") })
+	t.Run("started", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, []string{"SessionStart"}, nil) })
+	t.Run("joined-during-a-turn", func(t *testing.T) { spokeLinkWakesCodex(t, binary, binary, []string{"Stop"}, nil) })
 	older := os.Getenv(baseBinaryEnv)
 	for _, c := range []struct{ name, home, spoke string }{
 		{"joined-during-a-turn/base-home", older, binary},
@@ -38,14 +38,15 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 				t.Skip("set " + baseBinaryEnv + " to a previous build with -tags=testvendorhome")
 			}
 			requireFixtureBuild(t, older)
-			spokeLinkWakesCodex(t, c.home, c.spoke, "Stop", "UserPromptSubmit", "Stop")
+			spokeLinkWakesCodex(t, c.home, c.spoke, []string{"Stop"}, []string{"UserPromptSubmit", "Stop"})
 		})
 	}
 }
 
-// spokeLinkWakesCodex runs receiverHooks, in order, for the receiver's
-// thread under the managed server; its sibling starts as usual.
-func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary string, receiverHooks ...string) {
+// spokeLinkWakesCodex runs the receiver's hooks under the managed server:
+// before, then, when later is set, an ask that must not report a device
+// wake, then later. Its sibling starts as usual.
+func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary string, before, later []string) {
 	platform := map[string]string{"darwin": "apple-darwin", "linux": "unknown-linux-gnu"}[runtime.GOOS]
 	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
 	if platform == "" || arch == "" {
@@ -163,18 +164,11 @@ func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary string, receiverH
 	threads := []struct{ id, alias string }{
 		{"linked-codex-target", "receiver"}, {"linked-codex-sibling", "sibling"},
 	}
-	participants := make([]*participant, 0, len(threads))
-	for _, thread := range threads {
-		member := &participant{w: f.spoke, extra: []string{"CODEX_THREAD_ID=" + thread.id}}
-		member.must("join", channel, "--as", thread.alias)
-		participants = append(participants, member)
-		events := []string{"SessionStart"}
-		if thread.alias == "receiver" {
-			events = receiverHooks
-		}
-		turn := 0
+	turn := 0
+	send := func(thread string, events []string) {
+		t.Helper()
 		for _, event := range events {
-			hook := map[string]any{"hook_event_name": event, "session_id": thread.id, "cwd": f.spoke.home}
+			hook := map[string]any{"hook_event_name": event, "session_id": thread, "cwd": f.spoke.home}
 			switch event {
 			case "SessionStart":
 				hook["source"] = "startup"
@@ -189,6 +183,37 @@ func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary string, receiverH
 				t.Fatal(err)
 			}
 		}
+	}
+	participants := make([]*participant, 0, len(threads))
+	for _, thread := range threads {
+		member := &participant{w: f.spoke, extra: []string{"CODEX_THREAD_ID=" + thread.id}}
+		member.must("join", channel, "--as", thread.alias)
+		participants = append(participants, member)
+		events := []string{"SessionStart"}
+		if thread.alias == "receiver" {
+			events = before
+		}
+		send(thread.id, events)
+	}
+	if len(later) > 0 {
+		// The device sends its facts in order: once the sibling's start is
+		// observed, the receiver's earlier hooks were handled too.
+		eventually(t, "the home observed the sibling's managed launch", func() bool {
+			var n int
+			return homeDB.QueryRow(`SELECT COUNT(*) FROM link_event_launch l JOIN link_event_cut c ON c.device_id = l.device_id
+				AND c.binding_id = l.binding_id AND c.boot = l.boot WHERE c.vendor = 'codex' AND c.key = ? AND c.absent = 0`,
+				threads[1].id).Scan(&n) == nil && n == 1
+		})
+		early := sender.must("ask", "@receiver", "Before the prompt.")
+		var reply struct {
+			Recipients []struct{ Alias, Wake, Next string }
+		}
+		if err := json.Unmarshal([]byte(early.stdout), &reply); err != nil || len(reply.Recipients) != 1 ||
+			reply.Recipients[0].Wake == "device" || strings.Contains(reply.Recipients[0].Next, "linked device") {
+			t.Fatalf("before its prompt the ask reports a wake the device cannot make: %s (%v)", early.stdout, err)
+		}
+		participants[0].must("read", strconv.FormatInt(num(t, early, "id"), 10))
+		send(threads[0].id, later)
 	}
 	eventually(t, "the home observed managed Codex launches and scope cuts for both threads", func() bool {
 		var n int

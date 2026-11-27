@@ -115,9 +115,12 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 			evidence.Material.Verified {
 			profile = false
 		}
-		// A turn end gives a thread its server only when none is named yet:
-		// a start or a prompt says which server the session runs in now.
-		if threadTurnEnd && sameScope && old.Launch == launch && evidence.Material.Route.Host.PID > 0 {
+		// A turn end gives a thread its server only when no usable one is
+		// named yet: a start or a prompt says which server the session runs
+		// in now. A server in another PID namespace, which the reader never
+		// offers, does not count.
+		if threadTurnEnd && sameScope && old.Launch == launch && evidence.Material.Route.Host.PID > 0 &&
+			evidence.Material.PIDNamespace == proc.PIDNamespace() {
 			profile = false
 		}
 		if (!sameScope || old.Launch != launch) &&

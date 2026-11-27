@@ -421,10 +421,14 @@ func startLinkHookLaunch(ctx context.Context, tx store.Tx, peer LinkEventPeer, i
 	return projection, err
 }
 
-// threadTurnEnd reports a turn end of a thread-routed adapter's session.
-func threadTurnEnd(cmd HookEvent) bool {
+// threadTurnEnd reports a turn end of a thread-routed adapter's session run
+// by its managed server, from a device that captures the server's route at
+// a turn end. Any other mode would open a launch whose mode no later prompt
+// changes, and an older device never captures that route.
+func threadTurnEnd(peer LinkEventPeer, cmd HookEvent) bool {
 	a, ok := publish.Lookup(cmd.Profile.Adapter)
-	return ok && a.ThreadRouted() && cmd.Fact == FactTurnFinishing && cmd.LaunchRef == SessionLaunch
+	return peer.ThreadTurnEnd && ok && a.ThreadRouted() && cmd.Fact == FactTurnFinishing && cmd.LaunchRef == SessionLaunch &&
+		cmd.Profile.Mode == publish.ModeDaemon
 }
 
 func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, in linkHookInput, scope linkHookScope,
@@ -446,7 +450,7 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 		// A thread-routed session launch is never verified: its turn end
 		// opens it as its prompt does, since its route rests on the thread
 		// and the server the device captured, not on a process.
-		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) && !threadTurnEnd(cmd) {
+		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) && !threadTurnEnd(peer, cmd) {
 			return false, nil
 		}
 		verified = cmd.LaunchVerified

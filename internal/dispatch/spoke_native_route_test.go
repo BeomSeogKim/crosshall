@@ -342,3 +342,46 @@ func TestSpokeNativeRouteOfAThreadIsCapturedByATurnEndThatNamesItsServer(t *test
 		})
 	}
 }
+
+// A turn end that names a server in another PID namespace captures nothing
+// the reader offers, so it does not keep a later turn end naming a usable
+// server from capturing the route (#437).
+func TestSpokeNativeRouteOfAThreadIsNotHeldByAForeignTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+			INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+				VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host wire.Host, at int64) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: at, vendorHome: "/configure/codex", host: &host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture(6, wire.Host{PID: 321, Start: 654, NS: "another-namespace"}, 1000)
+	server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
+	capture(7, server, 2000)
+	if err := db.View(ctx, func(tx store.Tx) error {
+		got, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+		if err == nil && (!ok || got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start})) {
+			t.Fatalf("route %+v, %v; want the usable server's", got, ok)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

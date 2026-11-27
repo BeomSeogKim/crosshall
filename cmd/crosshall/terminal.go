@@ -15,3 +15,10 @@ func isTerminal(f *os.File) bool {
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), termiosRequest, uintptr(unsafe.Pointer(&t)))
 	return errno == 0
 }
+
+func flushTerminalInput(f *os.File) error {
+	if !isTerminal(f) {
+		return nil
+	}
+	return discardTerminalInput(int(f.Fd()))
+}

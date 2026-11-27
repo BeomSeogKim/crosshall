@@ -88,7 +88,10 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 		OwnerGate:       ident.OwnerGate,
 		RunChild:        ident.RunChild,
 		Stdin:           os.Stdin,
-		SetupTerminal:   func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		FlushTerminalInput: func() error {
+			return flushTerminalInput(os.Stdin)
+		},
+		SetupTerminal: func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
 	}
 	for _, spec := range hook.InstallSpecs() {
 		env.SetupAdapters = append(env.SetupAdapters, spec.Adapter)

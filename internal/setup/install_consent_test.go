@@ -221,6 +221,12 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			notice: noticeOn, turnEnd: "- Turn-end check (Claude Code, interactive sessions). " + turnEndBody},
 		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice,
 			turnEnd: turnEndOn},
+		{name: "borrowed per mode", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice,
+			turnEnd: turnEndOn + " This version is new to crosshall: the check is trusted from Claude Code 2.1.324 evidence for interactive sessions and from Claude Code 2.1.323 evidence for print mode.",
+			// Later than any shipped evidence, so each mode names its own build.
+			settings: `INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
+				('claude', '2.1.324', ?1, 'interactive', 'claude-3', 'turn_end', 'tested', 'fixture', 9000000000000),
+				('claude', '2.1.323', ?1, 'print', 'claude-3', 'turn_end', 'tested', 'fixture', 9000000000000)`},
 		{name: "seen", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn,
 			turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, confirmed)

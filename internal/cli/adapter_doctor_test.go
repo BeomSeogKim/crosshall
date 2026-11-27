@@ -142,7 +142,7 @@ func TestDoctorSaysTheTurnEndNoticeIsUncheckedWithoutALiveSession(t *testing.T) 
 	}
 	out, _, code := run(t, env, "owner", "doctor")
 	for _, want := range []string{
-		"turn-end notice not checked yet: no live Claude Code session, committed claims 0 on 20261127 UTC",
+		"turn-end notice not checked yet: no live Claude Code session joined to this hall, committed claims 0 on 20261127 UTC",
 		"turn-end notice unavailable, committed claims 0 on 20261127 UTC",
 	} {
 		if code != core.ExitOK || !strings.Contains(out, want) {

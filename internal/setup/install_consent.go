@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -239,8 +240,33 @@ func (d installAdapterDisclosure) turnEnd() string {
 		return prefix + "). Not available for this build."
 	}
 	line := prefix + ", " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
-	if d.TurnEndTrustedFrom != "" {
-		line += " This version is new to crosshall: the check is trusted from " + d.name + " " + d.TurnEndTrustedFrom + " evidence."
+	return line + d.turnEndTrust()
+}
+
+// turnEndTrust names the builds a turn-end check without evidence of its
+// own is trusted from, per mode when the modes differ.
+func (d installAdapterDisclosure) turnEndTrust() string {
+	interactive, print := d.TurnEndInteractiveTrustedFrom, d.TurnEndPrintTrustedFrom
+	if !d.TurnEndInteractive {
+		interactive = ""
 	}
-	return line
+	if !d.TurnEndPrint {
+		print = ""
+	}
+	from := func(version string) string { return "from " + d.name + " " + version + " evidence" }
+	var sources []string
+	switch {
+	case interactive == "" && print == "":
+		return ""
+	case interactive == print || !d.TurnEndInteractive || !d.TurnEndPrint:
+		sources = []string{from(cmp.Or(interactive, print))}
+	default:
+		if interactive != "" {
+			sources = append(sources, from(interactive)+" for interactive sessions")
+		}
+		if print != "" {
+			sources = append(sources, from(print)+" for print mode")
+		}
+	}
+	return " This version is new to crosshall: the check is trusted " + strings.Join(sources, " and ") + "."
 }

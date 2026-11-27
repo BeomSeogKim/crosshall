@@ -34,7 +34,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	var state *os.Root
 	// Starting the dispatcher is the remedy when none holds the lock, or when
 	// the state root does not exist yet; an unsafe path needs the owner instead.
-	notRunning := false
+	notRunning, notStarted, rendezvousMissing := false, false, false
 	stateErr := CheckStateRoot(cfg.Version, cfg.StateRoot, cfg.DefaultStateRoot)
 	var adapters []doctorAdapter
 	var warnings []string
@@ -51,6 +51,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		}
 		state, stateErr = spool.OpenServerRoot(cfg.StateRoot)
 		rendezvous, err := spool.OpenServerRoot(cfg.Rendezvous)
+		rendezvousMissing = errors.Is(err, os.ErrNotExist)
 		if err == nil {
 			attachDoctorHooks(adapters, rendezvous, now)
 			rendezvous.Close()
@@ -96,10 +97,18 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		}
 		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
 	} else {
+		notRunning = errors.Is(stateErr, os.ErrNotExist)
+		// A state directory that does not exist yet is a hall nobody started.
+		notStarted = notRunning && (rendezvousMissing || permissions.OK)
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
 			check.record("", stateErr)
+			if notStarted {
+				check.Detail = "not started yet"
+			}
 		}
-		notRunning = errors.Is(stateErr, os.ErrNotExist)
+		if notStarted && !permissions.OK {
+			permissions.Detail = "not started yet"
+		}
 	}
 	hint := ""
 	if notRunning {
@@ -109,7 +118,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	if !allowsTestClock(cfg.Version) {
 		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
 	}
-	return cfg.doctorResult(hint, checks, adapters, warnings)
+	return cfg.doctorResult(hint, notStarted, checks, adapters, warnings)
 }
 
 func (check *doctorCheck) record(detail string, err error) {
@@ -134,7 +143,7 @@ func approvalWarnings(approvals []store.DoctorApproval) []string {
 	return out
 }
 
-func (cfg LaunchConfig) doctorResult(hint string, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {
+func (cfg LaunchConfig) doctorResult(hint string, notStarted bool, checks []doctorCheck, adapters []doctorAdapter, warnings []string) core.Result {
 	status := core.ExitOK
 	for _, check := range checks {
 		if !check.OK {
@@ -147,9 +156,10 @@ func (cfg LaunchConfig) doctorResult(hint string, checks []doctorCheck, adapters
 		Rendezvous string          `json:"rendezvous,omitempty"`
 		Checks     []doctorCheck   `json:"checks"`
 		Hint       string          `json:"hint,omitempty"`
+		NotStarted bool            `json:"not_started,omitempty"`
 		Adapters   []doctorAdapter `json:"adapters,omitempty"`
 		Warnings   []string        `json:"warnings,omitempty"`
-	}{cfg.StateRoot, cfg.Rendezvous, checks, hint, adapters, warnings})
+	}{cfg.StateRoot, cfg.Rendezvous, checks, hint, notStarted, adapters, warnings})
 	return core.Result{Status: status, Data: data}
 }
 

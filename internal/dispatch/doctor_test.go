@@ -202,12 +202,27 @@ func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
 	if got := hint(absent.Doctor(t.Context())); got != "crosshall owner start" {
 		t.Errorf("never started: hint %q", got)
 	}
+	var never struct {
+		Checks     []doctorCheck `json:"checks"`
+		NotStarted bool          `json:"not_started"`
+	}
+	if err := json.Unmarshal(absent.Doctor(t.Context()).Data, &never); err != nil || !never.NotStarted {
+		t.Fatalf("never started: not_started missing (%v)", err)
+	}
+	for _, check := range never.Checks {
+		if !check.OK && check.Detail != "not started yet" {
+			t.Errorf("never started: check %+v, want detail %q", check, "not started yet")
+		}
+	}
 	stale, lock := doctorFixture(t)
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
 	}
 	if got := hint(stale.Doctor(t.Context())); got != "crosshall owner start" {
 		t.Errorf("stopped: hint %q", got)
+	}
+	if strings.Contains(string(stale.Doctor(t.Context()).Data), "not_started") {
+		t.Errorf("a stopped hall was started before: it is not reported as never started")
 	}
 	live, _ := doctorFixture(t)
 	if got := hint(live.Doctor(t.Context())); got != "" {

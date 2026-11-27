@@ -106,6 +106,28 @@ func TestRosterWithoutAdapterDoesNotReadAsAnError(t *testing.T) {
 	}
 }
 
+func TestDoctorSaysANeverStartedHallIsNotStarted(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"checks": []doctorCheck{
+			{Name: "lock", Detail: "not started yet"}, {Name: "readiness", Detail: "not started yet"},
+			{Name: "test_clock", OK: true, Detail: "release builds ignore X"},
+		},
+		"hint": "crosshall owner start", "not_started": true,
+	})
+	env := Env{OwnerGate: func() string { return "" }, Doctor: func(context.Context) core.Result { return core.Result{Status: core.ExitError, Data: data} }}
+	out, _, _ := run(t, env, "owner", "doctor")
+	if strings.Contains(out, "FAIL") || strings.Contains(out, "not running") ||
+		!strings.Contains(out, "Not started yet") || !strings.Contains(out, "start it now: crosshall owner start") ||
+		!strings.Contains(out, "PASS test_clock") {
+		t.Fatalf("a never-started hall should read as not started, with no FAIL lines:\n%s", out)
+	}
+	out, _, _ = run(t, env, "--json", "owner", "doctor")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got["not_started"] != true || got["hint"] != "crosshall owner start" {
+		t.Fatalf("JSON: %v %s", err, out)
+	}
+}
+
 func TestDoctorNamesTheStartCommand(t *testing.T) {
 	data, _ := json.Marshal(map[string]any{
 		"checks": []doctorCheck{{Name: "lock", Detail: "dispatcher lock is absent or idle"}, {Name: "readiness", Detail: "no live dispatcher readiness marker"}},

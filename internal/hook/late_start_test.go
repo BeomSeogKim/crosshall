@@ -3,10 +3,12 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -173,4 +175,80 @@ func lateStartBudget(t *testing.T, event, stdin string, under bool) {
 			t.Fatalf("counter %q (%v) with %d events", raw, err, events)
 		}
 	})
+}
+
+type deadlineTransport struct {
+	entry     time.Time
+	deadlines *[]string
+}
+
+func (deadlineTransport) HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error) {
+	return "", wire.Response{}, errors.New("no lookup")
+}
+
+func (d deadlineTransport) HookCall(ctx context.Context, _ ident.Identity, _ string, req wire.Request, _ bool) (spool.Reply, error) {
+	end, _ := ctx.Deadline()
+	*d.deadlines = append(*d.deadlines, fmt.Sprintf("%s %v", req.Verb, end.Sub(d.entry)))
+	return spool.Reply{}, nil
+}
+
+// Only a turn end that binds a missed launch sends its requests on the start
+// budget; a later turn end and a permission prompt, which bind nothing, keep
+// the ordinary deadline, so a linked device does not take them late (#437).
+func TestOnlyATurnEndThatBindsALaunchSendsOnTheStartBudget(t *testing.T) {
+	hosted(t, true)
+	_, dir, oldLeaf := runFixture(t)
+	id := ident.Identity{Vendor: "claude", Key: "fixture-thread"}
+	if err := os.Rename(oldLeaf, filepath.Join(dir, "m", id.Digest()[:16])); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "policy"), []byte("claude 1 0 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(key string) (string, bool) {
+		switch key {
+		case "CLAUDE_PID":
+			return "72", true
+		case "CLAUDE_CODE_SESSION_ID":
+			return "fixture-thread", true
+		case "CLAUDE_CODE_MESSAGING_SOCKET":
+			return "/tmp/cc-socks/72.sock", true
+		}
+		return "", false
+	}
+	start, ordinary := fmt.Sprint(StartBudget-counterAllowance), fmt.Sprint(Budget-counterAllowance)
+	for i, c := range []struct {
+		event, stdin string
+		want         []string
+	}{
+		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-0","stop_hook_active":false}`,
+			[]string{"hook.event " + start, "hook.route " + start}},
+		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-1","stop_hook_active":false}`,
+			[]string{"hook.event " + ordinary, "hook.route " + ordinary}},
+		{"Notification", `{"hook_event_name":"Notification","session_id":"fixture-thread","notification_type":"permission_prompt","prompt_id":"turn-2"}`,
+			[]string{"hook.event " + ordinary}},
+	} {
+		var deadlines []string
+		synctest.Test(t, func(t *testing.T) {
+			time.Sleep(time.Duration(i) * time.Second) // each bubble's clock starts at the same instant
+			entry := time.Now()
+			transport := deadlineTransport{entry: entry, deadlines: &deadlines}
+			prepare := func() (*os.Root, *hookCounter) { // runTimed closes the root it is given
+				root, err := os.OpenRoot(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return root, openHookCounter(root, "claude", c.event, entry)
+			}
+			var out strings.Builder
+			runTimed(entry, CallbackBase("claude", c.event), CallbackBudget("claude", c.event), &out, prepare,
+				func(ctx context.Context, rv *os.Root, w io.Writer) string {
+					return dispatchCallback(ctx, entry, rv, transport, []string{"claude", c.event}, strings.NewReader(c.stdin), w,
+						lookup, callbackState{root: t.TempDir()})
+				})
+		})
+		if !slices.Equal(deadlines, c.want) {
+			t.Fatalf("callback %d (%s) sent %q, want %q", i, c.event, deadlines, c.want)
+		}
+	}
 }

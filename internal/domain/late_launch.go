@@ -78,6 +78,17 @@ func (s *Service) bindMemberLateLaunch(ctx context.Context, tx store.Tx, req Req
 	if known, err := launchKnown(ctx, tx, principal, l.Ref); err != nil || known {
 		return false, err
 	}
+	if cmd.Fact != FactPromptSubmitted {
+		// A turn end or idle prompt binds a member that has no open process
+		// launch (#437), never one away from a process its start bound:
+		// that process may be the newer one, and only a prompt says which
+		// process the user is in.
+		var open bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM adapter_launch
+			WHERE principal_id = ? AND verified = 1 AND ended_hook_at_ms IS NULL)`, principal).Scan(&open); err != nil || open {
+			return false, err
+		}
+	}
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil || !found || !b.acceptsHookAt(cmd.HookAtMS) ||
 		b.ownerHookFence.Valid && (b.state != "live" || l.AtMS <= b.ownerHookFence.Int64) {

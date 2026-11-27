@@ -269,6 +269,12 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 			cmd.Fact, cmd.EventRef = FactApprovalRequested, "t1:approval"
 			return cmd
 		}},
+		{"a Stop while another process launch is open", func(*fixture, session, int64) {}, func(at int64) HookEvent {
+			return lateProof(stop("pid-9-b", "t1", at+30), at+20)
+		}},
+		{"an idle prompt of an older process", func(*fixture, session, int64) {}, func(at int64) HookEvent {
+			return lateProof(idlePrompt("pid-9-b", at+30), at-20)
+		}},
 		{"a Stop of a member that ended", func(f *fixture, s session, at int64) {
 			f.hookAs(s, ended("pid-7-a", at+10))
 		}, func(at int64) HookEvent { return lateProof(stop("pid-9-b", "t1", at+30), at+20) }},

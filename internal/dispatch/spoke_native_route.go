@@ -107,6 +107,13 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 		if err := json.Unmarshal([]byte(body), &evidence); err != nil {
 			return err
 		}
+		// Only a prompt or a start moves a scope's route from one verified
+		// launch to another: the home keeps offering for the launch it
+		// opened, which a turn end of another process does not replace.
+		if profile && !hook.enroll && hook.fact != wire.HookPromptSubmitted && sameScope && old.Launch != launch &&
+			evidence.Material.Verified {
+			profile = false
+		}
 		if (!sameScope || old.Launch != launch) &&
 			token.LeafSeq <= max(evidence.ProfileSeq, evidence.SocketSeq, evidence.PermissionSeq, evidence.ActivitySeq) {
 			return nil

@@ -274,10 +274,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if spec.RecoverEnroll && !spec.Enroll && !repo.none() {
 		extendBudget(ctx) // this prompt repairs its session's enrolment
-	} else if end, ok := ctx.Deadline(); ok && spec.RecoverEnroll && !spec.Enroll && !launch.late &&
+	} else if end, ok := ctx.Deadline(); ok && (spec.RecoverEnroll || m.bindsLateLaunch(spec)) && !spec.Enroll && !launch.late &&
 		end.After(entry.Add(Budget-counterAllowance)) {
-		// This prompt enrolls, repairs and binds nothing: no request after
-		// the ordinary budget.
+		// This prompt, turn end or idle prompt enrolls, repairs and binds
+		// nothing: no request after the ordinary budget.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, entry.Add(Budget-counterAllowance))
 		defer cancel()

@@ -208,3 +208,46 @@ func TestSpokeNativeRouteIsCapturedByTheTurnEndOfAJoinedLaunch(t *testing.T) {
 		}
 	}
 }
+
+// Within one scope, the turn end of another process does not take the route
+// of the launch a start opened, which the home keeps offering for (#437).
+func TestSpokeNativeRouteKeepsItsLaunchAgainstAnotherProcessTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "claude", Key: "client"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'claude', 'client', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('claude', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+			INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+				VALUES ('claude', 'client', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, launch string, material spokeNativeHook) {
+		t.Helper()
+		token.LeafSeq = seq
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, launch, 3, material)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const first, second = "/tmp/cc-socks/first.sock", "/tmp/cc-socks/second.sock"
+	capture(6, "pid-42-old", spokeNativeHook{enroll: true, startedAtMS: 1, verified: true, pidNamespace: proc.PIDNamespace()})
+	capture(7, "pid-42-old", spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: first, PermissionMode: "default", Start: true}})
+	capture(8, "pid-43-new", spokeNativeHook{fact: wire.HookTurnFinishing, startedAtMS: 2, verified: true, pidNamespace: proc.PIDNamespace()})
+	capture(9, "pid-43-new", spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: second, PermissionMode: "default"}})
+	if err := db.View(ctx, func(tx store.Tx) error {
+		route, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+		if err == nil && (!ok || route.Launch != "pid-42-old" || route.Probe.Address != first) {
+			t.Fatalf("route %+v, %v; want the started launch's", route, ok)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

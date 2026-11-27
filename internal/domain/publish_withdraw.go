@@ -83,14 +83,11 @@ func WithdrawCandidates(ctx context.Context, tx store.Tx) ([]WithdrawCandidate, 
 	kept := out[:0]
 	for _, c := range out {
 		if c.Reason == "" {
-			pending, err := selectIDs(ctx, tx, `SELECT x.message_id FROM publish_attempt_item i
-				JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
-				JOIN message m ON m.id = x.message_id
-				WHERE i.attempt_id = ? AND `+stillDueItem, c.ID)
+			due, err := carriesDueItem(ctx, tx, c.ID)
 			if err != nil {
 				return nil, err
 			}
-			if len(pending) > 0 {
+			if due {
 				continue
 			}
 			c.Reason = WithdrawNothingToRead
@@ -105,4 +102,40 @@ func WithdrawCandidates(ctx context.Context, tx store.Tx) ([]WithdrawCandidate, 
 // claimed; the items stay as they are.
 func WithdrawPublishAttempt(ctx context.Context, tx store.Tx, id int64, reason string, now time.Time) error {
 	return settlePublishAttempt(ctx, tx, id, "withdrawn: "+reason, now)
+}
+
+// carriesDueItem holds while attempt id still carries an item that is due.
+func carriesDueItem(ctx context.Context, tx store.Tx, id int64) (bool, error) {
+	pending, err := selectIDs(ctx, tx, `SELECT x.message_id FROM publish_attempt_item i
+		JOIN recipient x ON x.principal_id = i.principal_id AND x.message_id = i.message_id
+		JOIN message m ON m.id = x.message_id
+		WHERE i.attempt_id = ? AND `+stillDueItem, id)
+	return len(pending) > 0, err
+}
+
+// SettleNotPendingAttempt settles an attempt the transport reports not
+// pending, when nothing it carries is still due: it ran, or will run to
+// find nothing, so it can no longer do anything and need not hold its lane
+// (#446). A late receipt for it is judged stale. It reports whether it
+// settled; a notice still carrying due work stays held for the owner.
+func SettleNotPendingAttempt(ctx context.Context, tx store.Tx, id int64, now time.Time) (bool, error) {
+	due, err := carriesDueItem(ctx, tx, id)
+	if err != nil || due {
+		return false, err
+	}
+	return true, settlePublishAttempt(ctx, tx, id, "not pending: "+WithdrawNothingToRead, now)
+}
+
+// OpenPublishAttempts reports which of ids are still open: not observed,
+// not retired.
+func OpenPublishAttempts(ctx context.Context, tx store.Tx, ids []int64) (map[int64]bool, error) {
+	open := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		var ok bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_attempt WHERE id = ? AND `+openPublishLane+`)`, id).Scan(&ok); err != nil {
+			return nil, err
+		}
+		open[id] = ok
+	}
+	return open, nil
 }

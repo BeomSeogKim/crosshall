@@ -77,13 +77,38 @@ func privateMode(fi os.FileInfo, mode os.FileMode) bool {
 	return fi.Mode() == mode && fi.Sys().(*syscall.Stat_t).Uid == uint32(os.Geteuid())
 }
 
+// errReplaced reports a private file that another private file replaced
+// at its name while it was being opened.
+var errReplaced = errors.New("changed while opening")
+
+// replacedOpenAttempts bounds how often a read-only open starts over after
+// the file at its name was replaced, as PublishServerFile does by rename.
+const replacedOpenAttempts = 3
+
+// openRaceGate, when a test sets it, runs between the check of the
+// directory entry and the open.
+var openRaceGate func(name string)
+
 // OpenServerFile opens a private regular file without following the leaf name.
-// Writes can begin only after the directory entry and handle agree.
+// Writes can begin only after the directory entry and handle agree. A
+// read-only open of a file replaced meanwhile by another private file
+// starts over, a bounded number of times; each attempt checks the
+// ownership and mode again.
 func OpenServerFile(root *os.Root, name string, flags int) (*os.File, error) {
 	if name != filepath.Base(name) || name == "." || name == ".." || name == "" ||
 		flags&os.O_TRUNC != 0 {
 		return nil, fmt.Errorf("invalid private file name or flags for %q", name)
 	}
+	for attempt := 1; ; attempt++ {
+		file, err := openServerFile(root, name, flags)
+		if !errors.Is(err, errReplaced) || flags&(os.O_WRONLY|os.O_RDWR) != 0 ||
+			attempt == replacedOpenAttempts {
+			return file, err
+		}
+	}
+}
+
+func openServerFile(root *os.Root, name string, flags int) (*os.File, error) {
 	before, err := root.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) && flags&os.O_CREATE != 0 {
 		file, err := root.OpenFile(name, flags|os.O_EXCL|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
@@ -101,6 +126,9 @@ func OpenServerFile(root *os.Root, name string, flags int) (*os.File, error) {
 	if !privateMode(before, 0600) {
 		return nil, fmt.Errorf("%q must be a regular 0600 file owned by this user", name)
 	}
+	if openRaceGate != nil {
+		openRaceGate(name)
+	}
 	file, err := root.OpenFile(name, flags&^os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
@@ -113,9 +141,11 @@ func verifyServerFile(root *os.Root, name string, file *os.File, before os.FileI
 	if err == nil {
 		var current os.FileInfo
 		current, err = root.Lstat(name)
-		if err == nil && (!privateMode(opened, 0600) || !os.SameFile(opened, current) ||
-			(before != nil && !os.SameFile(opened, before))) {
+		if err == nil && !privateMode(opened, 0600) {
 			err = fmt.Errorf("%q changed while opening", name)
+		} else if err == nil && (!os.SameFile(opened, current) ||
+			(before != nil && !os.SameFile(opened, before))) {
+			err = fmt.Errorf("%q %w", name, errReplaced)
 		}
 	}
 	if err != nil {

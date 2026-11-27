@@ -39,6 +39,10 @@ The repository is trunk-based.
   and so does row content: the gate checks that a migration
   runs, matches a fresh store's schema and rolls back, while whether it
   changes rows correctly stays with the tier-2 review of the migration.
+  The lock serializes full runs only. If the full-run row fails, its detail
+  names the failed tests, the load before and after, and how many other
+  test runs and processes left by earlier rows ran beside it;
+  `row_full_run.others` lists them.
 
 ## Pull requests
 

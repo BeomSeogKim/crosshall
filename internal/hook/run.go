@@ -100,13 +100,21 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		}
 		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
-	var outcome atomic.Value
+	var outcome, refusedRoot atomic.Value
 	wrote := runTimed(budgetStart, base, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
 		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
+		if strings.HasPrefix(o, refusedPrefix) {
+			refusedRoot.Store(stateRoot)
+		}
 		return o
 	})
+	if root, _ := refusedRoot.Load().(string); root != "" {
+		// After the output and the counter: only a refusal pays for it.
+		o, _ := outcome.Load().(string)
+		logLine(root, args[0]+" "+args[1], captured, o)
+	}
 	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
 	}
@@ -144,19 +152,19 @@ func dispatchEvent(ctx context.Context, entry time.Time, rv *os.Root, client hoo
 
 func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client hookTransport, args []string, stdin io.Reader, stdout io.Writer, lookup func(string) (string, bool), state callbackState) string {
 	if len(args) != 2 {
-		return "refused"
+		return refused("args")
 	}
 	m, ok := loadManifest(args[0])
 	spec, known := m.event(args[1])
 	if !ok || !known {
-		return "refused"
+		return refused("manifest")
 	}
 	policy, err := readPolicy(rv, m.Adapter)
 	if errors.Is(err, os.ErrNotExist) || (err == nil && !policy.Enabled) {
 		return "off"
 	}
 	if err != nil {
-		return "refused"
+		return refused("policy")
 	}
 	writer := &frameWriter{dst: stdout}
 	var e event
@@ -177,7 +185,7 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "clean"
 	}
 	if err != nil {
-		return "refused"
+		return refused("event")
 	}
 	if m.BuildFromHost {
 		e.VendorVersion, e.Mode = hostBuild(rv, m)
@@ -210,13 +218,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	membership, err := ident.LookupMembership(leaf)
 	if err != nil {
-		return "refused"
+		return refused("membership")
 	}
 	pid := e.LaunchRef
 	launch, err := bindLaunch(leaf, gen, e, spec, entry)
 	e.LaunchRef, e.LaunchVerified = launch.ref, launch.verified
 	if err != nil {
-		return "refused"
+		return refused("launch")
 	}
 	if spec.Fact == wire.HookPromptSubmitted && e.LaunchVerified {
 		// The proof the dispatcher needs for a launch it has no row for.
@@ -290,18 +298,18 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 		return "clean" // published without waiting for a response
 	}
 	if reply.Response.Status != core.ExitOK {
-		return "refused"
+		return refusedWith("reply", reply.Response.Code)
 	}
 	if reply.Membership != nil {
 		membership = reply.Membership
 	}
 	if current, err := ident.ReadMembership(leaf); err != nil ||
 		membership != nil && current != *membership || membership == nil && current.Generation > 1 {
-		return "refused"
+		return refused("membership changed")
 	}
 	var result wire.HookResult
 	if err := json.Unmarshal(reply.Response.Data, &result); err != nil {
-		return "refused"
+		return refused("reply data")
 	}
 	failure, joinHintSeen := writeHookResultAndConfirmJoin(ctx, rv, leaf, gen, m.Adapter, policy.Epoch, spec, result, writer)
 	if failure != "" {
@@ -416,7 +424,7 @@ func writeHookResult(ctx context.Context, rv *os.Root, adapter string, epoch uin
 func prepareHookOutput(rv *os.Root, adapter string, epoch uint64, spec eventSpec, result wire.HookResult) (hookFrame, string) {
 	output, err := present(spec, result)
 	if err != nil {
-		return hookFrame{}, "refused"
+		return hookFrame{}, refused("output")
 	}
 	current, err := readPolicy(rv, adapter)
 	if err != nil || !current.Enabled || current.Epoch != epoch || result.Epoch != current.Epoch {
@@ -436,13 +444,26 @@ func (w *frameWriter) write(ctx context.Context, frame hookFrame) string {
 	}
 	if len(frame.data) > 0 {
 		if n, err := w.dst.Write(frame.data); err != nil || n != len(frame.data) {
-			return "refused"
+			return refused("write")
 		}
 		if offer := frame.offer; offer != nil && offer.OfferID > 0 && offer.Nonce != "" {
 			w.ack = wire.HookOutputAckArgs{Offer: offer, WrittenAtMS: time.Now().UnixMilli()}
 		}
 	}
 	return ""
+}
+
+// refusedPrefix marks an outcome that names the stage that refused. The
+// counter records it as "refused"; Run logs the stage (#454).
+const refusedPrefix = "refused: "
+
+func refused(stage string) string { return refusedPrefix + stage }
+
+func refusedWith(stage string, code core.Code) string {
+	if code == "" {
+		return refused(stage)
+	}
+	return refused(stage + " " + string(code))
 }
 
 func transportOutcome(ctx context.Context, err error) string {
@@ -452,7 +473,7 @@ func transportOutcome(ctx context.Context, err error) string {
 	if errors.Is(err, os.ErrNotExist) {
 		return "no_dispatcher"
 	}
-	return "refused"
+	return refused("transport")
 }
 
 func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hookTransport, spec eventSpec, e event) (*os.Root, string, enrolment, string) {
@@ -470,7 +491,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		return leaf, gen, repo, ""
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return nil, "", enrolment{}, "refused"
+		return nil, "", enrolment{}, refused("leaf")
 	}
 	if !spec.Enroll && !spec.RecoverEnroll {
 		return nil, "", enrolment{}, "unmatched"
@@ -510,7 +531,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	}
 	newSession := resp.Status == core.ExitNotEnrolled && resp.Code == core.CodeNotEnrolled
 	if resp.Status != core.ExitOK && !newSession {
-		return nil, "", enrolment{}, "refused"
+		return nil, "", enrolment{}, refusedWith("lookup", resp.Code)
 	}
 	if newSession && spec.Enroll {
 		if repo.none() && !continuesMember(rv, e) {
@@ -525,7 +546,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 		}
 	}
 	if resp.Status != core.ExitOK {
-		return nil, "", enrolment{}, "refused"
+		return nil, "", enrolment{}, refusedWith("enroll", resp.Code)
 	}
 	leaf, current, err := spool.OpenHookLeaf(members, e.Identity)
 	if err != nil {
@@ -533,7 +554,7 @@ func resolveLeaf(ctx context.Context, rv *os.Root, stateRoot string, client hook
 	}
 	if current != gen {
 		leaf.Close()
-		return nil, "", enrolment{}, "refused"
+		return nil, "", enrolment{}, refused("generation")
 	}
 	return leaf, gen, repo, ""
 }

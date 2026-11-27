@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,7 +167,7 @@ func TestMissingLeafStartOnlyChecksDefaultAfterLookupRefusal(t *testing.T) {
 		source, outcome string
 		wantHint        bool
 	}{
-		{core.CodeKeyRetired, "startup", "refused", false},
+		{core.CodeKeyRetired, "startup", "refused: lookup " + string(core.CodeKeyRetired), false},
 		{core.CodeNotEnrolled, "startup", "unmatched", true},
 		{core.CodeNotEnrolled, "compact", "unmatched", false},
 		{core.CodeNotEnrolled, "resume", "unmatched", false},
@@ -418,5 +419,36 @@ func TestEveryManifestHookEntersWhenItsPolicyIsOn(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// A refusal keeps its counter record and logs the stage that refused (#454).
+func TestARefusedCallbackLogsItsStage(t *testing.T) {
+	state := t.TempDir()
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	rendezvous := filepath.Join(state, "rendezvous")
+	if err := os.Mkdir(rendezvous, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{
+		"ready":  fmt.Sprintf("{\"instance\":\"fixture-host\",\"v\":1,\"pid\":%d}\n", os.Getpid()),
+		"policy": "codex 1 0 7\n",
+	} {
+		if err := os.WriteFile(filepath.Join(rendezvous, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths := Paths{State: state, Rendezvous: rendezvous, Start: func(context.Context) (bool, error) { return false, nil }}
+	entry := time.Now()
+	Run(entry, []string{"codex", "Stop"}, strings.NewReader("not json"), io.Discard, func() (Paths, error) { return paths, nil })
+	counter, err := os.ReadFile(filepath.Join(rendezvous, "hooks", entry.UTC().Format("20060102")))
+	if fields := strings.Fields(string(counter)); err != nil || len(fields) != 4 || fields[2] != "refused" {
+		t.Fatalf("counter %q, %v", counter, err)
+	}
+	log, err := os.ReadFile(filepath.Join(state, "dispatcher.log"))
+	if err != nil || !strings.Contains(string(log), "hook codex Stop: refused: event (") {
+		t.Fatalf("dispatcher.log %q, %v", log, err)
 	}
 }

@@ -57,6 +57,37 @@ func expectedInstallNotice(evidence []store.BuiltinEvidence, mode, version, noti
 	return notice + newVersionNotice
 }
 
+// trustedTurnEnd is the caveat a turn-end line carries when the build has no
+// tested evidence of its own and version's evidence covers it.
+func trustedTurnEnd(version string) string {
+	return " This version is new to crosshall: the check is trusted from Claude Code " + version + " evidence."
+}
+
+// expectedTurnEndTrust is the caveat for version from shipped evidence: the
+// latest tested build of the interactive mode, else of print mode, unless
+// version has evidence of its own.
+func expectedTurnEndTrust(evidence []store.BuiltinEvidence, version string) string {
+	for _, mode := range []string{"interactive", "print"} {
+		var latest store.BuiltinEvidence
+		for _, row := range evidence {
+			if row.Capability != "turn_end" || row.Mode != mode {
+				continue
+			}
+			if row.Version == version {
+				latest = store.BuiltinEvidence{}
+				break
+			}
+			if row.CheckedAtMS > latest.CheckedAtMS {
+				latest = row
+			}
+		}
+		if latest.Version != "" {
+			return trustedTurnEnd(latest.Version)
+		}
+	}
+	return ""
+}
+
 func TestInstallerPromptDisclosureMatchesTheListedAgent(t *testing.T) {
 	for _, tc := range []struct {
 		adapter string
@@ -188,8 +219,16 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			notice: noticeOn, turnEnd: "- Turn-end check (Claude Code, print mode). " + turnEndBody},
 		{name: "interactive only", version: "2.1.327", publishLevel: "tested", turnEndLevel: "tested", printLevel: "unavailable",
 			notice: noticeOn, turnEnd: "- Turn-end check (Claude Code, interactive sessions). " + turnEndBody},
-		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice, turnEnd: turnEndOn},
-		{name: "seen", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn, turnEnd: turnEndOn,
+		{name: "borrowed", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice,
+			turnEnd: turnEndOn},
+		{name: "borrowed per mode", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn + newVersionNotice,
+			turnEnd: turnEndOn + " This version is new to crosshall: the check is trusted from Claude Code 2.1.324 evidence for interactive sessions and from Claude Code 2.1.323 evidence for print mode.",
+			// Later than any shipped evidence, so each mode names its own build.
+			settings: `INSERT INTO capability_evidence (vendor, vendor_version, platform, mode, manifest_rev, cap, level, result_ref, checked_at_ms) VALUES
+				('claude', '2.1.324', ?1, 'interactive', 'claude-3', 'turn_end', 'tested', 'fixture', 9000000000000),
+				('claude', '2.1.323', ?1, 'print', 'claude-3', 'turn_end', 'tested', 'fixture', 9000000000000)`},
+		{name: "seen", version: "2.1.326", publishLevel: "tested", turnEndLevel: "tested", notice: noticeOn,
+			turnEnd: turnEndOn,
 			settings: `INSERT INTO capability_build (vendor, vendor_version, platform, mode, manifest_rev, cap, confirmed)
 				VALUES ('claude', '2.1.327', ?1, 'interactive', 'claude-3', 'publish', 3)`},
 		{name: "owner hall off", version: "2.1.327", publishLevel: "tested", turnEndLevel: "candidate",
@@ -231,6 +270,13 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 			platform := runtime.GOOS + "-" + runtime.GOARCH
 			notice, turnEnd, codexNotice := tc.notice, tc.turnEnd, tc.codexNotice
 			ledger := filepath.Join(f.State, "store.sqlite3")
+			if tc.name == "borrowed" || tc.name == "seen" {
+				// 2.1.327 has no turn-end evidence of its own: the line names
+				// the latest tested build, the fixture's or a shipped one.
+				fixture := store.BuiltinEvidence{Vendor: "claude", Version: "2.1.326", Platform: platform,
+					Mode: "interactive", ManifestRev: "claude-3", Capability: "turn_end", CheckedAtMS: 1}
+				turnEnd += expectedTurnEndTrust(append(hostInstallEvidence("claude", "claude-3"), fixture), "2.1.327")
+			}
 			if tc.name == "cold" {
 				claude := hostInstallEvidence("claude", "claude-3")
 				interactiveTurnEnd := hasInstallCapability(claude, "turn_end", "interactive")
@@ -242,6 +288,9 @@ func TestInstallerConsentDisclosesOnlyTheApplicableEffects(t *testing.T) {
 					turnEnd = "- Turn-end check (Claude Code, interactive sessions). " + turnEndBody
 				case printTurnEnd:
 					turnEnd = "- Turn-end check (Claude Code, print mode). " + turnEndBody
+				}
+				if turnEnd != "" {
+					turnEnd += expectedTurnEndTrust(claude, "2.1.327")
 				}
 				notice = expectedInstallNotice(claude, "interactive", "2.1.327", noticeOn)
 				if notice != "" {

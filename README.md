@@ -69,7 +69,7 @@ A no skips future installer offers for the listed agents. Enter skips this offer
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files the installer lists when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
 
 <!-- install-receipt -->
 ```text
@@ -89,7 +89,7 @@ The installer asks about usage statistics separately in your own terminal. The q
 ```text
 Usage statistics help Adrian Studio decide what to fix and build in crosshall. A daily report can include rounded counts of messages, notices and hook timings, plus the crosshall release, platform, agent release families and a random token for that day. Reports exclude message text, channel names, aliases, paths, host names and user names.
 The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
-Send usage statistics? [Y/n]
+Send usage statistics? [y/N]
 ```
 
 **2. In Codex, trust the hooks, then open Codex again.** Open Codex, run `/hooks` and trust the crosshall entries. Quit and reopen Codex so the new session starts with the trusted hooks. For idle wake, keep Codex in its default managed app server mode. Claude Code and Antigravity CLI have no hook trust step.

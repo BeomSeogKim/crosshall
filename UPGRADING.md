@@ -8,7 +8,7 @@ From v0.4.0 or any v0.4.0 release candidate, replace the binary at the existing 
 
 From v0.3.1, follow [the v0.4.0 upgrade steps](#to-v040) with the v0.5.0-rc.1 binary. The first start backs up the store and migrates it from schema 30 to 37.
 
-To roll back to v0.4.0, stop the dispatcher with v0.5.0-rc.1, put the v0.4.0 binary back at the original path and restart it on the same schema 37 store.
+To roll back to v0.4.0, stop the dispatcher with v0.5.0-rc.1, put the v0.4.0 binary back at the original path and restart it on the same schema 37 store. Setup in v0.5.0-rc.1 writes its install journal in format 4 (#452), which the v0.4.0 `crosshall setup` and `crosshall uninstall` refuse to read. To keep using them after a rollback, first run `crosshall uninstall` with v0.5.0-rc.1, which removes the hooks and the skill it installed, then roll back and run the v0.4.0 setup again.
 
 ## To v0.4.0
 

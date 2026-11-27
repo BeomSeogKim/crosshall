@@ -250,6 +250,7 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 		Rendezvous string          `json:"rendezvous"`
 		Checks     []doctorCheck   `json:"checks"`
 		Hint       string          `json:"hint"`
+		NotStarted bool            `json:"not_started"`
 		Adapters   json.RawMessage `json:"adapters"`
 		Warnings   []string        `json:"warnings"`
 	}
@@ -263,6 +264,9 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 		}
 		if result.Rendezvous != "" {
 			fields["rendezvous"] = result.Rendezvous
+		}
+		if result.NotStarted {
+			fields["not_started"] = true
 		}
 		if len(result.Warnings) != 0 {
 			fields["warnings"] = result.Warnings
@@ -288,7 +292,15 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 			return core.ExitError
 		}
 	}
+	if result.NotStarted {
+		if _, err := fmt.Fprintf(o.stdout, "Not started yet: this state directory has no hall. Start it with %s; ordinary crosshall commands and agent hooks start it too, but crosshall wait and crosshall owner doctor do not.\n", result.Hint); err != nil {
+			return core.ExitError
+		}
+	}
 	for _, check := range result.Checks {
+		if result.NotStarted && !check.OK {
+			continue
+		}
 		outcome := "FAIL"
 		if check.OK {
 			outcome = "PASS"
@@ -307,7 +319,7 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 			return core.ExitError
 		}
 	}
-	if result.Hint != "" {
+	if result.Hint != "" && !result.NotStarted {
 		if _, err := fmt.Fprintf(o.stdout, "The dispatcher is not running; next: %s\n", result.Hint); err != nil {
 			return core.ExitError
 		}
@@ -346,6 +358,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			TrustedFrom                       string `json:"trusted_from,omitempty"`
 			CommittedClaims                   int    `json:"committed_claims"`
 			ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
+			LiveLaunches                      int    `json:"live_launches"`
 		} `json:"turn_end_notice"`
 		Publish *struct {
 			State        string
@@ -419,6 +432,8 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				if notice.TrustedFrom != "" {
 					status += fmt.Sprintf(" (trusted from %s evidence)", notice.TrustedFrom)
 				}
+			} else if notice.LiveLaunches == 0 {
+				status = "not checked yet: no live " + manifests.DisplayName(a.Adapter) + " session joined to this hall"
 			}
 			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
 				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)

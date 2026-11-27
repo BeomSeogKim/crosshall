@@ -22,6 +22,11 @@ type InstallConsent struct {
 	// TurnEndSwitch is the owner's turn-end switch for the adapter: on, off,
 	// or empty when the evidence decides.
 	TurnEndSwitch string
+	// TurnEndInteractiveTrustedFrom and TurnEndPrintTrustedFrom name, per
+	// mode, the build whose tested evidence covers the turn-end check of a
+	// build without tested evidence of its own, as doctor's trusted_from
+	// does; empty otherwise.
+	TurnEndInteractiveTrustedFrom, TurnEndPrintTrustedFrom string
 }
 
 // InspectInstallConsent previews the settings and evidence after the new
@@ -69,12 +74,12 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 	if version < 0 || version > len(migrations) {
 		return fmt.Errorf("unsupported setup preview schema version %d", version)
 	}
-	owner := `SELECT '', '', '', '', '', '', '' WHERE 0`
+	owner := `SELECT '', '', '', '', '', '', '', 0 WHERE 0`
 	build := `SELECT '' vendor, '' vendor_version, '' platform, '' mode, '' manifest_rev, '' cap,
 		0 confirmed, NULL stopped_at_ms, NULL lifted_at_ms WHERE 0`
 	joining, publish, turnEnd := "0", "''", "''"
 	if version >= 2 {
-		owner = `SELECT vendor, vendor_version, platform, mode, manifest_rev, cap, level FROM main.capability_evidence`
+		owner = `SELECT vendor, vendor_version, platform, mode, manifest_rev, cap, level, checked_at_ms FROM main.capability_evidence`
 	}
 	if version >= 10 {
 		owner += ` WHERE source = 'owner'`
@@ -98,17 +103,26 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 	}
 	interactiveProfile := `json_set(?2, '$.mode', 'interactive')`
 	printProfile := `json_set(?2, '$.mode', 'print')`
+	trustedFrom := func(profile string) string {
+		match := func(alias string) string { return capabilityProfileMatch(alias, "?1", profile, "'turn_end'") }
+		return `CASE WHEN ` + CapabilityCovered("?1", profile, "'turn_end'") + `
+			AND NOT EXISTS (SELECT 1 FROM capability_evidence exact WHERE ` + match("exact") + `
+				AND exact.vendor_version = ` + profileField(profile, "vendor_version") + ` AND exact.level = 'tested')
+			THEN COALESCE((SELECT e.vendor_version FROM capability_evidence e WHERE ` + match("e") + ` AND e.level = 'tested'
+				ORDER BY e.checked_at_ms DESC, e.vendor_version LIMIT 1), '') ELSE '' END`
+	}
 	return tx.QueryRowContext(ctx, `WITH
-		owner_evidence(vendor, vendor_version, platform, mode, manifest_rev, cap, level) AS (`+owner+`),
-		shipped(vendor, vendor_version, platform, mode, manifest_rev, cap) AS (
+		owner_evidence(vendor, vendor_version, platform, mode, manifest_rev, cap, level, checked_at_ms) AS (`+owner+`),
+		shipped(vendor, vendor_version, platform, mode, manifest_rev, cap, checked_at_ms) AS (
 			SELECT value ->> '$.Vendor', value ->> '$.Version', value ->> '$.Platform',
-				value ->> '$.Mode', value ->> '$.ManifestRev', value ->> '$.Capability'
+				value ->> '$.Mode', value ->> '$.ManifestRev', value ->> '$.Capability', value ->> '$.CheckedAtMS'
 			FROM json_each(?3)
 		),
 		capability_evidence AS (
 			SELECT * FROM owner_evidence
 			UNION ALL
-			SELECT s.*, 'tested' FROM shipped s WHERE NOT EXISTS (
+			SELECT s.vendor, s.vendor_version, s.platform, s.mode, s.manifest_rev, s.cap, 'tested', s.checked_at_ms
+			FROM shipped s WHERE NOT EXISTS (
 				SELECT 1 FROM owner_evidence e WHERE (e.vendor, e.vendor_version, e.platform, e.mode, e.manifest_rev, e.cap)
 					= (s.vendor, s.vendor_version, s.platform, s.mode, s.manifest_rev, s.cap))
 		),
@@ -120,8 +134,10 @@ func readInstallConsent(ctx context.Context, tx Tx, vendor, profile, builtin str
 				AND e.vendor_version = `+profileField("?2", "vendor_version")+`)
 			AND COALESCE((SELECT cb.confirmed FROM capability_build cb WHERE `+capabilityProfileMatch("cb", "?1", "?2", "'publish'")+`
 				AND cb.vendor_version = `+profileField("?2", "vendor_version")+`), 0) < ?4,
-			`+CapabilityCovered("?1", interactiveProfile, "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd,
+			`+CapabilityCovered("?1", interactiveProfile, "'turn_end'")+`, `+CapabilityCovered("?1", printProfile, "'turn_end'")+`, `+turnEnd+`,
+			`+trustedFrom(interactiveProfile)+`, `+trustedFrom(printProfile),
 		vendor, profile, builtin, PublishBuildConfirmations).
 		Scan(&consent.AutoJoinOff, &consent.PublishCovered, &consent.PublishSwitch, &consent.PublishStopped,
-			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint, &consent.TurnEndSwitch)
+			&consent.PublishProbation, &consent.TurnEndInteractive, &consent.TurnEndPrint, &consent.TurnEndSwitch,
+			&consent.TurnEndInteractiveTrustedFrom, &consent.TurnEndPrintTrustedFrom)
 }

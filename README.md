@@ -4,11 +4,11 @@
 
 For developers who run more than one AI coding agent on one machine, for example Claude Code writing code and Codex CLI reviewing it, and want them to hand work to each other without copying text between terminals.
 
-Status: v0.4.0, a release for macOS and Linux on arm64 and x86-64. New in it: [linking a second device](docs/linking.md) over SSH. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.5.0-rc.1, a release candidate for macOS and Linux on arm64 and x86-64. New since v0.4.0: setup installs a crosshall skill, so your agents use crosshall without being told how, and the first install and its checks print less. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
 Start in three steps (requirements and full output: [quick start](#quick-start)):
 
-1. Install, and answer yes to add the agent hooks: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
+1. Install, and answer yes to add the agent hooks: `git clone --branch v0.5.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
 2. In a new plain terminal, start the hall: `crosshall owner start`
 3. Open two new agent sessions in the same Git repository (in Codex, first trust the hooks with `/hooks`), and tell one to ask the other for a review.
 
@@ -48,7 +48,7 @@ For the two-agent walkthrough, have Claude Code and Codex CLI installed and sign
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.5.0-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -74,7 +74,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.4.0 at /home/you/.local/bin/crosshall
+Installed crosshall v0.5.0-rc.1 at /home/you/.local/bin/crosshall
 Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
 ```
 

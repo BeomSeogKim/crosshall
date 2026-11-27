@@ -276,6 +276,17 @@ func TestCodexProvesTheServerItsStartNamed(t *testing.T) {
 		if err != nil {
 			t.Skipf("process start unavailable: %v", err)
 		}
+		// Linux closes Start's exec pipe before it sets up the new
+		// program's arguments, so the stand-in's command line can still
+		// read empty (#455).
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			if _, got, err := proc.Command(cmd.Process.Pid); err == nil && len(got) > 0 && slices.Equal(got[1:], cmd.Args[1:]) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the stand-in's command line never showed")
+			}
+		}
 		return Queue{PID: int64(cmd.Process.Pid), StartMS: start.Identity}
 	}
 	home, _ := filepath.EvalSymlinks(t.TempDir())

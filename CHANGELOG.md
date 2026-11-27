@@ -2,6 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## v0.4.0 (2026-11-27)
+
+- **Release of v0.4.0-rc.3:** no product change since rc.3.
+- **Upgrading:** all v0.4.0 release candidates stay on schema 37. The first start from v0.3.1 backs up the store and upgrades it from schema 30 to 37. See [UPGRADING.md](UPGRADING.md#to-v040).
+
 ## v0.4.0-rc.3 (2026-11-27)
 
 - **Upgrading:** v0.4.0-rc.1 and v0.4.0-rc.2 stores stay on schema 37. The first start from v0.3.1 backs up the store and upgrades it from schema 30 to 37. See [UPGRADING.md](UPGRADING.md#to-v040-rc3).

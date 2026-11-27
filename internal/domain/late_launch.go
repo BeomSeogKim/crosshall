@@ -3,9 +3,11 @@ package domain
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strconv"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/publish"
 	"github.com/BeomSeogKim/crosshall/internal/store"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
@@ -113,16 +115,29 @@ func launchKnown(ctx context.Context, tx store.Tx, principal int64, launch strin
 
 // startUnseen reports whether the member's current launch has no seen
 // start: a prompt joined it and its launch could not be bound.
-// linkedStartUnseen says a live member on a linked device has no launch
-// the home could wake for its binding: it joined after its session
-// started, and its device has sent no prompt since (#437). Its next prompt
-// opens the launch, as a local member's does.
+// linkedStartUnseen says a live member on a linked device, whose adapter
+// can send a notice, has no launch the home could wake in its current
+// scope: it joined, moved or rejoined after its session started, and its
+// device has sent no prompt since (#437). Its next prompt opens the launch
+// in that scope, as a local member's does.
 func linkedStartUnseen(ctx context.Context, tx store.Tx, principal, binding int64) (bool, error) {
-	var unseen bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM device_key k WHERE k.principal_id = ?1 AND k.state = 'live')
-		AND NOT EXISTS (SELECT 1 FROM link_event_launch l WHERE l.principal_id = ?1 AND l.binding_id = ?2)`,
-		principal, binding).Scan(&unseen)
-	return unseen, err
+	var vendor string
+	err := tx.QueryRowContext(ctx, `SELECT k.vendor FROM device_key k
+		JOIN member_selection s ON s.principal_id = k.principal_id AND s.binding_id = ?2
+		JOIN binding b ON b.id = s.binding_id
+		WHERE k.principal_id = ?1 AND k.state = 'live'
+			AND NOT EXISTS (SELECT 1 FROM link_event_launch l WHERE l.principal_id = k.principal_id
+				AND l.device_id = k.device_id AND l.credential_gen = k.credential_gen AND l.leaf_generation = k.leaf_generation
+				AND l.binding_id = b.id AND l.membership_generation = s.generation AND l.route_epoch = b.route_epoch)
+		LIMIT 1`, principal, binding).Scan(&vendor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	adapter, ok := publish.Lookup(vendor)
+	return ok && adapter.Transport().Send != nil, nil
 }
 
 func startUnseen(ctx context.Context, tx store.Tx, principal int64) (bool, error) {

@@ -415,4 +415,21 @@ func TestTheOwnerSeesALinkedMemberWhoseStartWasNotSeen(t *testing.T) {
 	if h.startUnseen("reader") {
 		t.Fatal("a linked member with a launch still shows an unseen start")
 	}
+	// A rejoin or a move gives a new scope the launch does not serve.
+	binding := h.token.Membership.BindingID
+	h.sql(`UPDATE binding SET route_epoch = route_epoch + 1 WHERE id = ?`, binding)
+	if !h.startUnseen("reader") {
+		t.Fatal("a launch of an earlier route epoch hid the unseen start")
+	}
+	h.sql(`UPDATE binding SET route_epoch = route_epoch - 1 WHERE id = ?`, binding)
+	h.sql(`UPDATE member_selection SET generation = generation + 1 WHERE binding_id = ?`, binding)
+	if !h.startUnseen("reader") {
+		t.Fatal("a launch of an earlier selection hid the unseen start")
+	}
+	// An adapter that cannot send a notice has no route to explain.
+	h.sql(`DELETE FROM link_event_launch WHERE principal_id = ?`, h.principal)
+	h.sql(`UPDATE device_key SET vendor = 'agy' WHERE principal_id = ?`, h.principal)
+	if h.startUnseen("reader") {
+		t.Fatal("a linked member whose adapter has no sender shows an unseen start")
+	}
 }

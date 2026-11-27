@@ -23,19 +23,17 @@ func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
 			t.Fatalf("wake = %+v, want %+v", got, want)
 		}
 	}
-	notice, noRoute := Wake{Wake: WakeNotice}, Wake{Wake: WakeNone, Why: WhyNoRoute}
-	// Until the device submits a wake on this route, the home cannot tell
-	// that its session takes one (#438).
-	check(noRoute)
-	proveLinkRoute(t, h, route)
-	check(notice)
+	device, noRoute := Wake{Wake: WakeDevice}, Wake{Wake: WakeNone, Why: WhyNoRoute}
+	// With the stream open and a launch it could wake, the device decides
+	// (#438); the home claims no notice it cannot prove.
+	check(device)
 	old := h.peer
 	acked := uint64(h.count(`SELECT acked FROM link_event_cursor WHERE device_id = ?`, h.peer.Device))
 	h.peer.Stream = link.NewNonce()
 	wantOK(t, h.owner(LinkEvents{LinkEventPeer: h.peer, AllowWake: true,
 		Subscribe: &link.Subscribe{Boot: route.Boot, FromSeq: acked}}, ""))
 	wantOK(t, h.owner(LinkEvents{LinkEventPeer: old, Close: true}, ""))
-	check(notice)
+	check(device)
 	h.sql(`UPDATE binding SET dnd = 1 WHERE id = ?`, route.Scope.Membership.BindingID)
 	check(noRoute)
 	h.sql(`UPDATE binding SET dnd = 0 WHERE id = ?`, route.Scope.Membership.BindingID)
@@ -56,21 +54,10 @@ func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
 	check(noRoute)
 }
 
-// proveLinkRoute records a submitted, released wake on route, as a device
-// that delivered one leaves it.
-func proveLinkRoute(t *testing.T, h *linkedHookFixture, route link.WakeRoute) int64 {
-	t.Helper()
-	id := h.turnEndAsk(h.writer, "reader", "prove-the-route")
-	wake, _ := dispatchTestLinkWake(t, h, route, id)
-	h.sql(`UPDATE link_wake_attempt SET state = 'submitted', submission_seq = 1, released_at_ms = ? WHERE id = ?`, ms(h.now), wake.AttemptID)
-	return id
-}
-
-// A request to a connected linked member reads as a notice once the
-// device has submitted a wake on the member's route, and as submitted once
-// a wake carried it; a refusal on that route or a later failed wake ends
-// the claim (#438).
-func TestLinkWakeReportsANoticeOnAProvenRoute(t *testing.T) {
+// A request to a connected linked member reads as the device's to wake,
+// with no local resume and the same daily count as before; once a linked
+// wake carried it, it reads as submitted (#438).
+func TestLinkWakeReportsTheDeviceForAConnectedMember(t *testing.T) {
 	h, route := linkWakeFixture(t)
 	binding := route.Scope.Membership.BindingID
 	messageWake := func(id int64) Wake {
@@ -79,19 +66,14 @@ func TestLinkWakeReportsANoticeOnAProvenRoute(t *testing.T) {
 			return h.svc.messageWake(ctx, tx, binding, h.principal, id, h.now)
 		})
 	}
-	ask := func(body string) int64 {
-		t.Helper()
-		r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: body}, "")
-		wantOK(t, r)
-		return decode[AskResult](t, r).ID
+	r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: "Review while connected."}, "")
+	wantOK(t, r)
+	asked := decode[AskResult](t, r)
+	if len(asked.Recipients) != 1 || asked.Recipients[0].Wake.Wake != WakeDevice || asked.Recipients[0].Wake.NeedsManualWake() {
+		t.Fatalf("ask to a connected linked member = %+v", asked.Recipients)
 	}
-	first := proveLinkRoute(t, h, route)
-	if got := messageWake(first); got.Wake != WakeNotice {
-		t.Fatalf("request a linked wake submitted = %+v", got)
-	}
-	second := ask("Review while connected.")
-	if got := messageWake(second); got.Wake != WakeNotice {
-		t.Fatalf("request on a proven route = %+v", got)
+	if n := h.count(`SELECT COUNT(*) FROM event WHERE kind = 'send_wake' AND json_extract(detail, '$.wake') = 'none'`); n != 1 {
+		t.Fatalf("send_wake events counted as none = %d", n)
 	}
 	owing := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) ([]OwingMember, error) {
 		return OwingMembers(ctx, tx, h.now)
@@ -101,29 +83,17 @@ func TestLinkWakeReportsANoticeOnAProvenRoute(t *testing.T) {
 			t.Fatalf("a linked member was offered a local resume notice: %+v", m)
 		}
 	}
-	// The device refused the request on this route: it is not offered again.
-	wake, _ := dispatchTestLinkWake(t, h, route, second)
-	h.sql(`UPDATE link_wake_attempt SET state = 'not_submitted', submission_seq = 2, released_at_ms = ? WHERE id = ?`, ms(h.now), wake.AttemptID)
-	member := func() Wake {
-		t.Helper()
-		return inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) (Wake, error) {
-			return memberWake(ctx, tx, binding, h.now)
-		})
+	note := decode[NoteResult](t, h.run(h.writer, Note{To: []string{"reader"}, Body: "FYI while connected."}, ""))
+	if got := messageWake(note.ID); got.Wake != WakeNone || got.Why != WhyKind {
+		t.Fatalf("note to a connected linked member = %+v", got)
 	}
-	// The latest wake on the route failed: the claim ends.
-	if got := member(); got.Why != WhyNoRoute {
-		t.Fatalf("member after a failed wake = %+v", got)
+	wake, _ := dispatchTestLinkWake(t, h, route, asked.ID)
+	if got := messageWake(asked.ID); got.Why != WhyHeld {
+		t.Fatalf("request while its wake dispatches = %+v", got)
 	}
-	// A later wake proves the route again, but not for the refused request.
-	h.sql(`INSERT INTO link_wake_attempt (device_id, credential_gen, principal_id, binding_id, vendor, lane, route, message_ids,
-			state, dispatched_at_ms, submission_seq, released_at_ms)
-		SELECT device_id, credential_gen, principal_id, binding_id, vendor, lane, route, '[]', 'submitted', ?, 3, ?
-		FROM link_wake_attempt WHERE id = ?`, ms(h.now), ms(h.now), wake.AttemptID)
-	if got := member(); got.Wake != WakeNotice {
-		t.Fatalf("member on a route proven again = %+v", got)
-	}
-	if got := messageWake(second); got.Wake == WakeNotice {
-		t.Fatalf("a refused request = %+v", got)
+	h.sql(`UPDATE link_wake_attempt SET state = 'submitted', submission_seq = 1, released_at_ms = ? WHERE id = ?`, ms(h.now), wake.AttemptID)
+	if got := messageWake(asked.ID); got.Wake != WakeNotice {
+		t.Fatalf("request a linked wake submitted = %+v", got)
 	}
 }
 

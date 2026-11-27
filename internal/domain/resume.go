@@ -51,6 +51,9 @@ type OwingMember struct {
 
 // CanResume says the publisher will try to give it a resume notice.
 func (m OwingMember) CanResume() bool {
+	if m.Wake.Wake == WakeDevice {
+		return false // a resume notice takes a local publish route
+	}
 	switch m.Wake.Why {
 	case WhyNoRoute, WhyOff, WhyEnded:
 		return false
@@ -83,14 +86,8 @@ func OwingMembers(ctx context.Context, tx store.Tx, now time.Time) ([]OwingMembe
 		return nil, err
 	}
 	for i := range out {
-		var linked bool
-		if out[i].Wake, linked, err = memberWakeOf(ctx, tx, out[i].BindingID, now); err != nil {
+		if out[i].Wake, err = memberWake(ctx, tx, out[i].BindingID, now); err != nil {
 			return nil, err
-		}
-		if linked && out[i].Wake.Wake == WakeNotice {
-			// A resume notice takes a local publish route (ReserveResume):
-			// a linked device's notice route cannot carry one.
-			out[i].Wake = Wake{Wake: WakeNone, Why: WhyNoRoute}
 		}
 	}
 	return out, nil

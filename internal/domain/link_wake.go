@@ -157,14 +157,6 @@ func linkWakeRouteEligible(ctx context.Context, tx store.Tx, peer LinkEventPeer,
 	return ready, err
 }
 
-// linkWakeOnRoute matches an attempt a made on a member's linked route
-// (boot, launch, policy epoch and scope, in that order), whatever lane the
-// device chose for it.
-const linkWakeOnRoute = `json_extract(a.route, '$.boot') = ? AND json_extract(a.route, '$.launch') = ?
-	AND json_extract(a.route, '$.policy_epoch') = ? AND json_extract(a.route, '$.scope.leaf_generation') = ?
-	AND json_extract(a.route, '$.scope.membership.binding_id') = ? AND json_extract(a.route, '$.scope.membership.generation') = ?
-	AND json_extract(a.route, '$.scope.route_epoch') = ?`
-
 // An attempt that may have submitted keeps its original IDs out of later wakes.
 const linkWakeMayHaveSubmitted = `(a.state IN ('submitted', 'uncertain')
 	OR (a.state = 'dispatching' AND a.released_at_ms IS NOT NULL))`
@@ -229,19 +221,9 @@ func linkedMemberWake(ctx context.Context, tx store.Tx, binding int64, now time.
 		return none, err
 	}
 	if !closed {
-		// Only the device can prove its session's route, and it does so
-		// when it delivers a wake: a launch whose latest wake on this route
-		// was submitted is a notice route (#438), like a local member's
-		// available publish state. Until then the home cannot tell.
-		var proven bool
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT a.state = 'submitted' FROM link_wake_attempt a
-			WHERE a.device_id = ? AND a.credential_gen = ? AND a.principal_id = ? AND `+linkWakeOnRoute+`
-			ORDER BY a.id DESC LIMIT 1), 0)`, peer.Device, peer.CredentialGen, principal,
-			route.Boot, route.Launch, route.PolicyEpoch, route.Scope.LeafGeneration, route.Scope.Membership.BindingID,
-			route.Scope.Membership.Generation, route.Scope.RouteEpoch).Scan(&proven); err != nil || !proven {
-			return none, err
-		}
-		return Wake{Wake: WakeNotice}, nil
+		// The device checks its session's route and wakes it when it can;
+		// the home cannot prove that route, so it claims no notice (#438).
+		return Wake{Wake: WakeDevice}, nil
 	}
 	running, err := inReportedTurn(ctx, tx, principal, now)
 	if err != nil || running {

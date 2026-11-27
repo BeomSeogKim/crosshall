@@ -223,6 +223,7 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 	}{
 		{"opus", domain.Wake{Wake: domain.WakeNotice}, "notice queued"},
 		{"vega", domain.Wake{Wake: domain.WakeWait}, "its wait is running"},
+		{"linked", domain.Wake{Wake: domain.WakeDevice, SeenAt: domain.SeenAtPrompt}, "the linked device will try to wake it"},
 		{"sol", codex, "not woken: no notice route for codex; it sees this at its next prompt"},
 		{"agy", none(domain.WhyNoRoute, domain.SeenAtCommand), "not woken: no notice route; it sees this at its next crosshall command"},
 		{"mini", none(domain.WhyDeviceOffline, domain.SeenAtCommand), "not woken: device offline; it sees this at its next crosshall command"},
@@ -263,6 +264,8 @@ func TestWakeWordsRenderTheSameEverywhere(t *testing.T) {
 			member = "woken by a notice"
 		case domain.WakeWait:
 			member = "woken by its wait"
+		case domain.WakeDevice:
+			member = "its linked device will try to wake it"
 		}
 		if !regexp.MustCompile(`@` + c.alias + ` .*  ` + regexp.QuoteMeta(member) + "\n").MatchString(who) {
 			t.Errorf("who lacks @%s %q:\n%s", c.alias, member, who)

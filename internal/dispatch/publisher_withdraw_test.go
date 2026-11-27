@@ -194,6 +194,13 @@ func TestPublisherSendsNoSecondNoticeBehindAnUnprovenWithdrawal(t *testing.T) {
 // read.
 func threadNoticeWorld(t *testing.T, result publish.Withdrawal, read bool) (*publishTestFixture, *publisher, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
+	return threadNoticeWorldWith(t, func() publish.Withdrawal { return result }, read)
+}
+
+// threadNoticeWorldWith is threadNoticeWorld with a transport whose
+// withdrawal answers withdraw().
+func threadNoticeWorldWith(t *testing.T, withdraw func() publish.Withdrawal, read bool) (*publishTestFixture, *publisher, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
 	var sends, withdrawals atomic.Int32
 	f := newPublishTestFixture(t)
 	f.ask(t, 11)
@@ -208,7 +215,7 @@ func threadNoticeWorld(t *testing.T, result publish.Withdrawal, read bool) (*pub
 		},
 		Withdraw: func(context.Context, domain.PublishTarget) publish.Withdrawal {
 			withdrawals.Add(1)
-			return result
+			return withdraw()
 		},
 	})
 	p := &publisher{db: f.db, homes: func(string) string { return home }}
@@ -315,9 +322,6 @@ func TestPublisherLogsAnUnsettledWithdrawalOnce(t *testing.T) {
 	}
 }
 
-// Vega #447: a notice found not pending while its route had ended is
-// withdrawn again once the same thread reopens with nothing left to read:
-// the changed reason is a new withdrawal, not the ended one's guard.
 func TestPublisherWithdrawsAgainWhenTheReasonChanges(t *testing.T) {
 	f, p, sends, withdrawals := threadNoticeWorld(t, publish.NotPending, true)
 	f.exec(t, `UPDATE publish_route SET state = 'ended', reason = 'session ended'`)
@@ -332,8 +336,6 @@ func TestPublisherWithdrawsAgainWhenTheReasonChanges(t *testing.T) {
 	}
 }
 
-// Vega #447: a settled notice's log guard is dropped once a tick finds it
-// is no longer a candidate.
 func TestPublisherForgetsTheLogGuardOfASettledNotice(t *testing.T) {
 	f, p, _, _ := threadNoticeWorld(t, publish.NotPending, true)
 	tickThrough(t, f, p, time.Second, 2*time.Second)
@@ -344,4 +346,62 @@ func TestPublisherForgetsTheLogGuardOfASettledNotice(t *testing.T) {
 		t.Errorf("log guard kept for notice %v", key)
 		return true
 	})
+}
+
+func TestPublisherRunsOneWithdrawalPerNoticeAcrossAReasonChange(t *testing.T) {
+	gate, entered := make(chan struct{}), make(chan struct{}, 4)
+	f, p, sends, withdrawals := threadNoticeWorldWith(t, func() publish.Withdrawal {
+		entered <- struct{}{}
+		<-gate
+		return publish.NotPending
+	}, true)
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(previous)
+	f.exec(t, `UPDATE publish_route SET state = 'ended', reason = 'session ended'`)
+	tickPublisher(t, p, f.now.Add(time.Second), false)
+	<-entered
+	f.exec(t, `UPDATE publish_route SET state = 'active', reason = ''`)
+	tickPublisher(t, p, f.now.Add(2*time.Second), false)
+	select {
+	case <-entered:
+		close(gate)
+		t.Fatal("a second withdrawal of the notice started while the first was in flight")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(gate)
+	p.workers.Wait()
+	tickThrough(t, f, p, 3*time.Second, 4*time.Second, 6*time.Second)
+	log.SetOutput(previous)
+	if !attemptRetired(t, f) || withdrawals.Load() != 2 || sends.Load() != 2 {
+		t.Fatalf("retired %v after %d withdrawals and %d sends", attemptRetired(t, f), withdrawals.Load(), sends.Load())
+	}
+	if n := strings.Count(logged.String(), "withdrawal of notice 1 "); n != 1 {
+		t.Fatalf("logged notice 1 %d times: %q", n, logged.String())
+	}
+}
+
+func TestPublisherLogsAnOpenNoticeOnceWhileItLeavesTheCandidates(t *testing.T) {
+	var calls atomic.Int32
+	f, p, home := withdrawWorld(t, func(context.Context, domain.PublishTarget) publish.Withdrawal {
+		calls.Add(1)
+		return publish.NotPending
+	})
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(previous)
+	tickThrough(t, f, p, time.Second)
+	f.exec(t, "UPDATE publish_attempt SET lane = 'process:2345:1234' WHERE id = 1")
+	tickThrough(t, f, p, 2*time.Second)
+	f.exec(t, "UPDATE publish_attempt SET lane = 'thread:claude:thread-1:"+home+"' WHERE id = 1")
+	tickThrough(t, f, p, 3*time.Second)
+	log.SetOutput(previous)
+	if calls.Load() != 2 || attemptRetired(t, f) {
+		t.Fatalf("%d withdrawals, retired %v; want the notice withdrawn again and held", calls.Load(), attemptRetired(t, f))
+	}
+	if n := strings.Count(logged.String(), "withdrawal of notice 1 "); n != 1 {
+		t.Fatalf("logged notice 1 %d times: %q", n, logged.String())
+	}
 }

@@ -125,3 +125,17 @@ func SettleNotPendingAttempt(ctx context.Context, tx store.Tx, id int64, now tim
 	}
 	return true, settlePublishAttempt(ctx, tx, id, "not pending: "+WithdrawNothingToRead, now)
 }
+
+// OpenPublishAttempts reports which of ids are still open: not observed,
+// not retired.
+func OpenPublishAttempts(ctx context.Context, tx store.Tx, ids []int64) (map[int64]bool, error) {
+	open := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		var ok bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM publish_attempt WHERE id = ? AND `+openPublishLane+`)`, id).Scan(&ok); err != nil {
+			return nil, err
+		}
+		open[id] = ok
+	}
+	return open, nil
+}

@@ -36,15 +36,19 @@ type publisher struct {
 	due              map[domain.PublishBinding]time.Time
 	working          sync.Map
 	retiring         sync.Map
-	// withdrawing guards one withdrawal per attempt and reason
-	// (withdrawKey): zero while one runs, then the time it may be tried
-	// again; a notice found not pending that still carries due work is left
-	// to its receipt while it is listed for that reason.
+	// withdrawRunning holds the attempts a withdrawal runs for: one at a
+	// time per attempt.
+	withdrawRunning sync.Map
+	// withdrawing holds, per attempt and reason (withdrawKey), the time a
+	// withdrawal may be tried again; a notice found not pending that still
+	// carries due work is left to its receipt while it is listed for that
+	// reason.
 	withdrawing sync.Map
-	// withdrawLogged holds the notices whose unproven withdrawal was logged.
+	// withdrawLogged holds the open notices whose unproven withdrawal was
+	// logged.
 	withdrawLogged sync.Map
-	// confirming guards one approval check per approval fact, as
-	// withdrawing does per attempt.
+	// confirming guards one approval check per approval fact: zero while
+	// one runs, then the time it may be tried again.
 	confirming sync.Map
 	// proving guards one proof per route: zero while one runs, then the
 	// time a failed proof may be retried (publishProveRetry).
@@ -136,6 +140,13 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	var attempts []int64
 	var queues []domain.HeldPublishQueue
 	var withdrawals []domain.WithdrawCandidate
+	// The notices whose withdrawal was logged, and which of them are open.
+	var logged []int64
+	p.withdrawLogged.Range(func(key, _ any) bool {
+		logged = append(logged, key.(int64))
+		return true
+	})
+	var open map[int64]bool
 	var approvals []domain.ApprovalCheck
 	var proofs []domain.PublishProof
 	// What the tick's resume pass found, applied only once it commits: a
@@ -225,6 +236,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if err == nil {
 			withdrawals, err = domain.WithdrawCandidates(ctx, tx)
 		}
+		if err == nil && len(logged) > 0 {
+			open, err = domain.OpenPublishAttempts(ctx, tx, logged)
+		}
 		if err == nil {
 			approvals, err = domain.ApprovalChecks(ctx, tx, now)
 		}
@@ -302,26 +316,24 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		// the callback itself returns, so a stuck probe is never doubled.
 		p.workers.Go(func() { p.retire(ctx, held.Queue, retired, func() { p.retiring.Delete(held.Queue) }) })
 	}
-	// Forget the attempts that are no longer candidates for the same reason
-	// (settled by a receipt or a withdrawal, or listed for another reason);
-	// a running withdrawal keeps its guard.
+	// Forget the retry times of attempts no longer listed for the same
+	// reason (settled by a receipt or a withdrawal, or listed for another
+	// reason), and the log marks of attempts that closed.
 	candidate := make(map[withdrawKey]bool, len(withdrawals))
-	listed := make(map[int64]bool, len(withdrawals))
 	for _, c := range withdrawals {
-		candidate[withdrawKeyOf(c)], listed[c.ID] = true, true
+		candidate[withdrawKeyOf(c)] = true
 	}
 	p.withdrawing.Range(func(key, value any) bool {
-		if !candidate[key.(withdrawKey)] && !value.(time.Time).IsZero() {
+		if !candidate[key.(withdrawKey)] {
 			p.withdrawing.CompareAndDelete(key, value)
 		}
 		return true
 	})
-	p.withdrawLogged.Range(func(key, _ any) bool {
-		if !listed[key.(int64)] {
-			p.withdrawLogged.Delete(key)
+	for _, id := range logged {
+		if !open[id] {
+			p.withdrawLogged.Delete(id)
 		}
-		return true
-	})
+	}
 	for _, c := range withdrawals {
 		withdraw := p.transport(c.Target.Adapter).Withdraw
 		if withdraw == nil || p.homes == nil {
@@ -333,14 +345,16 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if home, err := filepath.EvalSymlinks(c.Target.Home); err != nil || home != c.LaneHome {
 			continue
 		}
-		key := withdrawKeyOf(c)
-		if after, seen := p.withdrawing.LoadOrStore(key, time.Time{}); seen {
-			if retry := after.(time.Time); retry.IsZero() || now.Before(retry) {
-				continue // a withdrawal runs, waits to retry, or found it not pending
-			}
+		if retry, ok := p.withdrawing.Load(withdrawKeyOf(c)); ok && now.Before(retry.(time.Time)) {
+			continue // waits to retry, or found it not pending for this reason
 		}
-		p.withdrawing.Store(key, time.Time{})
-		p.workers.Go(func() { p.withdraw(ctx, c, withdraw, now) })
+		if _, running := p.withdrawRunning.LoadOrStore(c.ID, struct{}{}); running {
+			continue // one withdrawal per attempt at a time, whatever its reason
+		}
+		p.workers.Go(func() {
+			defer p.withdrawRunning.Delete(c.ID)
+			p.withdraw(ctx, c, withdraw, now)
+		})
 	}
 	due := make(map[int64]bool, len(approvals))
 	for _, c := range approvals {
@@ -477,7 +491,7 @@ func (p *publisher) withdraw(ctx context.Context, c domain.WithdrawCandidate,
 	}
 }
 
-// withdrawKey guards a withdrawal: an attempt and the reason it is
+// withdrawKey scopes a withdrawal's result: an attempt and the reason it is
 // withdrawn for, so a notice listed again for another reason (its thread
 // reopened) is withdrawn again (#447).
 type withdrawKey struct {
@@ -487,8 +501,8 @@ type withdrawKey struct {
 
 func withdrawKeyOf(c domain.WithdrawCandidate) withdrawKey { return withdrawKey{c.ID, c.Reason} }
 
-// logWithdrawal logs, once per notice, a withdrawal that did not prove the
-// notice gone.
+// logWithdrawal logs, once per notice while it is open, a withdrawal that
+// did not prove the notice gone.
 func (p *publisher) logWithdrawal(id int64, got publish.Withdrawal) {
 	if _, logged := p.withdrawLogged.LoadOrStore(id, struct{}{}); !logged {
 		log.Printf("dispatcher: publish: withdrawal of notice %d ended %s", id, got)

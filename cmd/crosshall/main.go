@@ -143,8 +143,8 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			if req.Offer && req.Terminal && os.Getenv("CROSSHALL_INSTALL_PATH_CONSENT") == "1" {
 				req.PathConsent = writeInstallerPathConsent
 			}
-			installed := false
-			req.Installed = func() { installed = true }
+			var installed []string
+			req.Installed = func(adapter string) { installed = append(installed, adapter) }
 			runErr := service.Run(ctx, setup.Request(req))
 			if !req.Offer || !req.Terminal || os.Getenv("CROSSHALL_INSTALL_READY_RECEIPT") != "1" {
 				return runErr
@@ -155,8 +155,15 @@ func runCLI(entry time.Time, paths statePaths, pathErr error) core.ExitCode {
 			if dispatcherReady {
 				lines = append(lines, "ready")
 			}
-			if installed {
+			if len(installed) > 0 {
 				lines = append(lines, "installed")
+			}
+			// A step the user takes in the agent before its hooks run, for the
+			// installer's closing next steps.
+			for _, adapter := range installed {
+				if hint := setup.TrustHint(adapter); hint != "" {
+					lines = append(lines, "next "+hint)
+				}
 			}
 			if len(lines) == 0 {
 				return runErr

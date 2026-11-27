@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,7 +75,7 @@ fi
 if [ "${CROSSHALL_INSTALL_READY_RECEIPT:-}" = 1 ]; then
   receipt=
   [ "${OFFER_READY:-}" = 1 ] && receipt='ready\n'
-  [ "${OFFER_INSTALLED:-}" = 1 ] && receipt="${receipt}installed\n"
+  [ "${OFFER_INSTALLED:-}" = 1 ] && receipt="${receipt}installed\nnext Trust the fixture hooks.\n"
   [ -z "$receipt" ] || printf "$receipt" >&4
 fi
 exit "$OFFER_EXIT"
@@ -129,14 +130,24 @@ esac
 		ready := os.Getenv("OFFER_READY") == "1"
 		// #196: the reachability line comes last, and only after an install.
 		if os.Getenv("OFFER_INSTALLED") == "1" {
-			if lines[len(lines)-1] != reachLine(target) {
-				t.Fatalf("an install did not end with the reachability line: %q", output)
+			if len(lines) < 4 || strings.Join(lines[len(lines)-4:], "\n") != reachLine(target) {
+				t.Fatalf("an install did not end with the next steps: %q", output)
 			}
-			lines = lines[:len(lines)-1]
+			lines = lines[:len(lines)-4]
 		} else if strings.Contains(string(output), "owner who --all") {
 			t.Fatalf("reachability line without an install: %q", output)
 		}
-		if lines[0] != "Installed crosshall v0.1.0 at "+target ||
+		quoted := strings.ReplaceAll(target, " ", `\ `)
+		if !offered {
+			// Nothing could be asked: the installer lists what is still to run.
+			still := []string{"No terminal to ask in, so only the binary was installed. Still to run, in a terminal:",
+				"  " + quoted + " setup          # lists the hooks for the agents it finds and asks first",
+				"  " + quoted + " owner start",
+				dest + " is not on PATH: add export PATH=" + strings.ReplaceAll(dest, " ", `\ `) + `:"$PATH" to your shell startup file.`}
+			if lines[0] != "Installed crosshall v0.1.0 at "+target || !slices.Equal(lines[1:], still) {
+				t.Fatalf("unexpected install output without a terminal: %q", output)
+			}
+		} else if lines[0] != "Installed crosshall v0.1.0 at "+target ||
 			(ready && strings.Contains(string(output), start)) || (!ready && lines[len(lines)-1] != start) {
 			t.Fatalf("unexpected install output: %q", output)
 		}
@@ -457,9 +468,10 @@ esac
 
 const newTerminalLine = `Open a new terminal for the PATH change, or run in this one: export PATH="$HOME/.local/bin:$PATH"`
 
-// reachLine is the installer's last line after an install, naming the
-// installed path as the installer quotes it.
+// reachLine is the installer's closing steps after an install: the step
+// setup's receipt names, then the installer's own, naming the installed path
+// as the installer quotes it.
 func reachLine(target string) string {
-	return "Open new sessions of these agents in a project. " + strings.ReplaceAll(target, " ", `\ `) +
-		" owner who --all then shows who the hall can reach."
+	return "Next:\n  1. Trust the fixture hooks.\n  2. Open new sessions of these agents in a project. A Codex session joins at its first prompt; anything will do.\n" +
+		"  3. In a plain terminal, " + strings.ReplaceAll(target, " ", `\ `) + " owner who --all shows who the hall can reach."
 }

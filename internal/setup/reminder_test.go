@@ -79,7 +79,7 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	// comes from the same version probe; the preview ran its own, which can
 	// time out under load, so it is compared only when both read one version.
 	var installed, result bytes.Buffer
-	if err := service.Run(t.Context(), Request{Action: "setup", JSON: true, Input: strings.NewReader("y\nn\nn\n"),
+	if err := service.Run(t.Context(), Request{Action: "setup", JSON: true, Verbose: true, Input: strings.NewReader("y\nn\nn\n"),
 		Output: &result, Prompt: &installed}); err != nil {
 		t.Fatal(err)
 	}

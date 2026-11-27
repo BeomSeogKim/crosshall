@@ -40,15 +40,27 @@ func (f *setupWorld) inTerminal(env []string, answers string, pipe []string, arg
 
 func TestSetupAsksForOneConsentInATerminal(t *testing.T) {
 	f := newSetupWorld(t)
-	code, out := f.inTerminal(f.env, "y\n", nil, "setup")
+	// --verbose lists every entry and exact rule; a no changes nothing.
+	code, out := f.inTerminal(f.env, "n\n", nil, "setup", "--verbose")
+	if code != 0 || strings.Count(out, "[y/N]") != 1 {
+		t.Fatalf("verbose exit %d:\n%s", code, out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf(`host_executable(name="crosshall", paths=[%q])`, f.executable),
+		`prefix_rule(pattern=["crosshall", "read"], decision="allow")`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("verbose plan lacks %q in:\n%s", want, out)
+		}
+	}
+	code, out = f.inTerminal(f.env, "y\n", nil, "setup")
 	if code != 0 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	for _, want := range []string{
 		"Claude Code hooks in " + f.paths["claude"] + " (from CLAUDE_CONFIG_DIR)",
 		"Codex hooks in " + f.paths["codex"] + " (from CODEX_HOME)",
-		fmt.Sprintf(`host_executable(name="crosshall", paths=[%q])`, f.executable),
-		`prefix_rule(pattern=["crosshall", "read"], decision="allow")`,
+		"crosshall.rules: adds ", " command rules", "Full list of entries: crosshall setup codex --verbose",
 		"Rules for the bare command crosshall trust the agent's PATH",
 		"Install the listed hooks and command rules? [y/N]",
 		"claude: installed", "codex: installed",
@@ -106,7 +118,9 @@ func TestInstallerOfferRecordsOnePathAndHookConsent(t *testing.T) {
 			if tc.receipt == "yes\n" {
 				// #196: real hooks were installed, which the installer's
 				// reachability line needs besides a ready dispatcher.
-				wantReady = "ready\ninstalled\n"
+				// Codex's hooks run only once trusted: the installer's
+				// next steps carry that step.
+				wantReady = "ready\ninstalled\nnext In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex.\n"
 				if !strings.Contains(out, "claude: installed") || !strings.Contains(out, "codex: installed") {
 					t.Fatalf("accepted offer did not install hooks:\n%s", out)
 				}

@@ -35,8 +35,10 @@ type Request struct {
 	Terminal       bool
 	PathConsent    func(bool) error
 	OfferTelemetry func(*bufio.Reader) error
-	// Installed is told that at least one agent's hooks were installed.
-	Installed func()
+	// Installed is told each agent whose hooks were installed.
+	Installed func(adapter string)
+	// Verbose lists every hook entry and rule instead of a count per file.
+	Verbose bool
 }
 
 type plan struct {
@@ -52,6 +54,7 @@ type plan struct {
 	Retained     []retainedFile `json:"retained,omitempty"`
 	disclosure   installDisclosure
 	quietConsent bool
+	verbose      bool
 }
 
 type PlanFile struct {
@@ -399,7 +402,7 @@ func buildsUnchanged(before, after map[string]build) bool {
 
 func displayPlan(req Request, op operation, targets []installTarget, resume bool) plan {
 	p := plan{Version: 1, OK: true, Kind: req.Action, DryRun: req.DryRun, Resume: resume,
-		Adapters: append([]string{}, op.Adapters...), Files: []PlanFile{}, Retained: op.Retained}
+		Adapters: append([]string{}, op.Adapters...), Files: []PlanFile{}, Retained: op.Retained, verbose: req.Verbose}
 	for _, target := range targets {
 		p.disclosure.include(target.disclosure)
 	}
@@ -457,6 +460,9 @@ func printPlan(out io.Writer, p plan) error {
 	}
 	commandRules := false
 	var sandboxNotes []string
+	// A new install shows a count per file; the entries, the evidence and
+	// the reminder state are behind --verbose (and in --json).
+	summary := p.Kind == "setup" && !p.verbose && !p.Resume && !p.Recovery
 	for _, f := range p.Files {
 		if f.Skill == "shared" {
 			fmt.Fprintf(&contents, "  crosshall skill shared with %s (%s)\n", f.SharedWith, f.Path)
@@ -474,6 +480,10 @@ func printPlan(out io.Writer, p plan) error {
 			for _, entry := range f.Add {
 				commandRules = commandRules || entry.Event == ""
 			}
+		}
+		if summary {
+			fmt.Fprintln(&contents, fileSummary(f))
+			continue
 		}
 		if f.Version == "" {
 			fmt.Fprintf(&contents, "%s %s\n", f.Adapter, f.Path)
@@ -538,8 +548,13 @@ func printPlan(out io.Writer, p plan) error {
 		for _, note := range sandboxNotes {
 			fmt.Fprintln(&contents, note)
 		}
+		if summary && len(p.Files) > 0 {
+			fmt.Fprintf(&contents, "Full list of entries: crosshall setup %s --verbose\n", strings.Join(p.Adapters, " "))
+		}
 		for _, adapter := range p.Adapters {
-			fmt.Fprintf(&contents, "Enable %s adapter policy after installation.\n", adapter)
+			if !summary {
+				fmt.Fprintf(&contents, "Then switches the %s adapter on.\n", adapter)
+			}
 			if i, ok := installers[adapter]; ok && i.trustHint() != "" {
 				fmt.Fprintln(&contents, i.trustHint())
 			}
@@ -554,6 +569,70 @@ func printPlan(out io.Writer, p plan) error {
 	}
 	_, err := io.WriteString(out, contents.String())
 	return err
+}
+
+// fileSummary is one line saying what a plan does to one file.
+func fileSummary(f PlanFile) string {
+	hooks, allow := 0, 0
+	for _, e := range f.Add {
+		if isClaudeAutoModeDefaults(e) {
+			continue // Claude's own baseline, kept beside crosshall's rule
+		}
+		if e.Event != "" {
+			hooks++
+		} else {
+			allow++
+		}
+	}
+	lines := func(text string) (n int) {
+		for line := range strings.SplitSeq(text, "\n") {
+			if line != "" {
+				n++
+			}
+		}
+		return n
+	}
+	var parts []string
+	count := func(n int, one, many string) {
+		if n == 1 {
+			parts = append(parts, "1 "+one)
+		} else if n > 1 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, many))
+		}
+	}
+	count(hooks, "hook", "hooks")
+	count(allow, "allow rule for crosshall commands", "allow rules for crosshall commands")
+	count(lines(f.AddText), "command rule", "command rules")
+	text := "  " + f.Adapter + " "
+	if f.Version != "" {
+		text += f.Version + " "
+	}
+	text += f.Path + ": "
+	if len(parts) > 0 {
+		text += "adds " + strings.Join(parts, ", ")
+	}
+	parts = nil
+	count(len(f.Remove)+lines(f.RemoveText), "old entry", "old entries")
+	if len(parts) > 0 {
+		if !strings.HasSuffix(text, ": ") {
+			text += "; "
+		}
+		text += "removes " + parts[0]
+	}
+	if len(f.Kept) > 0 {
+		if !strings.HasSuffix(text, ": ") {
+			text += "; "
+		}
+		if len(f.Kept) == 1 {
+			text += "leaves 1 edited entry as it is"
+		} else {
+			text += fmt.Sprintf("leaves %d edited entries as they are", len(f.Kept))
+		}
+	}
+	if strings.HasSuffix(text, ": ") {
+		text += "no change"
+	}
+	return text
 }
 
 func skillVerb(e edit) string {

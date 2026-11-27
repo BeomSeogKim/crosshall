@@ -79,7 +79,7 @@ func TestTheTerminalFlowInstallsHooksAndRulesWithOneConsent(t *testing.T) {
 			t.Fatalf("decline created %s: %v", path, err)
 		}
 	}
-	out, err := realRun(t, s, f, Request{Terminal: true}, "y\n")
+	out, err := realRun(t, s, f, Request{Terminal: true, Verbose: true}, "y\n")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -210,5 +210,49 @@ func TestAnUninstallAfterAnInterruptedSetupNamesTheSetup(t *testing.T) {
 	out, err := realRun(t, s, f, Request{Action: "uninstall", Adapters: []string{"claude"}}, "n\n")
 	if err != nil || !strings.Contains(out, "Recover the interrupted setup of claude without overwriting configuration?") {
 		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// A first install shows a count per file instead of every entry, with no
+// evidence, reminder or policy lines; a second run of setup on installed
+// agents says so and asks nothing.
+func TestSetupSummarizesThePlanAndKnowsAnInstalledAgent(t *testing.T) {
+	s, f, _ := realSetup(t)
+	out, err := realRun(t, s, f, Request{Terminal: true}, "y\n")
+	if err != nil || strings.Count(out, "[y/N]") != 1 {
+		t.Fatalf("install: %v\n%s", err, out)
+	}
+	preview, _, _ := strings.Cut(out, "[y/N]")
+	for _, want := range []string{"settings.json: adds ", " hooks, ", " allow rules for crosshall commands",
+		"crosshall.rules: adds ", " command rules", "Full list of entries: crosshall setup claude --verbose", "Full list of entries: crosshall setup codex --verbose",
+		"In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex."} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("summary lacks %q", want)
+		}
+	}
+	for _, jargon := range []string{"add permissions.allow", "add autoMode.allow", "add command rule", "add SessionStart",
+		"Capability evidence", "Reply reminder", "Reminder evidence", "adapter policy", "switches the"} {
+		if strings.Contains(preview, jargon) {
+			t.Errorf("summary shows %q", jargon)
+		}
+	}
+	if t.Failed() {
+		t.Fatalf("install output:\n%s", out)
+	}
+	for _, req := range []Request{{Terminal: true}, {Terminal: true, Adapters: []string{"claude"}}, {Adapters: []string{"claude", "codex"}}} {
+		again, err := realRun(t, s, f, req, "y\n")
+		if err != nil || strings.Contains(again, "[y/N]") || strings.Contains(again, "--apply") ||
+			!strings.Contains(again, "claude: already installed in ") || !strings.Contains(again, "; nothing to change") {
+			t.Fatalf("setup on installed agents %+v: %v\n%s", req, err, again)
+		}
+	}
+	// An explicit preview still shows the plan: --json keeps its plan field.
+	for _, req := range []Request{{DryRun: true, JSON: true, Adapters: []string{"claude"}},
+		{DryRun: true, Verbose: true, Adapters: []string{"claude"}}, {Terminal: true, Verbose: true, Adapters: []string{"claude"}}} {
+		again, err := realRun(t, s, f, req, "n\n")
+		if err != nil || strings.Contains(again, "already installed") ||
+			req.JSON && (!strings.Contains(again, `"outcome":"previewed"`) || !strings.Contains(again, `"plan":`)) {
+			t.Fatalf("explicit preview of an installed agent %+v: %v\n%s", req, err, again)
+		}
 	}
 }

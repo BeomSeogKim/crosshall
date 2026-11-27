@@ -33,11 +33,20 @@ remote=${BASH_REMATCH[2]}
 # Only the project's own repository is redirected to the local fixture.
 [[ $remote == https://github.com/BeomSeogKim/crosshall.git ]] || fail "the install example clones $remote, not the project repository"
 
-# The repository the README clones, at the README's tag, with this tree's
-# installer.
+# The repository the README clones, at the README's tag, with the installer
+# that tag shipped: the README describes the release a reader installs, not
+# this tree. Before the tag exists (a release being prepared), this tree is
+# that release, so its installer stands in.
 upstream="$tmp/upstream"
 mkdir -p "$upstream/scripts"
-cp "$scripts/install.sh" "$upstream/scripts/"
+if git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
+  installer="the $tag tag"
+  git -C "$root" show "$tag:scripts/install.sh" > "$upstream/scripts/install.sh"
+  chmod +x "$upstream/scripts/install.sh"
+else
+  installer="this tree (no $tag tag in this clone)"
+  cp "$scripts/install.sh" "$upstream/scripts/"
+fi
 printf 'module github.com/BeomSeogKim/crosshall\n\ngo 1.27.4\n' > "$upstream/go.mod"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$tmp/gitconfig"
 git config --file "$GIT_CONFIG_GLOBAL" "url.file://$upstream.insteadOf" "$remote"
@@ -82,7 +91,7 @@ mkdir -p "$home"
 # The README writes the home directory as /home/you.
 sed "s#$home#/home/you#g" "$tmp/output" > "$tmp/shown"
 cmp -s "$tmp/shown" "$tmp/receipt" ||
-  fail "installer printed:
+  fail "the installer of $installer printed:
 $(cat "$tmp/shown")
 README shows:
 $(cat "$tmp/receipt")"

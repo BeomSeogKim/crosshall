@@ -101,7 +101,7 @@ func wakeText(w domain.Wake, note bool) string {
 	case domain.WakeWait:
 		return "its wait is running"
 	case domain.WakeDevice:
-		return "the linked device will try to wake it"
+		return domain.LinkedDeviceWakes
 	}
 	text := "not woken: " + whyText(w, note)
 	switch w.SeenAt {

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/BeomSeogKim/crosshall/internal/hook/manifests"
 	"github.com/BeomSeogKim/crosshall/internal/setuptest"
 )
 
@@ -341,5 +343,83 @@ func TestGroupedSetupStillRefusesAnExternalChange(t *testing.T) {
 	}
 	if !bytes.Equal(configBytes(t, hooks), owner) {
 		t.Fatal("the refused install wrote the owner's hooks file")
+	}
+}
+
+// beforeRead runs fn once, when the prompt first reads the answer.
+type beforeRead struct {
+	fn func()
+	r  io.Reader
+}
+
+func (b *beforeRead) Read(p []byte) (int, error) {
+	if b.fn != nil {
+		b.fn()
+		b.fn = nil
+	}
+	return b.r.Read(p)
+}
+
+func TestGroupedSetupWritesTheSharedSkillWhenTheFirstPlanFails(t *testing.T) {
+	f, s, shared, path := sharedSkillHome(t)
+	before := homeTree(t, shared)
+	settings := filepath.Join(shared, "settings.json")
+	owner := []byte("{}\n")
+	var out bytes.Buffer
+	input := &beforeRead{fn: func() { writeConfigFixture(t, settings, owner, 0600) }, r: strings.NewReader("y\n")}
+	err := runRealPrompts(t, s, f, Request{Terminal: true, Adapters: []string{"claude", "codex"}}, &out, input)
+	if err == nil || !strings.Contains(err.Error(), "crosshall setup claude") {
+		t.Fatalf("grouped setup did not report the stale Claude Code plan: %v\n%s", err, out.String())
+	}
+	if got := strings.Count(out.String(), "crosshall skill shared with"); got != 1 {
+		t.Errorf("the result still reports a shared skill (%d mentions with the preview):\n%s", got, out.String())
+	}
+	if !strings.Contains(out.String(), "installed the crosshall skill for "+manifests.DisplayName("codex")+" ("+path+")") {
+		t.Errorf("the result does not report the skill Codex installed:\n%s", out.String())
+	}
+	j, _, err := readJournal(f.State)
+	if err != nil || len(j.Files) != 1 || len(j.SkillFiles) != 1 || j.SkillFiles["codex"].Path != path {
+		t.Fatalf("records: files %v, skills %+v (%v)\n%s", j.Files, j.SkillFiles, err, out.String())
+	}
+	if !bytes.Equal(configBytes(t, settings), owner) || !bytes.Equal(configBytes(t, path), skillContent) {
+		t.Fatal("setup wrote the changed Claude Code settings or did not write the skill")
+	}
+
+	uninstallVendor(t, f, s, "codex")
+	writeConfigFixture(t, settings, owner, 0600)
+	before["settings.json"] = homeTree(t, shared)["settings.json"]
+	if after := homeTree(t, shared); !maps.Equal(before, after) {
+		t.Fatalf("uninstall was not byte-exact:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+func TestGroupedSetupLeavesASharedSkillThatChangedWhenTheFirstPlanFails(t *testing.T) {
+	f, s, shared, path := sharedSkillHome(t)
+	plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
+	if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
+		t.Fatalf("grouped plans: %+v (%v)", plans, err)
+	}
+	writeConfigFixture(t, filepath.Join(shared, "settings.json"), []byte("{}\n"), 0600)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	mine := []byte("the owner's skill\n")
+	writeConfigFixture(t, path, mine, 0600)
+	f.CheckTargets(t)
+	if err := s.Install(t.Context(), plans[0]); err == nil {
+		t.Fatal("the stale Claude Code plan was applied")
+	}
+	if err := s.Install(t.Context(), plans[1]); err != nil {
+		t.Fatalf("Codex install: %v", err)
+	}
+	if !bytes.Equal(configBytes(t, path), mine) {
+		t.Fatal("Codex replaced a skill file that changed after planning")
+	}
+	if j, _, err := readJournal(f.State); err != nil || len(j.SkillFiles) != 0 || len(j.Files) != 1 {
+		t.Fatalf("records: files %v, skills %+v (%v)", j.Files, j.SkillFiles, err)
+	}
+	lines := strings.Join(s.appliedSkillOutcomes(plans[1]), "\n")
+	if !strings.Contains(lines, "did not install the crosshall skill") || strings.Contains(lines, "shared with") {
+		t.Fatalf("result lines: %q", lines)
 	}
 }

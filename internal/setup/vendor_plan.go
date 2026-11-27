@@ -44,6 +44,9 @@ type VendorPlan struct {
 	journal    journal
 	digest     string
 	disclosure installDisclosure
+	// sharedSkill is the skill edit this plan leaves to an earlier plan of
+	// the same group. It applies here when that plan did not write it.
+	sharedSkill *edit
 }
 
 // PendingScopeError reports the recorded scope before any recovery proceeds.
@@ -132,7 +135,8 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 	s.completeTargets(ctx, j, targets)
 	// One consent covers the group, so a skill path two vendors share gets
 	// one edit, in the first vendor's plan. The later vendor uses it through
-	// its recorded hooks path and makes no claim of its own.
+	// its recorded hooks path and makes no claim of its own, unless the first
+	// plan did not write it (see unwrittenSharedSkill).
 	skills := map[string]string{}
 	for i, target := range targets {
 		single := targets[i : i+1]
@@ -141,6 +145,7 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 			op = operation{Action: action, Adapters: []string{target.Spec.Adapter}}
 		}
 		var shared *PlanFile
+		var deferred *edit
 		op.Edits = slices.DeleteFunc(op.Edits, func(e edit) bool {
 			first, ok := skills[e.Path]
 			if !e.Skill {
@@ -150,11 +155,13 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 				return false
 			}
 			shared = &PlanFile{Adapter: e.Adapter, Path: e.Path, Skill: "shared", SharedWith: manifests.DisplayName(first)}
+			deferred = &e
 			return true
 		})
 		plan := newVendorPlan(op, single, j, digest, false)
 		if shared != nil {
 			plan.Files = append(plan.Files, *shared)
+			plan.sharedSkill = deferred
 		}
 		plans[targetIndexes[i]] = plan
 		plans[targetIndexes[i]].Err = err
@@ -324,7 +331,26 @@ func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPla
 		!sameSkillConsumers(j, p.journal, p.op) {
 		return errors.New("installation changed after planning; rerun to review the new plan")
 	}
-	return s.apply(ctx, digest, p.op)
+	op := p.op
+	if e, ok := unwrittenSharedSkill(j, p.sharedSkill); ok {
+		op.Edits = append(slices.Clone(op.Edits), e)
+	}
+	return s.apply(ctx, digest, op)
+}
+
+// unwrittenSharedSkill returns the skill edit a plan left to an earlier plan
+// of its group when no vendor holds that skill now, for example because the
+// earlier plan failed, and the file is still as planned. The group's consent
+// covered this write.
+func unwrittenSharedSkill(j journal, e *edit) (edit, bool) {
+	if e == nil || skillClaimer(j, e.Path) != "" {
+		return edit{}, false
+	}
+	current, err := readConfig(e.Path)
+	if err != nil || !e.matchesBefore(stamp(current)) {
+		return edit{}, false
+	}
+	return *e, true
 }
 
 // sameSkillConsumers reports that every skill edit of op still has the

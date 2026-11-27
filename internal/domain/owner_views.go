@@ -67,7 +67,8 @@ type OwnerMember struct {
 	EvidenceStale bool           `json:"evidence_stale"`
 	ExitTracking  ExitTracking   `json:"exit_tracking,omitempty"`
 	// StartUnseen says a live member without a route was joined by a prompt
-	// whose launch could not be bound: its session start was not seen.
+	// whose launch could not be bound, or, on a linked device, has no
+	// launch since it joined: its session start was not seen.
 	StartUnseen  bool    `json:"start_unseen,omitempty"`
 	HostAlive    bool    `json:"host_alive,omitempty"`
 	OpenRequests []int64 `json:"open_request_ids"`
@@ -170,6 +171,11 @@ func (s *Service) ownerWho(ctx context.Context, tx store.Tx, caller core.Caller,
 			if m.BindingState == "live" && publish == nil {
 				if m.StartUnseen, err = startUnseen(ctx, tx, m.principal); err != nil {
 					return core.Result{}, err
+				}
+				if !m.StartUnseen {
+					if m.StartUnseen, err = linkedStartUnseen(ctx, tx, m.principal, m.BindingID); err != nil {
+						return core.Result{}, err
+					}
 				}
 			}
 			m.OpenRequests, err = ownerOpenRequests(ctx, tx, m.BindingID)

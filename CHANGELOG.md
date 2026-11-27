@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A Claude notice that a later prompt passed by no longer holds its member (#450):** a Claude notice that got no receipt kept the member's lane held, and every later ask said `not woken: an earlier notice is unobserved`, until the owner ran `crosshall owner publish resume`. When a later prompt of the same session carried no receipt for it and the member has read everything it carries, the dispatcher now settles it (event `publish_attempt_settled`, reason `a later prompt carried no receipt: nothing left to read`) and sends the next notice. A notice that still carries unread work stays held, and the owner is still alerted after 15 minutes.
+
 ## v0.4.0 (2026-11-27)
 
 - **Release of v0.4.0-rc.3:** no product change since rc.3.

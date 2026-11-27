@@ -405,3 +405,80 @@ func TestPublisherLogsAnOpenNoticeOnceWhileItLeavesTheCandidates(t *testing.T) {
 		t.Fatalf("logged notice 1 %d times: %q", n, logged.String())
 	}
 }
+
+// processNoticeWorld submits notice 11 on the Claude member's process lane,
+// opens a later turn of the same launch that carried no receipt, and asks
+// again: request 12 waits behind the notice. With read, request 11 was
+// picked up first.
+func processNoticeWorld(t *testing.T, read bool) (*publishTestFixture, *publisher, *atomic.Int32) {
+	t.Helper()
+	var sends atomic.Int32
+	f := newPublishTestFixture(t)
+	f.ask(t, 11)
+	useTransport(t, publish.Transport{
+		Send: func(context.Context, domain.PublishTarget, string) domain.PublishOutcome {
+			sends.Add(1)
+			return domain.PublishSubmitted
+		},
+	})
+	p := &publisher{db: f.db}
+	t.Cleanup(p.workers.Wait)
+	tickPublisher(t, p, f.now, true)
+	p.workers.Wait()
+	f.requireAttempt(t, 1, domain.PublishSubmitted)
+	if read {
+		f.exec(t, `UPDATE recipient SET picked_up_at_ms = 1 WHERE message_id = 11`)
+	}
+	f.exec(t, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, finishing_hook_at_ms)
+		SELECT principal_id, launch_ref, 'typed', submitting_at_ms + 1000, submitting_at_ms + 2000 FROM publish_attempt WHERE id = 1`)
+	f.ask(t, 12)
+	return f, p, &sends
+}
+
+// #450: a process-lane notice with nothing left to read, passed by a later
+// prompt of its launch that carried no receipt, frees its member's lane;
+// the event says why and the next notice is sent.
+func TestPublisherFreesAProcessNoticeALaterPromptPassedBy(t *testing.T) {
+	f, p, sends := processNoticeWorld(t, true)
+	tickThrough(t, f, p, time.Second, 2*time.Second, 4*time.Second)
+	if !attemptRetired(t, f) {
+		t.Fatal("the passed-by notice still holds its lane")
+	}
+	if got := settledReason(t, f); got != domain.SettledByLaterPrompt {
+		t.Fatalf("settled for %q, want %q", got, domain.SettledByLaterPrompt)
+	}
+	if sends.Load() != 2 {
+		t.Fatalf("%d notices sent, want the next one offered", sends.Load())
+	}
+}
+
+// #450: a process-lane notice that still carries due work stays held after
+// a later prompt, and the owner is alerted once.
+func TestPublisherHoldsAProcessNoticeWithDueWorkAfterALaterPrompt(t *testing.T) {
+	f, p, sends := processNoticeWorld(t, false)
+	tickThrough(t, f, p, time.Second, 16*time.Minute, 17*time.Minute)
+	if attemptRetired(t, f) || sends.Load() != 1 {
+		t.Fatalf("retired %v after %d sends; want held", attemptRetired(t, f), sends.Load())
+	}
+	var alerts int
+	f.update(t, func(tx store.Tx) error {
+		return tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM owner_alert o JOIN event e ON e.seq = o.event_seq
+			WHERE e.kind = 'publish_held' AND json_extract(e.detail, '$.notice') = 1`).Scan(&alerts)
+	})
+	if alerts != 1 {
+		t.Fatalf("%d publish_held alerts for the held notice, want 1", alerts)
+	}
+}
+
+// #450: with nothing left to read but no later prompt, the notice may
+// still run: it stays held.
+func TestPublisherHoldsAProcessNoticeNoLaterPromptPassedBy(t *testing.T) {
+	f, p, sends := processNoticeWorld(t, true)
+	f.exec(t, `DELETE FROM turn WHERE turn_ref = 'typed'`)
+	f.exec(t, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, finishing_hook_at_ms)
+		SELECT principal_id, launch_ref, 'before', submitting_at_ms - 1000, submitting_at_ms FROM publish_attempt WHERE id = 1`)
+	tickThrough(t, f, p, time.Second, 2*time.Second, 4*time.Second)
+	if attemptRetired(t, f) || sends.Load() != 1 {
+		t.Fatalf("retired %v after %d sends; want held", attemptRetired(t, f), sends.Load())
+	}
+}

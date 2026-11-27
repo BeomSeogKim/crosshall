@@ -238,5 +238,9 @@ func (d installAdapterDisclosure) turnEnd() string {
 	default:
 		return prefix + "). Not available for this build."
 	}
-	return prefix + ", " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
+	line := prefix + ", " + mode + "). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. " + off
+	if d.TurnEndTrustedFrom != "" {
+		line += " This version is new to crosshall: the check is trusted from " + d.name + " " + d.TurnEndTrustedFrom + " evidence."
+	}
+	return line
 }

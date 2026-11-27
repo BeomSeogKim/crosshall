@@ -321,7 +321,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	}
 	// Forget the retry times of attempts no longer listed for the same
 	// reason (settled by a receipt or a withdrawal, or listed for another
-	// reason), and the log marks of attempts that closed.
+	// reason), and the log marks of attempts that closed while no
+	// withdrawal of theirs can still report: one started from a candidate
+	// read before an earlier one settled the attempt may still log (#448).
 	candidate := make(map[withdrawKey]bool, len(withdrawals))
 	for _, c := range withdrawals {
 		candidate[withdrawKeyOf(c)] = true
@@ -333,7 +335,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		return true
 	})
 	for _, id := range logged {
-		if !open[id] {
+		if _, running := p.withdrawRunning.Load(id); !open[id] && !running {
 			p.withdrawLogged.Delete(id)
 		}
 	}

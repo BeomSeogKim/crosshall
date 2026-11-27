@@ -34,6 +34,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	_ "modernc.org/sqlite" // Read the disposable ledger with Crosshall's own driver.
@@ -126,6 +127,10 @@ func writeCodexHooks(t *testing.T, root, exe string, m codexInstall, metered boo
 	// SessionStart and UserPromptSubmit. The shipped handler has already run.
 	barrier := "for n in 1 2 3 4 5 6 7 8 9 10; do test -f " + codexQuote(filepath.Join(root, "note-stored")) + " && exit 0; sleep 0.1; done; exit 1"
 	hooks["SessionStart"] = append(hooks["SessionStart"], codexGroup{Hooks: []codexHook{{"command", barrier, 2}}})
+	// Another records each SessionStart input as Codex sent it, for the
+	// launch provenance check: the shipped parser keeps only known fields.
+	record := codexQuote(filepath.Join(root, "session-start-input"))
+	hooks["SessionStart"] = append(hooks["SessionStart"], codexGroup{Hooks: []codexHook{{"command", "/bin/cat >> " + record + " && printf '\\n' >> " + record, 1}}})
 	data, err := json.Marshal(map[string]any{"hooks": hooks})
 	codexMust(t, err)
 	codexPut(t, filepath.Join(root, "codex", i.File), data)
@@ -307,6 +312,89 @@ func codexReminderEvidence(version, platform, mode, revision string) codexResult
 		return codexResult{"reminder", "unavailable", "The hook could not verify its launch version or mode. This run did not measure whether the read process receives the native tool-call ID."}
 	}
 	return codexResult{"reminder", "candidate", "No reminder verdict was established for this build, platform, mode and manifest revision."}
+}
+
+// codexProvenanceFields names the fields of SessionStart inputs (one JSON
+// object per line) that could carry a launch version or mode, at any depth.
+// permission_mode is the approval policy, not the launch mode.
+func codexProvenanceFields(input []byte) ([]string, error) {
+	var found []string
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for key, value := range v {
+				name := strings.TrimPrefix(path+"."+key, ".")
+				if key != "permission_mode" && slices.ContainsFunc(codexKeyWords(key), func(w string) bool { return w == "version" || w == "mode" }) {
+					found = append(found, name)
+				}
+				walk(name, value)
+			}
+		case []any:
+			for _, item := range v {
+				walk(path+"[]", item)
+			}
+		}
+	}
+	lines := 0
+	for line := range bytes.SplitSeq(input, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var v map[string]any
+		if err := json.Unmarshal(line, &v); err != nil {
+			return nil, fmt.Errorf("SessionStart input: %w", err)
+		}
+		lines++
+		walk("", v)
+	}
+	if lines == 0 {
+		return nil, errors.New("no SessionStart input was recorded")
+	}
+	slices.Sort(found)
+	return slices.Compact(found), nil
+}
+
+// codexKeyWords splits a field name into lower-case words at underscores,
+// hyphens, dots and camel-case boundaries: "launchMode" is launch, mode;
+// "model" is one word.
+func codexKeyWords(key string) []string {
+	var words []string
+	var word []rune
+	for _, r := range key {
+		upper := unicode.IsUpper(r)
+		if r == '_' || r == '-' || r == '.' || upper && len(word) > 0 {
+			if len(word) > 0 {
+				words = append(words, string(word))
+			}
+			word = word[:0]
+			if !upper {
+				continue
+			}
+		}
+		word = append(word, unicode.ToLower(r))
+	}
+	if len(word) > 0 {
+		words = append(words, string(word))
+	}
+	return words
+}
+
+func TestCodexProvenanceFields(t *testing.T) {
+	// The 0.171.0 SessionStart input, then the same with provenance added.
+	const observed = `{"session_id":"s","transcript_path":"/t","cwd":"/r","hook_event_name":"SessionStart","model":"fixture","permission_mode":"bypassPermissions","source":"startup"}`
+	if got, err := codexProvenanceFields([]byte(observed + "\n" + observed + "\n")); err != nil || len(got) != 0 {
+		t.Fatalf("observed input: %v %v", got, err)
+	}
+	added := strings.Replace(observed, `"source"`, `"codex_version":"0.172.0","launch":{"Mode":"exec"},"sessionMode":"exec","source"`, 1)
+	if got, err := codexProvenanceFields([]byte(observed + "\n" + added + "\n")); err != nil || !slices.Equal(got, []string{"codex_version", "launch.Mode", "sessionMode"}) {
+		t.Fatalf("input with provenance: %v %v", got, err)
+	}
+	for _, input := range []string{"", "\n", "not json\n"} {
+		if _, err := codexProvenanceFields([]byte(input)); err == nil {
+			t.Errorf("%q: no error", input)
+		}
+	}
 }
 
 func TestCodexReminderEvidenceScope(t *testing.T) {
@@ -560,6 +648,13 @@ func TestCodexExecConformance(t *testing.T) {
 		codexMust(t, err)
 		if !unverified {
 			t.Fatal("Codex supplied new launch provenance; re-evaluate reminder availability")
+		}
+		input, err := os.ReadFile(filepath.Join(root, "session-start-input"))
+		codexMust(t, err)
+		fields, err := codexProvenanceFields(input)
+		codexMust(t, err)
+		if len(fields) > 0 {
+			t.Fatalf("Codex supplied new launch provenance in its SessionStart input (%s); re-evaluate reminder availability", strings.Join(fields, ", "))
 		}
 	}
 	codexLedger(t, db)

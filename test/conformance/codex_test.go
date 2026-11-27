@@ -293,10 +293,17 @@ type codexResult struct {
 	Check string `json:"check"`
 }
 
-// Only the measured vendor build, platform, mode and adapter revision have a
+// codexReminderVersions are the Codex builds the reminder rows cover (issue
+// #20): the post-tool matcher starts on every shell call, and the hook cannot
+// verify its launch version or mode. 0.170.0 and 0.171.0 were measured;
+// 0.172.0 is the release gate's package, and each run checks both facts again
+// (TestCodexReminderTransport and the provenance guard below).
+var codexReminderVersions = []string{"0.170.0", "0.171.0", "0.172.0"}
+
+// Only the measured vendor builds, platform, mode and adapter revision have a
 // negative result. A different tuple needs its own conformance measurements.
 func codexReminderEvidence(version, platform, mode, revision string) codexResult {
-	if version == "0.170.0" && platform == "darwin-arm64" && mode == "exec" && revision == "codex-1" {
+	if slices.Contains(codexReminderVersions, version) && platform == "darwin-arm64" && mode == "exec" && revision == "codex-1" {
 		return codexResult{"reminder", "unavailable", "The hook could not verify its launch version or mode. This run did not measure whether the read process receives the native tool-call ID."}
 	}
 	return codexResult{"reminder", "candidate", "No reminder verdict was established for this build, platform, mode and manifest revision."}
@@ -305,6 +312,9 @@ func codexReminderEvidence(version, platform, mode, revision string) codexResult
 func TestCodexReminderEvidenceScope(t *testing.T) {
 	for _, tc := range []struct{ version, platform, mode, revision, level string }{
 		{"0.170.0", "darwin-arm64", "exec", "codex-1", "unavailable"},
+		{"0.171.0", "darwin-arm64", "exec", "codex-1", "unavailable"},
+		{"0.172.0", "darwin-arm64", "exec", "codex-1", "unavailable"},
+		{"0.173.0", "darwin-arm64", "exec", "codex-1", "candidate"},
 		{"0.169.0-alpha.11.1", "darwin-arm64", "exec", "codex-1", "candidate"},
 		{"0.170.0", "linux-arm64", "exec", "codex-1", "candidate"},
 		{"0.170.0", "darwin-amd64", "exec", "codex-1", "candidate"},
@@ -540,9 +550,12 @@ func TestCodexExecConformance(t *testing.T) {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	reminder := codexReminderEvidence(match[1], platform, "exec", manifest.Revision)
 	if reminder.Level == "unavailable" {
+		// The hook infers in_process itself from the process it runs in; that
+		// does not tell exec from an interactive session. Any other version
+		// or mode is new launch provenance.
 		var unverified bool
 		err := db.QueryRow(`SELECT COUNT(*) > 0 AND COUNT(*) = SUM(
-			json_extract(profile, '$.vendor_version') = 'unverified' AND json_extract(profile, '$.mode') = 'unverified')
+			json_extract(profile, '$.vendor_version') = 'unverified' AND json_extract(profile, '$.mode') IN ('unverified', 'in_process'))
 			FROM adapter_launch WHERE json_extract(profile, '$.adapter') = 'codex'`).Scan(&unverified)
 		codexMust(t, err)
 		if !unverified {

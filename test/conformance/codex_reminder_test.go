@@ -43,7 +43,8 @@ func TestCodexReminderTransport(t *testing.T) {
 	version.Dir, version.Env = root, env
 	output, err := version.Output()
 	codexMust(t, err)
-	if strings.TrimSpace(string(output)) != "codex-cli 0.170.0" || runtime.GOOS+"-"+runtime.GOARCH != "darwin-arm64" {
+	measured, found := strings.CutPrefix(strings.TrimSpace(string(output)), "codex-cli ")
+	if !found || !slices.Contains(codexReminderVersions, measured) || runtime.GOOS+"-"+runtime.GOARCH != "darwin-arm64" {
 		t.Skipf("no reminder transport evidence for %s on %s/%s", strings.TrimSpace(string(output)), runtime.GOOS, runtime.GOARCH)
 	}
 	exe := codexBinary(t, root)

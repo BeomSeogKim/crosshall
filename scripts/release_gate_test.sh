@@ -197,7 +197,8 @@ done
 # 4. The full-run row's neighbours: a process counts as left by an earlier
 #    row only when its executable is one the gate built; a mere path in the
 #    command line is named, not blamed; test runs are told by their argv.
-w=/gate/work o=/gate/out
+#    The gate's directories hold a space, as a user's --out path may.
+w="/gate/the work" o="/gate/the out"
 classes=$(awk -v work="$w" -v out="$o" -f "$here/release_gate_others.awk" <<PS
   101 00:01 $o/bin/crosshall __dispatch
   102 00:01 $w/crosshall-link-base __dispatch

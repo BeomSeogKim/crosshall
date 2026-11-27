@@ -421,7 +421,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 					status += fmt.Sprintf(" (trusted from %s evidence)", notice.TrustedFrom)
 				}
 			} else if notice.LiveLaunches == 0 {
-				status = "not checked yet: no live " + manifests.DisplayName(a.Adapter) + " session"
+				status = "not checked yet: no live " + manifests.DisplayName(a.Adapter) + " session joined to this hall"
 			}
 			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
 				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)

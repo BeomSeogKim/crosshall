@@ -148,23 +148,8 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 			Scan(&ready) == nil && ready
 	})
 
-	// The home reports the notice route the device's wake will use (#438),
-	// once it has served the launch's route change.
-	eventually(t, "who reports a notice route for the linked receiver", func() bool {
-		for _, m := range sender.must("who").obj["members"].([]any) {
-			if row := m.(map[string]any); row["alias"] == "receiver" {
-				return row["wake"] == "notice"
-			}
-		}
-		return false
-	})
 	const request = "Check the linked native inbox."
-	asked := sender.must("ask", "@receiver", request)
-	if recipients, _ := asked.obj["recipients"].([]any); len(recipients) != 1 ||
-		recipients[0].(map[string]any)["wake"] != "notice" {
-		t.Fatalf("the ask did not report a notice for the linked receiver: %v", asked.obj)
-	}
-	askID := num(t, asked, "id")
+	askID := num(t, sender.must("ask", "@receiver", request), "id")
 	adapter, ok := publish.Lookup("claude")
 	if !ok {
 		t.Fatal("Claude publish adapter missing from the fixture binary")
@@ -213,5 +198,23 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 	case line := <-lines:
 		t.Fatalf("native inbox sent a duplicate wake: %s", line)
 	default:
+	}
+
+	// The device submitted a wake on this route: the home now reports it
+	// as a notice route, and the next request is woken the same way (#438).
+	for _, m := range sender.must("who").obj["members"].([]any) {
+		if row := m.(map[string]any); row["alias"] == "receiver" && row["wake"] != "notice" {
+			t.Fatalf("who reports the linked receiver as %v", row)
+		}
+	}
+	asked := sender.must("ask", "@receiver", "Check the linked native inbox again.")
+	if recipients, _ := asked.obj["recipients"].([]any); len(recipients) != 1 ||
+		recipients[0].(map[string]any)["wake"] != "notice" {
+		t.Fatalf("the second ask did not report a notice for the linked receiver: %v", asked.obj)
+	}
+	select {
+	case <-lines:
+	case <-time.After(fixtureEventTimeout):
+		t.Fatalf("native inbox did not receive the wake for request %d", num(t, asked, "id"))
 	}
 }

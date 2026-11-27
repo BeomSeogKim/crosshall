@@ -115,15 +115,24 @@ func memberWakeOf(ctx context.Context, tx store.Tx, binding int64, now time.Time
 }
 
 // linkWakePending says a linked wake could still offer message msg to the
-// principal: no notice announced it and no linked attempt may have
-// submitted it.
+// principal, as pendingLinkWakeIDs selects it: no notice announced it, no
+// linked attempt may have submitted it, and the device has not refused it
+// on the member's current route.
 func linkWakePending(ctx context.Context, tx store.Tx, principal, msg int64) (bool, error) {
 	var pending bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
 		WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
 		AND NOT EXISTS (SELECT 1 FROM announcement a WHERE a.principal_id = x.principal_id AND a.message_id = x.message_id)
 		AND NOT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
-			WHERE a.principal_id = x.principal_id AND item.value = x.message_id AND `+linkWakeMayHaveSubmitted+`))`,
+			WHERE a.principal_id = x.principal_id AND item.value = x.message_id AND (`+linkWakeMayHaveSubmitted+`
+				OR (a.state = 'not_submitted' AND a.submission_seq > 0 AND EXISTS (SELECT 1 FROM link_event_launch l
+					WHERE l.principal_id = a.principal_id AND l.device_id = a.device_id AND l.credential_gen = a.credential_gen
+					AND json_extract(a.route, '$.boot') = l.boot AND json_extract(a.route, '$.launch') = l.launch_ref
+					AND json_extract(a.route, '$.policy_epoch') = l.policy_epoch
+					AND json_extract(a.route, '$.scope.leaf_generation') = l.leaf_generation
+					AND json_extract(a.route, '$.scope.membership.binding_id') = l.binding_id
+					AND json_extract(a.route, '$.scope.membership.generation') = l.membership_generation
+					AND json_extract(a.route, '$.scope.route_epoch') = l.route_epoch)))))`,
 		principal, msg).Scan(&pending)
 	return pending, err
 }
@@ -169,6 +178,16 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 	if attempt != "" && attempt != "reserved" {
 		return Wake{Wake: WakeNotice}, true, nil // already passed the submission fence
 	}
+	if attempt == "" {
+		var submitted bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
+			WHERE a.principal_id = ? AND item.value = ? AND `+linkWakeMayHaveSubmitted+`)`, principal, msg).Scan(&submitted); err != nil {
+			return Wake{}, false, err
+		}
+		if submitted {
+			return Wake{Wake: WakeNotice}, true, nil // a linked wake may have submitted it
+		}
+	}
 	eligible := attempt == "reserved"
 	var w Wake
 	if !eligible {
@@ -182,16 +201,6 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 		case w.Wake == WakeNotice && linked:
 			if eligible, err = linkWakePending(ctx, tx, principal, msg); err != nil {
 				return Wake{}, false, err
-			}
-			if !eligible {
-				var submitted bool
-				if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
-					WHERE a.principal_id = ? AND item.value = ? AND `+linkWakeMayHaveSubmitted+`)`, principal, msg).Scan(&submitted); err != nil {
-					return Wake{}, false, err
-				}
-				if submitted {
-					return Wake{Wake: WakeNotice}, true, nil // a linked wake may have submitted it
-				}
 			}
 			w = Wake{Wake: WakeNone, Why: WhyKind}
 		case w.Wake == WakeNotice:

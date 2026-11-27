@@ -314,3 +314,34 @@ func TestPublisherLogsAnUnsettledWithdrawalOnce(t *testing.T) {
 		})
 	}
 }
+
+// Vega #447: a notice found not pending while its route had ended is
+// withdrawn again once the same thread reopens with nothing left to read:
+// the changed reason is a new withdrawal, not the ended one's guard.
+func TestPublisherWithdrawsAgainWhenTheReasonChanges(t *testing.T) {
+	f, p, sends, withdrawals := threadNoticeWorld(t, publish.NotPending, true)
+	f.exec(t, `UPDATE publish_route SET state = 'ended', reason = 'session ended'`)
+	tickThrough(t, f, p, time.Second, 2*time.Second)
+	if attemptRetired(t, f) || withdrawals.Load() != 1 {
+		t.Fatalf("ended: retired %v after %d withdrawals, want held after one", attemptRetired(t, f), withdrawals.Load())
+	}
+	f.exec(t, `UPDATE publish_route SET state = 'active', reason = ''`)
+	tickThrough(t, f, p, 3*time.Second, 4*time.Second, 6*time.Second)
+	if !attemptRetired(t, f) || withdrawals.Load() != 2 || sends.Load() != 2 {
+		t.Fatalf("reopened: retired %v after %d withdrawals and %d sends", attemptRetired(t, f), withdrawals.Load(), sends.Load())
+	}
+}
+
+// Vega #447: a settled notice's log guard is dropped once a tick finds it
+// is no longer a candidate.
+func TestPublisherForgetsTheLogGuardOfASettledNotice(t *testing.T) {
+	f, p, _, _ := threadNoticeWorld(t, publish.NotPending, true)
+	tickThrough(t, f, p, time.Second, 2*time.Second)
+	if !attemptRetired(t, f) {
+		t.Fatal("the notice was not settled")
+	}
+	p.withdrawLogged.Range(func(key, _ any) bool {
+		t.Errorf("log guard kept for notice %v", key)
+		return true
+	})
+}

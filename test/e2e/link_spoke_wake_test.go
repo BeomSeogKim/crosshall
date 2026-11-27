@@ -22,6 +22,14 @@ import (
 )
 
 func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
+	t.Run("started-after-join", func(t *testing.T) { testSpokeLinkWakesClaude(t, false) })
+	// A session that joins by hand during a turn, after its start was not
+	// seen, is woken without a new prompt: its turn end opens the launch on
+	// the device and at the home (#437).
+	t.Run("joined-during-a-turn", func(t *testing.T) { testSpokeLinkWakesClaude(t, true) })
+}
+
+func testSpokeLinkWakesClaude(t *testing.T, lateJoin bool) {
 	const sessionID = "linked-claude-native-inbox"
 	const version = "2.1.9262"
 	f := newLinkFixture(t, binary, binary)
@@ -109,6 +117,30 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 	spoke.must("link", linkFixtureTarget, "--name", "fixture-spoke", "--yes")
 	waitSpokeLink(t, spoke, "connected")
 	receiver := &participant{w: f.spoke, extra: []string{"CLAUDE_CODE_SESSION_ID=" + sessionID, "CLAUDE_PID=" + pid}}
+	repo := filepath.Join(f.spoke.home, "checkout")
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runHook := func(event string, fields map[string]any) {
+		t.Helper()
+		fields["hook_event_name"], fields["session_id"], fields["cwd"] = event, sessionID, repo
+		input, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), f.spoke.binaryPath(), "hook", "claude", event)
+		cmd.Dir, cmd.Stdin = repo, bytes.NewReader(input)
+		cmd.Env = append(f.spoke.baseEnv(), receiver.extra...)
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_MESSAGING_SOCKET="+socket,
+			"AI_AGENT=claude-code_"+strings.ReplaceAll(version, ".", "-")+"_harness")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("linked Claude %s: %v: %s", event, err, out)
+		}
+	}
+	start := map[string]any{"source": "startup", "permission_mode": "default"}
+	if lateJoin {
+		runHook("SessionStart", start) // not a member yet: the start binds nothing
+	}
 	receiver.must("join", "native-wake", "--as", "receiver")
 
 	homeDB := f.home.db()
@@ -119,24 +151,11 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 			spokeDB.QueryRow(`SELECT c.eligible AND p.enabled FROM spoke_event_cursor c, spoke_policy p
 				WHERE p.adapter = 'claude'`).Scan(&enabled) == nil && enabled
 	})
-	repo := filepath.Join(f.spoke.home, "checkout")
-	if err := os.Mkdir(repo, 0700); err != nil {
-		t.Fatal(err)
-	}
-	start, err := json.Marshal(map[string]any{
-		"hook_event_name": "SessionStart", "session_id": sessionID, "cwd": repo,
-		"source": "startup", "permission_mode": "default",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.CommandContext(t.Context(), f.spoke.binaryPath(), "hook", "claude", "SessionStart")
-	cmd.Dir, cmd.Stdin = repo, bytes.NewReader(start)
-	cmd.Env = append(f.spoke.baseEnv(), receiver.extra...)
-	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_MESSAGING_SOCKET="+socket,
-		"AI_AGENT=claude-code_"+strings.ReplaceAll(version, ".", "-")+"_harness")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("linked Claude start: %v: %s", err, out)
+	if lateJoin {
+		// The turn that ran the join ends; no prompt follows it.
+		runHook("Stop", map[string]any{"prompt_id": "turn-1", "stop_hook_active": false, "permission_mode": "default"})
+	} else {
+		runHook("SessionStart", start)
 	}
 	eventually(t, "the home received the verified launch and matching scope cut", func() bool {
 		var ready bool

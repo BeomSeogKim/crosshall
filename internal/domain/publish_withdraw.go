@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,6 +125,52 @@ func SettleNotPendingAttempt(ctx context.Context, tx store.Tx, id int64, now tim
 		return false, err
 	}
 	return true, settlePublishAttempt(ctx, tx, id, "not pending: "+WithdrawNothingToRead, now)
+}
+
+// SettledByLaterPrompt is why a process-lane notice is settled once its
+// launch opened a later turn with no receipt for it and nothing it carries
+// is due (#450).
+const SettledByLaterPrompt = "a later prompt carried no receipt: " + WithdrawNothingToRead
+
+// laterPromptNotices are the open notices on process lanes that were
+// submitted, and whose launch opened a turn of its own after the
+// submission completed (resolved_at_ms, taken once the transport
+// returned). The notice's own prompt observes it in the transaction that
+// opens its turn, so such a turn came from a prompt that carried no
+// receipt for it. An uncertain send has no completed submission and stays
+// held. A typed-ahead placeholder is input into a running turn, which
+// Claude Code may absorb, not a turn of its own. It reads only open
+// notices, through the partial index publish_attempt_binding.
+var laterPromptNotices = `SELECT a.id FROM publish_attempt a
+	WHERE ` + openPublishLane + ` AND a.state = 'submitted' AND a.lane LIKE 'process:%'
+		AND EXISTS (SELECT 1 FROM turn t WHERE t.principal_id = a.principal_id AND t.launch_ref = a.launch_ref
+			AND t.opened_hook_at_ms > a.resolved_at_ms
+			AND substr(t.turn_ref, 1, ` + strconv.Itoa(len(typedAheadPrefix)) + `) <> '` + typedAheadPrefix + `')`
+
+// SettleLaterPromptNotices settles the process-lane notices a later prompt
+// of their launch passed by while nothing they carry is due (#450). A
+// process lane has no withdrawal (WithdrawCandidates lists none), so such
+// a notice held its member until a receipt, the end of its process, or the
+// owner's resume. If it still runs, its turn finds nothing to do, and its
+// late receipt is judged stale. A notice that still carries due work stays
+// held, and the publish_held owner alert still fires for it.
+func SettleLaterPromptNotices(ctx context.Context, tx store.Tx, now time.Time) error {
+	ids, err := selectIDs(ctx, tx, laterPromptNotices)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		due, err := carriesDueItem(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if !due {
+			if err := settlePublishAttempt(ctx, tx, id, SettledByLaterPrompt, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // OpenPublishAttempts reports which of ids are still open: not observed,

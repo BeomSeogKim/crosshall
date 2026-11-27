@@ -457,3 +457,41 @@ func TestTheOwnerSeesALinkedMemberWhoseStartWasNotSeen(t *testing.T) {
 		t.Fatal("a linked member whose adapter has no sender shows an unseen start")
 	}
 }
+
+// A linked member that joined during a turn sends no prompt until its user
+// types one: the turn end or idle prompt of its process launch opens the
+// launch, so its wake route needs no new prompt. A turn end of a
+// session-scoped launch opens none (#437).
+func TestATurnEndOfAProcessLaunchOpensALinkedLaunch(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		cmd   func(at int64) HookEvent
+		opens bool
+	}{
+		{"a Stop", func(at int64) HookEvent { return stop("pid-42-joined", "t1", at) }, true},
+		{"an idle prompt", func(at int64) HookEvent { return idlePrompt("pid-42-joined", at) }, true},
+		{"a Stop of a session launch", func(at int64) HookEvent { return stop(SessionLaunch, "t1", at) }, false},
+		{"an approval request", func(at int64) HookEvent {
+			cmd := stop("pid-42-joined", "t1", at)
+			cmd.Fact, cmd.EventRef = FactApprovalRequested, "t1:approval"
+			return cmd
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newLinkedHookFixture(t)
+			at := ms(h.now)
+			h.token.WallMS = at
+			status := link.RecordedStale
+			if c.opens {
+				status = link.RecordedApplied
+			}
+			h.fact(1, 2, c.cmd(at), status)
+			if got := h.count(`SELECT COUNT(*) FROM link_event_launch WHERE principal_id = ?`, h.principal); got != map[bool]int{true: 1}[c.opens] {
+				t.Fatalf("%d linked launches, want opened %t", got, c.opens)
+			}
+			if h.startUnseen("reader") == c.opens {
+				t.Fatalf("unseen start shown %t", !c.opens)
+			}
+		})
+	}
+}

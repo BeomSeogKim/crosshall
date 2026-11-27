@@ -20,25 +20,36 @@ import (
 )
 
 // A callback that may enroll its session gets the start budget: a start,
-// and a prompt, which enrolls a session whose start was missed. Every
-// other callback keeps the ordinary budget.
+// and a prompt, which enrolls a session whose start was missed. So does a
+// turn end or idle prompt of an adapter that names its process, which may
+// bind a launch whose start was missed (#437); like a prompt it runs on the
+// ordinary budget until it does. Every other callback keeps the ordinary
+// budget.
 func TestCallbacksThatMayEnrollGetTheStartBudget(t *testing.T) {
 	for _, tc := range []struct {
 		adapter, event string
-		want           time.Duration
+		want, base     time.Duration
 	}{
-		{"claude", "SessionStart", StartBudget},
-		{"codex", "SessionStart", StartBudget},
-		{"agy", "SessionStart", StartBudget},
-		{"claude", "UserPromptSubmit", StartBudget},
-		{"codex", "UserPromptSubmit", StartBudget},
-		{"claude", "Stop", Budget},
-		{"codex", "PermissionRequest", Budget},
-		{"claude", "NoSuchEvent", Budget},
-		{"nosuchadapter", "SessionStart", Budget},
+		{"claude", "SessionStart", StartBudget, StartBudget},
+		{"codex", "SessionStart", StartBudget, StartBudget},
+		{"agy", "SessionStart", StartBudget, StartBudget},
+		{"claude", "UserPromptSubmit", StartBudget, Budget},
+		{"codex", "UserPromptSubmit", StartBudget, Budget},
+		{"claude", "Stop", StartBudget, Budget},
+		{"claude", "StopFailure", StartBudget, Budget},
+		{"claude", "Notification", StartBudget, Budget},
+		{"codex", "Stop", Budget, Budget},
+		{"agy", "Stop", Budget, Budget},
+		{"claude", "SessionEnd", Budget, Budget},
+		{"codex", "PermissionRequest", Budget, Budget},
+		{"claude", "NoSuchEvent", Budget, Budget},
+		{"nosuchadapter", "SessionStart", Budget, Budget},
 	} {
 		if got := CallbackBudget(tc.adapter, tc.event); got != tc.want {
 			t.Errorf("%s %s: %v, want %v", tc.adapter, tc.event, got, tc.want)
+		}
+		if got := CallbackBase(tc.adapter, tc.event); got != tc.base {
+			t.Errorf("%s %s base: %v, want %v", tc.adapter, tc.event, got, tc.base)
 		}
 	}
 }

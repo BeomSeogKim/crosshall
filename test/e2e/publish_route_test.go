@@ -210,3 +210,55 @@ func TestPublishRouteTakesTheSocketFromTheNextPrompt(t *testing.T) {
 			sessionID, attempt)
 	})
 }
+
+// #437: a session that joins by hand during a turn, whose start was not
+// seen and whose join bound no launch, gets its route from that turn's end,
+// without a new prompt.
+func TestPublishRouteOfAHandJoinComesFromItsTurnEnd(t *testing.T) {
+	w := newWorld(t)
+	owner := w.owner()
+	owner.must("owner", "start")
+	owner.must("owner", "channel", "create", "checkout")
+	owner.must("owner", "adapter", "set", "claude", "--enabled", "on")
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "claude-e2e-joined-during-a-turn"
+	pid := fmt.Sprintf("%d", os.Getpid())
+	socket := "/tmp/cc-socks/" + pid + ".sock"
+	// The join runs outside the session's process, so it proposes no launch.
+	joined := &participant{w: w, extra: []string{"CLAUDE_CODE_SESSION_ID=" + sessionID}}
+	joined.must("join", "checkout", "--as", "late")
+	db := w.db()
+	var routes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM publish_route WHERE session_ref = ?`, sessionID).Scan(&routes); err != nil || routes != 0 {
+		t.Fatalf("the hand join registered %d routes (%v)", routes, err)
+	}
+	session := claudeSession{w: w, key: sessionID}
+	deadline := time.Now().Add(fixtureEventTimeout)
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	// A hook can exit successfully when its callback budget expires.
+	for attempt := 1; ; attempt++ {
+		cmd := exec.CommandContext(ctx, w.binaryPath(), "hook", "claude", "Stop")
+		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"hook_event_name":"Stop","session_id":%q,"prompt_id":"turn-%d","stop_hook_active":false,"cwd":%q,"permission_mode":"default"}`,
+			sessionID, attempt, repo))
+		cmd.Env = append(w.baseEnv(), "CLAUDE_CODE_SESSION_ID="+sessionID, "CLAUDE_PID="+pid,
+			"CLAUDE_CODE_ENTRYPOINT=cli", "AI_AGENT=claude-code_2-1-327_harness", "CLAUDE_CODE_MESSAGING_SOCKET="+socket)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hook Stop: %v\n%s", err, out)
+		}
+		session.waitForConsumption(deadline)
+		var state, path, launch string
+		err := db.QueryRowContext(ctx, `SELECT state, COALESCE(socket_path, ''), launch_ref FROM publish_route WHERE session_ref = ?`, sessionID).
+			Scan(&state, &path, &launch)
+		if err == nil && state == "active" && path == socket && strings.HasPrefix(launch, "pid-"+pid+"-") {
+			return
+		}
+		if counter := session.lastCounter(); !errors.Is(err, sql.ErrNoRows) || counter != "Stop deadline" || !time.Now().Before(deadline) {
+			t.Fatalf("Stop after %d callbacks: route %s %q %s (%v), last hook counter %q", attempt, state, path, launch, err, counter)
+		}
+	}
+}

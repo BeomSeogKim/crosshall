@@ -17,7 +17,8 @@ import (
 )
 
 // The prompt-side cost of a late start: once per launch the record write
-// (ancestor walk, lock, file), and on every prompt the PID namespace read.
+// (ancestor walk, lock, file), and on every prompt the PID namespace read;
+// ack_read is the acknowledgement read a turn end adds.
 // Diagnostic only; the hook's own budget is 28 ms at p95.
 func TestLateStartHookCost(t *testing.T) {
 	leaf := hookFileRoot(t)
@@ -48,6 +49,13 @@ func TestLateStartHookCost(t *testing.T) {
 				t.Fatalf("read: %+v, %v", b, err)
 			}
 		})
+		bound, _ := bindLaunch(leaf, "g1", e, spec, at.Add(time.Millisecond))
+		ackLaunch(leaf, bound)
+		timed("ack_read", func() {
+			if !launchAcked(leaf, bound) {
+				t.Fatal("acknowledgement not read")
+			}
+		})
 		timed("pid_namespace", func() { _ = proc.PIDNamespace() })
 		timed("hosted_by", func() {
 			if !proc.HostedBy(pid) {
@@ -55,7 +63,7 @@ func TestLateStartHookCost(t *testing.T) {
 			}
 		})
 	}
-	for _, metric := range []string{"first_prompt_writes_record", "later_prompt_reads_record", "hosted_by", "pid_namespace"} {
+	for _, metric := range []string{"first_prompt_writes_record", "later_prompt_reads_record", "ack_read", "hosted_by", "pid_namespace"} {
 		times := metrics[metric]
 		slices.Sort(times)
 		t.Logf("%s n=%d p50_us=%.1f p95_us=%.1f max_us=%.1f", metric, samples,

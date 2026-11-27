@@ -58,7 +58,7 @@ func TestResumedLegacyCodexInstallReportsPinFollowup(t *testing.T) {
 			}
 
 			plan := codexInstallPlan(t, s)
-			if plan.Err != nil || plan.Resume || len(plan.Files) != 2 || plan.Files[1].AddText == "" ||
+			if plan.Err != nil || plan.Resume || len(plan.Files) != 3 || plan.Files[1].AddText == "" || plan.Files[2].Skill != "install" ||
 				len(plan.Files[0].Add) == 0 || len(plan.Files[0].Add) != len(plan.Files[0].Remove) {
 				t.Fatalf("next setup did not preview a fresh pin: resume=%t, err=%v", plan.Resume, plan.Err)
 			}
@@ -94,7 +94,7 @@ func recordPendingLegacyCodexInstall(t *testing.T, s Service, f setuptest.Fixtur
 	if err != nil {
 		t.Fatal(err)
 	}
-	target.CommandRules = nil
+	target.CommandRules, target.Skill = nil, nil
 	for i, entry := range target.Wanted {
 		command, err := recordedCodexRoute(entry)
 		if err != nil {

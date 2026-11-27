@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+// The crosshall skill setup installs under each vendor's home.
+const (
+	skillDir  = "skills/crosshall"
+	skillFile = skillDir + "/SKILL.md"
+)
+
 type Fixture struct {
 	Root, Home, State, Bin string
 	Outside                string
@@ -27,13 +33,14 @@ func New(t testing.TB, vendors ...string) Fixture {
 		Root: root, Home: filepath.Join(root, "home"), State: filepath.Join(root, "state"),
 		Bin: filepath.Join(root, "bin"), Outside: filepath.Join(parent, "outside"),
 	}
-	for _, dir := range []string{f.Home, f.Bin, filepath.Join(f.Outside, ".claude"),
-		filepath.Join(f.Outside, ".codex"), filepath.Join(f.Outside, ".gemini", "config")} {
+	for _, dir := range []string{f.Home, f.Bin, filepath.Join(f.Outside, ".claude", skillDir),
+		filepath.Join(f.Outside, ".codex", skillDir), filepath.Join(f.Outside, ".gemini", "config", skillDir)} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{".claude/settings.json", ".codex/hooks.json", ".gemini/config/hooks.json"} {
+	for _, name := range []string{".claude/settings.json", ".codex/hooks.json", ".gemini/config/hooks.json",
+		".claude/" + skillFile, ".codex/" + skillFile, ".gemini/config/" + skillFile} {
 		path := filepath.Join(f.Outside, name)
 		const marker = "{\"outside_fixture\":true}\n"
 		if err := os.WriteFile(path, []byte(marker), 0600); err != nil {
@@ -91,8 +98,9 @@ func New(t testing.TB, vendors ...string) Fixture {
 func (f Fixture) CheckTargets(t testing.TB) {
 	t.Helper()
 	home := os.Getenv("HOME")
+	agy := filepath.Join(home, ".gemini", "config")
 	paths := []string{home, os.Getenv("CROSSHALL_STATE_DIR"), os.Getenv("XDG_STATE_HOME"),
-		filepath.Join(home, ".gemini", "config", "hooks.json")}
+		filepath.Join(agy, "hooks.json"), filepath.Join(agy, skillDir), filepath.Join(agy, skillFile)}
 	for _, target := range []struct{ variable, dir, file string }{
 		{"CLAUDE_CONFIG_DIR", ".claude", "settings.json"}, {"CODEX_HOME", ".codex", "hooks.json"},
 	} {
@@ -100,7 +108,7 @@ func (f Fixture) CheckTargets(t testing.TB) {
 		if !ok {
 			dir = filepath.Join(home, target.dir)
 		}
-		paths = append(paths, dir, filepath.Join(dir, target.file))
+		paths = append(paths, dir, filepath.Join(dir, target.file), filepath.Join(dir, skillDir), filepath.Join(dir, skillFile))
 	}
 	for _, path := range paths {
 		if err := f.checkPath(path); err != nil {

@@ -159,6 +159,9 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 		if err := domain.ActivatePublishRoutes(ctx, tx, now); err != nil {
 			return err
 		}
+		if err := domain.SettleLaterPromptNotices(ctx, tx, now); err != nil {
+			return err
+		}
 		bindings, err := domain.PublishCandidates(ctx, tx, now)
 		if err != nil {
 			return err

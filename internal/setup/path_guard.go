@@ -137,6 +137,20 @@ func managedConfigDirectories(path string) []string {
 	if name == "crosshall.rules" && filepath.Base(dir) == "rules" && validConfigHome(vendorHome) {
 		return []string{vendorHome, dir}
 	}
+	if name == "SKILL.md" && filepath.Base(dir) == "crosshall" && filepath.Base(vendorHome) == "skills" {
+		// The skill's directory and the skills directory sit under the
+		// vendor's home, which for Antigravity is .gemini/config.
+		skills := vendorHome
+		home := filepath.Dir(skills)
+		managed := []string{home, skills, dir}
+		if filepath.Base(home) == "config" && filepath.Base(filepath.Dir(home)) == ".gemini" {
+			managed = append([]string{filepath.Dir(home)}, managed...)
+		}
+		if validConfigHome(managed[0]) {
+			return managed
+		}
+		return nil
+	}
 	if filepath.Base(vendorHome) == ".gemini" &&
 		(name == "hooks.json" && filepath.Base(dir) == "config" ||
 			name == "settings.json" && filepath.Base(dir) == "antigravity-cli") {

@@ -348,15 +348,24 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Outcome, o.Retry = "recovered", retry(c.plan)
 	case c.plan.Action == "uninstall":
 		o.Outcome = "removed"
+		details := skillOutcomes(c.plan.Files)
+		for _, kept := range c.plan.Retained {
+			if strings.Contains(kept.Reason, "crosshall skill") {
+				details = append(details, fmt.Sprintf("%s (%s)", kept.Reason, kept.Path))
+			}
+		}
+		o.Detail = strings.Join(details, "\n")
 	default:
 		o.Outcome = "installed"
-		if len(c.plan.Retained) > 0 {
-			skipped := c.plan.Retained[0]
-			o.Detail = fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path)
-		} else if c.plan.resumedLegacyCodex() {
-			o.Detail = "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin."
+		details := skillOutcomes(c.plan.Files)
+		for _, skipped := range c.plan.Retained {
+			details = append(details, fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path))
+		}
+		if len(c.plan.Retained) == 0 && c.plan.resumedLegacyCodex() {
+			details = append(details, "The resumed Codex hooks still inherit the state directory. Rerun setup to preview and apply the state-root pin.")
 			o.Retry = "crosshall setup codex"
 		}
+		o.Detail = strings.Join(details, "\n")
 	}
 	return o
 }
@@ -368,7 +377,14 @@ func (p *prompter) uninstall(ctx context.Context) error {
 		return p.pending(err)
 	}
 	result := promptResult{Kind: "uninstall", DryRun: p.req.DryRun}
-	for _, plan := range plans {
+	for i, plan := range plans {
+		if i > 0 && !p.req.DryRun && plan.Err == nil && !plan.Resume && !plan.Recovery {
+			// An earlier vendor's removal can pass a shared skill to this
+			// one, so plan it again as it stands now.
+			if fresh, err := p.ops.PlanUninstall(ctx, []string{plan.Adapter}); err == nil && len(fresh) == 1 {
+				plan = fresh[0]
+			}
+		}
 		o := outcomeOf(plan)
 		if plan.Err != nil {
 			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)

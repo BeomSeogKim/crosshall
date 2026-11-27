@@ -4,11 +4,11 @@
 
 For developers who run more than one AI coding agent on one machine, for example Claude Code writing code and Codex CLI reviewing it, and want them to hand work to each other without copying text between terminals.
 
-Status: v0.4.0, a release for macOS and Linux on arm64 and x86-64. New in it: [linking a second device](docs/linking.md) over SSH. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.5.0, a release for macOS and Linux on arm64 and x86-64. New since v0.4.0: setup installs a crosshall skill, so your agents use crosshall without being told how, and the first install and its checks print less. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
 Start in three steps (requirements and full output: [quick start](#quick-start)):
 
-1. Install, and answer yes to add the agent hooks: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
+1. Install, and answer yes to add the agent hooks: `git clone --branch v0.5.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
 2. In a new plain terminal, start the hall: `crosshall owner start`
 3. Open two new agent sessions in the same Git repository (in Codex, first trust the hooks with `/hooks`), and tell one to ask the other for a review.
 
@@ -48,7 +48,7 @@ For the two-agent walkthrough, have Claude Code and Codex CLI installed and sign
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.5.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -65,15 +65,16 @@ Saying yes turns these on for the listed agents:
 - Prompt line (Claude Code, Codex CLI, Antigravity). A joined session sees one line with the numbers of its unread messages at its next prompt, and crosshall read picks them up. The line itself costs no model request.
 - Notices (Claude Code, interactive sessions). When work arrives for an idle session, the hall starts a turn in it. Each notice costs that session one model turn. Off: crosshall owner publish hall off
 - Turn-end check (Claude Code, interactive sessions and print mode). When a turn ends while a request waits that is unread, unanswered and not yet announced to the session, the turn continues once. Each continuation costs one model request. Off: crosshall owner adapter set claude --turn-end off
+- Skill. Setup installs a crosshall skill that teaches the agent the hall's commands. It adds only its short description to the agent's context, and the agent loads the rest when a request needs it.
 A no skips future installer offers for the listed agents. Enter skips this offer.
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. After a yes, the installer ends with the next steps, including any step an agent needs before it runs the hooks, such as trusting them with `/hooks` in Codex. Without a terminal to ask in, for example when you ask an agent to install crosshall, the installer installs the binary only and prints the commands still to run. It uses the full path if the current shell needs it:
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, installs a crosshall skill, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The skill is a `SKILL.md` in each agent's own skill directory (`~/.claude/skills/crosshall`, `~/.codex/skills/crosshall` and `~/.gemini/config/skills/crosshall`), so your agents learn the crosshall commands from it without being taught; see [the crosshall skill](docs/adapters.md#the-crosshall-skill). The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. After a yes, the installer ends with the next steps, including any step an agent needs before it runs the hooks, such as trusting them with `/hooks` in Codex. Without a terminal to ask in, for example when you ask an agent to install crosshall, the installer installs the binary only and prints the commands still to run. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.4.0 at /home/you/.local/bin/crosshall
+Installed crosshall v0.5.0 at /home/you/.local/bin/crosshall
 No terminal to ask in, so only the binary was installed. Still to run, in a terminal:
   /home/you/.local/bin/crosshall setup          # lists the hooks for the agents it finds and asks first
   /home/you/.local/bin/crosshall owner start

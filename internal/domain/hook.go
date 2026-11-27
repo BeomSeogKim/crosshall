@@ -675,6 +675,13 @@ func (s *Service) hookMemberEvent(ctx context.Context, tx store.Tx, caller core.
 		if recovered {
 			cmd.LaunchRef, cmd.LaunchVerified = SessionLaunch, false
 		}
+		// The hook's route report is applied only for this launch: naming it
+		// tells the hook it need not wait for this reply again (#437).
+		latest, err := latestLaunch(ctx, tx, principal)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return core.Result{}, err
+		}
+		out.Launch = latest
 	}
 	b, found, err := bindingOf(ctx, tx, principal)
 	if err != nil {

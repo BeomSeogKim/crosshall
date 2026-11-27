@@ -126,6 +126,14 @@ func TestDoctorSaysANeverStartedHallIsNotStarted(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil || got["not_started"] != true || got["hint"] != "crosshall owner start" {
 		t.Fatalf("JSON: %v %s", err, out)
 	}
+	data, _ = json.Marshal(map[string]any{
+		"checks":      []doctorCheck{{Name: "lock", Detail: "not started yet"}, {Name: "owner_spool_writable", Detail: "directory owner must be owned by this user and have mode 0700"}},
+		"hint":        "crosshall owner start",
+		"not_started": true,
+	})
+	if out, _, _ := run(t, env, "owner", "doctor"); !strings.Contains(out, "FAIL owner_spool_writable — directory owner must be") || strings.Contains(out, "FAIL lock") {
+		t.Fatalf("a real failure is still shown next to the not-started line:\n%s", out)
+	}
 }
 
 func TestDoctorNamesTheStartCommand(t *testing.T) {

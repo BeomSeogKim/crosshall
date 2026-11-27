@@ -36,7 +36,7 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Applied || len(preview.Files) != 3 {
+	if preview.Applied || len(preview.Files) != 5 {
 		t.Fatalf("unexpected preview: %+v", preview)
 	}
 	baseEvents := map[string][]string{
@@ -45,6 +45,9 @@ func TestSetupAndInspectReportParkedReminderWithBaseHooks(t *testing.T) {
 	}
 	previewed := make(map[string]PlanFile)
 	for _, f := range preview.Files {
+		if f.Skill != "" {
+			continue
+		}
 		if f.AddText != "" {
 			if f.Adapter != "codex" || f.Reminder != nil {
 				t.Errorf("unexpected command rules plan: %v", f.Path)
@@ -169,7 +172,7 @@ func TestSetupShowsCandidateForUnmeasuredBuildAfterImport(t *testing.T) {
 			t.Fatal(err)
 		}
 		var p plan
-		if err := json.Unmarshal(out.Bytes(), &p); err != nil || len(p.Files) != 1 {
+		if err := json.Unmarshal(out.Bytes(), &p); err != nil || len(p.Files) != 2 {
 			t.Fatalf("setup JSON %s: %s (%v)", level, out.Bytes(), err)
 		}
 		s := p.Files[0].Reminder

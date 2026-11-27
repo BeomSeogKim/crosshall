@@ -434,7 +434,9 @@ func observeLinkHookEvent(ctx context.Context, tx store.Tx, peer LinkEventPeer, 
 		scope.principal, peer.Device, peer.CredentialGen, in.token.Boot, scope.LeafGeneration, scope.binding.id,
 		scope.binding.selectionGen, scope.RouteEpoch).Scan(&projection, &launch, &policy, &verified, &live)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && live && launch == cmd.LaunchRef && policy != cmd.Epoch {
-		if cmd.Fact != FactPromptSubmitted {
+		// A prompt opens the launch, as does the turn end or idle prompt
+		// of a verified process launch that joined during a turn (#437).
+		if cmd.Fact != FactPromptSubmitted && (!lateLaunchFact(cmd.Fact) || !cmd.LaunchVerified) {
 			return false, nil
 		}
 		verified = cmd.LaunchVerified

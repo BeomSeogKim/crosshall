@@ -63,7 +63,13 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 	if !ok || adapter.Transport().Send == nil || launch == "" || epoch > math.MaxInt64 || token.LeafSeq > math.MaxInt64 {
 		return nil
 	}
-	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted
+	// The turn end or idle prompt of a process launch carries the launch's
+	// time as a prompt does, so a session that joined during a turn has a
+	// route without a new prompt (#437). A thread-routed adapter's route
+	// rests on the server only a prompt names.
+	profile := hook.enroll || hook.fact == wire.HookPromptSubmitted ||
+		(hook.fact == wire.HookTurnFinishing || hook.fact == wire.HookIdlePrompt) && hook.verified && hook.startedAtMS > 0 &&
+			!adapter.ThreadRouted()
 	if !profile && hook.report == nil {
 		switch hook.fact {
 		case wire.HookApprovalRequested, wire.HookTurnFinishing, wire.HookIdlePrompt, wire.HookSessionEnded:
@@ -101,6 +107,13 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 		if err := json.Unmarshal([]byte(body), &evidence); err != nil {
 			return err
 		}
+		// Only a prompt or a start moves a scope's route from one verified
+		// launch to another: the home keeps offering for the launch it
+		// opened, which a turn end of another process does not replace.
+		if profile && !hook.enroll && hook.fact != wire.HookPromptSubmitted && sameScope && old.Launch != launch &&
+			evidence.Material.Verified {
+			profile = false
+		}
 		if (!sameScope || old.Launch != launch) &&
 			token.LeafSeq <= max(evidence.ProfileSeq, evidence.SocketSeq, evidence.PermissionSeq, evidence.ActivitySeq) {
 			return nil
@@ -134,6 +147,20 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 		member.Vendor, member.Key, token.Boot, token.LeafGeneration, token.Membership.BindingID,
 		token.Membership.Generation, routeEpoch, launch, epoch, captureSeq, string(raw))
 	return err
+}
+
+// spokeNativeLaunch is the launch of the member's native route in the
+// token's scope: a route report for another launch in that scope is not
+// applied.
+func spokeNativeLaunch(ctx context.Context, tx store.Tx, member link.Member, token link.HookToken) (string, error) {
+	var launch string
+	err := tx.QueryRowContext(ctx, `SELECT launch FROM spoke_native_route WHERE vendor = ? AND key = ? AND boot = ?
+		AND leaf_generation = ? AND binding_id = ? AND membership_gen = ?`, member.Vendor, member.Key, token.Boot,
+		token.LeafGeneration, token.Membership.BindingID, token.Membership.Generation).Scan(&launch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return launch, err
 }
 
 func (e *spokeNativeEvidence) apply(adapter publish.Adapter, key string, token link.HookToken, hook spokeNativeHook, profile bool) {

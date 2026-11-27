@@ -4,11 +4,11 @@
 
 For developers who run more than one AI coding agent on one machine, for example Claude Code writing code and Codex CLI reviewing it, and want them to hand work to each other without copying text between terminals.
 
-Status: v0.5.1-rc.1, a release candidate for macOS and Linux on arm64 and x86-64. New since v0.5.0: the first install shows a short plan, says what to do next, and asks nothing for an agent that is already set up. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+Status: v0.5.1, a release for macOS and Linux on arm64 and x86-64. New since v0.5.0: the first install shows a short plan, says what to do next, and skips the install question for an agent that is already set up. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
 
 Start in three steps (requirements and full output: [quick start](#quick-start)):
 
-1. Install, and answer yes to add the agent hooks: `git clone --branch v0.5.1-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
+1. Install, and answer yes to add the agent hooks: `git clone --branch v0.5.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
 2. In a new plain terminal, start the hall: `crosshall owner start`
 3. Open two new agent sessions in the same Git repository (in Codex, first trust the hooks with `/hooks`), and tell one to ask the other for a review.
 
@@ -48,7 +48,7 @@ For the two-agent walkthrough, have Claude Code and Codex CLI installed and sign
 
 <!-- install-example -->
 ```sh
-git clone --branch v0.5.1-rc.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
+git clone --branch v0.5.1 --depth 1 https://github.com/BeomSeogKim/crosshall.git
 cd crosshall
 ./scripts/install.sh
 ```
@@ -74,7 +74,7 @@ A yes installs the hooks, lets your agents run crosshall's member commands witho
 
 <!-- install-receipt -->
 ```text
-Installed crosshall v0.5.1-rc.1 at /home/you/.local/bin/crosshall
+Installed crosshall v0.5.1 at /home/you/.local/bin/crosshall
 No terminal to ask in, so only the binary was installed. Still to run, in a terminal:
   /home/you/.local/bin/crosshall setup          # lists the hooks for the agents it finds and asks first
   /home/you/.local/bin/crosshall owner start
@@ -83,7 +83,7 @@ No terminal to ask in, so only the binary was installed. Still to run, in a term
 
 Open a new shell after accepting the PATH change. To use `crosshall` in the current shell, run `export PATH="$HOME/.local/bin:$PATH"`. Start your agents from a shell with that PATH.
 
-If you skipped the hooks, installed without a terminal, or installed an agent later, review the changes with `crosshall setup claude` and `crosshall setup codex` (an agent already set up reports `already installed` and asks nothing). Confirm each plan, or run `crosshall setup claude --apply` and `crosshall setup codex --apply` to apply directly. See [adapters](docs/adapters.md) for the optional hooks and [connect your agents](#connect-your-agents) for joining by hand.
+If you skipped the hooks, installed without a terminal, or installed an agent later, review the changes with `crosshall setup claude` and `crosshall setup codex` (an agent already set up reports `already installed` and asks for no install consent). Confirm each plan, or run `crosshall setup claude --apply` and `crosshall setup codex --apply` to apply directly. See [adapters](docs/adapters.md) for the optional hooks and [connect your agents](#connect-your-agents) for joining by hand.
 
 The checksum shows that the archive arrived intact, not who built it. To build the same tag instead, run `./scripts/install.sh --source` in the clone with Go 1.27.4 or later. More install details are in [operations](docs/operations.md#installing).
 

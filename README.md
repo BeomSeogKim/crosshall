@@ -2,9 +2,15 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.4.0, a release. [Linking a second device](docs/linking.md) over SSH is available by default. Since v0.3.1, Codex managed-daemon notices work on Intel macOS, and Codex says at join when the hall cannot wake it. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+For developers who run more than one AI coding agent on one machine, for example Claude Code writing code and Codex CLI reviewing it, and want them to hand work to each other without copying text between terminals.
 
-Install: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Status: v0.4.0, a release for macOS and Linux on arm64 and x86-64. New in it: [linking a second device](docs/linking.md) over SSH. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+
+Start in three steps (requirements and full output: [quick start](#quick-start)):
+
+1. Install, and answer yes to add the agent hooks: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
+2. In a new plain terminal, start the hall: `crosshall owner start`
+3. Open two new agent sessions in the same Git repository (in Codex, first trust the hooks with `/hooks`), and tell one to ask the other for a review.
 
 ## What it looks like
 

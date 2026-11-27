@@ -5,11 +5,11 @@ to this file; edit `AGENTS.md` only.
 
 ## Status
 
-The core command-line tool is released as release candidates (see the tags
-and `README.md`). Vendor adapters are being built: the hook command exists,
-installing it into an agent does not yet. The project was called `sotto`
-while it was being designed; a local folder or older notes may still use that
-name.
+crosshall is released; the tags, `README.md` and `CHANGELOG.md` say which
+version is current. `crosshall setup` installs the adapter hooks into Claude
+Code, Codex CLI and Antigravity CLI; `README.md` and `docs/adapters.md` list
+the builds and platforms each feature is verified on. The project was called
+`sotto` while it was being designed; older notes may still use that name.
 
 ## Private notes
 

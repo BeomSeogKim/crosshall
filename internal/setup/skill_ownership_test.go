@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -487,5 +488,35 @@ func TestAPlanWhoseSharedSkillOwnerWasDroppedShowsItsOwnWrite(t *testing.T) {
 	}
 	if j, _, err := readJournal(f.State); err != nil || j.SkillFiles["codex"].Path != path || !bytes.Equal(configBytes(t, path), skillContent) {
 		t.Fatalf("Codex did not write and claim the skill: %+v (%v)", j.SkillFiles, err)
+	}
+}
+
+func TestASharedSkillIsUnconfirmedWhenTheJournalCannotBeRead(t *testing.T) {
+	f, s, _, path := sharedSkillHome(t)
+	plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
+	if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
+		t.Fatalf("grouped plans: %+v (%v)", plans, err)
+	}
+	f.CheckTargets(t)
+	for _, plan := range plans {
+		if err := s.Install(t.Context(), plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var journalPath string
+	if err := filepath.WalkDir(f.State, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Name() == journalName {
+			journalPath = p
+		}
+		return err
+	}); err != nil || journalPath == "" {
+		t.Fatalf("no install journal under the state root (%v)", err)
+	}
+	if err := os.WriteFile(journalPath, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Join(s.appliedSkillOutcomes(plans[1]), "\n")
+	if !strings.Contains(lines, "could not confirm the crosshall skill") || !strings.Contains(lines, path) || strings.Contains(lines, "shared with") {
+		t.Fatalf("result lines without a readable journal: %q", lines)
 	}
 }

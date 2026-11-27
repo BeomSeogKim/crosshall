@@ -235,18 +235,19 @@ func skillOutcomes(files []PlanFile) []string {
 // appliedSkillOutcomes are the result lines of an applied plan. A skill the
 // plan shares is reported as the journal and the file now hold it: written
 // by the plan it was left to, written by this plan in its place, or not in
-// place.
+// place. Without the journal it is reported as unconfirmed.
 func (s Service) appliedSkillOutcomes(p VendorPlan) []string {
 	if p.sharedSkill == nil {
 		return skillOutcomes(p.Files)
 	}
-	j, _, err := readJournal(s.StateRoot)
-	if err != nil {
-		return skillOutcomes(p.Files)
-	}
+	j, _, journalErr := readJournal(s.StateRoot)
 	var lines []string
 	for _, f := range p.Files {
 		if f.Skill == "shared" && f.Path == p.sharedSkill.Path {
+			if journalErr != nil {
+				lines = append(lines, fmt.Sprintf("could not confirm the crosshall skill: %v (%s)", journalErr, f.Path))
+				continue
+			}
 			claimer := skillClaimer(j, f.Path)
 			current, err := readConfig(f.Path)
 			if claimer == "" || err != nil || !current.Exists || stamp(current).Hash != j.SkillFiles[claimer].Latest.Hash {

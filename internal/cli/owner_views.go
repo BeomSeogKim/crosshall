@@ -671,12 +671,15 @@ func owedLine(members []domain.OwingMember) string {
 		parts = append(parts, fmt.Sprintf("%d can be woken and get one resume notice when their turn is free", woken))
 	}
 	if len(linked) > 0 {
-		// A resume notice goes from this machine to a local session only.
-		text := "%d run on a linked device, which wake them itself; this machine sends them no resume notice (%s)"
+		// A resume notice goes from this machine to a local session only. The
+		// line promises no wake: a request the member already read is one its
+		// device does not wake it for either.
+		verb := "run"
 		if len(linked) == 1 {
-			text = "%d runs on a linked device, which wakes it itself; this machine sends it no resume notice (%s)"
+			verb = "runs"
 		}
-		parts = append(parts, fmt.Sprintf(text, len(linked), strings.Join(linked, ", ")))
+		parts = append(parts, fmt.Sprintf("%d %s on a linked device, and startup resume notices require a local session (%s)",
+			len(linked), verb, strings.Join(linked, ", ")))
 	}
 	if len(cannot) > 0 {
 		parts = append(parts, fmt.Sprintf("%d cannot be woken (%s)", len(cannot), strings.Join(cannot, ", ")))

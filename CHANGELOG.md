@@ -4,7 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
-- **Linked-device wake advice agrees everywhere (#445):** a request to a member its linked device will try to wake now reads `next: "the linked device will try to wake it"` in `--json`, not `waits for its next crosshall command`. The home also sends `why: "linked_device"` with the `device` outcome, so a v0.4.0-rc.1 or rc.2 client prints `not woken: linked_device` instead of a blank reason; the outcome and the daily count are unchanged. `crosshall owner start` lists such a member apart from those nothing can wake: its device wakes it, and this machine sends it no resume notice.
+- **Linked-device wake advice agrees everywhere (#445):** a request to a member its linked device will try to wake now reads `next: "the linked device will try to wake it"` in `--json`, not `waits for its next crosshall command`. The home also sends `why: "linked_device"` with the `device` outcome, so a v0.4.0-rc.1 or rc.2 client prints `not woken: linked_device` instead of a blank reason; the outcome and the daily count are unchanged. `crosshall owner start` lists a member that runs on a linked device apart from those nothing can wake, and says why it gets no resume notice: startup resume notices require a local session.
 
 ## v0.4.0 (2026-11-27)
 

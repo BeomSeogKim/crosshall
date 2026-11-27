@@ -63,7 +63,7 @@ A no skips future installer offers for the listed agents. Enter skips this offer
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files the installer lists when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
 
 <!-- install-receipt -->
 ```text

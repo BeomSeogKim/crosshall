@@ -405,19 +405,24 @@ path_modes=()
 
 plan_path() {
   local profile zhome=${ZDOTDIR:-$HOME}
-  local startup_profiles=("$HOME/.profile" "$HOME/.bashrc")
-  # Bash reads only the first readable login file. POSIX login shells use .profile.
-  for profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
-    if [[ -f $profile && -r $profile ]]; then
-      startup_profiles+=("$profile")
-      break
+  local startup_profiles=()
+  # Only the login shell's own files: a zsh user gets no bash files, and the
+  # reverse. Agents run commands in that shell, also as -c and -lc.
+  if [[ ${SHELL:-} == */zsh ]]; then
+    if [[ $zhome == /* && -d $zhome ]]; then
+      # Login shells can reorder PATH after .zshenv, notably via macOS path_helper.
+      startup_profiles+=("$zhome/.zshenv" "$zhome/.zlogin")
+      if [[ -e $zhome/.zshrc || -L $zhome/.zshrc ]]; then startup_profiles+=("$zhome/.zshrc"); fi
     fi
-  done
-  if [[ $zhome == /* && -d $zhome ]] &&
-     { [[ ${SHELL:-} == */zsh ]] || command -v zsh >/dev/null; }; then
-    # Login shells can reorder PATH after .zshenv, notably via macOS path_helper.
-    startup_profiles+=("$zhome/.zshenv" "$zhome/.zlogin")
-    if [[ -e $zhome/.zshrc || -L $zhome/.zshrc ]]; then startup_profiles+=("$zhome/.zshrc"); fi
+  else
+    startup_profiles+=("$HOME/.profile" "$HOME/.bashrc")
+    # Bash reads only the first readable login file. POSIX login shells use .profile.
+    for profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+      if [[ -f $profile && -r $profile ]]; then
+        startup_profiles+=("$profile")
+        break
+      fi
+    done
   fi
   for profile in "${startup_profiles[@]}"; do
     if ! profile_writable "$profile"; then
@@ -457,7 +462,7 @@ write_path_block() (
 )
 
 apply_path() {
-  local i profile mode
+  local i profile mode updated=false
   for i in "${!path_profiles[@]}"; do
     profile=${path_profiles[i]}
     mode=${path_modes[i]}
@@ -465,10 +470,14 @@ apply_path() {
       printf 'Shell startup file changed before it could be updated: %q\n' "$profile" >&2
     elif write_path_block "$profile" "$mode"; then
       printf 'Updated PATH in %q\n' "$profile"
+      updated=true
     else
       printf 'Could not update shell startup file: %q\n' "$profile" >&2
     fi
   done
+  if [[ $updated == true ]]; then
+    printf 'Open a new terminal for the PATH change, or run in this one: export PATH="$HOME/.local/bin:$PATH"\n'
+  fi
 }
 
 print_next() {

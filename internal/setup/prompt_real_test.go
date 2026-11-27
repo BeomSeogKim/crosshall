@@ -246,4 +246,13 @@ func TestSetupSummarizesThePlanAndKnowsAnInstalledAgent(t *testing.T) {
 			t.Fatalf("setup on installed agents %+v: %v\n%s", req, err, again)
 		}
 	}
+	// An explicit preview still shows the plan: --json keeps its plan field.
+	for _, req := range []Request{{DryRun: true, JSON: true, Adapters: []string{"claude"}},
+		{DryRun: true, Verbose: true, Adapters: []string{"claude"}}, {Terminal: true, Verbose: true, Adapters: []string{"claude"}}} {
+		again, err := realRun(t, s, f, req, "n\n")
+		if err != nil || strings.Contains(again, "already installed") ||
+			req.JSON && (!strings.Contains(again, `"outcome":"previewed"`) || !strings.Contains(again, `"plan":`)) {
+			t.Fatalf("explicit preview of an installed agent %+v: %v\n%s", req, err, again)
+		}
+	}
 }

@@ -196,7 +196,7 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 		switch {
 		case plan.Err != nil:
 			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
-		case !p.req.Apply && alreadyInstalled(plan):
+		case !p.req.Apply && !p.wantsPreview() && alreadyInstalled(plan):
 			o.Outcome = "unchanged"
 		case !p.req.Apply:
 			o.Outcome, o.Plan = "previewed", &plan
@@ -245,7 +245,7 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			fmt.Fprintf(p.out, "%s: %v\n", plan.Name, plan.Err)
 			continue
 		}
-		if alreadyInstalled(plan) {
+		if !p.wantsPreview() && alreadyInstalled(plan) {
 			o := outcomeOf(plan)
 			o.Outcome = "unchanged"
 			result.Vendors = append(result.Vendors, o)
@@ -535,6 +535,10 @@ type reportedError struct {
 
 func (e reportedError) Error() string  { return e.err.Error() }
 func (e reportedError) Reported() bool { return e.reported }
+
+// wantsPreview reports a request for the plan itself (--dry-run, --json or
+// --verbose), which shows it even when it would change nothing.
+func (p *prompter) wantsPreview() bool { return p.req.DryRun || p.req.JSON || p.req.Verbose }
 
 // alreadyInstalled reports a fresh install plan whose apply would only
 // switch policies on: every hook entry and rule is in place as setup writes

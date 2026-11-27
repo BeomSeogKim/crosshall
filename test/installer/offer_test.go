@@ -143,7 +143,7 @@ esac
 			still := []string{"No terminal to ask in, so only the binary was installed. Still to run, in a terminal:",
 				"  " + quoted + " setup          # lists the hooks for the agents it finds and asks first",
 				"  " + quoted + " owner start",
-				dest + ` is not on PATH: add export PATH="` + dest + `:$PATH" to your shell startup file.`}
+				dest + " is not on PATH: add export PATH=" + strings.ReplaceAll(dest, " ", `\ `) + `:"$PATH" to your shell startup file.`}
 			if lines[0] != "Installed crosshall v0.1.0 at "+target || !slices.Equal(lines[1:], still) {
 				t.Fatalf("unexpected install output without a terminal: %q", output)
 			}
@@ -472,6 +472,6 @@ const newTerminalLine = `Open a new terminal for the PATH change, or run in this
 // setup's receipt names, then the installer's own, naming the installed path
 // as the installer quotes it.
 func reachLine(target string) string {
-	return "Next:\n  1. Trust the fixture hooks.\n  2. Open new sessions of these agents in a project.\n" +
+	return "Next:\n  1. Trust the fixture hooks.\n  2. Open new sessions of these agents in a project. A Codex session joins at its first prompt; anything will do.\n" +
 		"  3. In a plain terminal, " + strings.ReplaceAll(target, " ", `\ `) + " owner who --all shows who the hall can reach."
 }

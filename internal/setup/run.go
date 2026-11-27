@@ -575,6 +575,9 @@ func printPlan(out io.Writer, p plan) error {
 func fileSummary(f PlanFile) string {
 	hooks, allow := 0, 0
 	for _, e := range f.Add {
+		if isClaudeAutoModeDefaults(e) {
+			continue // Claude's own baseline, kept beside crosshall's rule
+		}
 		if e.Event != "" {
 			hooks++
 		} else {

@@ -78,7 +78,7 @@ Installed crosshall v0.5.0 at /home/you/.local/bin/crosshall
 No terminal to ask in, so only the binary was installed. Still to run, in a terminal:
   /home/you/.local/bin/crosshall setup          # lists the hooks for the agents it finds and asks first
   /home/you/.local/bin/crosshall owner start
-/home/you/.local/bin is not on PATH: add export PATH="/home/you/.local/bin:$PATH" to your shell startup file.
+/home/you/.local/bin is not on PATH: add export PATH="$HOME/.local/bin:$PATH" to your shell startup file.
 ```
 
 Open a new shell after accepting the PATH change. To use `crosshall` in the current shell, run `export PATH="$HOME/.local/bin:$PATH"`. Start your agents from a shell with that PATH.

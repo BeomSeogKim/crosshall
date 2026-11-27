@@ -497,7 +497,9 @@ print_still_to_run() {
   printf '  %s setup          # lists the hooks for the agents it finds and asks first\n' "$cmd"
   printf '  %s owner start\n' "$cmd"
   if [[ $on_path != true ]]; then
-    printf '%s is not on PATH: add export PATH="%s:$PATH" to your shell startup file.\n' "${target%/*}" "${target%/*}"
+    local dir=${target%/*} shown
+    if [[ $dir == "$HOME/.local/bin" ]]; then shown='"$HOME/.local/bin:$PATH"'; else shown=$(printf '%q:"$PATH"' "$dir"); fi
+    printf '%s is not on PATH: add export PATH=%s to your shell startup file.\n' "$dir" "$shown"
   fi
 }
 
@@ -512,7 +514,7 @@ print_installed_next() {
       'next '*) printf '  %d. %s\n' "$n" "${line#next }"; n=$((n + 1)) ;;
     esac
   done < "$stage/setup-ready"
-  printf '  %d. Open new sessions of these agents in a project.\n' "$n"
+  printf '  %d. Open new sessions of these agents in a project. A Codex session joins at its first prompt; anything will do.\n' "$n"
   printf '  %d. In a plain terminal, %s owner who --all shows who the hall can reach.\n' "$((n + 1))" "$cmd"
 }
 

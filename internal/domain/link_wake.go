@@ -223,7 +223,7 @@ func linkedMemberWake(ctx context.Context, tx store.Tx, binding int64, now time.
 	if !closed {
 		// The device checks its session's route and wakes it when it can;
 		// the home cannot prove that route, so it claims no notice (#438).
-		return Wake{Wake: WakeDevice}, nil
+		return Wake{Wake: WakeDevice, Why: WhyLinkedDevice}, nil
 	}
 	running, err := inReportedTurn(ctx, tx, principal, now)
 	if err != nil || running {

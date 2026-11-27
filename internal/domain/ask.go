@@ -430,6 +430,8 @@ func (s *Service) deliveries(ctx context.Context, tx store.Tx, msg int64, now ti
 			out[at].Next = "notice queued"
 		case w.Wake == WakeWait:
 			out[at].Next = WaitRunning
+		case w.Wake == WakeDevice:
+			out[at].Next = LinkedDeviceWakes
 		case w.Why == WhyApproval:
 			out[at].Next = "waits on its owner's approval"
 		case w.Why == WhyTurnOpen && w.SeenAt == SeenAtTurnEnd:

@@ -23,7 +23,7 @@ func TestLinkWakeOfflineUsesTheCurrentProvenStream(t *testing.T) {
 			t.Fatalf("wake = %+v, want %+v", got, want)
 		}
 	}
-	device, noRoute := Wake{Wake: WakeDevice}, Wake{Wake: WakeNone, Why: WhyNoRoute}
+	device, noRoute := Wake{Wake: WakeDevice, Why: WhyLinkedDevice}, Wake{Wake: WakeNone, Why: WhyNoRoute}
 	// With the stream open and a launch it could wake, the device decides
 	// (#438); the home claims no notice it cannot prove.
 	check(device)
@@ -69,11 +69,15 @@ func TestLinkWakeReportsTheDeviceForAConnectedMember(t *testing.T) {
 	r := h.ask(h.writer, Ask{To: []string{"reader"}, New: true, Body: "Review while connected."}, "")
 	wantOK(t, r)
 	asked := decode[AskResult](t, r)
-	if len(asked.Recipients) != 1 || asked.Recipients[0].Wake.Wake != WakeDevice || asked.Recipients[0].Wake.NeedsManualWake() {
+	// The JSON next step agrees with the device outcome, and the why word
+	// gives a client without a device branch a reason to print (#445).
+	if len(asked.Recipients) != 1 || asked.Recipients[0].Wake.Wake != WakeDevice || asked.Recipients[0].Wake.Why != WhyLinkedDevice ||
+		asked.Recipients[0].Wake.NeedsManualWake() || asked.Recipients[0].Next != LinkedDeviceWakes {
 		t.Fatalf("ask to a connected linked member = %+v", asked.Recipients)
 	}
-	if n := h.count(`SELECT COUNT(*) FROM event WHERE kind = 'send_wake' AND json_extract(detail, '$.wake') = 'none'`); n != 1 {
-		t.Fatalf("send_wake events counted as none = %d", n)
+	if n := h.count(`SELECT COUNT(*) FROM event WHERE kind = 'send_wake' AND json_extract(detail, '$.wake') = 'none'
+		AND json_extract(detail, '$.why') IS NULL`); n != 1 {
+		t.Fatalf("send_wake events counted as none with no why = %d", n)
 	}
 	owing := inTx(t, h.fixture, func(ctx context.Context, tx store.Tx) ([]OwingMember, error) {
 		return OwingMembers(ctx, tx, h.now)

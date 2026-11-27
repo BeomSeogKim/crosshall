@@ -63,7 +63,7 @@ func TestTurnEndHookBoundaryFailsOpen(t *testing.T) {
 		{name: "setup off", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "off", off: true},
 		{name: "no dispatcher", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "no_dispatcher", offline: true},
 		{name: "transport timeout", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "deadline", calls: 1, want: true, err: context.DeadlineExceeded},
-		{name: "transport error", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "refused", calls: 1, want: true, err: errors.New("lost response")},
+		{name: "transport error", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "refused: transport", calls: 1, want: true, err: errors.New("lost response")},
 		{name: "no ask to announce", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "clean", calls: 1, asks: "fixture-host fixture-gen 0\n"},
 		{name: "an ask to announce", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "fixture-host fixture-gen 1\n"},
 		{name: "another dispatcher's record", event: "Stop", flag: `,"stop_hook_active":false`, outcome: "rpc", calls: 1, want: true, output: true, asks: "old-host fixture-gen 0\n"},

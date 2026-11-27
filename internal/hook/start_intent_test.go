@@ -27,7 +27,7 @@ func TestAStartThatWouldJoinSendsStartWhenTheDispatcherOffersIt(t *testing.T) {
 	}{
 		{"offered, joins", true, true, "", "start,hook.enroll", "rpc"},
 		{"offered, outside any repository", true, false, "", "lookup", "unmatched"},
-		{"offered, a retired key", true, true, core.CodeKeyRetired, "start", "refused"},
+		{"offered, a retired key", true, true, core.CodeKeyRetired, "start", "refused: lookup " + string(core.CodeKeyRetired)},
 		{"an older dispatcher", false, true, "", "lookup,join,hook.enroll", "rpc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

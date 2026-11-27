@@ -25,7 +25,7 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 				"evidence":[{"version":"2.1.327","platform":"darwin-arm64","mode":"print",
 				"manifest_rev":"claude-1","capability":"enroll","level":"tested"}],
 				"turn_end_notice":{"available":true,"date":"20261119","committed_claims":2,
-					"extra_model_requests_per_continuation":1,"trusted_from":"2.1.330"},
+					"extra_model_requests_per_continuation":1,"trusted_from":"2.1.330","live_launches":3},
 				"publish":{"builds":[
 					{"version":"2.1.330","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"tested"},
 					{"version":"2.1.331","platform":"darwin-arm64","mode":"interactive","manifest_rev":"claude-2","state":"trusted","confirmed":1,"held_unobserved":2},
@@ -123,6 +123,30 @@ func TestDoctorRendersAdapterDiagnostics(t *testing.T) {
 		if n := a.TurnEndNotice; n == nil || n.Date != "20261119" || n.ExtraModelRequestsPerContinuation != 1 ||
 			n.Available != (i == 0) || n.CommittedClaims != wantClaims || (i == 0 && n.TrustedFrom != "2.1.330") {
 			t.Errorf("%s turn-end notice: %+v", a.Adapter, n)
+		}
+	}
+}
+
+// With no live launch, doctor has checked no build: it says so instead of
+// "unavailable", which a new user reads as broken.
+func TestDoctorSaysTheTurnEndNoticeIsUncheckedWithoutALiveSession(t *testing.T) {
+	env := Env{
+		OwnerGate: func() string { return "" },
+		Doctor: func(context.Context) core.Result {
+			return core.Result{Status: core.ExitOK, Data: json.RawMessage(`{"checks":[{"name":"lock","ok":true,"detail":"dispatcher lock held"}],"adapters":[
+				{"adapter":"claude","policy":{"enabled":true,"epoch":1},"turn_end_notice":{"available":false,"date":"20261127",
+					"committed_claims":0,"extra_model_requests_per_continuation":1,"live_launches":0}},
+				{"adapter":"codex","policy":{"enabled":true,"epoch":1},"turn_end_notice":{"available":false,"date":"20261127",
+					"committed_claims":0,"extra_model_requests_per_continuation":1,"live_launches":1}}]}`)}
+		},
+	}
+	out, _, code := run(t, env, "owner", "doctor")
+	for _, want := range []string{
+		"turn-end notice not checked yet: no live Claude Code session, committed claims 0 on 20261127 UTC",
+		"turn-end notice unavailable, committed claims 0 on 20261127 UTC",
+	} {
+		if code != core.ExitOK || !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
 		}
 	}
 }

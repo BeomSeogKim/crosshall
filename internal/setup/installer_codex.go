@@ -20,7 +20,9 @@ func (codexInstaller) rulePath(hooks configTarget) string {
 
 func (codexInstaller) skillPath(hooks configTarget) string { return vendorSkillPath(hooks) }
 
-func (codexInstaller) trustHint() string { return "Review and trust these hooks with Codex /hooks." }
+func (codexInstaller) trustHint() string {
+	return "In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex."
+}
 
 func (codexInstaller) sandboxNote() string {
 	return "Codex allow rules run matching commands outside its sandbox."

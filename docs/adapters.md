@@ -10,7 +10,7 @@ A crosshall binary replaced without running setup again leaves the hooks of the 
 
 `crosshall setup codex` pins the selected crosshall state directory in its hook commands, so use that directory for member commands in the same `CODEX_HOME` and a separate `CODEX_HOME` for each independent state directory.
 
-`crosshall setup` shows the detected vendors, absolute settings paths, and exact command rules. One approval installs the listed hooks and rules. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup preserves existing command approvals. In Codex, review and trust the installed hooks with `/hooks`.
+`crosshall setup` shows the detected vendors, absolute settings paths, and exact command rules. From v0.5.1 it shows a count of the hooks and command rules it adds to each file instead; `crosshall setup <vendor> --verbose` lists every entry and exact command rule, and `--json` carries them too. One approval installs the listed hooks and rules. A decline in manual setup applies only to that run. Use a named setup command to limit the plans to particular vendors. Setup preserves existing command approvals. In Codex, review and trust the installed hooks with `/hooks`.
 
 Claude Code uses `$HOME/.claude/settings.json` by default and Codex uses `$HOME/.codex/hooks.json`. Set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an absolute directory to select another location. Antigravity uses the shared `$HOME/.gemini/config/hooks.json`, where Crosshall owns its named hook group. Codex and Antigravity hook commands pin the Crosshall state directory selected when you install them. [Google's Antigravity hooks documentation](https://antigravity.google/docs/hooks/#managing-hooks-in-antigravity-cli)
 

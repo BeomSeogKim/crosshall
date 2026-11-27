@@ -198,7 +198,7 @@ func TestOneConsentFollowsAllAvailablePlans(t *testing.T) {
 		"Claude Code hooks in /fixture/home/.claude/settings.json (default under HOME)",
 		"Codex hooks in /fixture/home/.codex/hooks.json (default under HOME)",
 		"Antigravity hooks in /fixture/home/.gemini/config/hooks.json (default under HOME)",
-		"Review and trust these hooks with Codex /hooks.",
+		"In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex.",
 		installConsentHeading,
 	} {
 		if i := strings.Index(r.out, label); i < 0 || i >= question {
@@ -452,7 +452,7 @@ func TestTheOfferReportsAnInstallOnlyWhenHooksWereInstalled(t *testing.T) {
 				ops.failing[name] = errors.New("cannot lock adapter installation")
 			}
 			var installs int
-			runPrompts(t, ops, Request{Offer: true, Terminal: true, Installed: func() { installs++ }}, tc.input)
+			runPrompts(t, ops, Request{Offer: true, Terminal: true, Installed: func(string) { installs++ }}, tc.input)
 			if installs != tc.want {
 				t.Fatalf("reported %d installs, want %d (installed %v)", installs, tc.want, ops.installed)
 			}

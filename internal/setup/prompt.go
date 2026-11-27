@@ -196,6 +196,8 @@ func (p *prompter) unattended(ctx context.Context, names []string) error {
 		switch {
 		case plan.Err != nil:
 			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
+		case !p.req.Apply && !p.wantsPreview() && alreadyInstalled(plan):
+			o.Outcome = "unchanged"
 		case !p.req.Apply:
 			o.Outcome, o.Plan = "previewed", &plan
 			previewed = append(previewed, scopeOf(plan)...)
@@ -241,6 +243,12 @@ func (p *prompter) askFrom(ctx context.Context, plans []VendorPlan, seen map[str
 			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)
 			result.Vendors = append(result.Vendors, o)
 			fmt.Fprintf(p.out, "%s: %v\n", plan.Name, plan.Err)
+			continue
+		}
+		if !p.wantsPreview() && alreadyInstalled(plan) {
+			o := outcomeOf(plan)
+			o.Outcome = "unchanged"
+			result.Vendors = append(result.Vendors, o)
 			continue
 		}
 		if plan.Resume || plan.Recovery {
@@ -463,7 +471,7 @@ func (p *prompter) printPlan(vp VendorPlan) error {
 	}
 	return printPlan(p.out, plan{Version: 1, OK: true, Kind: vp.Action, DryRun: p.req.DryRun,
 		Resume: vp.Resume, Recovery: vp.Recovery, Adapters: adapters, Files: vp.Files,
-		Retained: vp.Retained, disclosure: vp.disclosure, quietConsent: !vp.Resume && !vp.Recovery})
+		Retained: vp.Retained, disclosure: vp.disclosure, quietConsent: !vp.Resume && !vp.Recovery, verbose: p.req.Verbose})
 }
 
 // finish reports each vendor's outcome and fails when any vendor failed.
@@ -472,7 +480,9 @@ func (p *prompter) finish(result promptResult, note string) error {
 	var failed, retries []string
 	for _, o := range result.Vendors {
 		if o.Outcome == "installed" && p.req.Installed != nil {
-			p.req.Installed()
+			for _, adapter := range strings.Split(o.Adapter, ",") {
+				p.req.Installed(adapter)
+			}
 		}
 		if o.Outcome == "failed" {
 			result.OK = false
@@ -490,6 +500,9 @@ func (p *prompter) finish(result promptResult, note string) error {
 	} else {
 		for _, o := range result.Vendors {
 			line := fmt.Sprintf("%s: %s", o.Adapter, o.Outcome)
+			if o.Outcome == "unchanged" {
+				line = fmt.Sprintf("%s: already installed in %s; nothing to change", o.Adapter, o.Path)
+			}
 			if o.Error != "" {
 				line += " (" + o.Error + ")"
 			}
@@ -522,6 +535,36 @@ type reportedError struct {
 
 func (e reportedError) Error() string  { return e.err.Error() }
 func (e reportedError) Reported() bool { return e.reported }
+
+// wantsPreview reports a request for the plan itself (--dry-run, --json or
+// --verbose), which shows it even when it would change nothing.
+func (p *prompter) wantsPreview() bool { return p.req.DryRun || p.req.JSON || p.req.Verbose }
+
+// alreadyInstalled reports a fresh install plan whose apply would only
+// switch policies on: every hook entry and rule is in place as setup writes
+// it, and the recorded builds and journal format need no update.
+func alreadyInstalled(plan VendorPlan) bool {
+	if plan.Action != "setup" || plan.Resume || plan.Recovery || len(plan.Retained) > 0 ||
+		hasFileEdits(plan.op) || !buildsUnchanged(plan.journal.Builds, plan.op.Builds) ||
+		plan.journal.Version != plan.journal.formatVersion() {
+		return false
+	}
+	for _, f := range plan.Files {
+		if len(f.Add)+len(f.Remove)+len(f.Kept)+len(f.Prune) > 0 || f.AddText != "" || f.RemoveText != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// TrustHint is the step an agent needs before it runs adapter's installed
+// hooks, or "" when it needs none.
+func TrustHint(adapter string) string {
+	if i, ok := installers[adapter]; ok {
+		return i.trustHint()
+	}
+	return ""
+}
 
 func outcomeOf(plan VendorPlan) vendorOutcome {
 	return vendorOutcome{Adapter: strings.Join(scopeOf(plan), ","), Path: plan.Path, PathSource: plan.PathSource}

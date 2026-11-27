@@ -124,6 +124,13 @@ case $(cat "$tmp/output") in
   "$version"|"Installed crosshall $version at "*) ;;
   *) fail "verified install did not report $version" ;;
 esac
+# A directory with a colon cannot be one PATH entry: the commands keep the
+# quoted full path and no export advice is given.
+colon_dest="$tmp/tools\$local:bin"
+install good "$colon_dest" || fail "install into a colon directory failed: $(cat "$tmp/errors")"
+printf -v colon_start '  %q owner start' "$(cd -- "$colon_dest" && pwd -P)/crosshall"
+grep -Fxq -- "$colon_start" "$tmp/output" || fail "no quoted owner start for a colon directory: $(cat "$tmp/output")"
+if grep -q 'is not on PATH' "$tmp/output"; then fail "PATH advice for a colon directory: $(cat "$tmp/output")"; fi
 install good "$tmp/install location" || fail 'same verified artifact could not be reinstalled without Go'
 install missing "$tmp/unverified" && fail 'installed despite missing checksum and compiler'
 [[ ! -e $tmp/unverified/crosshall && ! -s $tmp/executions ]] || fail 'unverified program ran or installed'

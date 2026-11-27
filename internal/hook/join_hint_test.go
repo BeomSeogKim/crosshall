@@ -41,7 +41,7 @@ func TestHookJoinHintReceiptRequiresAFullWriteAndSuppressesOnlyGuidance(t *testi
 	write := func(w io.Writer) (string, bool) {
 		return writeHookResultAndConfirmJoin(t.Context(), rv, leaf, "fixture-gen", "codex", 7, spec, result, &frameWriter{dst: w})
 	}
-	if outcome, seen := write(shortJoinHintWriter{}); outcome != "refused" || seen {
+	if outcome, seen := write(shortJoinHintWriter{}); outcome != "refused: write" || seen {
 		t.Fatalf("short write was acknowledged: %q %t", outcome, seen)
 	}
 	if _, ok := ReadJoinHintAck(leaf, "fixture-gen"); ok {

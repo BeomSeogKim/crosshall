@@ -22,6 +22,10 @@ const (
 	WakeDevice = "device"
 )
 
+// LinkedDeviceWakes is the next step of a request a linked device will try
+// to wake its recipient for.
+const LinkedDeviceWakes = "the linked device will try to wake it"
+
 // Why words of WakeNone. They are fixed, and the same in a send result, in
 // who and in waiting; binding IDs, owner commands and reason details stay in
 // the owner's views.
@@ -37,6 +41,10 @@ const (
 	WhyApproval      = "awaiting_approval" // its turn waits on its owner's approval
 	WhyEnded         = "session_ended"     // its session ended; it may be closed
 	WhyDeviceOffline = "device_offline"
+	// WhyLinkedDevice goes with WakeDevice, which it does not change: a
+	// v0.4.0-rc.1 or rc.2 client that has no device branch prints this word
+	// as its reason instead of a blank one (#445).
+	WhyLinkedDevice = "linked_device"
 )
 
 // Where a member that is not woken sees the work.
@@ -301,7 +309,7 @@ func recordWakes(ctx context.Context, tx store.Tx, sender, msg int64, recipients
 			Why  string `json:"why,omitempty"`
 		}{d.Wake.Wake, d.Why}
 		if detail.Wake == WakeDevice {
-			detail.Wake = WakeNone // the daily report counts it as before
+			detail.Wake, detail.Why = WakeNone, "" // the daily report counts it as before
 		}
 		if err := audit(ctx, tx, sendWakeEvent, fmt.Sprintf("message:%d", msg), sender, detail, now); err != nil {
 			return err

@@ -5,6 +5,8 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **`crosshall link status` no longer fails when the device rewrites its status at that moment (#467):** a read-only open of a private file that another private file replaced by rename starts over, up to three times, instead of failing with `"link-status.json" changed while opening`. A replacement that is not a 0600 file owned by the user is still refused.
+- **Linked-device wake advice agrees everywhere (#445):** a request to a member its linked device will try to wake now reads `next: "the linked device will try to wake it"` in `--json`, not `waits for its next crosshall command`. The home also sends `why: "linked_device"` with the `device` outcome, so a v0.4.0-rc.1 or rc.2 client prints `not woken: linked_device` instead of a blank reason; the outcome and the daily count are unchanged. `crosshall owner start` lists a member that runs on a linked device apart from those nothing can wake, and says why it gets no resume notice: startup resume notices require a local session.
+
 - **The release gate's full-run row says what ran beside it:** when the row fails, its detail names the failed tests instead of the log's last line, which was often macOS's launch-denial report. ci-checks prints that report on any failure, and the same denials occur in passing runs. The detail also gives the load before and after the run, and counts the other test runs on the machine (the lock serializes full runs only) and the processes an earlier row left running. `row_full_run.others` lists each of them (#391).
 
 ## v0.4.0 (2026-11-27)

@@ -235,9 +235,10 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	eventually(t, "the spoke acknowledged the move", func() bool { return acked() > moved })
 
 	backup := t.TempDir()
-	home.must("owner", "stop")
+	stopHomeAndDevice(t, f)
 	copyStore(t, f.home.state, backup)
 	home.must("owner", "start")
+	member.run("who") // starts the device's dispatcher on demand
 	waitSpokeLink(t, spoke, "connected")
 	before := acked()
 	if got := member.run("join", "first", "--move"); got.exit != 0 {
@@ -245,9 +246,10 @@ func homeRestoredFromBackup(t *testing.T, unlink bool) {
 	}
 	eventually(t, "the spoke acknowledged events after the backup", func() bool { return acked() > before })
 
-	home.must("owner", "stop")
+	stopHomeAndDevice(t, f)
 	copyStore(t, backup, f.home.state)
 	home.must("owner", "start")
+	member.run("who") // starts the device's dispatcher on demand
 	eventually(t, "the spoke saw the home go back", func() bool {
 		var stopped int64
 		return spokeDB.QueryRow(`SELECT rolled_back FROM spoke_event_cursor`).Scan(&stopped) == nil && stopped == 1
@@ -371,6 +373,33 @@ func TestSpokeLinkAgainRefusesAnotherHall(t *testing.T) {
 	if aside, _ := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*-rolled-back-*")); len(aside) != 0 {
 		t.Fatalf("the stopped store was set aside: %v", aside)
 	}
+}
+
+// stopHomeAndDevice stops the linked device's dispatcher, waits until the home's link
+// serve processes it ran have exited, then stops the home. A connected
+// device's link serve starts the home dispatcher on demand at each call,
+// so a home stop alone can race with it: the stop fails on the
+// replacement, or a restarted dispatcher writes the store while the test
+// copies it.
+func stopHomeAndDevice(t *testing.T, f *linkFixture) {
+	t.Helper()
+	// A linked device refuses owner commands: its dispatcher gets SIGTERM.
+	device := linkDispatcher(f.spoke)
+	device.signal(syscall.SIGTERM)
+	eventually(t, "the device's dispatcher stopped", func() bool { return !device.alive() })
+	eventually(t, "the device's link serve processes exited", func() bool {
+		data, err := os.ReadFile(f.ssh + ".pids")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		for _, field := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(field); err == nil && syscall.Kill(pid, 0) == nil {
+				return false
+			}
+		}
+		return true
+	})
+	f.home.owner().must("owner", "stop")
 }
 
 // copyStore copies a stopped hall's store files from one state directory

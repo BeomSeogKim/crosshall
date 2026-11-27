@@ -18,7 +18,7 @@ const telemetryQuestion = `Usage statistics help Adrian Studio decide what to fi
 The maintainer's server keeps a report about ten days, until its encrypted copy in Google Drive is confirmed, and Drive keeps it 180 days. Sending starts with the first full UTC day after you opt in. Declining leaves every crosshall feature available. crosshall owner telemetry show shows the report waiting to be sent, exactly as it will be sent; crosshall owner telemetry off turns sending off.
 ` + telemetryPrompt
 
-const telemetryPrompt = "Send usage statistics? [Y/n]"
+const telemetryPrompt = "Send usage statistics? [y/N]"
 
 func applyTelemetryEnvironment(env Env, out io.Writer) error {
 	if env.TelemetryStateRoot == "" || !telemetryconfig.EnvironmentOff() {
@@ -74,9 +74,9 @@ func askTelemetry(input *bufio.Reader, out io.Writer) (string, error) {
 			return telemetryconfig.Unset, err
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "", "y", "yes", "ㅛ": // ㅛ and ㅜ: the y and n keys under a Korean input method
+		case "y", "yes", "ㅛ": // ㅛ and ㅜ: the y and n keys under a Korean input method
 			return telemetryconfig.On, nil
-		case "n", "no", "ㅜ":
+		case "", "n", "no", "ㅜ":
 			return telemetryconfig.Off, nil
 		}
 	}

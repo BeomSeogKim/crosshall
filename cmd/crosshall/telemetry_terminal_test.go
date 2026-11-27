@@ -71,7 +71,7 @@ func TestTelemetryConsentWithAPseudoTerminal(t *testing.T) {
 		{name: "owner CI", command: "owner", input: "\n", ci: "1", inCI: true, wantMode: telemetryconfig.Unset},
 		{name: "setup CI with empty marker", command: "setup", input: "\n", inCI: true, wantMode: telemetryconfig.Unset},
 		{name: "whitespace veto", command: "setup", input: "\n", doNotTrack: " ", wantMode: telemetryconfig.Unset},
-		{name: "Enter", command: "owner", input: "\n", wantQuestion: true, wantMode: telemetryconfig.On},
+		{name: "Enter", command: "owner", input: "\n", wantQuestion: true, wantMode: telemetryconfig.Off},
 		{name: "partial EOF", command: "setup", input: " \x04", wantQuestion: true, wantMode: telemetryconfig.Unset},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestTelemetryConsentWithAPseudoTerminal(t *testing.T) {
 			if err != nil {
 				t.Fatalf("terminal child: %v\n%s", err, out)
 			}
-			if question := strings.Contains(string(out), "Send usage statistics? [Y/n]"); question != tt.wantQuestion {
+			if question := strings.Contains(string(out), "Send usage statistics? [y/N]"); question != tt.wantQuestion {
 				t.Fatalf("unexpected question state: %s", out)
 			}
 			got, err := telemetryconfig.ReadMode(fixture.State)

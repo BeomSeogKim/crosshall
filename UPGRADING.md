@@ -2,9 +2,17 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.5.1
+
+From v0.5.1-rc.1, v0.5.0 or v0.5.0-rc.1, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the install journal stays in format 4, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed, and setup need not run again; see [the v0.5.1-rc.1 notes](#to-v051-rc1) for what setup reports and for a configuration home that Claude Code and Codex share.
+
+From v0.4.0 or earlier, follow [the v0.5.0 upgrade steps](#to-v050) with the v0.5.1 binary.
+
+To roll back to v0.5.0, stop the dispatcher, put the v0.5.0 binary back at the original path and restart it. No uninstall is needed: both releases use schema 37 and install journal format 4.
+
 ## To v0.5.1-rc.1
 
-From v0.5.0 or v0.5.0-rc.1, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the install journal stays in format 4, the hooks, command rules and skill keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed, and setup need not run again: the hook entries, rules and skill are the same as in v0.5.0, so `crosshall setup` reports each agent as `already installed` and asks nothing. Codex keeps its trust in the unchanged hooks. One exception: if Claude Code and Codex share one configuration home and a v0.5.0 setup reported `crosshall skill shared with Claude Code` while no `skills/crosshall/SKILL.md` is there (#474), run `crosshall setup codex` in your own terminal to install it.
+From v0.5.0 or v0.5.0-rc.1, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the install journal stays in format 4, the hooks, command rules and skill keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed, and setup need not run again: the hook entries, rules and skill are the same as in v0.5.0, so `crosshall setup` reports each installed agent as `already installed` without an install question. A bare `crosshall setup` still offers any other detected agent that has no hooks yet, and a run in a terminal can ask the separate usage-statistics question if you have not answered it. Codex keeps its trust in the unchanged hooks. One exception: if Claude Code and Codex share one configuration home and a v0.5.0 setup reported `crosshall skill shared with Claude Code` while no `skills/crosshall/SKILL.md` is there (#474), run `crosshall setup codex` in your own terminal to install it.
 
 From v0.4.0 or earlier, follow [the v0.5.0 upgrade steps](#to-v050) with the v0.5.1-rc.1 binary.
 

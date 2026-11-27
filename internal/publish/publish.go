@@ -93,8 +93,9 @@ const (
 	ApprovalUnknown Approval = "unknown"
 )
 
-// Withdrawal is what a transport reports for one withdrawal. Only Deleted
-// settles the notice; the others leave it to its receipt.
+// Withdrawal is what a transport reports for one withdrawal. Deleted
+// settles the notice, and NotPending settles one with nothing left to read;
+// otherwise it is left to its receipt.
 type Withdrawal string
 
 const (

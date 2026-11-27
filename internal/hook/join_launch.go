@@ -87,7 +87,6 @@ func BindJoinLaunch(rendezvous string, id ident.Identity, l domain.JoinLaunch) e
 	if err := writeRecord(leaf, name, fmt.Sprintf("%d %s\n", l.AtMS, digest)); err != nil {
 		return err
 	}
-	ackLaunch(leaf, launchBinding{ref: l.Ref, record: name}) // the dispatcher bound it
 	markLaunch(rv, pid)
 	return nil
 }

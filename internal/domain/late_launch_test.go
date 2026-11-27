@@ -222,7 +222,9 @@ func TestATurnEndOrIdlePromptBindsTheLaunchOfAHandJoin(t *testing.T) {
 			s := f.newSession("claude")
 			at := f.now.UnixMilli()
 			wantOK(t, f.join(s, Join{Channel: "checkout", Alias: "claude1"}, ""))
-			f.hookAs(s, c.cmd(at))
+			if got := f.hookAs(s, c.cmd(at)); got.Launch != "pid-9-b" {
+				t.Fatalf("reply %+v does not name the bound launch", got)
+			}
 			if got := f.launches(s); len(got) != 1 || got[0] != (launchRow{"pid-9-b", true, at + 20, "print"}) {
 				t.Fatalf("launches %+v, want the process launch bound", got)
 			}
@@ -294,6 +296,12 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 				f.t.Fatal(err)
 			}
 		}, latePrompt},
+		{"a Stop captured before a move", func(f *fixture, s session, at int64) {
+			if _, err := f.db.Exec(`UPDATE member_selection SET generation = 2, selected_at_ms = ? WHERE principal_id = ?`,
+				at+40, *f.caller(s).PrincipalID); err != nil {
+				f.t.Fatal(err)
+			}
+		}, func(at int64) HookEvent { return lateProof(stop("pid-9-b", "t1", at+30), at+20) }},
 		{"a launch time before the clean end", func(f *fixture, s session, at int64) {
 			f.hookAs(s, ended("pid-7-a", at+25))
 		}, latePrompt},
@@ -304,7 +312,11 @@ func TestAKnownMemberIsNotBoundLateWhereAStartWouldNotRestoreIt(t *testing.T) {
 			at := f.now.UnixMilli()
 			f.hookAs(s, start("pid-7-a", "startup", at))
 			c.absent(f, s, at)
-			f.hookAs(s, c.cmd(at))
+			// The reply does not name the late launch, so the hook keeps
+			// waiting for the next one (#437).
+			if got := f.hookAs(s, c.cmd(at)); got.Launch == "pid-9-b" {
+				t.Fatalf("reply names the unbound launch: %+v", got)
+			}
 			if got := f.launches(s); len(got) != 1 {
 				t.Fatalf("launches %+v, want only the started one", got)
 			}

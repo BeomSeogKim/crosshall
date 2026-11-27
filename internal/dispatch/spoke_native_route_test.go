@@ -194,6 +194,15 @@ func TestSpokeNativeRouteIsCapturedByTheTurnEndOfAJoinedLaunch(t *testing.T) {
 					hook.verified, hook.startedAtMS, hook.pidNamespace = true, 1, proc.PIDNamespace()
 				}
 				capture(6, hook)
+				if err := db.View(ctx, func(tx store.Tx) error {
+					launch, err := spokeNativeLaunch(ctx, tx, member, token)
+					if err == nil && (launch == "launch") != proof {
+						t.Fatalf("route launch %q after the turn end; want it named %v", launch, proof)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
 				capture(7, spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: socket, PermissionMode: "default"}})
 				if err := db.View(ctx, func(tx store.Tx) error {
 					route, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
@@ -240,6 +249,17 @@ func TestSpokeNativeRouteKeepsItsLaunchAgainstAnotherProcessTurnEnd(t *testing.T
 	capture(6, "pid-42-old", spokeNativeHook{enroll: true, startedAtMS: 1, verified: true, pidNamespace: proc.PIDNamespace()})
 	capture(7, "pid-42-old", spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: first, PermissionMode: "default", Start: true}})
 	capture(8, "pid-43-new", spokeNativeHook{fact: wire.HookTurnFinishing, startedAtMS: 2, verified: true, pidNamespace: proc.PIDNamespace()})
+	// The reply to that turn end names the started launch, so its hook keeps
+	// waiting before its route report.
+	if err := db.View(ctx, func(tx store.Tx) error {
+		launch, err := spokeNativeLaunch(ctx, tx, member, token)
+		if err == nil && launch != "pid-42-old" {
+			t.Fatalf("route launch %q, want pid-42-old", launch)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	capture(9, "pid-43-new", spokeNativeHook{report: &wire.HookRouteArgs{SocketPath: second, PermissionMode: "default"}})
 	if err := db.View(ctx, func(tx store.Tx) error {
 		route, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)

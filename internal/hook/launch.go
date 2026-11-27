@@ -198,11 +198,12 @@ func lateLaunch(leaf *os.Root, name string, pid uint64, e event, entry time.Time
 	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: at, late: true, record: name}, nil
 }
 
-// launchAcked reports whether the dispatcher answered a callback of this
-// launch: until it has, a callback that may bind the launch waits for its
-// reply before its route report, which the dispatcher does not order after
-// a one-way event (#437). A publication that never arrived leaves the
-// launch unacknowledged, so the next such callback waits again.
+// launchAcked reports whether a dispatcher reply named this launch as the
+// member's current one: until one has, a callback that may bind the launch
+// waits for its reply before its route report, which the dispatcher does
+// not order after a one-way event and applies only for that launch (#437).
+// A publication that never arrived, or an event the dispatcher skipped,
+// leaves the launch unacknowledged, so the next such callback waits again.
 func launchAcked(leaf *os.Root, l launchBinding) bool {
 	if l.record == "" {
 		return true
@@ -211,7 +212,7 @@ func launchAcked(leaf *os.Root, l launchBinding) bool {
 	return err == nil && string(ack) == l.ref
 }
 
-// ackLaunch records that the dispatcher answered a callback of the launch.
+// ackLaunch records that a dispatcher reply named the launch as current.
 func ackLaunch(leaf *os.Root, l launchBinding) {
 	if l.record != "" {
 		_ = writeRecord(leaf, l.record+".ack", l.ref) // best effort: the next callback waits again

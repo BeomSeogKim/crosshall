@@ -149,6 +149,20 @@ func recordSpokeNativeHook(ctx context.Context, tx store.Tx, member link.Member,
 	return err
 }
 
+// spokeNativeLaunch is the launch of the member's native route in the
+// token's scope: a route report for another launch in that scope is not
+// applied.
+func spokeNativeLaunch(ctx context.Context, tx store.Tx, member link.Member, token link.HookToken) (string, error) {
+	var launch string
+	err := tx.QueryRowContext(ctx, `SELECT launch FROM spoke_native_route WHERE vendor = ? AND key = ? AND boot = ?
+		AND leaf_generation = ? AND binding_id = ? AND membership_gen = ?`, member.Vendor, member.Key, token.Boot,
+		token.LeafGeneration, token.Membership.BindingID, token.Membership.Generation).Scan(&launch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return launch, err
+}
+
 func (e *spokeNativeEvidence) apply(adapter publish.Adapter, key string, token link.HookToken, hook spokeNativeHook, profile bool) {
 	if profile && token.LeafSeq > e.ProfileSeq {
 		e.ProfileSeq = token.LeafSeq

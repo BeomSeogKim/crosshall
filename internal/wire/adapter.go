@@ -160,8 +160,11 @@ type HookResult struct {
 	JoinHintAck  *HookJoinHintAck `json:"join_hint_ack,omitempty"`
 	// ChannelCreated tells the dispatcher that this enrolment made the
 	// repository's channel, so the published repository set is stale.
-	ChannelCreated bool   `json:"channel_created,omitempty"`
-	Epoch          uint64 `json:"epoch"`
+	ChannelCreated bool `json:"channel_created,omitempty"`
+	// Launch is the member's current launch after a hook.event: the launch
+	// a route report must name to be applied (#437).
+	Launch string `json:"launch,omitempty"`
+	Epoch  uint64 `json:"epoch"`
 }
 
 // HookOfferReceipt identifies a prepared batch for acknowledgement after output.

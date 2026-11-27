@@ -307,17 +307,20 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	// A callback that may bind a launch the dispatcher has not answered for
-	// waits for the bind: its route report needs the route the bind
-	// registers, and the dispatcher does not order a report after a
-	// one-way event (#437).
-	acked := !lateLaunchFact(e.Fact) || launchAcked(leaf, launch)
+	// A callback that may bind a launch waits for its reply until one names
+	// that launch as the member's current one: its route report is applied
+	// only for that launch, and the dispatcher does not order a report after
+	// a one-way event (#437).
+	acked := !lateLaunchFact(e.Fact) || !slices.Contains(offers, wire.HelloLaunchAck) || launchAcked(leaf, launch)
 	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want && acked)
 	if err != nil {
 		return transportOutcome(ctx, err)
 	}
 	if !acked && reply.Response.Status == core.ExitOK {
-		ackLaunch(leaf, launch)
+		var answered wire.HookResult
+		if json.Unmarshal(reply.Response.Data, &answered) == nil && answered.Launch == launch.ref {
+			ackLaunch(leaf, launch)
+		}
 	}
 	if clean || !want {
 		if !hookExpired(ctx) {
@@ -330,9 +333,6 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	}
 	if reply.Response.Status != core.ExitOK {
 		return refusedWith("reply", reply.Response.Code)
-	}
-	if spec.Enroll {
-		ackLaunch(leaf, launch) // the start bound its launch
 	}
 	if reply.Membership != nil {
 		membership = reply.Membership

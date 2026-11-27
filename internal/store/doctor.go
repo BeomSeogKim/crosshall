@@ -98,6 +98,9 @@ type DoctorTurnEndNotice struct {
 	Date                              string `json:"date"`
 	CommittedClaims                   int    `json:"committed_claims"`
 	ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
+	// LiveLaunches counts the live launches the availability was checked
+	// against; with none, Available says nothing about the installed build.
+	LiveLaunches int `json:"live_launches"`
 }
 
 // DoctorSnapshot contains the diagnostics read in one store transaction.
@@ -290,6 +293,7 @@ func readDoctorBuilds(ctx context.Context, tx Tx, adapter string, out *DoctorAda
 	var exactTurnEnd bool
 	for _, profile := range profiles {
 		out.UnseenStarts += profile.unseen
+		out.TurnEndNotice.LiveLaunches += profile.count
 		turnEnd, err := readCapabilityBuild(ctx, tx, adapter, profile.profile, "turn_end")
 		if err != nil {
 			return err

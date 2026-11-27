@@ -81,7 +81,7 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 		       (1, 'claude', 'current-claude', 'tomorrow', ?)`,
 		day.UnixMilli()-1, day.UnixMilli(), nextDay.UnixMilli()-1, nextDay.UnixMilli())
 
-	check := func(t *testing.T, wantClaudeAvailable bool, wantTrustedFrom string) {
+	check := func(t *testing.T, wantClaudeAvailable bool, wantTrustedFrom string, wantClaudeLive int) {
 		t.Helper()
 		adapters := []doctorAdapter{
 			{InstallStatus: setup.InstallStatus{Adapter: "claude"}},
@@ -100,6 +100,7 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 					TrustedFrom                       string `json:"trusted_from"`
 					CommittedClaims                   *int   `json:"committed_claims"`
 					ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
+					LiveLaunches                      *int   `json:"live_launches"`
 				} `json:"turn_end_notice"`
 			}
 		}
@@ -111,44 +112,48 @@ func TestDoctorReportsTurnEndClaimsAndLiveAvailability(t *testing.T) {
 			available   bool
 			claims      int
 			trustedFrom string
-		}{{"claude", wantClaudeAvailable, 2, wantTrustedFrom}, {"codex", false, 0, ""}} {
+			live        int
+		}{{"claude", wantClaudeAvailable, 2, wantTrustedFrom, wantClaudeLive}, {"codex", false, 0, "", 1}} {
 			a := got.Adapters[i]
 			n := a.TurnEndNotice
 			if a.Adapter != want.adapter || n == nil || n.Available == nil || *n.Available != want.available ||
 				n.Date != "20261119" || n.CommittedClaims == nil || *n.CommittedClaims != want.claims ||
-				n.ExtraModelRequestsPerContinuation != 1 || n.TrustedFrom != want.trustedFrom {
-				t.Errorf("doctor JSON: %s, want %s available=%t claims=%d trusted_from=%q", raw, want.adapter, want.available, want.claims, want.trustedFrom)
+				n.ExtraModelRequestsPerContinuation != 1 || n.TrustedFrom != want.trustedFrom ||
+				n.LiveLaunches == nil || *n.LiveLaunches != want.live {
+				t.Errorf("doctor JSON: %s, want %s available=%t claims=%d trusted_from=%q live_launches=%d",
+					raw, want.adapter, want.available, want.claims, want.trustedFrom, want.live)
 			}
 		}
 	}
-	check(t, true, "")
+	check(t, true, "", 1)
 	t.Run("inherited from another version", func(t *testing.T) {
 		update(t, "UPDATE capability_evidence SET vendor_version = '2.1.328' WHERE vendor = 'claude' AND cap = 'turn_end'")
 		defer update(t, "UPDATE capability_evidence SET vendor_version = '2.1.327' WHERE vendor = 'claude' AND cap = 'turn_end'")
-		check(t, true, "2.1.328")
+		check(t, true, "2.1.328", 1)
 	})
 	for _, test := range []struct {
 		name, disable, restore string
+		live                   int
 	}{
 		{"policy off", "UPDATE adapter_policy SET enabled = 0 WHERE adapter = 'claude'",
-			"UPDATE adapter_policy SET enabled = 1 WHERE adapter = 'claude'"},
+			"UPDATE adapter_policy SET enabled = 1 WHERE adapter = 'claude'", 1},
 		{"every launch ended", "UPDATE adapter_launch SET ended_hook_at_ms = 3 WHERE principal_id = 1",
-			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE principal_id = 1"},
+			"UPDATE adapter_launch SET ended_hook_at_ms = NULL WHERE principal_id = 1", 0},
 		{"binding departed", "UPDATE binding SET state = 'departed' WHERE principal_id = 1",
-			"UPDATE binding SET state = 'live' WHERE principal_id = 1"},
+			"UPDATE binding SET state = 'live' WHERE principal_id = 1", 0},
 		{"wrong platform", "UPDATE capability_evidence SET platform = 'linux-amd64' WHERE vendor = 'claude' AND cap = 'turn_end'",
-			"UPDATE capability_evidence SET platform = 'darwin-arm64' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+			"UPDATE capability_evidence SET platform = 'darwin-arm64' WHERE vendor = 'claude' AND cap = 'turn_end'", 1},
 		{"wrong mode", "UPDATE capability_evidence SET mode = 'interactive' WHERE vendor = 'claude' AND cap = 'turn_end'",
-			"UPDATE capability_evidence SET mode = 'print' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+			"UPDATE capability_evidence SET mode = 'print' WHERE vendor = 'claude' AND cap = 'turn_end'", 1},
 		{"wrong manifest", "UPDATE capability_evidence SET manifest_rev = 'claude-2' WHERE vendor = 'claude' AND cap = 'turn_end'",
-			"UPDATE capability_evidence SET manifest_rev = 'claude-1' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+			"UPDATE capability_evidence SET manifest_rev = 'claude-1' WHERE vendor = 'claude' AND cap = 'turn_end'", 1},
 		{"candidate", "UPDATE capability_evidence SET level = 'candidate' WHERE vendor = 'claude' AND cap = 'turn_end'",
-			"UPDATE capability_evidence SET level = 'tested' WHERE vendor = 'claude' AND cap = 'turn_end'"},
+			"UPDATE capability_evidence SET level = 'tested' WHERE vendor = 'claude' AND cap = 'turn_end'", 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			update(t, test.disable)
 			defer update(t, test.restore)
-			check(t, false, "")
+			check(t, false, "", test.live)
 		})
 	}
 }

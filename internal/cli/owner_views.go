@@ -346,6 +346,7 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 			TrustedFrom                       string `json:"trusted_from,omitempty"`
 			CommittedClaims                   int    `json:"committed_claims"`
 			ExtraModelRequestsPerContinuation int    `json:"extra_model_requests_per_continuation"`
+			LiveLaunches                      int    `json:"live_launches"`
 		} `json:"turn_end_notice"`
 		Publish *struct {
 			State        string
@@ -419,6 +420,8 @@ func renderDoctorAdapters(w io.Writer, raw json.RawMessage) error {
 				if notice.TrustedFrom != "" {
 					status += fmt.Sprintf(" (trusted from %s evidence)", notice.TrustedFrom)
 				}
+			} else if notice.LiveLaunches == 0 {
+				status = "not checked yet: no live " + manifests.DisplayName(a.Adapter) + " session"
 			}
 			fmt.Fprintf(&output, "  turn-end notice %s, committed claims %d on %s UTC, %d extra model request per continuation\n",
 				status, notice.CommittedClaims, notice.Date, notice.ExtraModelRequestsPerContinuation)

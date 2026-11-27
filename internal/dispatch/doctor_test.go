@@ -232,6 +232,19 @@ func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
 			t.Errorf("preferences only: check %+v, want detail %q", check, "not started yet")
 		}
 	}
+	// An unsafe owner spool keeps its error: startup would refuse it.
+	if err := os.Symlink(t.TempDir(), filepath.Join(absent.StateRoot, "owner")); err != nil {
+		t.Fatal(err)
+	}
+	prefs.Checks, prefs.NotStarted = nil, false
+	if err := json.Unmarshal(absent.Doctor(t.Context()).Data, &prefs); err != nil || !prefs.NotStarted {
+		t.Fatalf("unsafe owner spool: %+v (%v), want not started", prefs, err)
+	}
+	for _, check := range prefs.Checks {
+		if check.Name == "owner_spool_writable" && (check.OK || check.Detail == "not started yet") {
+			t.Errorf("unsafe owner spool: check %+v, want its own error", check)
+		}
+	}
 	stale, lock := doctorFixture(t)
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)

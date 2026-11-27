@@ -298,7 +298,7 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 		}
 	}
 	for _, check := range result.Checks {
-		if result.NotStarted && !check.OK {
+		if result.NotStarted && !check.OK && check.Detail == "not started yet" {
 			continue
 		}
 		outcome := "FAIL"

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **The release gate's full-run row says what ran beside it:** when the row fails, its detail names the failed tests instead of the log's last line, which was often macOS's launch-denial report. ci-checks prints that report on any failure, and the same denials occur in passing runs. The detail also gives the load before and after the run, and counts the other test runs on the machine (the lock serializes full runs only) and the processes an earlier row left running. `row_full_run.others` lists each of them (#391).
+
 ## v0.4.0 (2026-11-27)
 
 - **Release of v0.4.0-rc.3:** no product change since rc.3.

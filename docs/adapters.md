@@ -115,7 +115,7 @@ A route publishes when all of these hold:
 
 1. The session has a current route. Claude Code also requires a verified launch. Tested evidence covers the adapter, platform, mode and manifest revision. Exact-version evidence overrides inherited evidence. [Conformance](../CONFORMANCE.md#publish-profiles)
 2. The dispatcher proved the route against the session's process. For Codex, that proof identifies the managed server whose control socket will accept the notice.
-3. The route was activated. Only messages stored after that moment are offered, so a backlog never arrives as a burst.
+3. The route was activated. Only messages stored after that moment are offered, so a backlog never arrives as a burst. Known limit (#484): a route recorded at a session start, a recovering prompt or a turn end is proven and then activated on later dispatcher ticks, usually within about half a second, and a request or final reply stored before it first activates is not offered by a notice. Nothing is lost: the member still sees it at a later prompt line, a turn-end check or wait that covers it, or `crosshall read`. A member told that the hall brings new work does not check before ending a turn, so no notice wakes it for that message.
 4. No switch is off, the session is not in bypass permission mode, and the route is not suspended, capped or held.
 
 What a member sees:

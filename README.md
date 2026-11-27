@@ -348,6 +348,7 @@ For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more t
 ## Limits
 
 - An idle session with an available publish route can wake for a notice. Built-in Codex idle-wake evidence covers managed daemon mode on macOS and Linux, both arm64 and amd64. When a session has no notice route, it sees new requests at its next crosshall command or adapter prompt.
+- A request stored after a session's notice route is recorded but before the route first activates (usually within about half a second) gets no notice; the member still sees it at a later prompt or through `crosshall read` (#484).
 - The turn-end check has built-in evidence for Claude Code on macOS arm64 in print and interactive mode. It costs one extra model request when it continues a turn with an unread request. Stock Codex remains unsupported.
 - A Claude Code version other than the tested one, on the same platform and mode, runs on trial: the first three notices are checked, and a bad one stops notices for that version until you run `crosshall owner publish resume <binding-id>`. `crosshall owner who --all` shows a stop.
 - One user, and one machine keeps the hall. Sessions on a second machine can join it over SSH. See [linking a second device](docs/linking.md).

@@ -65,7 +65,8 @@ type PlanFile struct {
 	Prune      [][]string             `json:"remove_if_empty,omitempty"`
 	AddText    string                 `json:"add_text,omitempty"`
 	RemoveText string                 `json:"remove_text,omitempty"`
-	Skill      string                 `json:"skill,omitempty"` // install, update or remove of the crosshall skill
+	Skill      string                 `json:"skill,omitempty"` // install, update, remove or shared, of the crosshall skill
+	SharedWith string                 `json:"shared_with,omitempty"`
 	Evidence   []store.DoctorEvidence `json:"capability_evidence,omitempty"`
 	Reminder   *reminderStatus        `json:"reminder,omitempty"`
 }
@@ -457,6 +458,10 @@ func printPlan(out io.Writer, p plan) error {
 	commandRules := false
 	var sandboxNotes []string
 	for _, f := range p.Files {
+		if f.Skill == "shared" {
+			fmt.Fprintf(&contents, "  crosshall skill shared with %s (%s)\n", f.SharedWith, f.Path)
+			continue
+		}
 		if f.Skill != "" {
 			fmt.Fprintf(&contents, "  %s skill %s\n", f.Skill, f.Path)
 			continue

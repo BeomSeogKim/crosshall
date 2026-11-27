@@ -280,3 +280,66 @@ func TestSkillRemovalPreviewIsStaleOnceAnotherVendorShares(t *testing.T) {
 		t.Fatal("the stale removal deleted the skill Codex now uses")
 	}
 }
+
+func TestGroupedSetupInstallsASharedSkillOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		req    Request
+		answer string
+	}{
+		{"one yes", Request{Terminal: true, Adapters: []string{"claude", "codex"}}, "y\n"},
+		{"apply", Request{Apply: true, Adapters: []string{"claude", "codex"}}, ""},
+		{"installer offer", Request{Offer: true, Terminal: true}, "y\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, shared, path := sharedSkillHome(t)
+			before := homeTree(t, shared)
+			out, err := realRun(t, s, f, tc.req, tc.answer)
+			if err != nil {
+				t.Fatalf("grouped setup: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "crosshall skill shared with Claude Code ("+path+")") {
+				t.Errorf("plan does not show the shared skill:\n%s", out)
+			}
+			j, _, err := readJournal(f.State)
+			if err != nil || len(j.Files) != 2 || len(j.SkillFiles) != 1 || j.SkillFiles["claude"].Path != path {
+				t.Fatalf("grouped setup records: files %v, skills %+v (%v)\n%s", j.Files, j.SkillFiles, err, out)
+			}
+			if !bytes.Contains(configBytes(t, filepath.Join(shared, "hooks.json")), []byte("hook codex SessionStart")) ||
+				!bytes.Contains(configBytes(t, filepath.Join(shared, "settings.json")), []byte("SessionStart")) ||
+				!bytes.Equal(configBytes(t, path), skillContent) {
+				t.Fatal("grouped setup did not install both vendors and the skill")
+			}
+
+			out, err = realRun(t, s, f, Request{Action: "uninstall", Apply: true, Adapters: []string{"claude", "codex"}}, "")
+			if err != nil {
+				t.Fatalf("uninstall: %v\n%s", err, out)
+			}
+			if after := homeTree(t, shared); !maps.Equal(before, after) {
+				t.Fatalf("uninstall was not byte-exact:\nbefore %v\nafter  %v\n%s", before, after, out)
+			}
+		})
+	}
+}
+
+func TestGroupedSetupStillRefusesAnExternalChange(t *testing.T) {
+	f, s, shared, _ := sharedSkillHome(t)
+	plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
+	if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
+		t.Fatalf("grouped plans: %+v (%v)", plans, err)
+	}
+	f.CheckTargets(t)
+	if err := s.Install(t.Context(), plans[0]); err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(shared, "hooks.json")
+	owner := []byte("{\"owner\":true}\n")
+	writeConfigFixture(t, hooks, owner, 0600)
+	f.CheckTargets(t)
+	if err := s.Install(t.Context(), plans[1]); err == nil || !strings.Contains(err.Error(), "changed after planning") {
+		t.Fatalf("Codex install accepted an external change: %v", err)
+	}
+	if !bytes.Equal(configBytes(t, hooks), owner) {
+		t.Fatal("the refused install wrote the owner's hooks file")
+	}
+}

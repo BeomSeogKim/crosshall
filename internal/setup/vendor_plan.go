@@ -130,13 +130,33 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 		plans[i].Err = err
 	}
 	s.completeTargets(ctx, j, targets)
+	// One consent covers the group, so a skill path two vendors share gets
+	// one edit, in the first vendor's plan. The later vendor uses it through
+	// its recorded hooks path and makes no claim of its own.
+	skills := map[string]string{}
 	for i, target := range targets {
 		single := targets[i : i+1]
 		op, err := makeInstall(j, single)
 		if err != nil {
 			op = operation{Action: action, Adapters: []string{target.Spec.Adapter}}
 		}
-		plans[targetIndexes[i]] = newVendorPlan(op, single, j, digest, false)
+		var shared *PlanFile
+		op.Edits = slices.DeleteFunc(op.Edits, func(e edit) bool {
+			first, ok := skills[e.Path]
+			if !e.Skill {
+				return false
+			} else if !ok {
+				skills[e.Path] = e.Adapter
+				return false
+			}
+			shared = &PlanFile{Adapter: e.Adapter, Path: e.Path, Skill: "shared", SharedWith: manifests.DisplayName(first)}
+			return true
+		})
+		plan := newVendorPlan(op, single, j, digest, false)
+		if shared != nil {
+			plan.Files = append(plan.Files, *shared)
+		}
+		plans[targetIndexes[i]] = plan
 		plans[targetIndexes[i]].Err = err
 	}
 	return plans, nil

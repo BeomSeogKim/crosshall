@@ -215,6 +215,8 @@ func skillOutcomes(files []PlanFile) []string {
 			lines = append(lines, fmt.Sprintf("updated the crosshall skill for %s (%s)", name, f.Path))
 		case "remove":
 			lines = append(lines, fmt.Sprintf("removed the crosshall skill for %s (%s)", name, f.Path))
+		case "shared":
+			lines = append(lines, fmt.Sprintf("crosshall skill shared with %s (%s)", f.SharedWith, f.Path))
 		}
 	}
 	return lines

@@ -291,8 +291,11 @@ esac
 			}
 			shown := strings.ReplaceAll(out, "\r\n", "\n")
 			block := strings.TrimPrefix(string(profile), existing)
-			if got := strings.Index(shown, block); got < 0 || got >= strings.Index(shown, tc.prompt) {
-				t.Fatalf("written PATH block was not shown before confirmation:\n%s", shown)
+			// The block is shown once, after the list of files it goes to.
+			body := block[strings.Index(block, "\n")+1:]
+			if got := strings.Index(shown, body); got < 0 || got >= strings.Index(shown, tc.prompt) ||
+				strings.Count(shown, body) != 1 || !strings.Contains(shown, "\n  "+strings.ReplaceAll(login, " ", `\ `)+"\n") {
+				t.Fatalf("written PATH block was not shown once before confirmation:\n%s", shown)
 			}
 			// A bash user gets no zsh files.
 			for _, path := range []string{filepath.Join(zhome, ".zshenv"), filepath.Join(zhome, ".zlogin")} {

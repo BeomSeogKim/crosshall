@@ -507,11 +507,16 @@ if [[ $default_destination == true && $on_path == false && $HOME == /* && $HOME 
   plan_path
 fi
 if [[ ${path_profiles[0]+planned} ]]; then
-  printf 'Add ~/.local/bin first on PATH with the following shell startup changes:\n'
+  printf 'Add ~/.local/bin first on PATH by appending this block to each shell startup file below:\n'
   for i in "${!path_profiles[@]}"; do
-    printf '\n  %q\n' "${path_profiles[i]}"
-    path_block "${path_modes[i]}"
+    if [[ ${path_modes[i]} == created ]]; then
+      printf '  %q (new file)\n' "${path_profiles[i]}"
+    else
+      printf '  %q\n' "${path_profiles[i]}"
+    fi
   done
+  printf '\n'
+  path_block existing | sed '1s/.*/# crosshall: user PATH (created or existing)/'
   offer_setup 1
   answer=$(cat "$stage/path-choice")
   if [[ -z $answer ]]; then

@@ -216,6 +216,11 @@ func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req w
 					return err
 				}
 			}
+			if fact != nil && native.fact == wire.HookTurnFinishing {
+				if fact.Routed, err = spokeThreadServerRouted(ctx, tx, member, token, launch, epoch); err != nil {
+					return err
+				}
+			}
 		}
 		if fact != nil {
 			fact.Member, fact.Token = member, token

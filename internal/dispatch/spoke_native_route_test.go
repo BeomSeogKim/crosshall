@@ -329,6 +329,9 @@ func TestSpokeNativeRouteOfAThreadIsCapturedByATurnEndThatNamesItsServer(t *test
 				got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start}) || got.CaptureSeq != 6) {
 				t.Fatalf("route %+v, %v after the turn end; want presence %v", got, ok, named)
 			}
+			if routed := threadServerRouted(t, db, member, token); routed != named {
+				t.Fatalf("the turn end's fact says routed %v, want %v", routed, named)
+			}
 			if !named {
 				return
 			}
@@ -373,8 +376,14 @@ func TestSpokeNativeRouteOfAThreadIsNotHeldByAForeignTurnEnd(t *testing.T) {
 		}
 	}
 	capture(6, wire.Host{PID: 321, Start: 654, NS: "another-namespace"}, 1000)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a foreign server's turn end says the thread is routed")
+	}
 	server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
 	capture(7, server, 2000)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("a usable server's turn end does not say the thread is routed")
+	}
 	if err := db.View(ctx, func(tx store.Tx) error {
 		got, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
 		if err == nil && (!ok || got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start})) {
@@ -384,4 +393,18 @@ func TestSpokeNativeRouteOfAThreadIsNotHeldByAForeignTurnEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// threadServerRouted is the route flag a turn end's fact carries.
+func threadServerRouted(t *testing.T, db *store.Store, member link.Member, token link.HookToken) bool {
+	t.Helper()
+	var routed bool
+	if err := db.View(t.Context(), func(tx store.Tx) error {
+		var err error
+		routed, err = spokeThreadServerRouted(t.Context(), tx, member, token, "session", 3)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return routed
 }

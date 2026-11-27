@@ -114,11 +114,6 @@ const (
 // device without it never receives an EventPolicy or Snapshot.Policies.
 const CapPolicy = "policy"
 
-// CapThreadTurnEnd is advertised by a device that captures a thread-routed
-// session's route from a turn end that names its server (#437). Only then
-// does the home open such a session's launch at its turn end.
-const CapThreadTurnEnd = "thread_turn_end"
-
 // AdapterPolicy is the hall's policy for one adapter, as the hook checks
 // it: whether hooks run, whether reminders do, and the epoch that output
 // and offers are bound to. The home sends a policy event whenever one
@@ -261,6 +256,10 @@ type Fact struct {
 	Token HookToken       `json:"token"`
 	Kind  string          `json:"kind"`
 	Body  json.RawMessage `json:"body,omitempty"`
+	// Routed: after this turn end the device holds its thread's route to
+	// a managed server it can judge (#437). An older home ignores it, and
+	// an older device never sets it.
+	Routed bool `json:"routed,omitempty"`
 }
 
 // Written acknowledges that a hook wrote an offer completely to its

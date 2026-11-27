@@ -20,9 +20,6 @@ type LinkEventPeer struct {
 	CredentialGen int64  `json:"credential_gen"`
 	Admission     int64  `json:"admission"`
 	Stream        string `json:"stream"`
-	// ThreadTurnEnd: the device negotiated link.CapThreadTurnEnd, so it
-	// captures a thread's route at a turn end that names its server.
-	ThreadTurnEnd bool `json:"thread_turn_end,omitempty"`
 }
 
 type LinkEvents struct {

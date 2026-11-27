@@ -286,7 +286,7 @@ To move a joined session to another channel, run `crosshall join <channel> --mov
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.328, macOS |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.330, macOS |
 | Codex CLI | `CODEX_THREAD_ID` | Hook-joined sessions end the turn. A reachable session wakes on a notice. Otherwise new work appears at its next prompt. A hand-joined session waits in the foreground. | yes; its observations are marked unverified | unavailable | 0.172.0, managed daemon on macOS and Linux, both arm64 and amd64 |
 | Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | a wait in the background starts the next turn when it ends (1.5.15) | SessionStart, PreInvocation, Stop | interactive on macOS arm64, with matching manifest evidence | 1.5.16, macOS (1.5.11 as the agent reported it) |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
@@ -333,7 +333,7 @@ else
 fi
 ```
 
-For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more than one installation, or a dispatcher older than rc.13, follow [removing crosshall](docs/operations.md#removing-crosshall), which reviews each path first.
+For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more than one installation, or a dispatcher older than v0.1.0-rc.13, follow [removing crosshall](docs/operations.md#removing-crosshall), which reviews each path first.
 
 ## Limits
 

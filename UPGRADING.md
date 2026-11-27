@@ -2,6 +2,14 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.4.0
+
+From v0.4.0-rc.1, v0.4.0-rc.2, or v0.4.0-rc.3, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the hooks keep their settings, and linked devices keep their enrollment. No migration or setup is needed.
+
+From v0.3.1, follow [the rc.3 upgrade steps](#to-v040-rc3) with the v0.4.0 binary. The first start backs up the store and migrates it from schema 30 to 37.
+
+To roll back to v0.3.1, stop the dispatcher with v0.4.0 and follow the [schema 30 restore steps](#to-v040-rc1) using the backup from before the upgrade.
+
 ## To v0.4.0-rc.3
 
 Upgrading from v0.4.0-rc.1 or v0.4.0-rc.2 keeps the home database at schema 37. Upgrading from v0.3.1 moves it from schema 30 to 37. The first start from schema 30 saves a `store-v30-*.sqlite3` backup.

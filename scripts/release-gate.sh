@@ -535,11 +535,27 @@ row_two_devices() {
   ((status == 0 && failed == 0)) || return 1
 }
 
+# others <label>: what shares the machine with the full run, appended to
+# row_full_run.others: the load, other test runs (the lock serializes full
+# runs only) and processes this gate started and left running. Prints a
+# summary.
+others() {
+  local list load
+  load=$(uptime | sed 's/.*load averages*: //')
+  list=$(ps -axww -o pid= -o etime= -o command= |
+    awk -v work="$work" -v out="$out" -f "$repo/scripts/release_gate_others.awk")
+  printf '%s: load %s\n%s\n' "$1" "$load" "$list" >> "$out/row_full_run.others"
+  printf '%s load %s, %s other test processes, %s left by earlier rows, %s naming gate paths' "$1" "${load%% *}" \
+    "$(grep -c '^test: ' <<< "$list")" "$(grep -c '^gate: ' <<< "$list")" "$(grep -c '^names: ' <<< "$list")"
+}
+
 row_full_run() {
-  local lock start status
+  local lock start status before after failed
   $full_run || { detail "skipped by --skip-full-run"; return 3; }
   needs_builds || return
   lock=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)/ci-checks.lock
+  : > "$out/row_full_run.others"
+  before=$(others before)
   start=$(date +%s)
   # One full run at a time on this machine, behind the lock other runs use.
   if [[ -x /usr/bin/lockf ]]; then
@@ -548,7 +564,11 @@ row_full_run() {
     (cd -- "$head_tree" && flock "$lock" bash scripts/ci-checks.sh)
   fi
   status=$?
-  detail "exit $status after $((($(date +%s) - start) / 60))m $((($(date +%s) - start) % 60))s; last line: $(tail -n 1 "$out/$current.log")"
+  after=$(others after)
+  # The log's last line can be macOS's launch-denial report, which ci-checks
+  # prints on any failure; name the failed tests instead (#391).
+  failed=$(grep -E '^([[:space:]]*--- FAIL: |FAIL[[:space:]])' "$out/$current.log" | awk '$1 == "---" {print $3; next} {print $2}' | sort -u | paste -sd ' ' -)
+  detail "exit $status after $((($(date +%s) - start) / 60))m $((($(date +%s) - start) % 60))s; failed: ${failed:-none named}; $before, $after (row_full_run.others)"
   ((status == 0)) || return 1
 }
 

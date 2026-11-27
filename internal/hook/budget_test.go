@@ -68,7 +68,7 @@ func TestAStartAnsweredInsideTheStartBudgetIsNotADeadline(t *testing.T) {
 		prepare := func() (*os.Root, *hookCounter) {
 			return rv, openHookCounter(rv, "codex", "SessionStart", entry)
 		}
-		wrote := runTimed(entry, StartBudget, StartBudget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
+		wrote, _, _ := runTimed(entry, StartBudget, StartBudget, &output, prepare, func(ctx context.Context, rv *os.Root, w io.Writer) string {
 			time.Sleep(250 * time.Millisecond) // a dispatcher slowed by disk flushes
 			if hookExpired(ctx) {
 				return "deadline"

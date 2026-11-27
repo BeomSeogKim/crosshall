@@ -36,8 +36,10 @@ func (o *hookOutput) Write(p []byte) (int, error) {
 }
 
 // runTimed serves a callback within base, or within budget once dispatch
-// extends it (extendBudget); preparation always fits in base.
-func runTimed(entry time.Time, base, budget time.Duration, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) bool {
+// extends it (extendBudget); preparation always fits in base. It reports
+// whether output was written, the outcome the counter recorded ("" when
+// none) and the end of the budget the callback ran on.
+func runTimed(entry time.Time, base, budget time.Duration, stdout io.Writer, prepare func() (*os.Root, *hookCounter), dispatch func(context.Context, *os.Root, io.Writer) string) (bool, string, time.Time) {
 	output := &hookOutput{dst: stdout}
 	end := entry.Add(base)
 	workEnd := entry.Add(budget - counterAllowance)
@@ -79,7 +81,7 @@ func runTimed(entry time.Time, base, budget time.Duration, stdout io.Writer, pre
 		select {
 		case counter = <-ready:
 		default:
-			return output.state.Swap(outputSealed) != outputIdle
+			return output.state.Swap(outputSealed) != outputIdle, "", end
 		}
 	}
 	outcome := "deadline"
@@ -102,21 +104,22 @@ wait:
 	if !extended.Load() {
 		budget = base
 	}
-	return finishCounter(entry, budget, outcome, counter, output)
+	wrote, recorded := finishCounter(entry, budget, outcome, counter, output)
+	return wrote, recorded, entry.Add(budget)
 }
 
 // A late wake can report the missed deadline only on a pre-opened file.
 // An append started on time still shares the original absolute deadline.
-func finishCounter(entry time.Time, budget time.Duration, outcome string, counter *hookCounter, output *hookOutput) bool {
+func finishCounter(entry time.Time, budget time.Duration, outcome string, counter *hookCounter, output *hookOutput) (bool, string) {
 	state := output.state.Swap(outputSealed)
 	if counter == nil {
-		return state != outputIdle
+		return state != outputIdle, ""
 	}
 	if state == outputWriting {
 		// The outstanding write cannot be recalled. Return to the vendor
 		// immediately instead of keeping the process alive for accounting.
 		go counter.file.Close()
-		return true
+		return true, ""
 	}
 	now := time.Now()
 	end := entry.Add(budget)
@@ -140,7 +143,7 @@ func finishCounter(entry time.Time, budget time.Duration, outcome string, counte
 	case <-written:
 	case <-timer.C:
 	}
-	return state != outputIdle
+	return state != outputIdle, outcome
 }
 
 func hookExpired(ctx context.Context) bool {

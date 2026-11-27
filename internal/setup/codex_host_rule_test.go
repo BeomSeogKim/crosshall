@@ -49,7 +49,7 @@ func TestCodexSetupKeepsAnExistingHostRule(t *testing.T) {
 	if err := RenderVendorPlan(&preview, plan); err != nil {
 		t.Fatal(err)
 	}
-	if plan.Err != nil || len(plan.Files) != 1 || len(plan.Retained) != 1 || plan.Retained[0].Path != ownerPath ||
+	if plan.Err != nil || len(plan.Files) != 2 || len(plan.Retained) != 1 || plan.Retained[0].Path != ownerPath ||
 		!strings.Contains(preview.String(), ownerPath) || !strings.Contains(preview.String(), "skipped Codex command rules") {
 		t.Fatalf("existing host rule preview: %+v\n%s", plan, preview.String())
 	}
@@ -72,8 +72,8 @@ func TestCodexSetupRechecksHostRulesAfterApproval(t *testing.T) {
 	s := scopedService(f)
 	f.CheckTargets(t)
 	plan := codexInstallPlan(t, s)
-	if plan.Err != nil || len(plan.Files) != 2 {
-		t.Fatalf("expected the hook and command rule plans: %+v", plan)
+	if plan.Err != nil || len(plan.Files) != 3 {
+		t.Fatalf("expected the hook, command rule and skill plans: %+v", plan)
 	}
 	ownerPath := filepath.Join(filepath.Dir(plan.Files[1].Path), "new.rules")
 	if err := os.MkdirAll(filepath.Dir(ownerPath), 0700); err != nil {

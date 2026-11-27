@@ -109,7 +109,8 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 					op.Retained = append(op.Retained, retained)
 				}
 			}
-			addRemoval(&op, spec, j)
+			// Each vendor's removal has its own consent.
+			addRemoval(&op, spec, j, nil)
 			plans[i] = newVendorPlan(op, nil, j, digest, false)
 		}
 		return plans, nil
@@ -129,13 +130,33 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 		plans[i].Err = err
 	}
 	s.completeTargets(ctx, j, targets)
+	// One consent covers the group, so a skill path two vendors share gets
+	// one edit, in the first vendor's plan. The later vendor uses it through
+	// its recorded hooks path and makes no claim of its own.
+	skills := map[string]string{}
 	for i, target := range targets {
 		single := targets[i : i+1]
 		op, err := makeInstall(j, single)
 		if err != nil {
 			op = operation{Action: action, Adapters: []string{target.Spec.Adapter}}
 		}
-		plans[targetIndexes[i]] = newVendorPlan(op, single, j, digest, false)
+		var shared *PlanFile
+		op.Edits = slices.DeleteFunc(op.Edits, func(e edit) bool {
+			first, ok := skills[e.Path]
+			if !e.Skill {
+				return false
+			} else if !ok {
+				skills[e.Path] = e.Adapter
+				return false
+			}
+			shared = &PlanFile{Adapter: e.Adapter, Path: e.Path, Skill: "shared", SharedWith: manifests.DisplayName(first)}
+			return true
+		})
+		plan := newVendorPlan(op, single, j, digest, false)
+		if shared != nil {
+			plan.Files = append(plan.Files, *shared)
+		}
+		plans[targetIndexes[i]] = plan
 		plans[targetIndexes[i]].Err = err
 	}
 	return plans, nil
@@ -253,7 +274,7 @@ func recordedPlanPath(j journal, adapter string) string {
 			return file.Path
 		}
 	}
-	return ""
+	return j.SkillFiles[adapter].Path
 }
 
 // RenderVendorPlan writes the hook and approval preview for a prepared plan.
@@ -297,11 +318,24 @@ func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPla
 	vendor := p.op.Adapters[0]
 	if !reflect.DeepEqual(j.Files[vendor], p.journal.Files[vendor]) ||
 		!reflect.DeepEqual(j.RuleFiles[vendor], p.journal.RuleFiles[vendor]) ||
+		!reflect.DeepEqual(j.SkillFiles[vendor], p.journal.SkillFiles[vendor]) ||
 		j.Builds[vendor] != p.journal.Builds[vendor] ||
-		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) {
+		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) ||
+		!sameSkillConsumers(j, p.journal, p.op) {
 		return errors.New("installation changed after planning; rerun to review the new plan")
 	}
 	return s.apply(ctx, digest, p.op)
+}
+
+// sameSkillConsumers reports that every skill edit of op still has the
+// recorded consumers it was planned with.
+func sameSkillConsumers(now, planned journal, op operation) bool {
+	for _, e := range op.Edits {
+		if e.Skill && !slices.Equal(skillConsumers(now, e.Adapter, e.Path, nil), skillConsumers(planned, e.Adapter, e.Path, nil)) {
+			return false
+		}
+	}
+	return true
 }
 
 func retainedFor(j journal, vendor string) []retainedFile {

@@ -18,6 +18,8 @@ func (codexInstaller) rulePath(hooks configTarget) string {
 	return filepath.Join(filepath.Dir(hooks.Path), "rules", "crosshall.rules")
 }
 
+func (codexInstaller) skillPath(hooks configTarget) string { return vendorSkillPath(hooks) }
+
 func (codexInstaller) trustHint() string { return "Review and trust these hooks with Codex /hooks." }
 
 func (codexInstaller) sandboxNote() string {

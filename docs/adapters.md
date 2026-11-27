@@ -20,6 +20,16 @@ On supported Claude Code builds, the same setup approval adds a rule to `autoMod
 
 Codex loads `rules/crosshall.rules` inside the selected Codex home when it starts and runs allowed commands outside its sandbox. Setup declares the installed `crosshall` path as a Codex host executable. Codex applies the same command rules to the bare name and the resolved absolute path, preserving existing bare-name prompt and forbid rules. Setup still installs hooks when it finds an existing user rule that may declare the `crosshall` host executable or when the binary has been renamed. The preview shows why command permissions are skipped.
 
+### The crosshall skill
+
+The same approval installs a crosshall skill: a `SKILL.md` that teaches the agent the hall's commands (`who`, `join`, `ask`, `note`, `reply`, `wait`, `inbox` and `read`). Only its short description stays in the agent's context; the agent reads the rest when a request to message, ask or hand work to another agent session needs it. Each vendor gets its own copy of the same file, in its own user skill directory:
+
+- Claude Code: `skills/crosshall/SKILL.md` in its configuration home, `$CLAUDE_CONFIG_DIR` or `$HOME/.claude`.
+- Codex: `skills/crosshall/SKILL.md` in its home, `$CODEX_HOME` or `$HOME/.codex`. Setup does not use the shared `$HOME/.agents/skills`, which other vendors also read.
+- Antigravity CLI: `$HOME/.gemini/config/skills/crosshall/SKILL.md`.
+
+Setup owns the whole file, recorded in the install journal with the hooks. It writes the file only where none exists, and replaces it on a later setup only while its bytes are still the ones setup wrote, which is how a new release updates it. A file you edited, or one setup did not write, stays as it is: setup says so in one line and still installs the hooks. An identical file setup did not write is left in place and stays yours. Uninstall deletes the file only while its bytes are the ones setup wrote, then removes the `skills` and `crosshall` directories setup created if they are empty. An edited skill, or one recreated with the same bytes, is kept: uninstall says so, and setup gives up its record of it. When `CLAUDE_CONFIG_DIR` and `CODEX_HOME` name the same directory, both vendors share one skill file: setup records it once, and uninstalling one vendor keeps the file for the other, which then removes it.
+
 To revisit one vendor, run `crosshall setup claude`, `crosshall setup codex` or `crosshall setup antigravity`. An owner-run script can preview and apply the named vendors in two commands.
 
 ```sh
@@ -136,7 +146,7 @@ What the owner controls:
 
 The hall stops by itself, toward pull, in these cases:
 
-- **Held.** A notice was written but the session's hook has not reported it. Nothing more is sent to that session until the notice is observed, the session's process ends, or the owner releases it with `crosshall owner publish resume <binding-id>`. A timeout frees nothing, but a notice held for 15 minutes is reported to the owner (see [operations](operations.md#loop-guard)).
+- **Held.** A notice was written but the session's hook has not reported it. Nothing more is sent to that session until the notice is observed, the session's process ends, or the owner releases it with `crosshall owner publish resume <binding-id>`. A Claude notice is also released when a later prompt of the same session carried no receipt for it and the member has read everything it carries. A timeout frees nothing, but a notice held for 15 minutes is reported to the owner (see [operations](operations.md#loop-guard)).
 - **Suspended.** An absorbed or unknown notice suspends notices for its session for 30 minutes. So do three consecutive failed submissions. A third active suspension for the same launch lasts until that launch ends if all three came from absorbed notices or failed submissions. Expired suspensions and unknown receipts are excluded from that count. An own-turn receipt or an owner resume resets the count. When the session is told it lost reach because of a lasting suspension, its own line gives `crosshall owner publish resume <binding-id>`. The owner is also told directly, on the desktop and on the next owner command (see [operations](operations.md#loop-guard)). For a version inheriting tested evidence, an absorbed or unknown notice before the first three own-turn receipts also stops publish for that build. Resume lifts the build stop and keeps the confirmation count. A newer tested evidence import for the exact version also lifts the build stop.
 - **Capped.** A member gets at most 30 notices an hour.
 
@@ -152,7 +162,7 @@ A notice is an offer, not a delivery: the message is already stored, and a notic
 
 ## Turning adapters off and removing them
 
-`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove an adapter's managed hooks and command rules. Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before starting a removal. Bare `crosshall uninstall` uses the previous approval when resuming an interrupted removal. With input or output redirected, it previews the removal. Add `--apply` to remove the managed entries without reading input. When a settings file is as setup left it, uninstall restores its original bytes. After the agent or the owner has changed the file, uninstall removes the managed entries and every list or object setup created for them that is then empty, and keeps the rest of the file. A Claude `autoMode.allow` list that setup created goes too when only its `"$defaults"` is left. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
+`crosshall setup off` disables adapter effects and leaves the settings in place. Use `crosshall uninstall codex`, `crosshall uninstall claude` or `crosshall uninstall antigravity` to remove an adapter's managed hooks, command rules and [skill](#the-crosshall-skill). Bare `crosshall uninstall` covers all adapters. In a terminal, uninstall asks before starting a removal. Bare `crosshall uninstall` uses the previous approval when resuming an interrupted removal. With input or output redirected, it previews the removal. Add `--apply` to remove the managed entries without reading input. When a settings file is as setup left it, uninstall restores its original bytes. After the agent or the owner has changed the file, uninstall removes the managed entries and every list or object setup created for them that is then empty, and keeps the rest of the file. A Claude `autoMode.allow` list that setup created goes too when only its `"$defaults"` is left. Uninstall reports any entries it leaves for manual review. See [removing Crosshall](operations.md#removing-crosshall) for binary and state removal.
 
 ## What doctor reports
 

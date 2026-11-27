@@ -20,6 +20,9 @@ func (agyInstaller) rulePath(hooks configTarget) string {
 	return filepath.Join(hooks.Home, ".gemini", "antigravity-cli", "settings.json")
 }
 
+// skillPath is $HOME/.gemini/config/skills, which agy reads first.
+func (agyInstaller) skillPath(hooks configTarget) string { return vendorSkillPath(hooks) }
+
 func (agyInstaller) statePinned() bool { return true }
 
 func (agyInstaller) hookGroup() string { return agyHookGroup }

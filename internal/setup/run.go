@@ -65,6 +65,8 @@ type PlanFile struct {
 	Prune      [][]string             `json:"remove_if_empty,omitempty"`
 	AddText    string                 `json:"add_text,omitempty"`
 	RemoveText string                 `json:"remove_text,omitempty"`
+	Skill      string                 `json:"skill,omitempty"` // install, update, remove or shared, of the crosshall skill
+	SharedWith string                 `json:"shared_with,omitempty"`
 	Evidence   []store.DoctorEvidence `json:"capability_evidence,omitempty"`
 	Reminder   *reminderStatus        `json:"reminder,omitempty"`
 }
@@ -337,6 +339,14 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 		if op.Action == "setup" && !hasFileEdits(op) && buildsUnchanged(j.Builds, op.Builds) && j.Version == j.formatVersion() {
 			return s.setPolicies(ctx, op.Adapters, true)
 		}
+		// Recovery restores these when it cannot prove a publication.
+		op.Edits = slices.Clone(op.Edits)
+		for i := range op.Edits {
+			e := &op.Edits[i]
+			if record, ok := ownedFiles(&j, *e)[e.Adapter]; ok {
+				e.Prior = &record
+			}
+		}
 		j.Pending = &op
 	}
 	if !prepared || j.Version != j.formatVersion() {
@@ -370,7 +380,8 @@ func (s Service) apply(ctx context.Context, digest string, op operation) error {
 
 func hasFileEdits(op operation) bool {
 	for _, e := range op.Edits {
-		if e.Before != e.After {
+		// A skill edit with no change gives up or passes on a record.
+		if e.Before != e.After || e.Skill {
 			return true
 		}
 	}
@@ -396,6 +407,12 @@ func displayPlan(req Request, op operation, targets []installTarget, resume bool
 		p.Kind = "setup off"
 	}
 	for _, e := range op.Edits {
+		if e.Skill {
+			if verb := skillVerb(e); verb != "" {
+				p.Files = append(p.Files, PlanFile{Adapter: e.Adapter, Path: e.Path, Skill: verb})
+			}
+			continue
+		}
 		b := op.Builds[e.Adapter]
 		f := PlanFile{Adapter: e.Adapter, Path: e.Path, Add: e.Add, Remove: e.Remove, Kept: e.Kept, Prune: e.Prune,
 			AddText: e.AddText, RemoveText: e.RemoveText}
@@ -441,6 +458,14 @@ func printPlan(out io.Writer, p plan) error {
 	commandRules := false
 	var sandboxNotes []string
 	for _, f := range p.Files {
+		if f.Skill == "shared" {
+			fmt.Fprintf(&contents, "  crosshall skill shared with %s (%s)\n", f.SharedWith, f.Path)
+			continue
+		}
+		if f.Skill != "" {
+			fmt.Fprintf(&contents, "  %s skill %s\n", f.Skill, f.Path)
+			continue
+		}
 		if p.Kind == "setup" {
 			commandRules = commandRules || f.AddText != ""
 			if i, ok := installers[f.Adapter]; ok && f.AddText != "" && i.sandboxNote() != "" && !slices.Contains(sandboxNotes, i.sandboxNote()) {
@@ -529,6 +554,18 @@ func printPlan(out io.Writer, p plan) error {
 	}
 	_, err := io.WriteString(out, contents.String())
 	return err
+}
+
+func skillVerb(e edit) string {
+	switch {
+	case e.Before == e.After:
+		return ""
+	case !e.After.Exists:
+		return "remove"
+	case e.Before.Exists:
+		return "update"
+	}
+	return "install"
 }
 
 func printResult(req Request, p plan) error {

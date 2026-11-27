@@ -213,12 +213,17 @@ func linkedMemberWake(ctx context.Context, tx store.Tx, binding int64, now time.
 	if held {
 		return Wake{Wake: WakeNone, Why: WhyHeld}, nil
 	}
-	if !closed || scope.binding.dnd {
+	if scope.binding.dnd {
 		return none, nil
 	}
 	eligible, err := linkWakeRouteEligible(ctx, tx, peer, principal, route)
 	if err != nil || !eligible {
 		return none, err
+	}
+	if !closed {
+		// The device checks its session's route and wakes it when it can;
+		// the home cannot prove that route, so it claims no notice (#438).
+		return Wake{Wake: WakeDevice}, nil
 	}
 	running, err := inReportedTurn(ctx, tx, principal, now)
 	if err != nil || running {

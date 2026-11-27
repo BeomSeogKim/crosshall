@@ -16,6 +16,10 @@ const (
 	WakeNotice = "notice" // the hall starts a turn in its session
 	WakeWait   = "wait"   // a wait of the member is running
 	WakeNone   = "none"   // nothing does
+	// WakeDevice: the member's session is on a linked device, which checks
+	// its route and wakes it when it can. The home cannot prove that
+	// route, so this claims no notice (#438).
+	WakeDevice = "device"
 )
 
 // Why words of WakeNone. They are fixed, and the same in a send result, in
@@ -147,6 +151,16 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 	if attempt != "" && attempt != "reserved" {
 		return Wake{Wake: WakeNotice}, true, nil // already passed the submission fence
 	}
+	if attempt == "" {
+		var submitted bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM link_wake_attempt a, json_each(a.message_ids) item
+			WHERE a.principal_id = ? AND item.value = ? AND `+linkWakeMayHaveSubmitted+`)`, principal, msg).Scan(&submitted); err != nil {
+			return Wake{}, false, err
+		}
+		if submitted {
+			return Wake{Wake: WakeNotice}, true, nil // a linked wake may have submitted it
+		}
+	}
 	eligible := attempt == "reserved"
 	var w Wake
 	if !eligible {
@@ -162,7 +176,7 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 			}
 			w = Wake{Wake: WakeNone, Why: WhyKind}
 		}
-		if w.Why == WhyDeviceOffline {
+		if w.Wake == WakeDevice || w.Why == WhyDeviceOffline {
 			var pending bool
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM recipient x JOIN message m ON m.id = x.message_id
 				WHERE x.principal_id = ? AND m.id = ? AND `+pendingPublishItem+`
@@ -172,7 +186,11 @@ func (s *Service) messageWakeOf(ctx context.Context, tx store.Tx, binding, princ
 				principal, msg).Scan(&pending); err != nil {
 				return Wake{}, false, err
 			}
-			if !pending {
+			switch {
+			case pending:
+			case w.Wake == WakeDevice:
+				w = Wake{Wake: WakeNone, Why: WhyKind} // as a local notice route says of it
+			default:
 				w = Wake{Wake: WakeNone, Why: WhyNoRoute}
 			}
 		}
@@ -282,6 +300,9 @@ func recordWakes(ctx context.Context, tx store.Tx, sender, msg int64, recipients
 			Wake string `json:"wake"`
 			Why  string `json:"why,omitempty"`
 		}{d.Wake.Wake, d.Why}
+		if detail.Wake == WakeDevice {
+			detail.Wake = WakeNone // the daily report counts it as before
+		}
 		if err := audit(ctx, tx, sendWakeEvent, fmt.Sprintf("message:%d", msg), sender, detail, now); err != nil {
 			return err
 		}

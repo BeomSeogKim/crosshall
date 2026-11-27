@@ -5,6 +5,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **The owner sees why a linked member has no wake route yet (#437):** `crosshall owner who` adds `no notice route: its session start was not seen` for a member on a linked device that joined after its session started and has sent no prompt since. As for a local member, its next prompt opens the route.
+- **The home no longer says a linked member has no notice route while its device can wake it (#438):** `who`, `ask` and `reply` on the home said `not woken: no notice route` for a member on a linked device even when the device woke it. While the device holds its event stream and the member's launch could be woken, they now say `the linked device will try to wake it` (`wake: device` in `--json`), with no advice to wake the member by hand: only the device can check its session's route. A held wake, an offline device and a member with no launch the home could wake are reported as before. The daily report still counts these sends as `send.wake.none`.
 
 ## v0.4.0-rc.2 (2026-11-27)
 

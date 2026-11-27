@@ -148,8 +148,23 @@ func TestSpokeLinkWakesClaudeThroughNativeInbox(t *testing.T) {
 			Scan(&ready) == nil && ready
 	})
 
+	// The home leaves the wake to the device, which checks its session's
+	// route; it does not claim a notice it cannot prove (#438).
+	eventually(t, "who leaves the linked receiver's wake to its device", func() bool {
+		for _, m := range sender.must("who").obj["members"].([]any) {
+			if row := m.(map[string]any); row["alias"] == "receiver" {
+				return row["wake"] == "device"
+			}
+		}
+		return false
+	})
 	const request = "Check the linked native inbox."
-	askID := num(t, sender.must("ask", "@receiver", request), "id")
+	asked := sender.must("ask", "@receiver", request)
+	if recipients, _ := asked.obj["recipients"].([]any); len(recipients) != 1 ||
+		recipients[0].(map[string]any)["wake"] != "device" || strings.Contains(asked.stdout, "tell your user") {
+		t.Fatalf("the ask did not leave the linked receiver's wake to its device: %v", asked.obj)
+	}
+	askID := num(t, asked, "id")
 	adapter, ok := publish.Lookup("claude")
 	if !ok {
 		t.Fatal("Claude publish adapter missing from the fixture binary")

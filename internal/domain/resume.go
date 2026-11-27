@@ -51,6 +51,9 @@ type OwingMember struct {
 
 // CanResume says the publisher will try to give it a resume notice.
 func (m OwingMember) CanResume() bool {
+	if m.Wake.Wake == WakeDevice {
+		return false // a resume notice takes a local publish route
+	}
 	switch m.Wake.Why {
 	case WhyNoRoute, WhyOff, WhyEnded:
 		return false

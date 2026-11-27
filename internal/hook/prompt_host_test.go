@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +18,10 @@ import (
 
 // A Codex prompt run by the managed server names that server and its home,
 // as a start does, so a dispatcher that missed the start can register the
-// route (#252). No other callback sends them, and no prompt sends them to a
-// dispatcher that does not offer to accept them: an older one decodes
-// hook.event strictly and would refuse the prompt.
-func TestOnlyACodexPromptNamesItsServerAndOnlyWhenOffered(t *testing.T) {
+// route (#252); a turn end does too (#437). No other callback sends them,
+// and neither sends them to a dispatcher that does not offer to accept them:
+// an older one decodes hook.event strictly and would refuse the callback.
+func TestOnlyACodexPromptOrTurnEndNamesItsServerAndOnlyWhenOffered(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -33,12 +34,23 @@ func TestOnlyACodexPromptNamesItsServerAndOnlyWhenOffered(t *testing.T) {
 		t.Fatal(err)
 	}
 	standInHost(t, server, []string{server, "app-server", "--managed-daemon"}, true)
-	for _, offered := range []bool{true, false} {
-		t.Run(fmt.Sprintf("offered-%t", offered), func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		hello []string
+	}{
+		{"no offer", nil},
+		{"prompt only", []string{wire.HelloLaunchProof, wire.HelloPromptHost}},
+		{"prompt and turn end", []string{wire.HelloLaunchProof, wire.HelloPromptHost, wire.HelloTurnHost}},
+	} {
+		offered := tc.hello != nil
+		t.Run(tc.name, func(t *testing.T) {
 			rv, dir, _ := runFixture(t)
 			if offered {
-				marker := fmt.Sprintf(`{"instance":"fixture-host","v":1,"pid":%d,"hello":[%q,%q]}`, os.Getpid(),
-					wire.HelloLaunchProof, wire.HelloPromptHost)
+				hello, err := json.Marshal(tc.hello)
+				if err != nil {
+					t.Fatal(err)
+				}
+				marker := fmt.Sprintf(`{"instance":"fixture-host","v":1,"pid":%d,"hello":%s}`, os.Getpid(), hello)
 				if err := os.WriteFile(filepath.Join(dir, "ready"), []byte(marker), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -77,9 +89,10 @@ func TestOnlyACodexPromptNamesItsServerAndOnlyWhenOffered(t *testing.T) {
 			for i, e := range events {
 				_, hasHost := e.keys["host"]
 				_, hasHome := e.keys["vendor_home"]
-				named := offered && e.args.Fact == wire.HookPromptSubmitted
+				named := e.args.Fact == wire.HookPromptSubmitted && slices.Contains(tc.hello, wire.HelloPromptHost) ||
+					e.args.Fact == wire.HookTurnFinishing && slices.Contains(tc.hello, wire.HelloTurnHost)
 				if named && (e.args.Host == nil || *e.args.Host != want || e.args.VendorHome != home) {
-					t.Fatalf("prompt %d names %+v in %q, want %+v in %q", i, e.args.Host, e.args.VendorHome, want, home)
+					t.Fatalf("event %d (%s) names %+v in %q, want %+v in %q", i, e.args.Fact, e.args.Host, e.args.VendorHome, want, home)
 				}
 				if !named && (hasHost || hasHome) {
 					t.Fatalf("event %d (%s, offered %t) carries a server: %s", i, e.args.Fact, offered, e.keys["host"])

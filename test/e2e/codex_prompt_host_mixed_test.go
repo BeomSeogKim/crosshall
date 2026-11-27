@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,22 +79,20 @@ func upgradeInPlaceUnderOlderDispatcher(t *testing.T, old string) {
 	writer := f.member()
 	writer.must("join", "setup-check", "--as", "writer")
 	writer.must("note", "@codex1", body)
+	// A turn end may name its server too (#437); the older dispatcher does
+	// not offer to accept that, so the hook must not send it.
 	for _, turn := range []string{"turn-1", "turn-2"} {
-		out := f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"`+turn+`","prompt":"fixture private text"`)
-		for _, word := range []string{"refus", "invalid", "error", "bad arguments"} {
-			if strings.Contains(strings.ToLower(out), word) {
-				t.Fatalf("the prompt printed %q into the session", out)
+		for _, call := range []struct{ event, fields, kind string }{
+			{"UserPromptSubmit", `"turn_id":"` + turn + `","prompt":"fixture private text"`, "prompt_submitted"},
+			{"Stop", `"turn_id":"` + turn + `","stop_hook_active":false`, "turn_finishing"},
+		} {
+			out := f.invokeHook(repo, "codex", call.event, call.fields)
+			for _, word := range []string{"refus", "invalid", "error", "bad arguments"} {
+				if strings.Contains(strings.ToLower(out), word) {
+					t.Fatalf("the %s printed %q into the session", call.event, out)
+				}
 			}
-		}
-		for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(50 * time.Millisecond) {
-			var observed int
-			if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE turn_ref = ? AND kind = 'prompt_submitted'`, turn).
-				Scan(&observed); err == nil && observed > 0 {
-				break
-			}
-			if !time.Now().Before(deadline) {
-				t.Fatalf("the older dispatcher did not record prompt %s; %s", turn, f.enrollmentEvidence("codex"))
-			}
+			waitObservation(t, f, db, turn, call.kind)
 		}
 	}
 	member := &participant{w: f.world, extra: []string{"CODEX_THREAD_ID=" + setupSessionPrefix + "codex"}}
@@ -102,5 +101,72 @@ func upgradeInPlaceUnderOlderDispatcher(t *testing.T, old string) {
 	}
 	if got := f.dispatcherPIDs(); len(got) != 1 || got[0] != dispatcher[0] {
 		t.Fatalf("dispatchers %v, want the base build's %d throughout", got, dispatcher[0])
+	}
+}
+
+func waitObservation(t *testing.T, f *setupWorld, db *sql.DB, turn, kind string) {
+	t.Helper()
+	for deadline := time.Now().Add(fixtureEventTimeout); ; time.Sleep(50 * time.Millisecond) {
+		var observed int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE turn_ref = ? AND kind = ?`, turn, kind).
+			Scan(&observed); err == nil && observed > 0 {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the dispatcher did not record %s of %s; %s", kind, turn, f.enrollmentEvidence("codex"))
+		}
+	}
+}
+
+// The other direction: the hooks still name the base commit's crosshall
+// while this build's dispatcher runs. The older hook names no server on a
+// turn end, so a hand-joined session gets nothing from it, and its next
+// prompt, which names the server, registers the route (#437).
+func TestOlderCodexHookUnderANewDispatcherRegistersAtItsPrompt(t *testing.T) {
+	old := os.Getenv(baseBinaryEnv)
+	if old == "" {
+		t.Skip("set " + baseBinaryEnv + " to run that older hook under this dispatcher")
+	}
+	f := newSetupWorld(t)
+	f.apply("", "setup", "codex", "--apply")
+	repo := f.enrollmentRepo()
+	f.codexServer = buildCodexDaemon(t, filepath.Dir(f.paths["codex"]))
+	dispatcher := f.dispatcherPIDs()
+	if len(dispatcher) != 1 {
+		t.Fatalf("want this build's dispatcher running, got %v", dispatcher)
+	}
+	content, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := f.executable + ".next"
+	if err := os.WriteFile(next, content, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, f.executable); err != nil {
+		t.Fatal(err)
+	}
+	member := &participant{w: f.world, extra: []string{"CODEX_THREAD_ID=" + setupSessionPrefix + "codex"}}
+	member.must("join", "setup-check", "--as", "codex1")
+	db := f.db()
+	routes := func() int {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM publish_route WHERE adapter = 'codex' AND host_pid IS NOT NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	f.invokeHook(repo, "codex", "Stop", `"turn_id":"turn-1","stop_hook_active":false`)
+	waitObservation(t, f, db, "turn-1", "turn_finishing")
+	if n := routes(); n != 0 {
+		t.Fatalf("the older hook's turn end registered %d routes", n)
+	}
+	f.invokeHook(repo, "codex", "UserPromptSubmit", `"turn_id":"turn-2","prompt":"fixture private text"`)
+	waitObservation(t, f, db, "turn-2", "prompt_submitted")
+	if n := routes(); n != 1 {
+		t.Fatalf("the older hook's prompt registered %d routes, want the server's", n)
+	}
+	if got := f.dispatcherPIDs(); len(got) != 1 || got[0] != dispatcher[0] {
+		t.Fatalf("dispatchers %v, want this build's %d throughout", got, dispatcher[0])
 	}
 }

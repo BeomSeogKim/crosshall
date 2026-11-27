@@ -294,9 +294,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if !spec.Enroll && !slices.Contains(offers, wire.HelloLaunchProof) {
 		e.LaunchAtMS, e.PIDNamespace = 0, "" // an older dispatcher refuses the proof
 	}
-	// A prompt names its server as a start does; an older dispatcher
-	// refuses the fields, and no other callback needs them.
-	if !spec.Enroll && (spec.Fact != wire.HookPromptSubmitted || !slices.Contains(offers, wire.HelloPromptHost)) {
+	// A prompt names its server as a start does, and so does a turn end, so
+	// a session that joined by hand during a turn has its route without a new
+	// prompt (#437). An older dispatcher refuses the fields, and no other
+	// callback needs them.
+	namesServer := spec.Fact == wire.HookPromptSubmitted && slices.Contains(offers, wire.HelloPromptHost) ||
+		spec.Fact == wire.HookTurnFinishing && slices.Contains(offers, wire.HelloTurnHost)
+	if !spec.Enroll && !namesServer {
 		e.Host, e.VendorHome = nil, ""
 	}
 	req := makeRequest(entry, m, spec, e, repo, want, policy.Epoch)

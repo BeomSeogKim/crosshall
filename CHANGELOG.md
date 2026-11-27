@@ -5,6 +5,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 ## Unreleased
 
 - **A Claude notice that a later prompt passed by no longer holds its member (#450):** a Claude notice that got no receipt kept the member's lane held, and every later ask said `not woken: an earlier notice is unobserved`, until the owner ran `crosshall owner publish resume`. When a later prompt of the same session carried no receipt for it and the member has read everything it carries, the dispatcher now settles it (event `publish_attempt_settled`, reason `a later prompt carried no receipt: nothing left to read`) and sends the next notice. A notice that still carries unread work stays held, and the owner is still alerted after 15 minutes.
+- **The release gate's full-run row says what ran beside it:** when the row fails, its detail names the failed tests instead of the log's last line, which was often macOS's launch-denial report. ci-checks prints that report on any failure, and the same denials occur in passing runs. The detail also gives the load before and after the run, and counts the other test runs on the machine (the lock serializes full runs only) and the processes an earlier row left running. `row_full_run.others` lists each of them (#391).
 
 ## v0.4.0 (2026-11-27)
 

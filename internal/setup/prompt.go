@@ -369,7 +369,14 @@ func (p *prompter) uninstall(ctx context.Context) error {
 		return p.pending(err)
 	}
 	result := promptResult{Kind: "uninstall", DryRun: p.req.DryRun}
-	for _, plan := range plans {
+	for i, plan := range plans {
+		if i > 0 && !p.req.DryRun && plan.Err == nil && !plan.Resume && !plan.Recovery {
+			// An earlier vendor's removal can pass a shared skill to this
+			// one, so plan it again as it stands now.
+			if fresh, err := p.ops.PlanUninstall(ctx, []string{plan.Adapter}); err == nil && len(fresh) == 1 {
+				plan = fresh[0]
+			}
+		}
 		o := outcomeOf(plan)
 		if plan.Err != nil {
 			o.Outcome, o.Error, o.Retry = "failed", plan.Err.Error(), retryAfter(plan, plan.Err)

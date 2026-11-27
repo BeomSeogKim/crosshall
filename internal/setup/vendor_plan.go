@@ -102,10 +102,6 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 
 	plans := make([]VendorPlan, len(specs))
 	if action == "uninstall" {
-		removing := make([]string, 0, len(specs))
-		for _, spec := range specs {
-			removing = append(removing, spec.Adapter)
-		}
 		for i, spec := range specs {
 			op := operation{Action: action}
 			for _, retained := range j.Retained {
@@ -113,7 +109,8 @@ func (s Service) vendorPlans(ctx context.Context, action string, adapters []stri
 					op.Retained = append(op.Retained, retained)
 				}
 			}
-			addRemoval(&op, spec, j, removing)
+			// Each vendor's removal has its own consent.
+			addRemoval(&op, spec, j, nil)
 			plans[i] = newVendorPlan(op, nil, j, digest, false)
 		}
 		return plans, nil
@@ -303,10 +300,22 @@ func (s Service) applyVendorPlan(ctx context.Context, action string, p VendorPla
 		!reflect.DeepEqual(j.RuleFiles[vendor], p.journal.RuleFiles[vendor]) ||
 		!reflect.DeepEqual(j.SkillFiles[vendor], p.journal.SkillFiles[vendor]) ||
 		j.Builds[vendor] != p.journal.Builds[vendor] ||
-		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) {
+		!slices.Equal(retainedFor(j, vendor), retainedFor(p.journal, vendor)) ||
+		!sameSkillConsumers(j, p.journal, p.op) {
 		return errors.New("installation changed after planning; rerun to review the new plan")
 	}
 	return s.apply(ctx, digest, p.op)
+}
+
+// sameSkillConsumers reports that every skill edit of op still has the
+// recorded consumers it was planned with.
+func sameSkillConsumers(now, planned journal, op operation) bool {
+	for _, e := range op.Edits {
+		if e.Skill && !slices.Equal(skillConsumers(now, e.Adapter, e.Path, nil), skillConsumers(planned, e.Adapter, e.Path, nil)) {
+			return false
+		}
+	}
+	return true
 }
 
 func retainedFor(j journal, vendor string) []retainedFile {

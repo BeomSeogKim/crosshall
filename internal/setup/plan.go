@@ -380,9 +380,10 @@ func recordedHookExecutable(spec hook.InstallSpec, entry Entry) (string, error) 
 
 func makeUninstall(j journal) operation {
 	op := operation{Action: "uninstall", Retained: slices.Clone(j.Retained)}
-	removing := adapterNames()
+	// One consent covers every adapter here.
+	sameOp := adapterNames()
 	for _, spec := range hook.InstallSpecs() {
-		addRemoval(&op, spec, j, removing)
+		addRemoval(&op, spec, j, sameOp)
 	}
 	for _, files := range []map[string]ownedFile{j.Files, j.RuleFiles, j.SkillFiles} {
 		for adapter, record := range files {
@@ -394,14 +395,14 @@ func makeUninstall(j journal) operation {
 	return op
 }
 
-// addRemoval plans one adapter's removal; removing names every adapter the
-// same request removes.
-func addRemoval(op *operation, spec hook.InstallSpec, j journal, removing []string) {
+// addRemoval plans one adapter's removal; sameOp names the adapters the same
+// operation, under one consent, removes.
+func addRemoval(op *operation, spec hook.InstallSpec, j journal, sameOp []string) {
 	op.Adapters = append(op.Adapters, spec.Adapter)
 	// The skill goes first, so its directories are gone before the hooks'
 	// removal cleans up a vendor home setup created.
 	if record, ok := j.SkillFiles[spec.Adapter]; ok {
-		addSkillRemoval(op, spec, record, j, removing)
+		addSkillRemoval(op, spec, record, j, sameOp)
 	}
 	if record, ok := j.RuleFiles[spec.Adapter]; ok {
 		addFileRemoval(op, spec, record, true)

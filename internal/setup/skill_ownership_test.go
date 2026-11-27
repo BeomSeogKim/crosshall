@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,5 +193,90 @@ func TestUnprovenUpgradeKeepsTheEarlierProvenClaims(t *testing.T) {
 	}
 	if bytes.Contains(after, []byte("hook")) || bytes.Contains(after, []byte("crosshall")) {
 		t.Fatalf("uninstall left the earlier proven hooks and rules: %s", after)
+	}
+}
+
+// sharedSkillHome points both Claude Code and Codex at one directory and
+// installs them in order.
+func sharedSkillHome(t *testing.T, order ...string) (setuptest.Fixture, Service, string, string) {
+	t.Helper()
+	f := setuptest.New(t, "claude", "codex")
+	s := scopedService(f)
+	shared := filepath.Join(f.Root, "shared home")
+	if err := os.Mkdir(shared, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", shared)
+	t.Setenv("CODEX_HOME", shared)
+	for _, adapter := range order {
+		installVendor(t, f, s, adapter)
+	}
+	return f, s, shared, filepath.Join(shared, "skills", "crosshall", "SKILL.md")
+}
+
+func TestScopedUninstallKeepsASharedSkillPerVendorConsent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		order  []string
+		answer string
+		kept   bool
+	}{
+		{"Claude first, yes then no", []string{"claude", "codex"}, "y\nn\n", true},
+		{"Claude first, yes to both", []string{"claude", "codex"}, "y\ny\n", false},
+		{"Codex first, yes then no", []string{"codex", "claude"}, "y\nn\n", true},
+		{"Codex first, yes to both", []string{"codex", "claude"}, "y\ny\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, shared, path := sharedSkillHome(t)
+			before := homeTree(t, shared)
+			for _, adapter := range tc.order {
+				installVendor(t, f, s, adapter)
+			}
+			out, err := realRun(t, s, f, Request{Action: "uninstall", Terminal: true, Adapters: []string{"claude", "codex"}}, tc.answer)
+			if err != nil {
+				t.Fatalf("uninstall: %v\n%s", err, out)
+			}
+			j, _, err := readJournal(f.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.kept {
+				if !bytes.Equal(configBytes(t, path), skillContent) || j.SkillFiles["codex"].Path != path || len(j.SkillFiles) != 1 {
+					t.Fatalf("Codex stays installed but lost the skill or its claim: %+v\n%s", j.SkillFiles, out)
+				}
+				return
+			}
+			if after := homeTree(t, shared); !maps.Equal(before, after) || len(j.SkillFiles) != 0 {
+				t.Fatalf("uninstalling both was not byte-exact:\nbefore %v\nafter  %v\n%s", before, after, out)
+			}
+		})
+	}
+}
+
+func TestSharedSkillFollowsTheRecordedCodexHome(t *testing.T) {
+	f, s, _, path := sharedSkillHome(t, "claude", "codex")
+	t.Setenv("CODEX_HOME", filepath.Join(f.Root, "another codex home"))
+	removal := uninstallVendor(t, f, s, "claude")
+	if !bytes.Equal(configBytes(t, path), skillContent) || len(removal.Retained) != 1 {
+		t.Fatalf("uninstall from another CODEX_HOME removed the skill Codex uses: %+v", removal.Retained)
+	}
+	if j, _, err := readJournal(f.State); err != nil || j.SkillFiles["codex"].Path != path {
+		t.Fatalf("the skill claim did not pass to Codex: %+v (%v)", j.SkillFiles, err)
+	}
+}
+
+func TestSkillRemovalPreviewIsStaleOnceAnotherVendorShares(t *testing.T) {
+	f, s, _, path := sharedSkillHome(t, "claude")
+	plans, err := s.PlanUninstall(t.Context(), []string{"claude"})
+	if err != nil || len(plans) != 1 || plans[0].Err != nil || vendorSkill(t, plans[0]).Skill != "remove" {
+		t.Fatalf("Claude Code removal preview: %+v (%v)", plans, err)
+	}
+	installVendor(t, f, s, "codex")
+	f.CheckTargets(t)
+	if err := s.Uninstall(t.Context(), plans[0]); err == nil || !strings.Contains(err.Error(), "rerun") {
+		t.Fatalf("a stale removal was accepted: %v", err)
+	}
+	if !bytes.Equal(configBytes(t, path), skillContent) {
+		t.Fatal("the stale removal deleted the skill Codex now uses")
 	}
 }

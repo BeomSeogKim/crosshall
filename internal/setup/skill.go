@@ -128,25 +128,28 @@ func skillClaimedByAnother(j journal, adapter, path string) bool {
 	return false
 }
 
-// sharedSkillUser names another adapter, installed and staying installed,
-// whose configuration home puts its skill at the same path.
-func sharedSkillUser(adapter, path string, j journal, removing []string) string {
+// skillConsumers names the other adapters whose recorded installation puts
+// the skill at path: their own skill record, or the skill path of their
+// recorded hooks file. It reads only the journal, never the environment.
+// sameOp names adapters that one consent removes together with adapter.
+func skillConsumers(j journal, adapter, path string, sameOp []string) []string {
+	var consumers []string
 	for _, spec := range hook.InstallSpecs() {
 		other := spec.Adapter
-		_, hooks := j.Files[other]
-		_, rules := j.RuleFiles[other]
-		if other == adapter || slices.Contains(removing, other) || !hooks && !rules {
+		if other == adapter || slices.Contains(sameOp, other) {
 			continue
 		}
-		if location, err := resolveSkillPath(spec); err == nil && location.Path == path {
-			return other
+		hooks, recorded := j.Files[other]
+		if j.SkillFiles[other].Path == path ||
+			recorded && installerFor(other).skillPath(configTarget{Path: hooks.Path}) == path {
+			consumers = append(consumers, other)
 		}
 	}
-	return ""
+	return consumers
 }
 
-func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile, j journal, removing []string) {
-	e, kept, err := planSkillRemoval(spec, record, j, removing)
+func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile, j journal, sameOp []string) {
+	e, kept, err := planSkillRemoval(spec, record, j, sameOp)
 	if err != nil {
 		op.Retained = append(op.Retained, retainedFile{spec.Adapter, record.Path, err.Error()})
 		return
@@ -158,10 +161,10 @@ func addSkillRemoval(op *operation, spec hook.InstallSpec, record ownedFile, j j
 }
 
 // planSkillRemoval deletes the skill only while it is the file setup wrote,
-// with the bytes setup recorded, and no other installed vendor shares it.
+// with the bytes setup recorded, and no other recorded vendor shares it.
 // Otherwise setup gives up its record of the file, or passes it to the
 // vendor that still uses it.
-func planSkillRemoval(spec hook.InstallSpec, record ownedFile, j journal, removing []string) (edit, *retainedFile, error) {
+func planSkillRemoval(spec hook.InstallSpec, record ownedFile, j journal, sameOp []string) (edit, *retainedFile, error) {
 	location, err := resolveSkillPath(spec)
 	if err != nil {
 		return edit{}, nil, err
@@ -189,7 +192,8 @@ func planSkillRemoval(spec hook.InstallSpec, record ownedFile, j journal, removi
 	case now.Hash != record.Latest.Hash:
 		return kept(skillEditedReason)
 	default:
-		if other := sharedSkillUser(spec.Adapter, location.Path, j, removing); other != "" {
+		if others := skillConsumers(j, spec.Adapter, location.Path, sameOp); len(others) != 0 {
+			other := others[0]
 			e.Record, e.Transfer = &record, other
 			return kept("kept the crosshall skill: " + manifests.DisplayName(other) + " still uses it")
 		}

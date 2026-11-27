@@ -117,7 +117,7 @@ func TestDoctorSaysANeverStartedHallIsNotStarted(t *testing.T) {
 	env := Env{OwnerGate: func() string { return "" }, Doctor: func(context.Context) core.Result { return core.Result{Status: core.ExitError, Data: data} }}
 	out, _, _ := run(t, env, "owner", "doctor")
 	if strings.Contains(out, "FAIL") || strings.Contains(out, "not running") ||
-		!strings.Contains(out, "Not started yet") || !strings.Contains(out, "start it now: crosshall owner start") ||
+		!strings.Contains(out, "Not started yet") || !strings.Contains(out, "Start it with crosshall owner start;") || !strings.Contains(out, "crosshall wait and crosshall owner doctor do not") ||
 		!strings.Contains(out, "PASS test_clock") {
 		t.Fatalf("a never-started hall should read as not started, with no FAIL lines:\n%s", out)
 	}

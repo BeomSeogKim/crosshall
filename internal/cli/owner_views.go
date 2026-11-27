@@ -293,7 +293,7 @@ func renderDoctor(o outputs, r core.Result) core.ExitCode {
 		}
 	}
 	if result.NotStarted {
-		if _, err := fmt.Fprintf(o.stdout, "Not started yet: this state directory has no hall. The next crosshall command that needs the hall starts it, or start it now: %s\n", result.Hint); err != nil {
+		if _, err := fmt.Fprintf(o.stdout, "Not started yet: this state directory has no hall. Start it with %s; ordinary crosshall commands and agent hooks start it too, but crosshall wait and crosshall owner doctor do not.\n", result.Hint); err != nil {
 			return core.ExitError
 		}
 	}

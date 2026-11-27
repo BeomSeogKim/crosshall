@@ -14,6 +14,7 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
 	"github.com/BeomSeogKim/crosshall/internal/store"
+	"github.com/BeomSeogKim/crosshall/internal/telemetryconfig"
 	"github.com/BeomSeogKim/crosshall/internal/wire"
 )
 
@@ -212,6 +213,23 @@ func TestDoctorNamesTheStartCommandWhenNoDispatcherRuns(t *testing.T) {
 	for _, check := range never.Checks {
 		if !check.OK && check.Detail != "not started yet" {
 			t.Errorf("never started: check %+v, want detail %q", check, "not started yet")
+		}
+	}
+	// Setup or the telemetry answer can create the state directory first.
+	if _, _, err := telemetryconfig.SetMode(absent.StateRoot, telemetryconfig.Off, "installer", telemetryconfig.Unset); err != nil {
+		t.Fatal(err)
+	}
+	var prefs struct {
+		Checks     []doctorCheck `json:"checks"`
+		Hint       string        `json:"hint"`
+		NotStarted bool          `json:"not_started"`
+	}
+	if err := json.Unmarshal(absent.Doctor(t.Context()).Data, &prefs); err != nil || !prefs.NotStarted || prefs.Hint != "crosshall owner start" {
+		t.Fatalf("preferences only: %+v (%v), want not started", prefs, err)
+	}
+	for _, check := range prefs.Checks {
+		if !check.OK && check.Detail != "not started yet" {
+			t.Errorf("preferences only: check %+v, want detail %q", check, "not started yet")
 		}
 	}
 	stale, lock := doctorFixture(t)

@@ -70,6 +70,9 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		default:
 			lock.record("", errors.New("dispatcher lock is absent or idle"))
 			notRunning = true
+			// Setup and the telemetry answer can create the state directory
+			// before any dispatcher ran; a dispatcher leaves its lock and store.
+			notStarted = neverStarted(state) && (rendezvousMissing || permissions.OK)
 		}
 		if marker := readReady(cfg.Rendezvous); marker.live(state) {
 			readiness.record(fmt.Sprintf("dispatcher PID %d is ready", marker.PID), nil)
@@ -102,12 +105,13 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		notStarted = notRunning && (rendezvousMissing || permissions.OK)
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
 			check.record("", stateErr)
-			if notStarted {
+		}
+	}
+	if notStarted {
+		for _, check := range []*doctorCheck{&lock, &readiness, &version, &permissions, &ownerSpool} {
+			if !check.OK {
 				check.Detail = "not started yet"
 			}
-		}
-		if notStarted && !permissions.OK {
-			permissions.Detail = "not started yet"
 		}
 	}
 	hint := ""
@@ -119,6 +123,17 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		checks = append(checks, doctorCheck{Name: "test_clock", OK: true, Detail: "release builds ignore " + clockOffsetEnv})
 	}
 	return cfg.doctorResult(hint, notStarted, checks, adapters, warnings)
+}
+
+// neverStarted reports a state directory that holds neither the dispatcher
+// lock nor the store, so no dispatcher has run there.
+func neverStarted(state *os.Root) bool {
+	for _, name := range []string{"dispatcher.lock", "store.sqlite3"} {
+		if _, err := state.Lstat(name); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 func (check *doctorCheck) record(detail string, err error) {

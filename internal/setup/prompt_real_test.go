@@ -290,4 +290,22 @@ func TestASkillOnlyPlanAsksForTheSkillWithoutTheTrustStep(t *testing.T) {
 	if t.Failed() {
 		t.Fatalf("skill-only setup output:\n%s", out)
 	}
+
+	// An owner-edited skill is retained, not written: still only a skill
+	// changes, and the retained line stays visible.
+	edited := append(configBytes(t, skills[0]), "owner note\n"...)
+	if err := os.WriteFile(skills[0], edited, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(skills[1]); err != nil {
+		t.Fatal(err)
+	}
+	out, err = realRun(t, s, f, Request{Terminal: true}, "y\n")
+	if err != nil || strings.Count(out, "[y/N]") != 1 || !strings.Contains(out, "Install the crosshall skill? [y/N]") ||
+		!strings.Contains(out, "  retain claude "+skills[0]) || strings.Contains(out, "run /hooks") {
+		t.Fatalf("skill-only setup with a retained skill: %v\n%s", err, out)
+	}
+	if !bytes.Equal(configBytes(t, skills[0]), edited) || !bytes.Equal(configBytes(t, skills[1]), skillContent) {
+		t.Fatalf("retained or reinstalled skill wrong:\n%s", out)
+	}
 }

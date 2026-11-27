@@ -562,14 +562,12 @@ func alreadyInstalled(plan VendorPlan) bool {
 }
 
 // skillOnly reports plans whose only change is the crosshall skill: no hook
-// entry, command rule or retained file, only a skill to install, update or
-// take from another plan of the group.
+// entry or command rule, only a skill to install, update or take from
+// another plan of the group. A retained file is left as it is, so it changes
+// nothing.
 func skillOnly(plans []VendorPlan) bool {
 	skill := false
 	for _, plan := range plans {
-		if len(plan.Retained) > 0 {
-			return false
-		}
 		for _, f := range plan.Files {
 			switch f.Skill {
 			case "install", "update", "shared":

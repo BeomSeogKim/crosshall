@@ -356,20 +356,27 @@ func codexProvenanceFields(input []byte) ([]string, error) {
 }
 
 // codexKeyWords splits a field name into lower-case words at underscores,
-// hyphens, dots and camel-case boundaries: "launchMode" is launch, mode;
-// "model" is one word.
+// hyphens, dots and case boundaries, keeping upper-case runs whole:
+// "launchMode" is launch, mode; "CODEX_VERSION" is codex, version;
+// "HTTPMode" is http, mode; "model" is one word.
 func codexKeyWords(key string) []string {
 	var words []string
 	var word []rune
-	for _, r := range key {
-		upper := unicode.IsUpper(r)
-		if r == '_' || r == '-' || r == '.' || upper && len(word) > 0 {
+	runes := []rune(key)
+	for i, r := range runes {
+		if r == '_' || r == '-' || r == '.' {
 			if len(word) > 0 {
 				words = append(words, string(word))
 			}
 			word = word[:0]
-			if !upper {
-				continue
+			continue
+		}
+		if unicode.IsUpper(r) && len(word) > 0 {
+			prev := runes[i-1]
+			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+			if !unicode.IsUpper(prev) || nextLower {
+				words = append(words, string(word))
+				word = word[:0]
 			}
 		}
 		word = append(word, unicode.ToLower(r))
@@ -389,6 +396,10 @@ func TestCodexProvenanceFields(t *testing.T) {
 	added := strings.Replace(observed, `"source"`, `"codex_version":"0.172.0","launch":{"Mode":"exec"},"sessionMode":"exec","source"`, 1)
 	if got, err := codexProvenanceFields([]byte(observed + "\n" + added + "\n")); err != nil || !slices.Equal(got, []string{"codex_version", "launch.Mode", "sessionMode"}) {
 		t.Fatalf("input with provenance: %v %v", got, err)
+	}
+	upper := strings.Replace(observed, `"source"`, `"CODEX_VERSION":"0.172.0","MODE":"exec","HTTPMode":"x","MODEL":"m","source"`, 1)
+	if got, err := codexProvenanceFields([]byte(upper)); err != nil || !slices.Equal(got, []string{"CODEX_VERSION", "HTTPMode", "MODE"}) {
+		t.Fatalf("input with upper-case provenance: %v %v", got, err)
 	}
 	for _, input := range []string{"", "\n", "not json\n"} {
 		if _, err := codexProvenanceFields([]byte(input)); err == nil {

@@ -422,8 +422,8 @@ func TestEveryManifestHookEntersWhenItsPolicyIsOn(t *testing.T) {
 	}
 }
 
-// A refusal keeps its counter record and logs the stage that refused (#454).
-func TestARefusedCallbackLogsItsStage(t *testing.T) {
+func refusalFixture(t *testing.T, policy string) Paths {
+	t.Helper()
 	state := t.TempDir()
 	if err := os.Chmod(state, 0700); err != nil {
 		t.Fatal(err)
@@ -434,21 +434,56 @@ func TestARefusedCallbackLogsItsStage(t *testing.T) {
 	}
 	for name, data := range map[string]string{
 		"ready":  fmt.Sprintf("{\"instance\":\"fixture-host\",\"v\":1,\"pid\":%d}\n", os.Getpid()),
-		"policy": "codex 1 0 7\n",
+		"policy": policy,
 	} {
 		if err := os.WriteFile(filepath.Join(rendezvous, name), []byte(data), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	paths := Paths{State: state, Rendezvous: rendezvous, Start: func(context.Context) (bool, error) { return false, nil }}
+	return Paths{State: state, Rendezvous: rendezvous, Start: func(context.Context) (bool, error) { return false, nil }}
+}
+
+// A refusal keeps its counter record and logs the stage that refused (#454).
+func TestARefusedCallbackLogsItsStage(t *testing.T) {
+	paths := refusalFixture(t, "codex 1 0 7\n")
 	entry := time.Now()
 	Run(entry, []string{"codex", "Stop"}, strings.NewReader("not json"), io.Discard, func() (Paths, error) { return paths, nil })
-	counter, err := os.ReadFile(filepath.Join(rendezvous, "hooks", entry.UTC().Format("20060102")))
+	counter, err := os.ReadFile(filepath.Join(paths.Rendezvous, "hooks", entry.UTC().Format("20060102")))
 	if fields := strings.Fields(string(counter)); err != nil || len(fields) != 4 || fields[2] != "refused" {
 		t.Fatalf("counter %q, %v", counter, err)
 	}
-	log, err := os.ReadFile(filepath.Join(state, "dispatcher.log"))
+	log, err := os.ReadFile(filepath.Join(paths.State, "dispatcher.log"))
 	if err != nil || !strings.Contains(string(log), "hook codex Stop: refused: event (") {
 		t.Fatalf("dispatcher.log %q, %v", log, err)
+	}
+}
+
+// The refusal's line waits for the vendor's fallback output and never
+// past the callback's budget.
+func TestARefusalLogComesAfterTheFallbackWithinTheBudget(t *testing.T) {
+	paths := refusalFixture(t, "agy 1 0 7\n")
+	logged := make(chan string, 1)
+	release := make(chan struct{})
+	defer close(release)
+	previous := refusalLog
+	t.Cleanup(func() { refusalLog = previous })
+	var out strings.Builder
+	refusalLog = func(_, _ string, _ time.Time, outcome string) {
+		logged <- out.String() + outcome
+		<-release
+	}
+	entry := time.Now()
+	Run(entry, []string{"agy", "SessionStart"}, strings.NewReader("not json"), &out, func() (Paths, error) { return paths, nil })
+	elapsed := time.Since(entry)
+	select {
+	case got := <-logged:
+		if got != "{}\nrefused: event" {
+			t.Fatalf("logged %q", got)
+		}
+	default:
+		t.Fatal("the refusal was not logged")
+	}
+	if out.String() != "{}\n" || elapsed > StartBudget+100*time.Millisecond {
+		t.Fatalf("output %q after %v", out.String(), elapsed)
 	}
 }

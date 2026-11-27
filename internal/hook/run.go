@@ -101,7 +101,7 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		return rv, openHookCounter(rv, args[0], args[1], budgetStart)
 	}
 	var outcome, refusedRoot atomic.Value
-	wrote := runTimed(budgetStart, base, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
+	wrote, recorded, budgetEnd := runTimed(budgetStart, base, budget, stdout, prepare, func(ctx context.Context, rv *os.Root, output io.Writer) string {
 		client := spool.Client{Rendezvous: rv.Name()}
 		o := dispatchCallback(ctx, captured, rv, client, args, stdin, output, os.LookupEnv, callbackState{stateRoot, lifecycle})
 		outcome.Store(o)
@@ -110,10 +110,9 @@ func Run(captured time.Time, args []string, stdin io.Reader, stdout io.Writer, l
 		}
 		return o
 	})
-	if root, _ := refusedRoot.Load().(string); root != "" {
-		// After the output and the counter: only a refusal pays for it.
-		o, _ := outcome.Load().(string)
-		logLine(root, args[0]+" "+args[1], captured, o)
+	if root, _ := refusedRoot.Load().(string); root != "" && strings.HasPrefix(recorded, refusedPrefix) {
+		// Deferred past the vendor's output; only a recorded refusal pays.
+		defer logRefusal(root, args[0]+" "+args[1], captured, recorded, budgetEnd)
 	}
 	if lifecycle != nil && !lifecycle.waitUntil(captured.Add(budget)) && args[1] == "SessionStart" && startedState == "" {
 		lifecycle.waitUntil(time.Now().Add(startupRepoGrace))
@@ -464,6 +463,28 @@ func refusedWith(stage string, code core.Code) string {
 		return refused(stage)
 	}
 	return refused(stage + " " + string(code))
+}
+
+// refusalLog writes a refusal's line; a variable so tests can stall it.
+var refusalLog = logLine
+
+// logRefusal appends the refusal's stage to dispatcher.log, waiting no
+// later than the callback's budget end.
+func logRefusal(stateRoot, callback string, entry time.Time, outcome string, end time.Time) {
+	if !time.Now().Before(end) {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refusalLog(stateRoot, callback, entry, outcome)
+	}()
+	timer := time.NewTimer(time.Until(end))
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func transportOutcome(ctx context.Context, err error) string {

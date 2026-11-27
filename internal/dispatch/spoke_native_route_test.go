@@ -456,3 +456,59 @@ func TestSpokeThreadRouteFromBeforeARejoinDoesNotRouteALaterTurnEnd(t *testing.T
 		t.Fatal("a hostless turn end after the rejoin says the thread is routed by the old scope's server")
 	}
 }
+
+// A linked join's membership stamp can be seen before the home's event
+// installs the member's scope. A turn end naming the server in that window
+// captures the route provisionally, which the scope's cut then admits: its
+// fact says the thread is routed, as the home applies it after that cut too.
+// A later turn end that captures nothing new says nothing (#437).
+func TestSpokeThreadRouteCapturedBeforeItsScopeRoutesTheTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host *wire.Host) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: int64(seq) * 1000, vendorHome: "/configure/codex", host: host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}
+	capture(6, &server)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("a turn end naming the server before the scope arrived does not say the thread is routed")
+	}
+	capture(7, nil)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a later hostless turn end before the scope says the thread is routed")
+	}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+			VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.View(ctx, func(tx store.Tx) error {
+		got, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+		if err == nil && (!ok || got.Probe.Route.Host != (publish.Queue{PID: server.PID, StartMS: server.Start})) {
+			t.Fatalf("after the cut the offer reader returns %+v, %v; want the provisional capture", got, ok)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

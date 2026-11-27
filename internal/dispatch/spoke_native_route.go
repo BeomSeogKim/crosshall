@@ -172,23 +172,50 @@ func spokeNativeLaunch(ctx context.Context, tx store.Tx, member link.Member, tok
 	return launch, err
 }
 
-// spokeThreadServerRouted reports whether the route the device would offer
-// a thread-routed member, read as the offer reader reads it (the current
-// route epoch and cut), is the token's scope and launch and names a managed
-// server: what a turn end must leave before the home opens the launch at
-// it (#437).
+// spokeThreadServerRouted reports whether, after a turn end, the device
+// holds a managed server route for the token's scope and launch: what the
+// turn end must leave before the home opens the launch at it (#437). The
+// route is the one the offer reader returns, which applies the current route
+// epoch and cut, or a capture made under the token's membership before its
+// scope arrived, which that cut admits: the home applies the turn end only
+// after the same cut, and both are after it at the same leaf sequence.
 func spokeThreadServerRouted(ctx context.Context, tx store.Tx, member link.Member, token link.HookToken, launch string, epoch uint64) (bool, error) {
 	adapter, ok := publish.Lookup(member.Vendor)
 	if !ok || !adapter.ThreadRouted() || epoch > math.MaxInt64 {
 		return false, nil
 	}
 	r, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
-	if err != nil || !ok {
+	if err != nil {
 		return false, err
 	}
-	return r.Scope.LeafGeneration == token.LeafGeneration && r.Scope.Membership == token.Membership &&
-		r.Launch == launch && r.PolicyEpoch == int64(epoch) &&
-		r.Probe.Route.Mode == publish.ModeDaemon && r.Probe.Route.Host.PID > 0, nil
+	if ok {
+		return r.Scope.LeafGeneration == token.LeafGeneration && r.Scope.Membership == token.Membership &&
+			r.Launch == launch && r.PolicyEpoch == int64(epoch) &&
+			r.Probe.Route.Mode == publish.ModeDaemon && r.Probe.Route.Host.PID > 0, nil
+	}
+	var body string
+	err = tx.QueryRowContext(ctx, `SELECT r.evidence FROM spoke_native_route r
+		JOIN spoke_policy p ON p.adapter = r.vendor AND p.epoch = r.policy_epoch AND p.enabled = 1
+		JOIN spoke_event_cursor c ON c.id = 1 AND c.boot = r.boot AND c.eligible = 1 AND c.rolled_back = 0
+		WHERE r.vendor = ? AND r.key = ? AND r.boot = ? AND r.leaf_generation = ? AND r.binding_id = ? AND r.membership_gen = ?
+			AND r.route_epoch = 0 AND r.capture_seq = ? AND r.launch = ? AND r.policy_epoch = ?
+			AND NOT EXISTS (SELECT 1 FROM spoke_member_scope s WHERE s.vendor = r.vendor AND s.key = r.key
+				AND s.leaf_generation = r.leaf_generation AND s.binding_id = r.binding_id AND s.membership_gen = r.membership_gen)`,
+		member.Vendor, member.Key, token.Boot, token.LeafGeneration, token.Membership.BindingID, token.Membership.Generation,
+		token.LeafSeq, launch, int64(epoch)).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var evidence spokeNativeEvidence
+	if err := json.Unmarshal([]byte(body), &evidence); err != nil {
+		return false, err
+	}
+	m := evidence.Material
+	return !m.Ended && m.StartedAtMS > 0 && m.PIDNamespace == proc.PIDNamespace() &&
+		m.Route.Mode == publish.ModeDaemon && m.Route.Host.PID > 0, nil
 }
 
 func (e *spokeNativeEvidence) apply(adapter publish.Adapter, key string, token link.HookToken, hook spokeNativeHook, profile bool) {

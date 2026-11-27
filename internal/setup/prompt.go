@@ -146,9 +146,9 @@ func (p *prompter) offer(ctx context.Context) error {
 	if err != nil {
 		return nil
 	}
-	plans = slices.DeleteFunc(plans, func(plan VendorPlan) bool {
+	plans = ownSharedSkills(slices.DeleteFunc(plans, func(plan VendorPlan) bool {
 		return !eligible[plan.Adapter] || prefs.Vendors[plan.Adapter].Answer == "no"
-	})
+	}))
 	if len(plans) == 0 {
 		return nil
 	}
@@ -349,7 +349,7 @@ func (p *prompter) apply(ctx context.Context, c choice) vendorOutcome {
 		o.Detail = strings.Join(details, "\n")
 	default:
 		o.Outcome = "installed"
-		details := skillOutcomes(c.plan.Files)
+		details := p.s.appliedSkillOutcomes(c.plan)
 		for _, skipped := range c.plan.Retained {
 			details = append(details, fmt.Sprintf("%s (%s)", skipped.Reason, skipped.Path))
 		}

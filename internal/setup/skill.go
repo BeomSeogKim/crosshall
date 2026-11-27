@@ -119,6 +119,16 @@ func releaseSkill(adapter, path string, now fingerprint) *edit {
 	return &edit{Adapter: adapter, Skill: true, Path: path, Before: now, After: now}
 }
 
+// skillClaimer names the adapter whose skill record is at path, if any.
+func skillClaimer(j journal, path string) string {
+	for _, spec := range hook.InstallSpecs() {
+		if j.SkillFiles[spec.Adapter].Path == path {
+			return spec.Adapter
+		}
+	}
+	return ""
+}
+
 func skillClaimedByAnother(j journal, adapter, path string) bool {
 	for other, record := range j.SkillFiles {
 		if other != adapter && record.Path == path {
@@ -218,6 +228,39 @@ func skillOutcomes(files []PlanFile) []string {
 		case "shared":
 			lines = append(lines, fmt.Sprintf("crosshall skill shared with %s (%s)", f.SharedWith, f.Path))
 		}
+	}
+	return lines
+}
+
+// appliedSkillOutcomes are the result lines of an applied plan. A skill the
+// plan shares is reported as the journal and the file now hold it: written
+// by the plan it was left to, written by this plan in its place, or not in
+// place.
+func (s Service) appliedSkillOutcomes(p VendorPlan) []string {
+	if p.sharedSkill == nil {
+		return skillOutcomes(p.Files)
+	}
+	j, _, err := readJournal(s.StateRoot)
+	if err != nil {
+		return skillOutcomes(p.Files)
+	}
+	var lines []string
+	for _, f := range p.Files {
+		if f.Skill == "shared" && f.Path == p.sharedSkill.Path {
+			claimer := skillClaimer(j, f.Path)
+			current, err := readConfig(f.Path)
+			if claimer == "" || err != nil || !current.Exists || stamp(current).Hash != j.SkillFiles[claimer].Latest.Hash {
+				lines = append(lines, fmt.Sprintf("did not install the crosshall skill: it changed after planning (%s)", f.Path))
+				continue
+			}
+			switch claimer {
+			case f.Adapter:
+				f.Skill = "install"
+			default:
+				f.SharedWith = manifests.DisplayName(claimer)
+			}
+		}
+		lines = append(lines, skillOutcomes([]PlanFile{f})...)
 	}
 	return lines
 }

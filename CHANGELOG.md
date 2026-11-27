@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A grouped setup no longer reports a shared skill it never wrote (#474):** when Claude Code and Codex share one configuration home, `crosshall setup claude codex` writes the crosshall skill once, in Claude Code's plan. If that plan then failed, for example because its settings changed while the question was open, Codex installed its hooks and still reported `crosshall skill shared with Claude Code`, but no skill was written. Codex now writes the skill itself under the same consent and reports `installed the crosshall skill for Codex`. If the skill path also changed after the preview, setup leaves it as it is, still installs Codex's hooks, and says it did not install the skill. The result reports a shared skill only while that file is in place. When the installer's offer drops Claude Code after planning, the Codex preview shows the skill install it will make.
+
 ## v0.5.0 (2026-11-27)
 
 - **Release of v0.5.0-rc.1:** no product change since rc.1.

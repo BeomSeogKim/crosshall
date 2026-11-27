@@ -2,6 +2,14 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.5.0-rc.1
+
+From v0.4.0 or any v0.4.0 release candidate, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the hooks keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices.
+
+From v0.3.1, follow [the v0.4.0 upgrade steps](#to-v040) with the v0.5.0-rc.1 binary. The first start backs up the store and migrates it from schema 30 to 37.
+
+To roll back to v0.4.0, stop the dispatcher with v0.5.0-rc.1, put the v0.4.0 binary back at the original path and restart it on the same schema 37 store.
+
 ## To v0.4.0
 
 From v0.4.0-rc.1, v0.4.0-rc.2, or v0.4.0-rc.3, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the hooks keep their settings, and linked devices keep their enrollment. No migration or setup is needed.

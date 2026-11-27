@@ -2,8 +2,11 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
-## Unreleased
+## v0.5.0-rc.1 (2026-11-27)
 
+Agents pick up crosshall with no instruction: `crosshall setup` installs a crosshall skill, so a Claude Code, Codex or Antigravity session that is asked to hand work to another agent uses crosshall on its own. The first install and `crosshall owner doctor` are quieter for new users.
+
+- **Upgrading:** a v0.4.0 store stays on schema 37; replace the binary and restart. See [UPGRADING.md](UPGRADING.md#to-v050-rc1).
 - **Linked-device wake advice agrees everywhere (#445):** a request to a member its linked device will try to wake now reads `next: "the linked device will try to wake it"` in `--json`, not `waits for its next crosshall command`. The home also sends `why: "linked_device"` with the `device` outcome, so a v0.4.0-rc.1 or rc.2 client prints `not woken: linked_device` instead of a blank reason; the outcome and the daily count are unchanged. `crosshall owner start` lists a member that runs on a linked device apart from those nothing can wake, and says why it gets no resume notice: startup resume notices require a local session.
 
 - **The release gate's full-run row says what ran beside it:** when the row fails, its detail names the failed tests instead of the log's last line, which was often macOS's launch-denial report. ci-checks prints that report on any failure, and the same denials occur in passing runs. The detail also gives the load before and after the run, and counts the other test runs on the machine (the lock serializes full runs only) and the processes an earlier row left running. `row_full_run.others` lists each of them (#391).

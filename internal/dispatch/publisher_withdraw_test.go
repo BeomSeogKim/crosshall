@@ -429,8 +429,9 @@ func processNoticeWorld(t *testing.T, read bool) (*publishTestFixture, *publishe
 	if read {
 		f.exec(t, `UPDATE recipient SET picked_up_at_ms = 1 WHERE message_id = 11`)
 	}
-	f.exec(t, `INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, finishing_hook_at_ms)
-		SELECT principal_id, launch_ref, 'typed', submitting_at_ms + 1000, submitting_at_ms + 2000 FROM publish_attempt WHERE id = 1`)
+	f.exec(t, `UPDATE publish_attempt SET resolved_at_ms = submitting_at_ms + 1000 WHERE id = 1;
+		INSERT INTO turn (principal_id, launch_ref, turn_ref, opened_hook_at_ms, finishing_hook_at_ms)
+		SELECT principal_id, launch_ref, 'typed', resolved_at_ms + 1000, resolved_at_ms + 2000 FROM publish_attempt WHERE id = 1`)
 	f.ask(t, 12)
 	return f, p, &sends
 }
@@ -480,5 +481,27 @@ func TestPublisherHoldsAProcessNoticeNoLaterPromptPassedBy(t *testing.T) {
 	tickThrough(t, f, p, time.Second, 2*time.Second, 4*time.Second)
 	if attemptRetired(t, f) || sends.Load() != 1 {
 		t.Fatalf("retired %v after %d sends; want held", attemptRetired(t, f), sends.Load())
+	}
+}
+
+// #450 review: the evidence must be a turn of its own opened after the
+// submission completed. A turn opened while the notice was being written,
+// a typed-ahead placeholder (input into a running turn), or an uncertain
+// send leaves the notice held.
+func TestPublisherHoldsAProcessNoticeWithoutALaterTurnOfItsOwn(t *testing.T) {
+	for name, change := range map[string]string{
+		"during the write": `UPDATE turn SET opened_hook_at_ms = (SELECT submitting_at_ms + 500 FROM publish_attempt WHERE id = 1)
+			WHERE turn_ref = 'typed'`,
+		"typed ahead": `UPDATE turn SET turn_ref = 'typed-ahead:running@1' WHERE turn_ref = 'typed'`,
+		"uncertain":   `UPDATE publish_attempt SET state = 'uncertain' WHERE id = 1`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p, sends := processNoticeWorld(t, true)
+			f.exec(t, change)
+			tickThrough(t, f, p, time.Second, 2*time.Second, 4*time.Second)
+			if attemptRetired(t, f) || sends.Load() != 1 {
+				t.Fatalf("retired %v after %d sends; want held", attemptRetired(t, f), sends.Load())
+			}
+		})
 	}
 }

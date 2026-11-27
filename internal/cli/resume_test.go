@@ -25,6 +25,22 @@ func TestOwedLineAfterOwnerStart(t *testing.T) {
 	if got := owedLine(members[:1]); got != "1 member owes 2 open requests: 1 can be woken and get one resume notice when their turn is free." {
 		t.Fatalf("one member: %q", got)
 	}
+	// A linked member gets no local resume notice; the line says why
+	// instead of printing a blank reason (#445).
+	linked := domain.OwingMember{BindingID: 4, Channel: "dev", Alias: "rigel", Owed: 1,
+		Wake: domain.Wake{Wake: domain.WakeDevice, Why: domain.WhyLinkedDevice}}
+	want = "4 members owe 5 open requests: 2 can be woken and get one resume notice when their turn is free; " +
+		"1 runs on a linked device, which wakes it itself; this machine sends it no resume notice (@rigel in #dev); " +
+		"1 cannot be woken (@sol in #dev: no notice route for codex)."
+	if got := owedLine(append(members, linked)); got != want {
+		t.Fatalf("with a linked member\n got %q\nwant %q", got, want)
+	}
+	// So does a v0.4.0-rc home, which sends the device outcome with no why.
+	linked.Wake.Why = ""
+	if got := owedLine([]domain.OwingMember{linked, linked}); got != "2 members owe 2 open requests: "+
+		"2 run on a linked device, which wake them itself; this machine sends them no resume notice (@rigel in #dev, @rigel in #dev)." {
+		t.Fatalf("two linked members: %q", got)
+	}
 }
 
 // owner start asks the started dispatcher who owes; an older dispatcher's

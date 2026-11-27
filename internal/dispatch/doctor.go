@@ -32,6 +32,7 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 	permissions := doctorCheck{Name: "rendezvous_permissions"}
 	ownerSpool := doctorCheck{Name: "owner_spool_writable"}
 	var state *os.Root
+	var spoolErr error
 	// Starting the dispatcher is the remedy when none holds the lock, or when
 	// the state root does not exist yet; an unsafe path needs the owner instead.
 	notRunning, notStarted, rendezvousMissing := false, false, false
@@ -98,7 +99,8 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 					" changed since setup recorded it: its turn-end check waits until crosshall reads the new version")
 			}
 		}
-		ownerSpool.record("owner spool accepts writes", probeOwnerSpool(state))
+		spoolErr = probeOwnerSpool(state)
+		ownerSpool.record("owner spool accepts writes", spoolErr)
 	} else {
 		notRunning = errors.Is(stateErr, os.ErrNotExist)
 		// A state directory that does not exist yet is a hall nobody started.
@@ -106,12 +108,17 @@ func (cfg LaunchConfig) Doctor(ctx context.Context) core.Result {
 		for _, check := range []*doctorCheck{&lock, &readiness, &version, &ownerSpool} {
 			check.record("", stateErr)
 		}
+		spoolErr = stateErr
 	}
 	if notStarted {
-		for _, check := range []*doctorCheck{&lock, &readiness, &version, &permissions, &ownerSpool} {
+		for _, check := range []*doctorCheck{&lock, &readiness, &version, &permissions} {
 			if !check.OK {
 				check.Detail = "not started yet"
 			}
+		}
+		// Startup refuses an unsafe owner spool, so only a missing one waits for the start.
+		if !ownerSpool.OK && errors.Is(spoolErr, os.ErrNotExist) {
+			ownerSpool.Detail = "not started yet"
 		}
 	}
 	hint := ""

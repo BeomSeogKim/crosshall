@@ -146,9 +146,9 @@ func (p *prompter) offer(ctx context.Context) error {
 	if err != nil {
 		return nil
 	}
-	plans = slices.DeleteFunc(plans, func(plan VendorPlan) bool {
+	plans = ownSharedSkills(slices.DeleteFunc(plans, func(plan VendorPlan) bool {
 		return !eligible[plan.Adapter] || prefs.Vendors[plan.Adapter].Answer == "no"
-	})
+	}))
 	if len(plans) == 0 {
 		return nil
 	}

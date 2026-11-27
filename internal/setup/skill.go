@@ -233,8 +233,9 @@ func skillOutcomes(files []PlanFile) []string {
 }
 
 // appliedSkillOutcomes are the result lines of an applied plan. A skill the
-// plan shares is reported as the journal now holds it: written by the plan
-// it was left to, written by this plan in its place, or not written.
+// plan shares is reported as the journal and the file now hold it: written
+// by the plan it was left to, written by this plan in its place, or not in
+// place.
 func (s Service) appliedSkillOutcomes(p VendorPlan) []string {
 	if p.sharedSkill == nil {
 		return skillOutcomes(p.Files)
@@ -246,10 +247,13 @@ func (s Service) appliedSkillOutcomes(p VendorPlan) []string {
 	var lines []string
 	for _, f := range p.Files {
 		if f.Skill == "shared" && f.Path == p.sharedSkill.Path {
-			switch claimer := skillClaimer(j, f.Path); claimer {
-			case "":
-				lines = append(lines, fmt.Sprintf("did not install the crosshall skill: it changed after planning; rerun setup (%s)", f.Path))
+			claimer := skillClaimer(j, f.Path)
+			current, err := readConfig(f.Path)
+			if claimer == "" || err != nil || !current.Exists || stamp(current).Hash != j.SkillFiles[claimer].Latest.Hash {
+				lines = append(lines, fmt.Sprintf("did not install the crosshall skill: it changed after planning (%s)", f.Path))
 				continue
+			}
+			switch claimer {
 			case f.Adapter:
 				f.Skill = "install"
 			default:

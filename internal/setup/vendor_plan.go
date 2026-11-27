@@ -346,11 +346,41 @@ func unwrittenSharedSkill(j journal, e *edit) (edit, bool) {
 	if e == nil || skillClaimer(j, e.Path) != "" {
 		return edit{}, false
 	}
+	// Apply requires the exact planned state, directories included, so a
+	// skill that would fail there stays out and the hooks still install.
 	current, err := readConfig(e.Path)
-	if err != nil || !e.matchesBefore(stamp(current)) {
+	if err != nil || stamp(current) != e.Before {
 		return edit{}, false
 	}
 	return *e, true
+}
+
+// ownSharedSkills gives a plan the skill edit it left to an earlier plan
+// that plans no longer holds, so its preview shows the write it makes.
+func ownSharedSkills(plans []VendorPlan) []VendorPlan {
+	written := map[string]bool{}
+	for i := range plans {
+		p := &plans[i]
+		for _, e := range p.op.Edits {
+			if e.Skill {
+				written[e.Path] = true
+			}
+		}
+		e := p.sharedSkill
+		if e == nil || written[e.Path] {
+			continue
+		}
+		p.op.Edits = append(slices.Clone(p.op.Edits), *e)
+		p.Files = slices.Clone(p.Files)
+		for k, f := range p.Files {
+			if f.Skill == "shared" && f.Path == e.Path {
+				p.Files[k] = PlanFile{Adapter: e.Adapter, Path: e.Path, Skill: skillVerb(*e)}
+			}
+		}
+		p.sharedSkill = nil
+		written[e.Path] = true
+	}
+	return plans
 }
 
 // sameSkillConsumers reports that every skill edit of op still has the

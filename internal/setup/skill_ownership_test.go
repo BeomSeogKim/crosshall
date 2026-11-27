@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -394,32 +395,97 @@ func TestGroupedSetupWritesTheSharedSkillWhenTheFirstPlanFails(t *testing.T) {
 }
 
 func TestGroupedSetupLeavesASharedSkillThatChangedWhenTheFirstPlanFails(t *testing.T) {
-	f, s, shared, path := sharedSkillHome(t)
+	for _, tc := range []struct {
+		name string
+		file []byte
+	}{
+		{"a file appeared", []byte("the owner's skill\n")},
+		{"only its directories appeared", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, s, shared, path := sharedSkillHome(t)
+			plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
+			if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
+				t.Fatalf("grouped plans: %+v (%v)", plans, err)
+			}
+			writeConfigFixture(t, filepath.Join(shared, "settings.json"), []byte("{}\n"), 0600)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.file != nil {
+				writeConfigFixture(t, path, tc.file, 0600)
+			}
+			f.CheckTargets(t)
+			if err := s.Install(t.Context(), plans[0]); err == nil {
+				t.Fatal("the stale Claude Code plan was applied")
+			}
+			if err := s.Install(t.Context(), plans[1]); err != nil {
+				t.Fatalf("Codex hooks did not install: %v", err)
+			}
+			if tc.file != nil && !bytes.Equal(configBytes(t, path), tc.file) {
+				t.Fatal("Codex replaced a skill file that changed after planning")
+			}
+			if _, err := os.Lstat(path); tc.file == nil && !os.IsNotExist(err) {
+				t.Fatalf("Codex wrote the skill into directories that appeared after planning: %v", err)
+			}
+			if j, _, err := readJournal(f.State); err != nil || len(j.SkillFiles) != 0 || len(j.Files) != 1 {
+				t.Fatalf("records: files %v, skills %+v (%v)", j.Files, j.SkillFiles, err)
+			}
+			lines := strings.Join(s.appliedSkillOutcomes(plans[1]), "\n")
+			if !strings.Contains(lines, "did not install the crosshall skill") || strings.Contains(lines, "shared with") {
+				t.Fatalf("result lines: %q", lines)
+			}
+		})
+	}
+}
+
+func TestGroupedSetupDoesNotReportASharedSkillRemovedBeforeTheLaterPlan(t *testing.T) {
+	f, s, _, path := sharedSkillHome(t)
 	plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
 	if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
 		t.Fatalf("grouped plans: %+v (%v)", plans, err)
 	}
-	writeConfigFixture(t, filepath.Join(shared, "settings.json"), []byte("{}\n"), 0600)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	f.CheckTargets(t)
+	if err := s.Install(t.Context(), plans[0]); err != nil {
 		t.Fatal(err)
 	}
-	mine := []byte("the owner's skill\n")
-	writeConfigFixture(t, path, mine, 0600)
-	f.CheckTargets(t)
-	if err := s.Install(t.Context(), plans[0]); err == nil {
-		t.Fatal("the stale Claude Code plan was applied")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 	if err := s.Install(t.Context(), plans[1]); err != nil {
 		t.Fatalf("Codex install: %v", err)
 	}
-	if !bytes.Equal(configBytes(t, path), mine) {
-		t.Fatal("Codex replaced a skill file that changed after planning")
-	}
-	if j, _, err := readJournal(f.State); err != nil || len(j.SkillFiles) != 0 || len(j.Files) != 1 {
-		t.Fatalf("records: files %v, skills %+v (%v)", j.Files, j.SkillFiles, err)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("Codex wrote the skill Claude Code's record holds: %v", err)
 	}
 	lines := strings.Join(s.appliedSkillOutcomes(plans[1]), "\n")
 	if !strings.Contains(lines, "did not install the crosshall skill") || strings.Contains(lines, "shared with") {
 		t.Fatalf("result lines: %q", lines)
+	}
+}
+
+func TestAPlanWhoseSharedSkillOwnerWasDroppedShowsItsOwnWrite(t *testing.T) {
+	f, s, _, path := sharedSkillHome(t)
+	plans, err := s.PlanInstall(t.Context(), []string{"claude", "codex"})
+	if err != nil || len(plans) != 2 || plans[0].Err != nil || plans[1].Err != nil {
+		t.Fatalf("grouped plans: %+v (%v)", plans, err)
+	}
+	if kept := ownSharedSkills(slices.Clone(plans)); vendorSkill(t, kept[1]).Skill != "shared" {
+		t.Fatalf("a plan whose owner stays lost the shared line: %+v", kept[1].Files)
+	}
+	codex := ownSharedSkills(plans[1:])[0]
+	var preview bytes.Buffer
+	if err := RenderVendorPlan(&preview, codex); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview.String(), "install skill "+path) || strings.Contains(preview.String(), "shared with") {
+		t.Fatalf("preview does not show Codex's own write:\n%s", preview.String())
+	}
+	f.CheckTargets(t)
+	if err := s.Install(t.Context(), codex); err != nil {
+		t.Fatal(err)
+	}
+	if j, _, err := readJournal(f.State); err != nil || j.SkillFiles["codex"].Path != path || !bytes.Equal(configBytes(t, path), skillContent) {
+		t.Fatalf("Codex did not write and claim the skill: %+v (%v)", j.SkillFiles, err)
 	}
 }

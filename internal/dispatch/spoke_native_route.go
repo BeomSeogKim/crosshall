@@ -172,32 +172,23 @@ func spokeNativeLaunch(ctx context.Context, tx store.Tx, member link.Member, tok
 	return launch, err
 }
 
-// spokeThreadServerRouted reports whether a thread-routed member's route in
-// the token's scope names a managed server of this PID namespace for the
-// launch: what a turn end must leave before the home opens the launch at it
-// (#437).
+// spokeThreadServerRouted reports whether the route the device would offer
+// a thread-routed member, read as the offer reader reads it (the current
+// route epoch and cut), is the token's scope and launch and names a managed
+// server: what a turn end must leave before the home opens the launch at
+// it (#437).
 func spokeThreadServerRouted(ctx context.Context, tx store.Tx, member link.Member, token link.HookToken, launch string, epoch uint64) (bool, error) {
 	adapter, ok := publish.Lookup(member.Vendor)
 	if !ok || !adapter.ThreadRouted() || epoch > math.MaxInt64 {
 		return false, nil
 	}
-	var body string
-	err := tx.QueryRowContext(ctx, `SELECT evidence FROM spoke_native_route WHERE vendor = ? AND key = ? AND boot = ?
-		AND leaf_generation = ? AND binding_id = ? AND membership_gen = ? AND launch = ? AND policy_epoch = ?`,
-		member.Vendor, member.Key, token.Boot, token.LeafGeneration, token.Membership.BindingID, token.Membership.Generation,
-		launch, int64(epoch)).Scan(&body)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
+	r, ok, err := readSpokeNativeRoute(ctx, tx, token.Boot, member)
+	if err != nil || !ok {
 		return false, err
 	}
-	var evidence spokeNativeEvidence
-	if err := json.Unmarshal([]byte(body), &evidence); err != nil {
-		return false, err
-	}
-	m := evidence.Material
-	return m.Route.Mode == publish.ModeDaemon && m.Route.Host.PID > 0 && m.PIDNamespace == proc.PIDNamespace(), nil
+	return r.Scope.LeafGeneration == token.LeafGeneration && r.Scope.Membership == token.Membership &&
+		r.Launch == launch && r.PolicyEpoch == int64(epoch) &&
+		r.Probe.Route.Mode == publish.ModeDaemon && r.Probe.Route.Host.PID > 0, nil
 }
 
 func (e *spokeNativeEvidence) apply(adapter publish.Adapter, key string, token link.HookToken, hook spokeNativeHook, profile bool) {

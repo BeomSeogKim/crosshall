@@ -48,8 +48,9 @@ func TestSpokeLinkWakesCodexThroughNativeQueue(t *testing.T) {
 
 // spokeLinkWakesCodex runs the receiver's hooks under the managed server,
 // with hookBinary as the hook when it is set: before, then, when later is
-// set, an ask that must not report a device wake unless the device holds a
-// server route for the receiver, then later. Its sibling starts as usual.
+// set and the home opened no launch from them, an ask that must not report
+// a device wake, then later. A launch the home opened needs the device's
+// server route. Its sibling starts as usual.
 func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary, hookBinary string, before, later []string) {
 	platform := map[string]string{"darwin": "apple-darwin", "linux": "unknown-linux-gnu"}[runtime.GOOS]
 	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
@@ -218,16 +219,31 @@ func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary, hookBinary strin
 			FROM spoke_native_route WHERE vendor = 'codex' AND key = ?`, threads[0].id).Scan(&server); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			t.Fatal(err)
 		}
-		early := sender.must("ask", "@receiver", "Before the prompt.")
-		var reply struct {
-			Recipients []struct{ Alias, Wake, Next string }
+		var opened int
+		if err := homeDB.QueryRow(`SELECT COUNT(*) FROM link_event_launch l JOIN link_event_cut c ON c.device_id = l.device_id
+			AND c.binding_id = l.binding_id AND c.boot = l.boot AND c.route_epoch = l.route_epoch
+			WHERE c.vendor = 'codex' AND c.key = ? AND c.absent = 0`, threads[0].id).Scan(&opened); err != nil {
+			t.Fatal(err)
 		}
-		if err := json.Unmarshal([]byte(early.stdout), &reply); err != nil || len(reply.Recipients) != 1 ||
-			server == 0 && (reply.Recipients[0].Wake == "device" || strings.Contains(reply.Recipients[0].Next, "linked device")) {
-			t.Fatalf("before its prompt the ask reports a wake the device holds no server route for (%d): %s (%v)", server, early.stdout, err)
+		switch {
+		case opened > 0 && server == 0:
+			t.Fatal("the home opened the receiver's launch at a turn end the device holds no server route after")
+		case opened > 0:
+			// Builds that name and accept the server at a turn end: the
+			// turn end alone makes the session wakeable, as without a base
+			// build.
+		default:
+			early := sender.must("ask", "@receiver", "Before the prompt.")
+			var reply struct {
+				Recipients []struct{ Alias, Wake, Next string }
+			}
+			if err := json.Unmarshal([]byte(early.stdout), &reply); err != nil || len(reply.Recipients) != 1 ||
+				reply.Recipients[0].Wake == "device" || strings.Contains(reply.Recipients[0].Next, "linked device") {
+				t.Fatalf("before its prompt the ask reports a wake with no linked launch (server %d): %s (%v)", server, early.stdout, err)
+			}
+			participants[0].must("read", strconv.FormatInt(num(t, early, "id"), 10))
+			send(threads[0].id, later)
 		}
-		participants[0].must("read", strconv.FormatInt(num(t, early, "id"), 10))
-		send(threads[0].id, later)
 	}
 	eventually(t, "the home observed managed Codex launches and scope cuts for both threads", func() bool {
 		var n int

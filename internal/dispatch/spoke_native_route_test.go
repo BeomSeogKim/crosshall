@@ -408,3 +408,51 @@ func threadServerRouted(t *testing.T, db *store.Store, member link.Member, token
 	}
 	return routed
 }
+
+// A route captured before a leave and rejoin is not the new scope's: once
+// the rejoin's cut is applied, a turn end that names no server leaves the
+// old route in place, and its fact does not say the thread is routed, as the
+// offer reader does not offer that route (#437).
+func TestSpokeThreadRouteFromBeforeARejoinDoesNotRouteALaterTurnEnd(t *testing.T) {
+	db, _ := openSpokeWakeStore(t)
+	ctx := t.Context()
+	member := link.Member{Vendor: "codex", Key: "thread"}
+	token := link.HookToken{Boot: "boot", LeafGeneration: "gen", Membership: link.Membership{BindingID: 4, Generation: 2}}
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO spoke_leaf(digest, vendor, key, generation, epoch, file_identity, created_at_ms, binding_id, membership_gen)
+			VALUES ('digest', 'codex', 'thread', 'gen', 1, 'file', 1, 4, 2);
+			INSERT INTO spoke_policy VALUES ('codex', 1, 1, 3);
+			INSERT INTO spoke_event_cursor(id, boot, acked_seq, eligible) VALUES (1, 'boot', 5, 1);
+			INSERT INTO spoke_member_scope (vendor, key, leaf_generation, binding_id, membership_gen, route_epoch, cut_seq)
+				VALUES ('codex', 'thread', 'gen', 4, 2, 1, 5)`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(seq uint64, host *wire.Host, at int64) {
+		t.Helper()
+		token.LeafSeq = seq
+		hook := spokeNativeHook{fact: wire.HookTurnFinishing, mode: publish.ModeDaemon, hookAtMS: at, vendorHome: "/configure/codex", host: host}
+		if err := db.Update(ctx, func(tx store.Tx) error {
+			return recordSpokeNativeHook(ctx, tx, member, token, "session", 3, hook)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture(6, &wire.Host{PID: 123, Start: 456, NS: proc.PIDNamespace()}, 1000)
+	if !threadServerRouted(t, db, member, token) {
+		t.Fatal("the named turn end does not say the thread is routed")
+	}
+	// A leave and rejoin on the same binding keeps the selection
+	// generation and advances the route epoch, cut after the old capture.
+	if err := db.Update(ctx, func(tx store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE spoke_member_scope SET route_epoch = 2, cut_seq = 7 WHERE vendor = 'codex' AND key = 'thread'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capture(8, nil, 2000)
+	if threadServerRouted(t, db, member, token) {
+		t.Fatal("a hostless turn end after the rejoin says the thread is routed by the old scope's server")
+	}
+}

@@ -37,9 +37,12 @@ type publisher struct {
 	working          sync.Map
 	retiring         sync.Map
 	// withdrawing guards one withdrawal per attempt: zero while one runs,
-	// then the time it may be tried again; a notice found not pending is
-	// left to its receipt for the rest of this start.
+	// then the time it may be tried again; a notice found not pending that
+	// still carries due work is left to its receipt for the rest of this
+	// start.
 	withdrawing sync.Map
+	// withdrawLogged holds the notices whose unproven withdrawal was logged.
+	withdrawLogged sync.Map
 	// confirming guards one approval check per approval fact, as
 	// withdrawing does per attempt.
 	confirming sync.Map
@@ -308,6 +311,7 @@ func (p *publisher) tick(ctx context.Context, now time.Time, startup bool) error
 	p.withdrawing.Range(func(key, value any) bool {
 		if !candidate[key.(int64)] && !value.(time.Time).IsZero() {
 			p.withdrawing.CompareAndDelete(key, value)
+			p.withdrawLogged.Delete(key)
 		}
 		return true
 	})
@@ -399,8 +403,9 @@ func (p *publisher) confirm(ctx context.Context, c domain.ApprovalCheck,
 	}
 }
 
-// withdraw takes back a notice that should not run, and settles it only
-// when the transport proves it deleted. Not pending, it is left to its
+// withdraw takes back a notice that should not run, and settles it when
+// the transport proves it deleted, or reports it not pending while nothing
+// it carries is due (#446). Not pending with due work, it is left to its
 // receipt, and the held-notice backstop, for the rest of this start;
 // unreachable, it is tried again after publishProveRetry.
 func (p *publisher) withdraw(ctx context.Context, c domain.WithdrawCandidate,
@@ -418,8 +423,31 @@ func (p *publisher) withdraw(ctx context.Context, c domain.WithdrawCandidate,
 	}, nil)
 	switch {
 	case !ok || call.Err() != nil || got == publish.Unreachable:
+		p.logWithdrawal(c.ID, publish.Unreachable)
 		release()
+	case got == publish.NotPending && c.Reason == domain.WithdrawNothingToRead:
+		p.logWithdrawal(c.ID, got)
+		var settled bool
+		record, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
+		defer cancelRecord()
+		err := p.db.Update(record, func(tx store.Tx) error {
+			var err error
+			if settled, err = domain.SettleNotPendingAttempt(record, tx, c.ID, time.Now()); err != nil || !settled {
+				return err
+			}
+			return p.applyStamps(record, tx)
+		})
+		logPublishFailure(err)
+		switch {
+		case err != nil:
+			release()
+		case settled:
+			p.withdrawing.Delete(c.ID)
+		default:
+			p.withdrawing.Store(c.ID, maxTime)
+		}
 	case got == publish.NotPending:
+		p.logWithdrawal(c.ID, got)
 		p.withdrawing.Store(c.ID, maxTime)
 	case got == publish.Deleted:
 		record, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
@@ -438,6 +466,14 @@ func (p *publisher) withdraw(ctx context.Context, c domain.WithdrawCandidate,
 		}
 	default:
 		release()
+	}
+}
+
+// logWithdrawal logs, once per notice, a withdrawal that did not prove the
+// notice gone.
+func (p *publisher) logWithdrawal(id int64, got publish.Withdrawal) {
+	if _, logged := p.withdrawLogged.LoadOrStore(id, struct{}{}); !logged {
+		log.Printf("dispatcher: publish: withdrawal of notice %d ended %s", id, got)
 	}
 }
 

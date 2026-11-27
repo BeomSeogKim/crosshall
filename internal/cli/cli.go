@@ -145,6 +145,8 @@ type Env struct {
 	NewKey func() string
 	// Stdin supplies a message body given as "-". Nil means no input.
 	Stdin io.Reader
+	// FlushTerminalInput discards queued input when Stdin is a terminal.
+	FlushTerminalInput func() error
 	// Unavailable, when set, explains why commands that need the dispatcher
 	// cannot run (for example a development build without CROSSHALL_STATE_DIR).
 	Unavailable string

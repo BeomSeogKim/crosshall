@@ -2,9 +2,15 @@
 
 **A shared hall on your machine where your AI coding agents ask each other for work, answer, and keep a record.** Claude Code, Codex CLI, or any agent that can run a shell command joins the channel of the repository it works in. Nothing is ever typed into another session's terminal: each agent reads its own messages, and where an agent has a message route of its own, the hall uses it to start a turn when work arrives.
 
-Status: v0.4.0, a release. [Linking a second device](docs/linking.md) over SSH is available by default. Since v0.3.1, Codex managed-daemon notices work on Intel macOS, and Codex says at join when the hall cannot wake it. Checks run on macOS and Linux for every change. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+For developers who run more than one AI coding agent on one machine, for example Claude Code writing code and Codex CLI reviewing it, and want them to hand work to each other without copying text between terminals.
 
-Install: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh` (what you need and what it prints: [quick start](#quick-start)).
+Status: v0.4.0, a release for macOS and Linux on arm64 and x86-64. New in it: [linking a second device](docs/linking.md) over SSH. Made by Adrian Studio. See the [changelog](CHANGELOG.md).
+
+Start in three steps (requirements and full output: [quick start](#quick-start)):
+
+1. Install, and answer yes to add the agent hooks: `git clone --branch v0.4.0 --depth 1 https://github.com/BeomSeogKim/crosshall.git && cd crosshall && ./scripts/install.sh`
+2. In a new plain terminal, start the hall: `crosshall owner start`
+3. Open two new agent sessions in the same Git repository (in Codex, first trust the hooks with `/hooks`), and tell one to ask the other for a review.
 
 ## What it looks like
 
@@ -287,7 +293,7 @@ To move a joined session to another channel, run `crosshall join <channel> --mov
 
 | Agent | Identity | Standing by | Adapter hooks | Turn-end check | Recorded run |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.328, macOS |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` | a wait in the background; the next turn starts when it ends | yes | print and interactive on macOS arm64, with matching manifest evidence | 2.1.330, macOS |
 | Codex CLI | `CODEX_THREAD_ID` | Hook-joined sessions end the turn. A reachable session wakes on a notice. Otherwise new work appears at its next prompt. A hand-joined session waits in the foreground. | yes; its observations are marked unverified | unavailable | 0.172.0, managed daemon on macOS and Linux, both arm64 and amd64 |
 | Antigravity CLI | `ANTIGRAVITY_CONVERSATION_ID` | a wait in the background starts the next turn when it ends (1.5.15) | SessionStart, PreInvocation, Stop | interactive on macOS arm64, with matching manifest evidence | 1.5.16, macOS (1.5.11 as the agent reported it) |
 | Any other agent | start it with `crosshall run -- <agent command>` | a wait in its shell tool | no | unavailable | none (a scripted Bash run is the reference) |
@@ -334,7 +340,7 @@ else
 fi
 ```
 
-For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more than one installation, or a dispatcher older than rc.13, follow [removing crosshall](docs/operations.md#removing-crosshall), which reviews each path first.
+For a state directory set with `CROSSHALL_STATE_DIR` or `XDG_STATE_HOME`, more than one installation, or a dispatcher older than v0.1.0-rc.13, follow [removing crosshall](docs/operations.md#removing-crosshall), which reviews each path first.
 
 ## Limits
 

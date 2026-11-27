@@ -25,6 +25,8 @@ type launchBinding struct {
 	atMS     int64
 	// late reports that this callback wrote the record a missed start left out.
 	late bool
+	// record names the launch's record in the member directory.
+	record string
 }
 
 var sessionLaunch = launchBinding{ref: "session"}
@@ -152,7 +154,7 @@ func bindLaunch(leaf *os.Root, generation string, e event, spec eventSpec, entry
 	if digest == "-" || (stat.Size() != 0 && latest <= stat.ModTime().UnixMilli()) {
 		return sessionLaunch, nil
 	}
-	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: latest}, nil
+	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: latest, record: name}, nil
 }
 
 // lateLaunchFact reports whether a callback may bind a launch whose start
@@ -193,5 +195,25 @@ func lateLaunch(leaf *os.Root, name string, pid uint64, e event, entry time.Time
 	if err := writeRecord(leaf, name, fmt.Sprintf("%d %s\n", at, digest)); err != nil {
 		return sessionLaunch, err
 	}
-	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: at, late: true}, nil
+	return launchBinding{ref: fmt.Sprintf("pid-%d-%s", pid, digest), verified: true, atMS: at, late: true, record: name}, nil
+}
+
+// launchAcked reports whether the dispatcher answered a callback of this
+// launch: until it has, a callback that may bind the launch waits for its
+// reply before its route report, which the dispatcher does not order after
+// a one-way event (#437). A publication that never arrived leaves the
+// launch unacknowledged, so the next such callback waits again.
+func launchAcked(leaf *os.Root, l launchBinding) bool {
+	if l.record == "" {
+		return true
+	}
+	ack, err := ident.ReadPrivateFile(leaf, l.record+".ack", 256)
+	return err == nil && string(ack) == l.ref
+}
+
+// ackLaunch records that the dispatcher answered a callback of the launch.
+func ackLaunch(leaf *os.Root, l launchBinding) {
+	if l.record != "" {
+		_ = writeRecord(leaf, l.record+".ack", l.ref) // best effort: the next callback waits again
+	}
 }

@@ -181,6 +181,7 @@ func lateStartBudget(t *testing.T, event, stdin string, under bool) {
 type deadlineTransport struct {
 	entry     time.Time
 	deadlines *[]string
+	lost      bool // the event never reaches the dispatcher
 }
 
 func (deadlineTransport) HookLookup(context.Context, ident.Identity, string) (string, wire.Response, error) {
@@ -194,14 +195,19 @@ func (d deadlineTransport) HookCall(ctx context.Context, _ ident.Identity, _ str
 		kind = "one-way"
 	}
 	*d.deadlines = append(*d.deadlines, fmt.Sprintf("%s %v %s", req.Verb, end.Sub(d.entry), kind))
+	if d.lost && req.Verb == wire.VerbHookEvent {
+		return spool.Reply{}, errors.New("publication lost")
+	}
 	return spool.Reply{Response: wire.Response{Result: core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}}}, nil
 }
 
 // Only a turn end that binds a missed launch sends its requests on the start
 // budget; a later turn end and a permission prompt, which bind nothing, keep
-// the ordinary deadline, so a linked device does not take them late. The
-// binding turn end waits for the bind before its route report, which the
-// dispatcher does not order after a one-way event (#437).
+// the ordinary deadline, so a linked device does not take them late. A turn
+// end waits for its event's reply before its route report, which the
+// dispatcher does not order after a one-way event, until the dispatcher has
+// answered one for the launch: a lost first publication leaves the next turn
+// end waiting (#437).
 func TestOnlyATurnEndThatBindsALaunchSendsOnTheStartBudget(t *testing.T) {
 	hosted(t, true)
 	_, dir, oldLeaf := runFixture(t)
@@ -224,22 +230,25 @@ func TestOnlyATurnEndThatBindsALaunchSendsOnTheStartBudget(t *testing.T) {
 		return "", false
 	}
 	start, ordinary := fmt.Sprint(StartBudget-counterAllowance), fmt.Sprint(Budget-counterAllowance)
+	stop := func(turn int) string {
+		return fmt.Sprintf(`{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-%d","stop_hook_active":false}`, turn)
+	}
 	for i, c := range []struct {
 		event, stdin string
+		lost         bool
 		want         []string
 	}{
-		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-0","stop_hook_active":false}`,
-			[]string{"hook.event " + start + " waits", "hook.route " + start + " one-way"}},
-		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-1","stop_hook_active":false}`,
-			[]string{"hook.event " + ordinary + " one-way", "hook.route " + ordinary + " one-way"}},
-		{"Notification", `{"hook_event_name":"Notification","session_id":"fixture-thread","notification_type":"permission_prompt","prompt_id":"turn-2"}`,
-			[]string{"hook.event " + ordinary + " one-way"}},
+		{"Stop", stop(0), true, []string{"hook.event " + start + " waits"}},
+		{"Stop", stop(1), false, []string{"hook.event " + ordinary + " waits", "hook.route " + ordinary + " one-way"}},
+		{"Stop", stop(2), false, []string{"hook.event " + ordinary + " one-way", "hook.route " + ordinary + " one-way"}},
+		{"Notification", `{"hook_event_name":"Notification","session_id":"fixture-thread","notification_type":"permission_prompt","prompt_id":"turn-3"}`,
+			false, []string{"hook.event " + ordinary + " one-way"}},
 	} {
 		var deadlines []string
 		synctest.Test(t, func(t *testing.T) {
 			time.Sleep(time.Duration(i) * time.Second) // each bubble's clock starts at the same instant
 			entry := time.Now()
-			transport := deadlineTransport{entry: entry, deadlines: &deadlines}
+			transport := deadlineTransport{entry: entry, deadlines: &deadlines, lost: c.lost}
 			prepare := func() (*os.Root, *hookCounter) { // runTimed closes the root it is given
 				root, err := os.OpenRoot(dir)
 				if err != nil {

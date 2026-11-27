@@ -307,12 +307,17 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	// A callback that binds a missed launch waits for the bind: its route
-	// report needs the route the bind registers, and the dispatcher does
-	// not order a report after a one-way event (#437).
-	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want && !launch.late)
+	// A callback that may bind a launch the dispatcher has not answered for
+	// waits for the bind: its route report needs the route the bind
+	// registers, and the dispatcher does not order a report after a
+	// one-way event (#437).
+	acked := !lateLaunchFact(e.Fact) || launchAcked(leaf, launch)
+	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want && acked)
 	if err != nil {
 		return transportOutcome(ctx, err)
+	}
+	if !acked && reply.Response.Status == core.ExitOK {
+		ackLaunch(leaf, launch)
 	}
 	if clean || !want {
 		if !hookExpired(ctx) {
@@ -321,10 +326,13 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 				_, _ = client.HookCall(ctx, e.Identity, gen, routeReq, true)
 			}
 		}
-		return "clean" // published without waiting for a response
+		return "clean" // no output: published, or answered only for its launch
 	}
 	if reply.Response.Status != core.ExitOK {
 		return refusedWith("reply", reply.Response.Code)
+	}
+	if spec.Enroll {
+		ackLaunch(leaf, launch) // the start bound its launch
 	}
 	if reply.Membership != nil {
 		membership = reply.Membership

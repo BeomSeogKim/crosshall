@@ -35,7 +35,7 @@ func TestClaudeAutoModeRulesShareSetupConsentAndRestoreSettings(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeConfigFixture(t, path, []byte(tc.original), 0640)
-			req := Request{Terminal: true, Adapters: []string{"claude"}}
+			req := Request{Terminal: true, Adapters: []string{"claude"}, Verbose: true}
 			guidance := claudeAutoModeEntries(s.Executable, false)[0]
 			preview := func(answer string) {
 				t.Helper()

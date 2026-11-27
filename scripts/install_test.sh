@@ -109,7 +109,7 @@ INSTALL_TEST_BUSY_ONCE="$tmp/version-calls" install_release "$dest" > "$tmp/outp
 [[ $(cat "$tmp/version-calls") == .. ]] || fail "expected the version check to retry once after exit 126"
 check_release v0.1.0 first
 check_output_line "Installed crosshall v0.1.0 at $target"
-printf -v absolute_start 'Next (in a plain terminal): %q owner start' "$target"
+printf -v absolute_start '  %q owner start' "$target"
 check_output_line "$absolute_start"
 cp "$target" "$tmp/first"
 
@@ -145,7 +145,7 @@ done
 PATH="$dest:$PATH" GOFLAGS=-overlay=missing-env-overlay.json install_release "$dest" > "$tmp/output"
 check_release v0.2.0 second
 check_output_line "Installed crosshall v0.2.0 at $target"
-check_output_line 'Next (in a plain terminal): crosshall owner start'
+check_output_line '  crosshall owner start'
 
 cat > "$tmp/unrelated" <<'EOF'
 #!/bin/sh

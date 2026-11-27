@@ -55,9 +55,9 @@ cd crosshall
 
 Git reports a detached HEAD when it checks out the release tag. Continue with the installer.
 
-The installer downloads the [release archive](https://github.com/BeomSeogKim/crosshall/releases) for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. It lists the agents it found and the hook entries and command rules it would add, then asks once. This example shows a PATH change and a Claude Code notice route. The plan reflects the features available for your agent builds and platform.
+The installer downloads the [release archive](https://github.com/BeomSeogKim/crosshall/releases) for your machine, checks its SHA-256 checksum and writes `~/.local/bin/crosshall`. It lists the agents it found and how many hook entries and command rules it would add to each file, then asks once; `crosshall setup claude --verbose` lists every entry. This example shows a PATH change and a Claude Code notice route. The plan reflects the features available for your agent builds and platform.
 
-<!-- from a real install of main 76091dc with Claude Code 2.1.330 and Codex CLI 0.171.0; the list of entries above it is left out -->
+<!-- from a real install of main 76091dc with Claude Code 2.1.330 and Codex CLI 0.171.0; the file summary above it is left out -->
 <!-- readme-check: install-question -->
 ```text
 Saying yes turns these on for the listed agents:
@@ -69,17 +69,20 @@ A no skips future installer offers for the listed agents. Enter skips this offer
 Apply the shown PATH change and install the listed hooks and command rules? [y/N]
 ```
 
-A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. Without a terminal to ask in, the installer installs the binary and prints the commands still to run. It uses the full path if the current shell needs it.
+A yes installs the hooks, lets your agents run crosshall's member commands without a permission prompt for each, and adds `~/.local/bin` to the startup files of your login shell, which the installer lists, when a PATH change is needed. The installer reports whether these features are available, switched off, or could not be checked. A no installs the binary only and skips future offers for those agents. Pressing Enter skips the offer this once. After a yes, the installer ends with the next steps, including any step an agent needs before it runs the hooks, such as trusting them with `/hooks` in Codex. Without a terminal to ask in, for example when you ask an agent to install crosshall, the installer installs the binary only and prints the commands still to run. It uses the full path if the current shell needs it:
 
 <!-- install-receipt -->
 ```text
 Installed crosshall v0.4.0 at /home/you/.local/bin/crosshall
-Next (in a plain terminal): /home/you/.local/bin/crosshall owner start
+No terminal to ask in, so only the binary was installed. Still to run, in a terminal:
+  /home/you/.local/bin/crosshall setup          # lists the hooks for the agents it finds and asks first
+  /home/you/.local/bin/crosshall owner start
+/home/you/.local/bin is not on PATH: add export PATH="/home/you/.local/bin:$PATH" to your shell startup file.
 ```
 
 Open a new shell after accepting the PATH change. To use `crosshall` in the current shell, run `export PATH="$HOME/.local/bin:$PATH"`. Start your agents from a shell with that PATH.
 
-If you skipped the hooks, installed without a terminal, or installed an agent later, review the changes with `crosshall setup claude` and `crosshall setup codex`. Confirm each plan, or run `crosshall setup claude --apply` and `crosshall setup codex --apply` to apply directly. See [adapters](docs/adapters.md) for the optional hooks and [connect your agents](#connect-your-agents) for joining by hand.
+If you skipped the hooks, installed without a terminal, or installed an agent later, review the changes with `crosshall setup claude` and `crosshall setup codex` (an agent already set up reports `already installed` and asks nothing). Confirm each plan, or run `crosshall setup claude --apply` and `crosshall setup codex --apply` to apply directly. See [adapters](docs/adapters.md) for the optional hooks and [connect your agents](#connect-your-agents) for joining by hand.
 
 The checksum shows that the archive arrived intact, not who built it. To build the same tag instead, run `./scripts/install.sh --source` in the clone with Go 1.27.4 or later. More install details are in [operations](docs/operations.md#installing).
 

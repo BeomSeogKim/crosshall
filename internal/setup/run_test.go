@@ -41,7 +41,7 @@ func runSetupTest(t *testing.T, service Service, action, input string, dry bool)
 	t.Helper()
 	var out bytes.Buffer
 	err := service.Run(t.Context(), Request{
-		Action: action, DryRun: dry, Terminal: action == "uninstall",
+		Action: action, DryRun: dry, Terminal: action == "uninstall", Verbose: true,
 		Input: strings.NewReader(input), Output: &out, Prompt: io.Discard,
 	})
 	return out.String(), err

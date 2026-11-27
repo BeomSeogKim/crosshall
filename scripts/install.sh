@@ -488,6 +488,34 @@ print_next() {
   fi
 }
 
+# Without a terminal (an agent running the installer, for one) nothing can
+# be asked, so only the binary is installed: say what is still to run.
+print_still_to_run() {
+  local cmd=crosshall
+  if [[ $on_path != true ]]; then cmd=$(printf '%q' "$target"); fi
+  printf 'No terminal to ask in, so only the binary was installed. Still to run, in a terminal:\n'
+  printf '  %s setup          # lists the hooks for the agents it finds and asks first\n' "$cmd"
+  printf '  %s owner start\n' "$cmd"
+  if [[ $on_path != true ]]; then
+    printf '%s is not on PATH: add export PATH="%s:$PATH" to your shell startup file.\n' "${target%/*}" "${target%/*}"
+  fi
+}
+
+# The closing steps after some agent's hooks were installed, with the
+# step an agent needs before it runs them (Codex's /hooks trust).
+print_installed_next() {
+  local n=1 line cmd=crosshall
+  if [[ $on_path != true ]]; then cmd=$(printf '%q' "$target"); fi
+  printf 'Next:\n'
+  while IFS= read -r line; do
+    case $line in
+      'next '*) printf '  %d. %s\n' "$n" "${line#next }"; n=$((n + 1)) ;;
+    esac
+  done < "$stage/setup-ready"
+  printf '  %d. Open new sessions of these agents in a project.\n' "$n"
+  printf '  %d. In a plain terminal, %s owner who --all shows who the hall can reach.\n' "$((n + 1))" "$cmd"
+}
+
 offer_setup() {
   # Keep both streams attached to the terminal for the consent prompt.
   if ! CROSSHALL_INSTALL_PATH_CONSENT="$1" CROSSHALL_INSTALL_READY_RECEIPT=1 \
@@ -500,7 +528,7 @@ printf 'Installed crosshall %s at %s\n' "$version" "$target"
 on_path=false
 if [[ $(command -v crosshall) -ef $target ]]; then on_path=true; fi
 if ! owner_terminal; then
-  print_next
+  print_still_to_run
   exit 0
 fi
 if [[ $default_destination == true && $on_path == false && $HOME == /* && $HOME != *:* ]]; then
@@ -533,9 +561,5 @@ fi
 # Last, after every outcome and PATH change: only when some agent's hooks
 # were installed, which a ready dispatcher alone does not prove.
 if grep -qsFx installed "$stage/setup-ready"; then
-  if [[ $on_path == true ]]; then
-    printf 'Open new sessions of these agents in a project. crosshall owner who --all then shows who the hall can reach.\n'
-  else
-    printf 'Open new sessions of these agents in a project. %q owner who --all then shows who the hall can reach.\n' "$target"
-  fi
+  print_installed_next
 fi

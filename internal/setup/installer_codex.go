@@ -18,7 +18,9 @@ func (codexInstaller) rulePath(hooks configTarget) string {
 	return filepath.Join(filepath.Dir(hooks.Path), "rules", "crosshall.rules")
 }
 
-func (codexInstaller) trustHint() string { return "Review and trust these hooks with Codex /hooks." }
+func (codexInstaller) trustHint() string {
+	return "In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex."
+}
 
 func (codexInstaller) sandboxNote() string {
 	return "Codex allow rules run matching commands outside its sandbox."

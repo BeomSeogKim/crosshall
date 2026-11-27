@@ -411,7 +411,7 @@ func TestTheFirstInstallListsTheBuiltInEvidence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.Bin, "codex"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
-	out, err := realRun(t, s, f, Request{Offer: true, Terminal: true}, "\n")
+	out, err := realRun(t, s, f, Request{Offer: true, Terminal: true, Verbose: true}, "\n")
 	if err != nil {
 		t.Fatal(err)
 	}

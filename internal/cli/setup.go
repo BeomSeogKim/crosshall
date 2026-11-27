@@ -31,11 +31,13 @@ type SetupRequest struct {
 	Terminal       bool
 	PathConsent    func(bool) error
 	OfferTelemetry func(*bufio.Reader) error
-	// Installed is told that at least one agent's hooks were installed.
-	Installed func()
+	// Installed is told each agent whose hooks were installed.
+	Installed func(adapter string)
+	// Verbose lists every hook entry and rule instead of a count per file.
+	Verbose bool
 }
 
-const setupUsage = "usage: setup [--dry-run] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run|--apply] [names]"
+const setupUsage = "usage: setup [--dry-run] [--verbose] [claude|codex|antigravity ...] | setup <names> --apply | setup status | setup off | uninstall [--dry-run|--apply] [names]"
 
 // scriptedForm is printed when an unnamed setup cannot ask questions.
 const scriptedForm = `setup asks for confirmation in a terminal. Nothing was changed.
@@ -138,6 +140,8 @@ func parseSetup(action string, args, adapters []string) (SetupRequest, bool) {
 			req.DryRun = true
 		case arg == "--apply" && !req.Apply:
 			req.Apply = true
+		case arg == "--verbose" && action == "setup" && !req.Verbose:
+			req.Verbose = true
 		case slices.Contains(adapters, arg) && !slices.Contains(req.Adapters, arg):
 			req.Adapters = append(req.Adapters, arg)
 		default:

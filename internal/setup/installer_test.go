@@ -38,7 +38,7 @@ func TestEveryInstallableAdapterHasItsInstaller(t *testing.T) {
 	want := map[string]struct{ home, rules, trust, sandbox string }{
 		"claude": {"/Users/x/.claude", "/Users/x/.claude/settings.json", "", ""},
 		"codex": {"/Users/x/.codex", "/Users/x/.codex/rules/crosshall.rules",
-			"Review and trust these hooks with Codex /hooks.", "Codex allow rules run matching commands outside its sandbox."},
+			"In Codex, run /hooks, review and trust the crosshall entries, then reopen Codex.", "Codex allow rules run matching commands outside its sandbox."},
 		"agy": {"/Users/x/.gemini/config", "/Users/x/.gemini/antigravity-cli/settings.json", "", ""},
 	}
 	specs := shippedSpecs()

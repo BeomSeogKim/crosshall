@@ -426,6 +426,30 @@ func TestTheOwnerSeesALinkedMemberWhoseStartWasNotSeen(t *testing.T) {
 	if !h.startUnseen("reader") {
 		t.Fatal("a launch of an earlier selection hid the unseen start")
 	}
+	h.sql(`UPDATE member_selection SET generation = generation - 1 WHERE binding_id = ?`, binding)
+	if h.startUnseen("reader") {
+		t.Fatal("the restored scope still shows an unseen start")
+	}
+	// The device acknowledged a new boot: the launch of the old boot serves
+	// nothing until a prompt of the new boot opens one.
+	h.token.Boot = "boot-b"
+	h.peer.Stream = link.NewNonce()
+	h.sql(`DELETE FROM link_event_stream WHERE device_id = ?`, h.peer.Device)
+	h.sql(`INSERT INTO link_event_stream (device_id, stream, admission_gen, boot, snapshot_seq, created_at_ms) VALUES (?, ?, ?, ?, 0, ?)`,
+		h.peer.Device, h.peer.Stream, h.peer.Admission, h.token.Boot, at)
+	h.sql(`UPDATE link_event_cursor SET boot = ? WHERE device_id = ?`, h.token.Boot, h.peer.Device)
+	cut := h.installCut(3, false)
+	if err := h.svc.resolveLinkFactCuts(t.Context(), h.db, h.peer, link.Ack{Boot: h.token.Boot, Cuts: []link.LeafCut{cut}}, true, h.now); err != nil {
+		t.Fatal(err)
+	}
+	h.sql(`UPDATE link_event_stream SET snapshot_seq = NULL WHERE stream = ?`, h.peer.Stream) // as the snapshot ack does
+	if !h.startUnseen("reader") {
+		t.Fatal("a launch of an earlier boot hid the unseen start")
+	}
+	h.fact(2, 4, prompt("pid-42-boot-b", "t2", at+1), link.RecordedApplied)
+	if h.startUnseen("reader") {
+		t.Fatal("a prompt of the acknowledged boot left the unseen start")
+	}
 	// An adapter that cannot send a notice has no route to explain.
 	h.sql(`DELETE FROM link_event_launch WHERE principal_id = ?`, h.principal)
 	h.sql(`UPDATE device_key SET vendor = 'agy' WHERE principal_id = ?`, h.principal)

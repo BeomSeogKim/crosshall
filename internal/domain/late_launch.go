@@ -117,8 +117,9 @@ func launchKnown(ctx context.Context, tx store.Tx, principal int64, launch strin
 // start: a prompt joined it and its launch could not be bound.
 // linkedStartUnseen says a live member on a linked device, whose adapter
 // can send a notice, has no launch the home could wake in its current
-// scope: it joined, moved or rejoined after its session started, and its
-// device has sent no prompt since (#437). Its next prompt opens the launch
+// scope: it joined, moved or rejoined after its session started, or its
+// device acknowledged a new boot, and its device has sent no prompt since
+// (#437). Its next prompt opens the launch
 // in that scope, as a local member's does.
 func linkedStartUnseen(ctx context.Context, tx store.Tx, principal, binding int64) (bool, error) {
 	var vendor string
@@ -128,7 +129,8 @@ func linkedStartUnseen(ctx context.Context, tx store.Tx, principal, binding int6
 		WHERE k.principal_id = ?1 AND k.state = 'live'
 			AND NOT EXISTS (SELECT 1 FROM link_event_launch l WHERE l.principal_id = k.principal_id
 				AND l.device_id = k.device_id AND l.credential_gen = k.credential_gen AND l.leaf_generation = k.leaf_generation
-				AND l.binding_id = b.id AND l.membership_generation = s.generation AND l.route_epoch = b.route_epoch)
+				AND l.binding_id = b.id AND l.membership_generation = s.generation AND l.route_epoch = b.route_epoch
+				AND l.boot = (SELECT c.boot FROM link_event_cursor c WHERE c.device_id = l.device_id AND c.credential_gen = l.credential_gen))
 		LIMIT 1`, principal, binding).Scan(&vendor)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

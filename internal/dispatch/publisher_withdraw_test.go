@@ -8,6 +8,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -404,4 +405,63 @@ func TestPublisherLogsAnOpenNoticeOnceWhileItLeavesTheCandidates(t *testing.T) {
 	if n := strings.Count(logged.String(), "withdrawal of notice 1 "); n != 1 {
 		t.Fatalf("logged notice 1 %d times: %q", n, logged.String())
 	}
+}
+
+// #448: a tick that read its candidates before an earlier withdrawal
+// settled the notice starts a second withdrawal of the settled notice. The
+// next tick finds the notice closed while that withdrawal still runs; the
+// notice is logged once all the same.
+func TestPublisherLogsOnceWhenAStaleCandidateIsWithdrawnAgain(t *testing.T) {
+	gates := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	entered := make(chan struct{}, 4)
+	var call atomic.Int32
+	f, p, _, withdrawals := threadNoticeWorldWith(t, func() publish.Withdrawal {
+		entered <- struct{}{}
+		<-gates[call.Add(1)-1]
+		return publish.NotPending
+	}, true)
+	var logged bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(previous)
+	tickPublisher(t, p, f.now.Add(time.Second), false)
+	<-entered
+	// The next tick reads the notice as a candidate while the first
+	// withdrawal is held; once it has read, the first one settles the
+	// notice and releases its guard before the tick claims the worker slot.
+	homes, settle := p.homes, sync.Once{}
+	p.homes = func(adapter string) string {
+		settle.Do(func() {
+			close(gates[0])
+			deadline := time.Now().Add(5 * time.Second)
+			for _, running := p.withdrawRunning.Load(int64(1)); running; _, running = p.withdrawRunning.Load(int64(1)) {
+				if time.Now().After(deadline) {
+					t.Error("the first withdrawal did not finish")
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
+		return homes(adapter)
+	}
+	tickPublisher(t, p, f.now.Add(2*time.Second), false)
+	<-entered
+	if !attemptRetired(t, f) {
+		t.Fatal("the first withdrawal did not settle the notice")
+	}
+	tickPublisher(t, p, f.now.Add(3*time.Second), false)
+	close(gates[1])
+	p.workers.Wait()
+	tickThrough(t, f, p, 4*time.Second)
+	log.SetOutput(previous)
+	if withdrawals.Load() != 2 {
+		t.Fatalf("%d withdrawals, want the stale candidate withdrawn again", withdrawals.Load())
+	}
+	if n := strings.Count(logged.String(), "withdrawal of notice 1 "); n != 1 {
+		t.Fatalf("logged notice 1 %d times: %q", n, logged.String())
+	}
+	p.withdrawLogged.Range(func(key, _ any) bool {
+		t.Errorf("log guard kept for notice %v", key)
+		return true
+	})
 }

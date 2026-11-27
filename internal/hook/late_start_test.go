@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/BeomSeogKim/crosshall/internal/core"
 	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/proc"
 	"github.com/BeomSeogKim/crosshall/internal/spool"
@@ -186,15 +187,21 @@ func (deadlineTransport) HookLookup(context.Context, ident.Identity, string) (st
 	return "", wire.Response{}, errors.New("no lookup")
 }
 
-func (d deadlineTransport) HookCall(ctx context.Context, _ ident.Identity, _ string, req wire.Request, _ bool) (spool.Reply, error) {
+func (d deadlineTransport) HookCall(ctx context.Context, _ ident.Identity, _ string, req wire.Request, oneWay bool) (spool.Reply, error) {
 	end, _ := ctx.Deadline()
-	*d.deadlines = append(*d.deadlines, fmt.Sprintf("%s %v", req.Verb, end.Sub(d.entry)))
-	return spool.Reply{}, nil
+	kind := "waits"
+	if oneWay {
+		kind = "one-way"
+	}
+	*d.deadlines = append(*d.deadlines, fmt.Sprintf("%s %v %s", req.Verb, end.Sub(d.entry), kind))
+	return spool.Reply{Response: wire.Response{Result: core.Result{Status: core.ExitOK, Data: json.RawMessage(`{}`)}}}, nil
 }
 
 // Only a turn end that binds a missed launch sends its requests on the start
 // budget; a later turn end and a permission prompt, which bind nothing, keep
-// the ordinary deadline, so a linked device does not take them late (#437).
+// the ordinary deadline, so a linked device does not take them late. The
+// binding turn end waits for the bind before its route report, which the
+// dispatcher does not order after a one-way event (#437).
 func TestOnlyATurnEndThatBindsALaunchSendsOnTheStartBudget(t *testing.T) {
 	hosted(t, true)
 	_, dir, oldLeaf := runFixture(t)
@@ -222,11 +229,11 @@ func TestOnlyATurnEndThatBindsALaunchSendsOnTheStartBudget(t *testing.T) {
 		want         []string
 	}{
 		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-0","stop_hook_active":false}`,
-			[]string{"hook.event " + start, "hook.route " + start}},
+			[]string{"hook.event " + start + " waits", "hook.route " + start + " one-way"}},
 		{"Stop", `{"hook_event_name":"Stop","session_id":"fixture-thread","prompt_id":"turn-1","stop_hook_active":false}`,
-			[]string{"hook.event " + ordinary, "hook.route " + ordinary}},
+			[]string{"hook.event " + ordinary + " one-way", "hook.route " + ordinary + " one-way"}},
 		{"Notification", `{"hook_event_name":"Notification","session_id":"fixture-thread","notification_type":"permission_prompt","prompt_id":"turn-2"}`,
-			[]string{"hook.event " + ordinary}},
+			[]string{"hook.event " + ordinary + " one-way"}},
 	} {
 		var deadlines []string
 		synctest.Test(t, func(t *testing.T) {

@@ -307,7 +307,10 @@ func dispatchCallback(ctx context.Context, entry time.Time, rv *os.Root, client 
 	if hookExpired(ctx) {
 		return "deadline"
 	}
-	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want)
+	// A callback that binds a missed launch waits for the bind: its route
+	// report needs the route the bind registers, and the dispatcher does
+	// not order a report after a one-way event (#437).
+	reply, err := client.HookCall(ctx, e.Identity, gen, req, !want && !launch.late)
 	if err != nil {
 		return transportOutcome(ctx, err)
 	}

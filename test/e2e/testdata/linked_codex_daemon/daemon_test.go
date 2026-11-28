@@ -12,6 +12,9 @@ import (
 	"github.com/BeomSeogKim/crosshall/internal/appserver/appservertest"
 )
 
+// fixtureHookDone is the line the fixture prints after each hook exits.
+const fixtureHookDone = "fixture hook done"
+
 // The socket and hook children belong to this process so both production
 // checks see the same managed server identity.
 func TestManagedCodexDaemon(t *testing.T) {
@@ -69,6 +72,10 @@ func TestManagedCodexDaemon(t *testing.T) {
 		cmd.Stdin = bytes.NewReader(stdin.Bytes())
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("managed Codex %s: %v: %s", line.Event, err, out)
+		}
+		// The test waits for this line before it looks at what the hook did.
+		if _, err := os.Stdout.WriteString(fixtureHookDone + "\n"); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

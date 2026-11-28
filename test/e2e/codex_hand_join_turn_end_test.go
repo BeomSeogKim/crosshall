@@ -130,11 +130,16 @@ func TestALocalCodexHandJoinIsWokenAfterItsTurnEndAlone(t *testing.T) {
 	receiver := &participant{w: w, extra: []string{"CODEX_THREAD_ID=" + thread}}
 	receiver.must("join", channel, "--as", "receiver")
 	db := w.db()
-	if err := json.NewEncoder(input).Encode(map[string]any{
+	hooks := codexFixtureHooks{input: input, log: logPath, rendezvous: w.rendezvous()}
+	hooks.deliver(t, map[string]any{
 		"hook_event_name": "Stop", "session_id": thread, "cwd": w.home, "turn_id": "turn-1", "stop_hook_active": false,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}, func() int64 {
+		var n int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM observation WHERE kind = 'turn_finishing'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	})
 	eventually(t, "the turn end registered the daemon route on the managed server", func() bool {
 		var host int
 		return db.QueryRow(`SELECT COALESCE(r.host_pid, 0) FROM publish_route r JOIN binding b ON b.id = r.binding_id

@@ -4,6 +4,7 @@ All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING
 
 ## Unreleased
 
+- **A short README in English and Korean (docs):** the README is now a short introduction with an install section an AI agent can follow step by step, and [README.ko.md](README.ko.md) is its Korean version. The full walkthrough, every install question, deadlines, limits and removal moved to [docs/guide.md](docs/guide.md), which the README tests now run.
 - **A linked device keeps a hook observation it took in time (#495):** a hook that sends its observation without waiting for an answer, such as a turn end, was dropped when the device's dispatcher reached it after its deadline, even though the device had taken it in before then. On a busy device a hand-joined Codex session's turn end could be lost this way, and the session got its route only at its next prompt. The device now keeps such an observation, as the hall's own dispatcher always did. One the device has not taken in by its deadline is still dropped.
 
 ## v0.5.2 (2026-11-28)

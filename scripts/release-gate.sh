@@ -194,10 +194,12 @@ row_source() {
   date=${BASH_REMATCH[1]}
   line=$(git -C "$repo" show "$commit:UPGRADING.md" | grep -m 1 '^## ')
   [[ $line == "## To $version" ]] || { detail "UPGRADING.md opens with '$line'"; return 1; }
-  pins=$(git -C "$repo" show "$commit:README.md" | grep -o -- '--branch v[^ ]*' | sort -u)
-  [[ $pins == "--branch $version" ]] || { detail "README.md pins: $(echo $pins)"; return 1; }
-  git -C "$repo" show "$commit:README.md" | grep -qF "Installed crosshall $version " ||
-    { detail "README.md does not show the installed $version"; return 1; }
+  for readme in README.md README.ko.md; do
+    pins=$(git -C "$repo" show "$commit:$readme" | grep -o -- '--branch v[^ ]*' | sort -u)
+    [[ $pins == "--branch $version" ]] || { detail "$readme pins: $(echo $pins)"; return 1; }
+    git -C "$repo" show "$commit:$readme" | grep -qF "Installed crosshall $version " ||
+      { detail "$readme does not show the installed $version"; return 1; }
+  done
   detail "$changed paths changed since $base; dated $date; no .notes/ or AI attribution"
 }
 

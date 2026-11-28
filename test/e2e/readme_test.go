@@ -392,9 +392,9 @@ func readmeLines(out string) []string {
 
 // The README's runnable blocks are executed in order, as a newcomer would
 // type them. Set CROSSHALL_README_UPDATE=1 to write the observed output back
-// into README.md.
+// into docs/guide.md.
 func TestReadmeCommandsRunAsShown(t *testing.T) {
-	const path = "../../README.md"
+	const path = "../../docs/guide.md"
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +479,7 @@ func readmeRewrite(t *testing.T, path string, lines []string, replace map[int][]
 // deletes the state directory.
 func readmeRemoval(t *testing.T) readmeCommand {
 	t.Helper()
-	raw, err := os.ReadFile("../../README.md")
+	raw, err := os.ReadFile("../../docs/guide.md")
 	if err != nil {
 		t.Fatal(err)
 	}

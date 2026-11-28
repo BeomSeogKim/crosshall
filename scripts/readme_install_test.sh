@@ -27,6 +27,10 @@ clone=$(grep '^git clone ' "$tmp/example.sh") || fail 'install example has no gi
 # The one-line install near the top of the page is the same example.
 oneline=$(awk 'NF { printf "%s%s", sep, $0; sep = " && " }' "$tmp/example.sh")
 grep -Fq -- "\`$oneline\`" "$readme" || fail "the README's one-line install differs from the install example: $oneline"
+# The Korean README shows the same install example and receipt.
+readme_ko="$root/README.ko.md"
+grep -Fq -- "\`$oneline\`" "$readme_ko" || fail "README.ko.md's one-line install differs from the install example: $oneline"
+grep -Fxq -- "$(head -n 1 "$tmp/receipt")" "$readme_ko" || fail "README.ko.md does not show the install receipt"
 [[ $clone =~ --branch\ ([^ ]+)\ .*\ (https://[^ ]+)$ ]] || fail "unexpected clone line: $clone"
 tag=${BASH_REMATCH[1]}
 remote=${BASH_REMATCH[2]}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BeomSeogKim/crosshall/internal/domain"
+	"github.com/BeomSeogKim/crosshall/internal/ident"
 	"github.com/BeomSeogKim/crosshall/internal/publish"
 )
 
@@ -173,9 +174,26 @@ func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary, hookBinary strin
 	threads := []struct{ id, alias string }{
 		{"linked-codex-target", "receiver"}, {"linked-codex-sibling", "sibling"},
 	}
+	// A linked device keeps its member spools beside its own store.
+	stores, err := filepath.Glob(filepath.Join(f.spoke.state, "spoke", "*", "store.sqlite3"))
+	if err != nil || len(stores) != 1 {
+		t.Fatalf("spoke stores %v, %v", stores, err)
+	}
+	hooks := codexFixtureHooks{input: input, log: logPath, rendezvous: ident.Rendezvous(filepath.Dir(stores[0]), os.Geteuid())}
 	turn := 0
 	send := func(thread string, events []string) {
 		t.Helper()
+		// The device has handled a hook once it queued its fact for the home.
+		seq := func() int64 {
+			var n int64
+			if err := spokeDB.QueryRow(`SELECT MAX(
+				(SELECT COALESCE(MAX(hook_sent_seq), 0) FROM spoke_leaf WHERE vendor = 'codex' AND key = ?1),
+				(SELECT COALESCE(MAX(leaf_seq), 0) FROM spoke_hook_outbox WHERE vendor = 'codex' AND key = ?1 AND kind = 'fact'))`,
+				thread).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
 		for _, event := range events {
 			hook := map[string]any{"hook_event_name": event, "session_id": thread, "cwd": f.spoke.home}
 			switch event {
@@ -188,9 +206,7 @@ func spokeLinkWakesCodex(t *testing.T, homeBinary, spokeBinary, hookBinary strin
 				// Before any prompt: the turn the session joined during ends.
 				hook["turn_id"], hook["stop_hook_active"] = "turn-"+strconv.Itoa(turn), false
 			}
-			if err := json.NewEncoder(input).Encode(hook); err != nil {
-				t.Fatal(err)
-			}
+			hooks.deliver(t, hook, seq)
 		}
 	}
 	participants := make([]*participant, 0, len(threads))

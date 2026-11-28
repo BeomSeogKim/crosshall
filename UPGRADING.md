@@ -2,6 +2,14 @@
 
 Notes for moving an existing installation from one release to the next. A new installation needs none of this; start from the [README](README.md).
 
+## To v0.5.2
+
+From v0.5.2-rc.1, v0.5.1, v0.5.1-rc.1, v0.5.0 or v0.5.0-rc.1, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the install journal stays in format 4, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed, and setup need not run again. From v0.5.0 or v0.5.0-rc.1, one exception still applies: if Claude Code and Codex share one configuration home and a v0.5.0 setup reported `crosshall skill shared with Claude Code` while no `skills/crosshall/SKILL.md` is there ([#474](https://github.com/BeomSeogKim/crosshall/issues/474)), run `crosshall setup codex` in your own terminal to install it. A linked Codex session that joins by hand during a turn is woken at that turn end once both the home and its device run v0.5.2 or v0.5.2-rc.1; until then it gets its route at its next prompt, as before. See [the v0.5.2-rc.1 notes](#to-v052-rc1) for what setup reports.
+
+From v0.4.0 or earlier, follow [the v0.5.0 upgrade steps](#to-v050) with the v0.5.2 binary.
+
+To roll back to v0.5.1 or v0.5.0, stop the dispatcher, put the earlier binary back at the original path and restart it. No uninstall is needed: these releases all use schema 37 and install journal format 4.
+
 ## To v0.5.2-rc.1
 
 From v0.5.1, v0.5.1-rc.1, v0.5.0 or v0.5.0-rc.1, replace the binary at the existing install path and restart the dispatcher. The store stays on schema 37, the install journal stays in format 4, the hooks, command rules and skill keep their settings, and linked devices keep their enrollment. Upgrade the home first, then linked devices. No migration is needed, and setup need not run again: the hook entries, rules and skill are the same as in v0.5.1, so `crosshall setup` reports an agent whose setup is complete and unchanged as `already installed` and asks nothing, and Codex keeps its trust in the unchanged hooks. From v0.5.0 or v0.5.0-rc.1, one exception from [the v0.5.1-rc.1 notes](#to-v051-rc1) still applies: if Claude Code and Codex share one configuration home and a v0.5.0 setup reported `crosshall skill shared with Claude Code` while no `skills/crosshall/SKILL.md` is there (#474), run `crosshall setup codex` in your own terminal to install it. A linked Codex session that joins by hand during a turn is woken at that turn end only once both the home and its device run v0.5.2-rc.1; until then it gets its route at its next prompt, as before.

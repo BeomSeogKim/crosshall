@@ -141,7 +141,7 @@ func (f *spokeFixture) sendArgs(t *testing.T, verb, key, args string, within tim
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := f.s.spokeCommand(t.Context(), f.path, f.dir, id, raw)
+	r, err := f.s.spokeCommand(t.Context(), f.path, f.dir, id, raw, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,10 @@
 
 All notable changes, newest first. Upgrade steps are in [UPGRADING.md](UPGRADING.md).
 
+## Unreleased
+
+- **A linked device keeps a hook observation it took in time:** a hook that sends its observation without waiting for an answer, such as a turn end, was dropped when the device's dispatcher reached it after its deadline, even though the device had taken it in before then. On a busy device a hand-joined Codex session's turn end could be lost this way, and the session got its route only at its next prompt. The device now keeps such an observation, as the hall's own dispatcher always did. One the device has not taken in by its deadline is still dropped.
+
 ## v0.5.2 (2026-11-28)
 
 - **Release of v0.5.2-rc.1:** no product change since rc.1.

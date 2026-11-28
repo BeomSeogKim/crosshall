@@ -349,8 +349,8 @@ func (s *server) scanSpokeMembers(ctx context.Context, reap bool, now time.Time)
 		if reap {
 			s.logFailure(spool.ReapServerSpool(dir, now.Add(-24*time.Hour), true))
 		}
-		s.logFailure(spool.DrainMemberSpool(dir, func(id string, raw []byte, _ bool) (core.Result, error) {
-			return s.spokeCommand(ctx, path, dir, id, raw)
+		s.logFailure(spool.DrainMemberSpool(dir, func(id string, raw []byte, admittedOneWay bool) (core.Result, error) {
+			return s.spokeCommand(ctx, path, dir, id, raw, admittedOneWay)
 		}))
 		dir.Close()
 	}
@@ -415,8 +415,8 @@ func (s *server) spokeHello(ctx context.Context, id string, raw []byte) (core.Re
 // reach the link. A key already in the outbox is never reset: other bytes
 // are a conflict, an answered one shows its answer, and an unresolved one
 // is looked up receipt-only.
-func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
-	r, err := s.spokeForward(ctx, path, dir, id, raw)
+func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id string, raw []byte, admittedOneWay bool) (core.Result, error) {
+	r, err := s.spokeForward(ctx, path, dir, id, raw, admittedOneWay)
 	if err == nil && r.Code == core.CodeUnsent {
 		// Nothing left: if the home went back meanwhile, say so.
 		if refusal := s.rolledBackRefusal(); refusal != nil {
@@ -426,7 +426,7 @@ func (s *server) spokeCommand(ctx context.Context, path string, dir *os.Root, id
 	return r, err
 }
 
-func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id string, raw []byte) (core.Result, error) {
+func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id string, raw []byte, admittedOneWay bool) (core.Result, error) {
 	var req wire.Request
 	if err := json.Unmarshal(raw, &req); err != nil || req.Version != wire.Version || req.Attempt != id {
 		return commandError(core.ExitUsage, "", "invalid command envelope"), nil
@@ -435,7 +435,7 @@ func (s *server) spokeForward(ctx context.Context, path string, dir *os.Root, id
 		return *r, nil
 	}
 	if req.IsHook() {
-		return s.spokeHook(ctx, path, dir, req)
+		return s.spokeHook(ctx, path, dir, req, admittedOneWay)
 	}
 	if req.ExpiresAtMS <= time.Now().UnixMilli() {
 		return unknownOutcome("attempt expired", req.OpKey), nil

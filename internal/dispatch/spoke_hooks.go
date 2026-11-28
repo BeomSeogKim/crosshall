@@ -84,14 +84,15 @@ var spokeHookFacts = map[string]bool{
 // fact, or the written acknowledgement of an offer it printed, goes to the
 // hook outbox with the token the hook took at capture, in a committed
 // transaction; its output comes only from an eligible cache.
-func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req wire.Request) (core.Result, error) {
+func (s *server) spokeHook(ctx context.Context, path string, dir *os.Root, req wire.Request, admittedOneWay bool) (core.Result, error) {
 	if req.Verb != wire.VerbHookEnroll && req.Verb != wire.VerbHookEvent && req.Verb != wire.VerbHookRoute && req.Verb != wire.VerbHookJoinHintAck {
 		return domain.Fail(core.ExitUnavailable, core.CodeDispatcherUnavailable,
 			"hook routes of a linked device reach the hall in a later release", ""), nil
 	}
 	// As natively, the acknowledgement of output already written is
-	// recorded however late it arrives.
-	if req.Verb != wire.VerbHookJoinHintAck && req.ExpiresAtMS <= time.Now().UnixMilli() {
+	// recorded however late it arrives, and so is a one-way hook the spool
+	// admitted before its deadline: its hook has exited and sends it no more.
+	if req.Verb != wire.VerbHookJoinHintAck && req.ExpiresAtMS <= time.Now().UnixMilli() && (!admittedOneWay || !req.OneWayHook()) {
 		return unknownOutcome("attempt expired", req.OpKey), nil
 	}
 	capture := req.Capture

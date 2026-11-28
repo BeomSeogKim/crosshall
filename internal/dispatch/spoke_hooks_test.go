@@ -84,7 +84,7 @@ func (f *hookFixture) hook(t *testing.T, verb string, args any, seq uint64, stam
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := f.s.spokeCommand(t.Context(), f.path, f.dir, id, body)
+	r, err := f.s.spokeCommand(t.Context(), f.path, f.dir, id, body, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,6 +602,53 @@ func TestASpokeReleasesLeftoverHookFramesAfterItsFirstPass(t *testing.T) {
 	f.s.scanSpokeMembers(t.Context(), false, time.Now())
 	if got := waitFacts(t, f.home, 1); len(got) != 1 || got[0].Token.LeafSeq != 4 {
 		t.Fatalf("after the first pass: %+v", got)
+	}
+	f.end(t, f.home)
+}
+
+// A one-way hook the member spool admitted before its deadline is handled
+// even when the drain reaches it later, as natively: its hook has exited
+// and sends it no more. One still waiting for admission at its deadline is
+// dropped.
+func TestASpokeHandlesAnAdmittedOneWayHookAfterItsDeadline(t *testing.T) {
+	f := newHookFixture(t)
+	no := false
+	packet := func(seq uint64) (string, []byte) {
+		args, err := json.Marshal(wire.HookEventArgs{Profile: wire.HookProfile{Adapter: "codex"}, LaunchRef: hookLaunch,
+			EventRef: "stop-" + strconv.FormatUint(seq, 10), Fact: wire.HookTurnFinishing, TurnRef: "t-1", Epoch: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := wire.NewID()
+		raw, err := json.Marshal(wire.Request{Version: wire.Version, Attempt: id,
+			OpKey: "hook:codex:" + hookLaunch + ":stop-" + strconv.FormatUint(seq, 10), KeyDigest: f.digest, Generation: f.generation,
+			Verb: wire.VerbHookEvent, Args: args, PublishSeq: seq, Reply: &no, ExpiresAtMS: time.Now().Add(-time.Second).UnixMilli(),
+			Capture: &wire.HookCapture{Boot: "boot-1", MonoNS: 5, WallMS: f.wallMS, Membership: stamp22}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id + ".json", raw
+	}
+	for area, seq := range map[string]uint64{"work": 4, "in": 5} {
+		if err := os.MkdirAll(filepath.Join(f.path, area), 0700); err != nil {
+			t.Fatal(err)
+		}
+		name, raw := packet(seq)
+		if err := os.WriteFile(filepath.Join(f.path, area, name), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.s.scanSpokeMembers(t.Context(), false, time.Now())
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE kind = 'fact' AND leaf_seq = 4`); n != 1 {
+		t.Fatal("the admitted turn end was dropped at its deadline")
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM spoke_hook_outbox WHERE leaf_seq = 5`); n != 0 {
+		t.Fatal("a turn end not admitted by its deadline was handled")
+	}
+	for _, area := range []string{"in", "work"} {
+		if left, err := os.ReadDir(filepath.Join(f.path, area)); err != nil || len(left) != 0 {
+			t.Fatalf("%s holds %v (%v)", area, left, err)
+		}
 	}
 	f.end(t, f.home)
 }
